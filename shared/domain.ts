@@ -143,22 +143,25 @@ export function rollup(lines: Map<string, Months>): Map<string, Months> {
   const g = (c: string): Months => t.get(c) || zero12();
   const subM = (a: Months, b: Months): Months => a.map((v, i) => r2(v - b[i]));
 
+  // Ranges start just past each section's header code — header rows can never
+  // carry amounts (the FHND workbook had values typed on 5100/7000 header rows;
+  // Yardi's own section totals exclude them).
   t.set('5004', sumRange(4994, 5003));
   t.set('5029', sumRange(5018, 5028));
   t.set('5049', sumRange(5031, 5048));
   t.set('5070', addM(addM(g('5004'), g('5029')), g('5049')));
-  t.set('5190', sumRange(5100, 5189));
+  t.set('5190', sumRange(5101, 5189));
   t.set('5500', addM(g('5070'), g('5190')));
-  t.set('6170', sumRange(6100, 6169));
-  t.set('6370', sumRange(6300, 6369));
-  t.set('6399', sumRange(6372, 6398));
-  t.set('6470', sumRange(6400, 6469));
-  t.set('6570', sumRange(6500, 6569));
-  t.set('6670', sumRange(6600, 6669));
-  t.set('6770', sumRange(6700, 6769));
-  t.set('6870', sumRange(6800, 6869));
-  t.set('6970', sumRange(6900, 6969));
-  t.set('7070', sumRange(7000, 7069));
+  t.set('6170', sumRange(6101, 6169));
+  t.set('6370', sumRange(6301, 6369));
+  t.set('6399', sumRange(6374, 6398));
+  t.set('6470', sumRange(6401, 6469));
+  t.set('6570', sumRange(6501, 6569));
+  t.set('6670', sumRange(6601, 6669));
+  t.set('6770', sumRange(6701, 6769));
+  t.set('6870', sumRange(6801, 6869));
+  t.set('6970', sumRange(6901, 6969));
+  t.set('7070', sumRange(7001, 7069));
   t.set('7098', addM(addM(g('6770'), g('6870')), addM(g('6970'), g('7070'))));
   t.set('7099', [g('6170'), g('6370'), g('6399'), g('6470'), g('6570'), g('6670'), g('7098')].reduce(addM, zero12()));
   t.set('7279', g('7099'));
