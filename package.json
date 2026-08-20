@@ -1,0 +1,39 @@
+{
+  "name": "nd-budget-tool",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Property budgeting tool — new-acquisition budgets tied to underwriting, annual budgets later. Yardi CSV + Excel outputs.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "esbuild src/server.ts src/db.ts src/auth.ts src/migrate.ts src/routes.ts src/importers.ts src/csv-export.ts src/xlsx-export.ts src/seed-if-empty.ts shared/domain.ts --platform=node --format=esm --outdir=dist --outbase=. --sourcemap",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "migrate": "tsx src/migrate.ts",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/src/server.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "connect-pg-simple": "^9.0.1",
+    "dotenv": "^16.4.5",
+    "esbuild": "^0.24.2",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1",
+    "multer": "^1.4.5-lts.1",
+    "pg": "^8.13.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/connect-pg-simple": "^7.0.3",
+    "@types/express": "^4.17.21",
+    "@types/express-session": "^1.18.0",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

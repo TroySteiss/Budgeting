@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+*.log
+test/fixtures/*.xlsx
+test/fixtures/*.csv
+scripts/e2e-out.*

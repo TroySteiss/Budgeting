@@ -1,0 +1,3852 @@
+[
+ {
+  "code": "4991",
+  "name": "INCOME",
+  "kind": "header",
+  "section": "gpr",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 10,
+  "curve": null
+ },
+ {
+  "code": "4992",
+  "name": "RENTAL INCOME",
+  "kind": "header",
+  "section": "gpr",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 12,
+  "curve": null
+ },
+ {
+  "code": "4993",
+  "name": "NET GROSS POTENTIAL RENT",
+  "kind": "header",
+  "section": "gpr",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 13,
+  "curve": null
+ },
+ {
+  "code": "4994",
+  "name": "TENANT GROSS POTENTIAL",
+  "kind": "detail",
+  "section": "gpr",
+  "pcode": "1",
+  "csv_order": 4,
+  "display_order": 14,
+  "curve": "flat"
+ },
+ {
+  "code": "4995",
+  "name": "HAP CONTRACT RENT",
+  "kind": "detail",
+  "section": "gpr",
+  "pcode": "1",
+  "csv_order": 5,
+  "display_order": 15,
+  "curve": "flat"
+ },
+ {
+  "code": "4996",
+  "name": "HAP VOUCHER RENT",
+  "kind": "detail",
+  "section": "gpr",
+  "pcode": "1",
+  "csv_order": 6,
+  "display_order": 16,
+  "curve": "flat"
+ },
+ {
+  "code": "5003",
+  "name": "LOSS/GAIN TO LEASE",
+  "kind": "detail",
+  "section": "gpr",
+  "pcode": "loss",
+  "csv_order": 7,
+  "display_order": 20,
+  "curve": "flat"
+ },
+ {
+  "code": "5004",
+  "name": "TOTAL NET GROSS POTENTIAL RENT",
+  "kind": "total",
+  "section": "gpr",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 21,
+  "curve": null
+ },
+ {
+  "code": "5017",
+  "name": "CONCESSIONS",
+  "kind": "header",
+  "section": "concessions",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 23,
+  "curve": null
+ },
+ {
+  "code": "5018",
+  "name": "BOND CONCESSION",
+  "kind": "detail",
+  "section": "concessions",
+  "pcode": "2",
+  "csv_order": 8,
+  "display_order": 24,
+  "curve": "flat"
+ },
+ {
+  "code": "5019",
+  "name": "PEP CONCESSION",
+  "kind": "detail",
+  "section": "concessions",
+  "pcode": "2",
+  "csv_order": 9,
+  "display_order": 25,
+  "curve": "flat"
+ },
+ {
+  "code": "5020",
+  "name": "RENT CONCESSION - RECURRING",
+  "kind": "detail",
+  "section": "concessions",
+  "pcode": "2",
+  "csv_order": 10,
+  "display_order": 26,
+  "curve": "flat"
+ },
+ {
+  "code": "5021",
+  "name": "RENT CONCESSION - ONE-TIME",
+  "kind": "detail",
+  "section": "concessions",
+  "pcode": "2",
+  "csv_order": 11,
+  "display_order": 27,
+  "curve": "flat"
+ },
+ {
+  "code": "5022",
+  "name": "CONCESSION RECAPTURE",
+  "kind": "detail",
+  "section": "concessions",
+  "pcode": "2",
+  "csv_order": 12,
+  "display_order": 28,
+  "curve": "flat"
+ },
+ {
+  "code": "5023",
+  "name": "RENEWAL CONCESSION",
+  "kind": "detail",
+  "section": "concessions",
+  "pcode": "2",
+  "csv_order": 13,
+  "display_order": 29,
+  "curve": "flat"
+ },
+ {
+  "code": "5024",
+  "name": "MOVE-IN CONCESSION",
+  "kind": "detail",
+  "section": "concessions",
+  "pcode": "2",
+  "csv_order": 14,
+  "display_order": 30,
+  "curve": "flat"
+ },
+ {
+  "code": "5025",
+  "name": "REFERRAL CONCESSION",
+  "kind": "detail",
+  "section": "concessions",
+  "pcode": "2",
+  "csv_order": 15,
+  "display_order": 31,
+  "curve": "flat"
+ },
+ {
+  "code": "5027",
+  "name": "SUMMER STORAGE CONCESSION",
+  "kind": "detail",
+  "section": "concessions",
+  "pcode": "2",
+  "csv_order": 16,
+  "display_order": 32,
+  "curve": "flat"
+ },
+ {
+  "code": "5028",
+  "name": "FIRE CONCESSION",
+  "kind": "detail",
+  "section": "concessions",
+  "pcode": "2",
+  "csv_order": 17,
+  "display_order": 33,
+  "curve": "flat"
+ },
+ {
+  "code": "5029",
+  "name": "TOTAL CONCESSIONS",
+  "kind": "total",
+  "section": "concessions",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 34,
+  "curve": null
+ },
+ {
+  "code": "5030",
+  "name": "RENTAL LOSS",
+  "kind": "header",
+  "section": "rental_loss",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 36,
+  "curve": null
+ },
+ {
+  "code": "5031",
+  "name": "Less: VACANCY",
+  "kind": "detail",
+  "section": "rental_loss",
+  "pcode": "3",
+  "csv_order": 18,
+  "display_order": 37,
+  "curve": "flat"
+ },
+ {
+  "code": "5032",
+  "name": "Less: MODELS",
+  "kind": "detail",
+  "section": "rental_loss",
+  "pcode": "3",
+  "csv_order": 19,
+  "display_order": 38,
+  "curve": "flat"
+ },
+ {
+  "code": "5033",
+  "name": "Less: ADMIN",
+  "kind": "detail",
+  "section": "rental_loss",
+  "pcode": "3",
+  "csv_order": 20,
+  "display_order": 39,
+  "curve": "flat"
+ },
+ {
+  "code": "5034",
+  "name": "Less: DOWN",
+  "kind": "detail",
+  "section": "rental_loss",
+  "pcode": "3",
+  "csv_order": 21,
+  "display_order": 40,
+  "curve": "flat"
+ },
+ {
+  "code": "5035",
+  "name": "Less: CURRENT DELINQUENCY",
+  "kind": "detail",
+  "section": "rental_loss",
+  "pcode": "3",
+  "csv_order": 22,
+  "display_order": 41,
+  "curve": "flat"
+ },
+ {
+  "code": "5036",
+  "name": "PRIOR PERIOD COLLECTIONS",
+  "kind": "detail",
+  "section": "rental_loss",
+  "pcode": "3",
+  "csv_order": 23,
+  "display_order": 42,
+  "curve": "flat"
+ },
+ {
+  "code": "5040",
+  "name": "WRITE-OFFS",
+  "kind": "detail",
+  "section": "rental_loss",
+  "pcode": "3",
+  "csv_order": 24,
+  "display_order": 43,
+  "curve": "flat"
+ },
+ {
+  "code": "5049",
+  "name": "TOTAL RENTAL LOSS",
+  "kind": "total",
+  "section": "rental_loss",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 44,
+  "curve": null
+ },
+ {
+  "code": "5070",
+  "name": "TOTAL RENTAL INCOME",
+  "kind": "total",
+  "section": "rental_loss",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 45,
+  "curve": null
+ },
+ {
+  "code": "5100",
+  "name": "OTHER INCOME",
+  "kind": "header",
+  "section": "other_income",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 47,
+  "curve": null
+ },
+ {
+  "code": "5103",
+  "name": "ALARM FEE",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 25,
+  "display_order": 48,
+  "curve": "flat"
+ },
+ {
+  "code": "5104",
+  "name": "AMENITY MEMBERSHIP",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 26,
+  "display_order": 49,
+  "curve": "flat"
+ },
+ {
+  "code": "5105",
+  "name": "APPLICATION FEES",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 27,
+  "display_order": 50,
+  "curve": "flat"
+ },
+ {
+  "code": "5110",
+  "name": "BAD DEBT RECOVERY",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 28,
+  "display_order": 51,
+  "curve": "flat"
+ },
+ {
+  "code": "5112",
+  "name": "CELL TOWER RENT",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 29,
+  "display_order": 52,
+  "curve": "flat"
+ },
+ {
+  "code": "5115",
+  "name": "CABLE TV/INTERNET",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 30,
+  "display_order": 53,
+  "curve": "flat"
+ },
+ {
+  "code": "5116",
+  "name": "CORPORATE FEES",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 31,
+  "display_order": 54,
+  "curve": "flat"
+ },
+ {
+  "code": "5117",
+  "name": "CONVENIENCE FEE",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 32,
+  "display_order": 55,
+  "curve": "flat"
+ },
+ {
+  "code": "5118",
+  "name": "COMMERCIAL RENT",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 33,
+  "display_order": 56,
+  "curve": "flat"
+ },
+ {
+  "code": "5119",
+  "name": "VENDOR COMMISSIONS",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 34,
+  "display_order": 57,
+  "curve": "flat"
+ },
+ {
+  "code": "5120",
+  "name": "DAMAGE REIMBURSEMENT",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 35,
+  "display_order": 58,
+  "curve": "flat"
+ },
+ {
+  "code": "5121",
+  "name": "FURNITURE RENTAL INCOME",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 36,
+  "display_order": 59,
+  "curve": "flat"
+ },
+ {
+  "code": "5122",
+  "name": "HAP UTILITY ALLOWANCE",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "4",
+  "csv_order": 37,
+  "display_order": 60,
+  "curve": "flat"
+ },
+ {
+  "code": "5124",
+  "name": "HAP REPAYMENT EXPENSE RECOVERY",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 38,
+  "display_order": 61,
+  "curve": "flat"
+ },
+ {
+  "code": "5125",
+  "name": "INTEREST INCOME",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 39,
+  "display_order": 62,
+  "curve": "flat"
+ },
+ {
+  "code": "5126",
+  "name": "INSURANCE NON-COMPLIANCE FEES",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 40,
+  "display_order": 63,
+  "curve": "flat"
+ },
+ {
+  "code": "5130",
+  "name": "OTHER MISCELLANEOUS INCOME",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 41,
+  "display_order": 64,
+  "curve": "flat"
+ },
+ {
+  "code": "5131",
+  "name": "EQUIPMENT LEASE",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 42,
+  "display_order": 65,
+  "curve": "flat"
+ },
+ {
+  "code": "5132",
+  "name": "WASHER/DRYER RENTAL INCOME",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 43,
+  "display_order": 66,
+  "curve": "flat"
+ },
+ {
+  "code": "5135",
+  "name": "LAUNDRY INCOME",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 44,
+  "display_order": 67,
+  "curve": "flat"
+ },
+ {
+  "code": "5136",
+  "name": "STORAGE UNIT INCOME",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 45,
+  "display_order": 68,
+  "curve": "flat"
+ },
+ {
+  "code": "5138",
+  "name": "CLUBHOUSE RENTAL",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 46,
+  "display_order": 69,
+  "curve": "flat"
+ },
+ {
+  "code": "5140",
+  "name": "LEASE TERMINATION",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 47,
+  "display_order": 70,
+  "curve": "flat"
+ },
+ {
+  "code": "5145",
+  "name": "LEGAL FEES",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 48,
+  "display_order": 71,
+  "curve": "flat"
+ },
+ {
+  "code": "5147",
+  "name": "MODEL INCOME",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 49,
+  "display_order": 72,
+  "curve": "flat"
+ },
+ {
+  "code": "5149",
+  "name": "HOLD OVER COMMERCIAL",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 50,
+  "display_order": 73,
+  "curve": "flat"
+ },
+ {
+  "code": "5150",
+  "name": "MONTH-TO-MONTH",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 51,
+  "display_order": 74,
+  "curve": "flat"
+ },
+ {
+  "code": "5151",
+  "name": "SHORT TERM LEASE PREMIUM",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 52,
+  "display_order": 75,
+  "curve": "flat"
+ },
+ {
+  "code": "5152",
+  "name": "DEPOSITS FORFEITURE",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 53,
+  "display_order": 76,
+  "curve": "flat"
+ },
+ {
+  "code": "5155",
+  "name": "NSF FEES INCOME",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 54,
+  "display_order": 77,
+  "curve": "flat"
+ },
+ {
+  "code": "5156",
+  "name": "CREDIT APPROVAL FEE",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 55,
+  "display_order": 78,
+  "curve": "flat"
+ },
+ {
+  "code": "5157",
+  "name": "NON-REFUND ADMIN FEE",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 56,
+  "display_order": 79,
+  "curve": "flat"
+ },
+ {
+  "code": "5158",
+  "name": "PEST CONTROL FEE",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 57,
+  "display_order": 80,
+  "curve": "flat"
+ },
+ {
+  "code": "5159",
+  "name": "PARKING GARAGE-MONTHLY NON-TENANT",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 58,
+  "display_order": 81,
+  "curve": "flat"
+ },
+ {
+  "code": "5160",
+  "name": "PARKING INCOME",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 59,
+  "display_order": 82,
+  "curve": "flat"
+ },
+ {
+  "code": "5161",
+  "name": "PARKING GARAGE INCOME",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 60,
+  "display_order": 83,
+  "curve": "flat"
+ },
+ {
+  "code": "5162",
+  "name": "COMMERCIAL PARKING GARAGE-OTHER",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 61,
+  "display_order": 84,
+  "curve": "flat"
+ },
+ {
+  "code": "5163",
+  "name": "PAYMENT PLAN FEE",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 62,
+  "display_order": 85,
+  "curve": "flat"
+ },
+ {
+  "code": "5164",
+  "name": "TRASH REIM - VALET SVC",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "4",
+  "csv_order": 63,
+  "display_order": 86,
+  "curve": "flat"
+ },
+ {
+  "code": "5165",
+  "name": "PET FEE / RENT",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 64,
+  "display_order": 87,
+  "curve": "flat"
+ },
+ {
+  "code": "5166",
+  "name": "INITIAL PET MOVE IN CHARGE",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 65,
+  "display_order": 88,
+  "curve": "flat"
+ },
+ {
+  "code": "5167",
+  "name": "SEWER REIM",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "4",
+  "csv_order": 66,
+  "display_order": 89,
+  "curve": "flat"
+ },
+ {
+  "code": "5168",
+  "name": "TRANSFER FEE",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 67,
+  "display_order": 90,
+  "curve": "flat"
+ },
+ {
+  "code": "5169",
+  "name": "TRASH REIM",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "4",
+  "csv_order": 68,
+  "display_order": 91,
+  "curve": "flat"
+ },
+ {
+  "code": "5170",
+  "name": "UTILITIES REIM",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "4",
+  "csv_order": 69,
+  "display_order": 92,
+  "curve": "flat"
+ },
+ {
+  "code": "5171",
+  "name": "GAS REIM",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "4",
+  "csv_order": 70,
+  "display_order": 93,
+  "curve": "flat"
+ },
+ {
+  "code": "5172",
+  "name": "STREET REIM",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "4",
+  "csv_order": 71,
+  "display_order": 94,
+  "curve": "flat"
+ },
+ {
+  "code": "5174",
+  "name": "WATER REIM",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "4",
+  "csv_order": 72,
+  "display_order": 95,
+  "curve": "flat"
+ },
+ {
+  "code": "5175",
+  "name": "VENDING MACHINES",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 73,
+  "display_order": 96,
+  "curve": "flat"
+ },
+ {
+  "code": "5178",
+  "name": "VENDOR REBATES",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 74,
+  "display_order": 97,
+  "curve": "flat"
+ },
+ {
+  "code": "5180",
+  "name": "OTHER INCOME",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 75,
+  "display_order": 98,
+  "curve": "flat"
+ },
+ {
+  "code": "5181",
+  "name": "OTHER COMMISSION INCOME",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 76,
+  "display_order": 99,
+  "curve": "flat"
+ },
+ {
+  "code": "5183",
+  "name": "COMM- CAM RECOVERY",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 77,
+  "display_order": 100,
+  "curve": "flat"
+ },
+ {
+  "code": "5184",
+  "name": "COMM- INS RECOVERY",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 78,
+  "display_order": 101,
+  "curve": "flat"
+ },
+ {
+  "code": "5185",
+  "name": "COMM - TAX RECOVERY",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 79,
+  "display_order": 102,
+  "curve": "flat"
+ },
+ {
+  "code": "5186",
+  "name": "COMM- FIXED RECOVERY",
+  "kind": "detail",
+  "section": "other_income",
+  "pcode": "5",
+  "csv_order": 80,
+  "display_order": 103,
+  "curve": "flat"
+ },
+ {
+  "code": "5190",
+  "name": "NET OTHER INCOME",
+  "kind": "total",
+  "section": "other_income",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 104,
+  "curve": null
+ },
+ {
+  "code": "5500",
+  "name": "TOTAL INCOME",
+  "kind": "total",
+  "section": "other_income",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 106,
+  "curve": null
+ },
+ {
+  "code": "5999",
+  "name": "EXPENSES",
+  "kind": "header",
+  "section": "fixed_admin",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 108,
+  "curve": null
+ },
+ {
+  "code": "6000",
+  "name": "OPERATING EXPENSES",
+  "kind": "header",
+  "section": "fixed_admin",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 110,
+  "curve": null
+ },
+ {
+  "code": "6100",
+  "name": "FIXED ADMINISTRATIVE",
+  "kind": "header",
+  "section": "fixed_admin",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 112,
+  "curve": null
+ },
+ {
+  "code": "6102",
+  "name": "ACCOUNTING FEES",
+  "kind": "detail",
+  "section": "fixed_admin",
+  "pcode": "9",
+  "csv_order": 81,
+  "display_order": 113,
+  "curve": "flat"
+ },
+ {
+  "code": "6104",
+  "name": "AUTO INSURANCE",
+  "kind": "detail",
+  "section": "fixed_admin",
+  "pcode": "9",
+  "csv_order": 82,
+  "display_order": 114,
+  "curve": "flat"
+ },
+ {
+  "code": "6108",
+  "name": "INSURANCE EXPENSE",
+  "kind": "detail",
+  "section": "fixed_admin",
+  "pcode": "6",
+  "csv_order": 83,
+  "display_order": 115,
+  "curve": "flat"
+ },
+ {
+  "code": "6110",
+  "name": "INSURANCE - FLOOD",
+  "kind": "detail",
+  "section": "fixed_admin",
+  "pcode": "6",
+  "csv_order": 84,
+  "display_order": 116,
+  "curve": "flat"
+ },
+ {
+  "code": "6112",
+  "name": "MANAGEMENT FEE",
+  "kind": "detail",
+  "section": "fixed_admin",
+  "pcode": "7",
+  "csv_order": 85,
+  "display_order": 117,
+  "curve": "flat"
+ },
+ {
+  "code": "6113",
+  "name": "PERSONAL PROPERTY TAX",
+  "kind": "detail",
+  "section": "fixed_admin",
+  "pcode": "8",
+  "csv_order": 86,
+  "display_order": 118,
+  "curve": "flat"
+ },
+ {
+  "code": "6115",
+  "name": "CAM EXPENSE",
+  "kind": "detail",
+  "section": "fixed_admin",
+  "pcode": "9",
+  "csv_order": 87,
+  "display_order": 119,
+  "curve": "flat"
+ },
+ {
+  "code": "6116",
+  "name": "REAL ESTATE TAXES",
+  "kind": "detail",
+  "section": "fixed_admin",
+  "pcode": "8",
+  "csv_order": 88,
+  "display_order": 120,
+  "curve": "flat"
+ },
+ {
+  "code": "6117",
+  "name": "FRANCHISE TAX",
+  "kind": "detail",
+  "section": "fixed_admin",
+  "pcode": "8",
+  "csv_order": 89,
+  "display_order": 121,
+  "curve": "flat"
+ },
+ {
+  "code": "6119",
+  "name": "HOA FEES",
+  "kind": "detail",
+  "section": "fixed_admin",
+  "pcode": "9",
+  "csv_order": 90,
+  "display_order": 122,
+  "curve": "flat"
+ },
+ {
+  "code": "6122",
+  "name": "LOAN FEES",
+  "kind": "detail",
+  "section": "fixed_admin",
+  "pcode": "9",
+  "csv_order": 91,
+  "display_order": 123,
+  "curve": "flat"
+ },
+ {
+  "code": "6140",
+  "name": "INCOME TAX",
+  "kind": "detail",
+  "section": "fixed_admin",
+  "pcode": "9",
+  "csv_order": 92,
+  "display_order": 124,
+  "curve": "flat"
+ },
+ {
+  "code": "6170",
+  "name": "TOTAL FIXED ADMINISTRATIVE",
+  "kind": "total",
+  "section": "fixed_admin",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 125,
+  "curve": null
+ },
+ {
+  "code": "6300",
+  "name": "ADMINISTRATIVE",
+  "kind": "header",
+  "section": "admin",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 127,
+  "curve": null
+ },
+ {
+  "code": "6302",
+  "name": "ADMIN ADVERTISING",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 93,
+  "display_order": 128,
+  "curve": "flat"
+ },
+ {
+  "code": "6305",
+  "name": "AUTO FUEL",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 94,
+  "display_order": 129,
+  "curve": "flat"
+ },
+ {
+  "code": "6306",
+  "name": "AUTO MAINTENANCE",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 95,
+  "display_order": 130,
+  "curve": "flat"
+ },
+ {
+  "code": "6308",
+  "name": "BANK CHARGES",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 96,
+  "display_order": 131,
+  "curve": "flat"
+ },
+ {
+  "code": "6309",
+  "name": "COLLECTION FEES",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 97,
+  "display_order": 132,
+  "curve": "flat"
+ },
+ {
+  "code": "6310",
+  "name": "CONSULTING SERVICE",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 98,
+  "display_order": 133,
+  "curve": "flat"
+ },
+ {
+  "code": "6311",
+  "name": "PAYMENT PROCESSING FEES",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 99,
+  "display_order": 134,
+  "curve": "flat"
+ },
+ {
+  "code": "6312",
+  "name": "CREDIT / BACKGROUND CHECKS",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 100,
+  "display_order": 135,
+  "curve": "flat"
+ },
+ {
+  "code": "6314",
+  "name": "CORPORATE APARTMENT",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 101,
+  "display_order": 136,
+  "curve": "flat"
+ },
+ {
+  "code": "6315",
+  "name": "DONATIONS",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 102,
+  "display_order": 137,
+  "curve": "flat"
+ },
+ {
+  "code": "6316",
+  "name": "EDUCATION / DUES",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 103,
+  "display_order": 138,
+  "curve": "flat"
+ },
+ {
+  "code": "6317",
+  "name": "IN-HOUSE TRAINING",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 104,
+  "display_order": 139,
+  "curve": "flat"
+ },
+ {
+  "code": "6318",
+  "name": "EMPLOYEE RELATIONS",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 105,
+  "display_order": 140,
+  "curve": "flat"
+ },
+ {
+  "code": "6319",
+  "name": "LATE FEES",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 106,
+  "display_order": 141,
+  "curve": "flat"
+ },
+ {
+  "code": "6320",
+  "name": "LEGAL SERVICES",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 107,
+  "display_order": 142,
+  "curve": "flat"
+ },
+ {
+  "code": "6322",
+  "name": "LEGAL - EVICTIONS",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 108,
+  "display_order": 143,
+  "curve": "flat"
+ },
+ {
+  "code": "6324",
+  "name": "LICENSES / MINOR TAXES",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 109,
+  "display_order": 144,
+  "curve": "flat"
+ },
+ {
+  "code": "6325",
+  "name": "OFFICE LEASE",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 110,
+  "display_order": 145,
+  "curve": "flat"
+ },
+ {
+  "code": "6326",
+  "name": "OFFICE EQUIPMENT LEASE",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 111,
+  "display_order": 146,
+  "curve": "flat"
+ },
+ {
+  "code": "6327",
+  "name": "CORP EQUIPMENT LEASES",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 112,
+  "display_order": 147,
+  "curve": "flat"
+ },
+ {
+  "code": "6328",
+  "name": "OFFICE EQUIPMENT PURCHASES",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 113,
+  "display_order": 148,
+  "curve": "flat"
+ },
+ {
+  "code": "6329",
+  "name": "IT EQUIPMENT",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 114,
+  "display_order": 149,
+  "curve": "flat"
+ },
+ {
+  "code": "6330",
+  "name": "OFFICE EQUIPMENT REPAIRS",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 115,
+  "display_order": 150,
+  "curve": "flat"
+ },
+ {
+  "code": "6331",
+  "name": "COMPUTER SOFTWARE",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 116,
+  "display_order": 153,
+  "curve": "flat"
+ },
+ {
+  "code": "6332",
+  "name": "OFFICE SUPPLIES",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 117,
+  "display_order": 154,
+  "curve": "flat"
+ },
+ {
+  "code": "6334",
+  "name": "POSTAGE / FED-EX",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 118,
+  "display_order": 155,
+  "curve": "flat"
+ },
+ {
+  "code": "6335",
+  "name": "PARKING FEES",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 119,
+  "display_order": 156,
+  "curve": "flat"
+ },
+ {
+  "code": "6336",
+  "name": "ADMINISTRATIVE PRINT/FORMS",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 120,
+  "display_order": 157,
+  "curve": "flat"
+ },
+ {
+  "code": "6338",
+  "name": "RELOCATION EXPENSE",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 121,
+  "display_order": 158,
+  "curve": "flat"
+ },
+ {
+  "code": "6340",
+  "name": "STORAGE RENTAL",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 122,
+  "display_order": 159,
+  "curve": "flat"
+ },
+ {
+  "code": "6342",
+  "name": "MILEAGE REIMBURSEMENTS",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 123,
+  "display_order": 160,
+  "curve": "flat"
+ },
+ {
+  "code": "6343",
+  "name": "TRAVEL",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 124,
+  "display_order": 161,
+  "curve": "flat"
+ },
+ {
+  "code": "6350",
+  "name": "THIRD PARTY BILLING",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 125,
+  "display_order": 162,
+  "curve": "flat"
+ },
+ {
+  "code": "6359",
+  "name": "USE TAX EXPENSE",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 126,
+  "display_order": 163,
+  "curve": "flat"
+ },
+ {
+  "code": "6360",
+  "name": "NEW PROJECT DEVELOPMENT",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 127,
+  "display_order": 164,
+  "curve": "flat"
+ },
+ {
+  "code": "6362",
+  "name": "CORP. TEAM RELATIONS DEPT",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 128,
+  "display_order": 165,
+  "curve": "flat"
+ },
+ {
+  "code": "6363",
+  "name": "WASHER/DRYER RENTAL",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 129,
+  "display_order": 166,
+  "curve": "flat"
+ },
+ {
+  "code": "6364",
+  "name": "LAUNDRY ROOM EXPENSES",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 130,
+  "display_order": 167,
+  "curve": "flat"
+ },
+ {
+  "code": "6365",
+  "name": "OTHER ADMINISTRATIVE EXP",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 131,
+  "display_order": 168,
+  "curve": "flat"
+ },
+ {
+  "code": "6366",
+  "name": "RECRUITING - GENERAL ADMIN",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 132,
+  "display_order": 169,
+  "curve": "flat"
+ },
+ {
+  "code": "6367",
+  "name": "RECRUITING - DIRECT JOB ADS",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 133,
+  "display_order": 170,
+  "curve": "flat"
+ },
+ {
+  "code": "6368",
+  "name": "RECRUITING - OUTREACH PROGRAMS",
+  "kind": "detail",
+  "section": "admin",
+  "pcode": "9",
+  "csv_order": 134,
+  "display_order": 171,
+  "curve": "flat"
+ },
+ {
+  "code": "6370",
+  "name": "TOTAL ADMINISTRATIVE EXP",
+  "kind": "total",
+  "section": "admin",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 172,
+  "curve": null
+ },
+ {
+  "code": "6371",
+  "name": "CORPORATE EVENTS",
+  "kind": "header",
+  "section": "corporate_events",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 174,
+  "curve": null
+ },
+ {
+  "code": "6375",
+  "name": "ANNUAL INVESTOR MEETING",
+  "kind": "detail",
+  "section": "corporate_events",
+  "pcode": "9",
+  "csv_order": 135,
+  "display_order": 175,
+  "curve": "flat"
+ },
+ {
+  "code": "6381",
+  "name": "ANNUAL MI FISH FRY",
+  "kind": "detail",
+  "section": "corporate_events",
+  "pcode": "9",
+  "csv_order": 136,
+  "display_order": 176,
+  "curve": "flat"
+ },
+ {
+  "code": "6383",
+  "name": "HOLIDAY PARTY",
+  "kind": "detail",
+  "section": "corporate_events",
+  "pcode": "9",
+  "csv_order": 137,
+  "display_order": 177,
+  "curve": "flat"
+ },
+ {
+  "code": "6385",
+  "name": "INDUSTRY CONFERENCES",
+  "kind": "detail",
+  "section": "corporate_events",
+  "pcode": "9",
+  "csv_order": 138,
+  "display_order": 178,
+  "curve": "flat"
+ },
+ {
+  "code": "6386",
+  "name": "MAINTENANCE BOOTCAMP",
+  "kind": "detail",
+  "section": "corporate_events",
+  "pcode": "9",
+  "csv_order": 139,
+  "display_order": 179,
+  "curve": "flat"
+ },
+ {
+  "code": "6387",
+  "name": "PROPERTY MANAGER BOOTCAMP",
+  "kind": "detail",
+  "section": "corporate_events",
+  "pcode": "9",
+  "csv_order": 140,
+  "display_order": 180,
+  "curve": "flat"
+ },
+ {
+  "code": "6390",
+  "name": "DEPARTMENT RETREATS",
+  "kind": "detail",
+  "section": "corporate_events",
+  "pcode": "9",
+  "csv_order": 141,
+  "display_order": 181,
+  "curve": "flat"
+ },
+ {
+  "code": "6392",
+  "name": "SPORTING EVENTS",
+  "kind": "detail",
+  "section": "corporate_events",
+  "pcode": "9",
+  "csv_order": 142,
+  "display_order": 182,
+  "curve": "flat"
+ },
+ {
+  "code": "6399",
+  "name": "TOTAL CORPORATE EVENTS",
+  "kind": "total",
+  "section": "corporate_events",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 183,
+  "curve": null
+ },
+ {
+  "code": "6400",
+  "name": "PAYROLL",
+  "kind": "header",
+  "section": "payroll",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 185,
+  "curve": null
+ },
+ {
+  "code": "6402",
+  "name": "ADMINISTRATIVE GROSS WAGES",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 143,
+  "display_order": 186,
+  "curve": "flat"
+ },
+ {
+  "code": "6404",
+  "name": "MAINTENANCE GROSS WAGES",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 144,
+  "display_order": 187,
+  "curve": "flat"
+ },
+ {
+  "code": "6405",
+  "name": "LANDSCAPING GROSS WAGES",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 145,
+  "display_order": 188,
+  "curve": "flat"
+ },
+ {
+  "code": "6406",
+  "name": "COURTESY PATROL WAGES",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 146,
+  "display_order": 189,
+  "curve": "flat"
+ },
+ {
+  "code": "6407",
+  "name": "MAINT. ROVER GROSS WAGES",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 147,
+  "display_order": 190,
+  "curve": "flat"
+ },
+ {
+  "code": "6408",
+  "name": "BONUS",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 148,
+  "display_order": 191,
+  "curve": "flat"
+ },
+ {
+  "code": "6410",
+  "name": "COMMISSIONS",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 149,
+  "display_order": 192,
+  "curve": "flat"
+ },
+ {
+  "code": "6412",
+  "name": "OVER-TIME  GROSS WAGES",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 150,
+  "display_order": 193,
+  "curve": "flat"
+ },
+ {
+  "code": "6413",
+  "name": "EMPLOYEE RENT",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 151,
+  "display_order": 194,
+  "curve": "flat"
+ },
+ {
+  "code": "6414",
+  "name": "CONTRACT LABOR",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 152,
+  "display_order": 195,
+  "curve": "flat"
+ },
+ {
+  "code": "6416",
+  "name": "ADMINISTRATIVE FEE",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 153,
+  "display_order": 196,
+  "curve": "flat"
+ },
+ {
+  "code": "6418",
+  "name": "EMPLOYER PAYROLL TAXES",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 154,
+  "display_order": 197,
+  "curve": "flat"
+ },
+ {
+  "code": "6420",
+  "name": "WORKERS COMP",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 155,
+  "display_order": 198,
+  "curve": "flat"
+ },
+ {
+  "code": "6421",
+  "name": "401(K) CONTRIBUTIONS",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 156,
+  "display_order": 199,
+  "curve": "flat"
+ },
+ {
+  "code": "6422",
+  "name": "MEDICAL INSURANCE",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 157,
+  "display_order": 200,
+  "curve": "flat"
+ },
+ {
+  "code": "6424",
+  "name": "DRUG / BACKGROUND / NEW HIRE",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 158,
+  "display_order": 201,
+  "curve": "flat"
+ },
+ {
+  "code": "6450",
+  "name": "PAYROLL- ALLOCATIONS OUT",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 159,
+  "display_order": 202,
+  "curve": "flat"
+ },
+ {
+  "code": "6451",
+  "name": "CORPORATE ALLOC-CREDIT",
+  "kind": "detail",
+  "section": "payroll",
+  "pcode": "10",
+  "csv_order": 160,
+  "display_order": 203,
+  "curve": "flat"
+ },
+ {
+  "code": "6470",
+  "name": "TOTAL PAYROLL EXPENSE",
+  "kind": "total",
+  "section": "payroll",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 204,
+  "curve": null
+ },
+ {
+  "code": "6500",
+  "name": "MARKETING",
+  "kind": "header",
+  "section": "marketing",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 206,
+  "curve": null
+ },
+ {
+  "code": "6501",
+  "name": "ADVERTISING - DIGITAL",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 161,
+  "display_order": 207,
+  "curve": "flat"
+ },
+ {
+  "code": "6502",
+  "name": "ADVERTISING - ILS",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 162,
+  "display_order": 208,
+  "curve": "flat"
+ },
+ {
+  "code": "6503",
+  "name": "ADVERTISING - PHOTOGRAPHY",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 163,
+  "display_order": 209,
+  "curve": "flat"
+ },
+ {
+  "code": "6504",
+  "name": "ADVERTISING - PRINT",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 164,
+  "display_order": 210,
+  "curve": "flat"
+ },
+ {
+  "code": "6506",
+  "name": "ADVERTISING - LOCAL VENDORS",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 165,
+  "display_order": 211,
+  "curve": "flat"
+ },
+ {
+  "code": "6508",
+  "name": "APARTMENT LOCATORS",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 166,
+  "display_order": 212,
+  "curve": "flat"
+ },
+ {
+  "code": "6509",
+  "name": "REPUTATION MANAGEMENT",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 167,
+  "display_order": 213,
+  "curve": "flat"
+ },
+ {
+  "code": "6510",
+  "name": "RESIDENT/PROSPECT SWAG",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 168,
+  "display_order": 214,
+  "curve": "flat"
+ },
+ {
+  "code": "6511",
+  "name": "MODEL APARTMENT",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 169,
+  "display_order": 215,
+  "curve": "flat"
+ },
+ {
+  "code": "6512",
+  "name": "MODEL FURNITURE",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 170,
+  "display_order": 216,
+  "curve": "flat"
+ },
+ {
+  "code": "6514",
+  "name": "MARKETING COLLATERAL",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 171,
+  "display_order": 217,
+  "curve": "flat"
+ },
+ {
+  "code": "6516",
+  "name": "RESIDENT / PUBLIC RELATIONS",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 172,
+  "display_order": 218,
+  "curve": "flat"
+ },
+ {
+  "code": "6518",
+  "name": "MARKETING - SIGNAGE",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 173,
+  "display_order": 219,
+  "curve": "flat"
+ },
+ {
+  "code": "6520",
+  "name": "MARKETING SITE VISIT",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 174,
+  "display_order": 220,
+  "curve": "flat"
+ },
+ {
+  "code": "6550",
+  "name": "PROPERTY WEBSITES",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 175,
+  "display_order": 221,
+  "curve": "flat"
+ },
+ {
+  "code": "6555",
+  "name": "WEBSITE PORTALS",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 176,
+  "display_order": 222,
+  "curve": "flat"
+ },
+ {
+  "code": "6560",
+  "name": "MARKETING ALLOCATIONS",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 177,
+  "display_order": 223,
+  "curve": "flat"
+ },
+ {
+  "code": "6565",
+  "name": "OTHER MARKETING",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 178,
+  "display_order": 224,
+  "curve": "flat"
+ },
+ {
+  "code": "6568",
+  "name": "COMMUNITY GOODWILL",
+  "kind": "detail",
+  "section": "marketing",
+  "pcode": "11",
+  "csv_order": 179,
+  "display_order": 225,
+  "curve": "flat"
+ },
+ {
+  "code": "6570",
+  "name": "TOTAL MARKETING EXPENSE",
+  "kind": "total",
+  "section": "marketing",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 226,
+  "curve": null
+ },
+ {
+  "code": "6600",
+  "name": "UTILITIES",
+  "kind": "header",
+  "section": "utilities",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 228,
+  "curve": null
+ },
+ {
+  "code": "6601",
+  "name": "CABLE - CORP UNIT",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 180,
+  "display_order": 229,
+  "curve": "flat"
+ },
+ {
+  "code": "6602",
+  "name": "CABLE TV",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 181,
+  "display_order": 230,
+  "curve": "flat"
+ },
+ {
+  "code": "6604",
+  "name": "ELECTRIC - COMMON",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 182,
+  "display_order": 231,
+  "curve": "electric"
+ },
+ {
+  "code": "6605",
+  "name": "ELECTRIC - CORP UNIT",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 183,
+  "display_order": 232,
+  "curve": "electric"
+ },
+ {
+  "code": "6606",
+  "name": "ELECTRIC - VACANTS",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 184,
+  "display_order": 233,
+  "curve": "electric"
+ },
+ {
+  "code": "6607",
+  "name": "ELEC- COMMERCIAL",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 185,
+  "display_order": 234,
+  "curve": "electric"
+ },
+ {
+  "code": "6608",
+  "name": "GAS - COMMON",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 186,
+  "display_order": 235,
+  "curve": "heat"
+ },
+ {
+  "code": "6609",
+  "name": "GAS - CORP UNIT",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 187,
+  "display_order": 236,
+  "curve": "heat"
+ },
+ {
+  "code": "6610",
+  "name": "GAS - VACANTS",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 188,
+  "display_order": 237,
+  "curve": "heat"
+ },
+ {
+  "code": "6611",
+  "name": "GAS- COMMERCIAL",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 189,
+  "display_order": 238,
+  "curve": "heat"
+ },
+ {
+  "code": "6614",
+  "name": "SEWER / STORM DRAINS",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 190,
+  "display_order": 239,
+  "curve": "flat"
+ },
+ {
+  "code": "6615",
+  "name": "SEWER-COMMERCIAL",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 191,
+  "display_order": 240,
+  "curve": "flat"
+ },
+ {
+  "code": "6616",
+  "name": "TELEPHONE - CELLULAR",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 192,
+  "display_order": 241,
+  "curve": "flat"
+ },
+ {
+  "code": "6617",
+  "name": "TELEPHONE - CORP UNIT",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 193,
+  "display_order": 242,
+  "curve": "flat"
+ },
+ {
+  "code": "6618",
+  "name": "TELEPHONE - OFFICE",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 194,
+  "display_order": 243,
+  "curve": "flat"
+ },
+ {
+  "code": "6619",
+  "name": "INTERNET",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 195,
+  "display_order": 244,
+  "curve": "flat"
+ },
+ {
+  "code": "6620",
+  "name": "TRASH",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 196,
+  "display_order": 245,
+  "curve": "flat"
+ },
+ {
+  "code": "6621",
+  "name": "TRASH - VALET SVC",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 197,
+  "display_order": 246,
+  "curve": "flat"
+ },
+ {
+  "code": "6622",
+  "name": "WATER",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 198,
+  "display_order": 247,
+  "curve": "flat"
+ },
+ {
+  "code": "6623",
+  "name": "WATER- COMMERCIAL",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 199,
+  "display_order": 248,
+  "curve": "flat"
+ },
+ {
+  "code": "6630",
+  "name": "INTERNET - CORP UNIT",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 200,
+  "display_order": 249,
+  "curve": "flat"
+ },
+ {
+  "code": "6650",
+  "name": "UTILITY LATE FEES",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 201,
+  "display_order": 250,
+  "curve": "flat"
+ },
+ {
+  "code": "6665",
+  "name": "OTHER UTILITY",
+  "kind": "detail",
+  "section": "utilities",
+  "pcode": "12",
+  "csv_order": 202,
+  "display_order": 251,
+  "curve": "flat"
+ },
+ {
+  "code": "6670",
+  "name": "TOTAL UTILITY EXPENSES",
+  "kind": "total",
+  "section": "utilities",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 252,
+  "curve": null
+ },
+ {
+  "code": "6690",
+  "name": "MAINTENANCE EXPENSE",
+  "kind": "header",
+  "section": "in_house_maint",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 254,
+  "curve": null
+ },
+ {
+  "code": "6700",
+  "name": "IN-HOUSE GENERAL MAINT/SUPPLY",
+  "kind": "header",
+  "section": "in_house_maint",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 256,
+  "curve": null
+ },
+ {
+  "code": "6702",
+  "name": "APPLIANCE PARTS/SMALL APPLIANCES",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 203,
+  "display_order": 257,
+  "curve": "flat"
+ },
+ {
+  "code": "6704",
+  "name": "DRAPES/BLINDS",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 204,
+  "display_order": 258,
+  "curve": "flat"
+ },
+ {
+  "code": "6706",
+  "name": "CARPET CLEANING SUPPLIES",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 205,
+  "display_order": 259,
+  "curve": "flat"
+ },
+ {
+  "code": "6708",
+  "name": "DOORS/SUPPLIES (INTERIOR/ENTRY)",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 206,
+  "display_order": 260,
+  "curve": "flat"
+ },
+ {
+  "code": "6710",
+  "name": "ELECTRICAL (INTERIOR/EXTERIOR)",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 207,
+  "display_order": 261,
+  "curve": "flat"
+ },
+ {
+  "code": "6712",
+  "name": "EQUIPMENT REPAIRS",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 208,
+  "display_order": 262,
+  "curve": "flat"
+ },
+ {
+  "code": "6714",
+  "name": "EQUIPMENT PURCHASES - NEW",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 209,
+  "display_order": 263,
+  "curve": "flat"
+ },
+ {
+  "code": "6716",
+  "name": "EXTERMINATING SUPPLIES",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 210,
+  "display_order": 264,
+  "curve": "flat"
+ },
+ {
+  "code": "6718",
+  "name": "FIRE / SAFETY SUPPLIES",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 211,
+  "display_order": 265,
+  "curve": "flat"
+ },
+ {
+  "code": "6720",
+  "name": "HVAC / BOILER SUPPLIES",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 212,
+  "display_order": 266,
+  "curve": "flat"
+ },
+ {
+  "code": "6722",
+  "name": "JANITORIAL SUPPLIES",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 213,
+  "display_order": 267,
+  "curve": "flat"
+ },
+ {
+  "code": "6724",
+  "name": "LANDSCAPING SUPPLIES",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 214,
+  "display_order": 268,
+  "curve": "summer"
+ },
+ {
+  "code": "6726",
+  "name": "LOCKS / KEYS",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 215,
+  "display_order": 269,
+  "curve": "flat"
+ },
+ {
+  "code": "6728",
+  "name": "PAINT / DRYWALL",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 216,
+  "display_order": 270,
+  "curve": "flat"
+ },
+ {
+  "code": "6730",
+  "name": "PLUMBING SUPPLIES",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 217,
+  "display_order": 271,
+  "curve": "flat"
+ },
+ {
+  "code": "6732",
+  "name": "UNIFORMS",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 218,
+  "display_order": 272,
+  "curve": "flat"
+ },
+ {
+  "code": "6733",
+  "name": "TOOLS - EMPLOYEE REIMBURSEMENT",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 219,
+  "display_order": 273,
+  "curve": "flat"
+ },
+ {
+  "code": "6734",
+  "name": "POOL / REC SUPPLIES",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 220,
+  "display_order": 274,
+  "curve": "flat"
+ },
+ {
+  "code": "6736",
+  "name": "WINDOWS",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 221,
+  "display_order": 275,
+  "curve": "flat"
+ },
+ {
+  "code": "6738",
+  "name": "HARDWARE",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 222,
+  "display_order": 276,
+  "curve": "flat"
+ },
+ {
+  "code": "6765",
+  "name": "OTHER SUPPLIES",
+  "kind": "detail",
+  "section": "in_house_maint",
+  "pcode": "13",
+  "csv_order": 223,
+  "display_order": 277,
+  "curve": "flat"
+ },
+ {
+  "code": "6770",
+  "name": "TOTAL IN-HOUSE EXPENSES",
+  "kind": "total",
+  "section": "in_house_maint",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 278,
+  "curve": null
+ },
+ {
+  "code": "6800",
+  "name": "EXTERIOR / CAM MAINTENANCE",
+  "kind": "header",
+  "section": "exterior_cam",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 280,
+  "curve": null
+ },
+ {
+  "code": "6802",
+  "name": "CONCRETE REPAIRS",
+  "kind": "detail",
+  "section": "exterior_cam",
+  "pcode": "13",
+  "csv_order": 224,
+  "display_order": 281,
+  "curve": "flat"
+ },
+ {
+  "code": "6804",
+  "name": "DOORS (EXTERIOR / CAM)",
+  "kind": "detail",
+  "section": "exterior_cam",
+  "pcode": "13",
+  "csv_order": 225,
+  "display_order": 282,
+  "curve": "flat"
+ },
+ {
+  "code": "6806",
+  "name": "FENCING",
+  "kind": "detail",
+  "section": "exterior_cam",
+  "pcode": "13",
+  "csv_order": 226,
+  "display_order": 283,
+  "curve": "flat"
+ },
+ {
+  "code": "6808",
+  "name": "GUTTERS / DOWN SPOUTS",
+  "kind": "detail",
+  "section": "exterior_cam",
+  "pcode": "13",
+  "csv_order": 227,
+  "display_order": 284,
+  "curve": "flat"
+ },
+ {
+  "code": "6810",
+  "name": "LIFT STATION",
+  "kind": "detail",
+  "section": "exterior_cam",
+  "pcode": "13",
+  "csv_order": 228,
+  "display_order": 285,
+  "curve": "flat"
+ },
+ {
+  "code": "6812",
+  "name": "PARKING / DRIVEWAYS",
+  "kind": "detail",
+  "section": "exterior_cam",
+  "pcode": "13",
+  "csv_order": 229,
+  "display_order": 286,
+  "curve": "flat"
+ },
+ {
+  "code": "6813",
+  "name": "PAINT (EXTERIOR)",
+  "kind": "detail",
+  "section": "exterior_cam",
+  "pcode": "13",
+  "csv_order": 230,
+  "display_order": 287,
+  "curve": "flat"
+ },
+ {
+  "code": "6814",
+  "name": "ROOF REPAIRS",
+  "kind": "detail",
+  "section": "exterior_cam",
+  "pcode": "13",
+  "csv_order": 231,
+  "display_order": 288,
+  "curve": "flat"
+ },
+ {
+  "code": "6816",
+  "name": "SIGNAGE/MAINTENANCE",
+  "kind": "detail",
+  "section": "exterior_cam",
+  "pcode": "13",
+  "csv_order": 232,
+  "display_order": 289,
+  "curve": "flat"
+ },
+ {
+  "code": "6818",
+  "name": "SNOW REMOVAL",
+  "kind": "detail",
+  "section": "exterior_cam",
+  "pcode": "13",
+  "csv_order": 233,
+  "display_order": 290,
+  "curve": "snow"
+ },
+ {
+  "code": "6820",
+  "name": "STAIR / BANISTERS",
+  "kind": "detail",
+  "section": "exterior_cam",
+  "pcode": "13",
+  "csv_order": 234,
+  "display_order": 291,
+  "curve": "flat"
+ },
+ {
+  "code": "6822",
+  "name": "STRUCTURE IMPROVEMENTS",
+  "kind": "detail",
+  "section": "exterior_cam",
+  "pcode": "13",
+  "csv_order": 235,
+  "display_order": 292,
+  "curve": "flat"
+ },
+ {
+  "code": "6824",
+  "name": "OTHER EXTERIOR/CAM EXP.",
+  "kind": "detail",
+  "section": "exterior_cam",
+  "pcode": "13",
+  "csv_order": 236,
+  "display_order": 293,
+  "curve": "flat"
+ },
+ {
+  "code": "6870",
+  "name": "TOTAL EXTERIOR / CAM EXP",
+  "kind": "total",
+  "section": "exterior_cam",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 294,
+  "curve": null
+ },
+ {
+  "code": "6900",
+  "name": "CONTRACT SERVICES",
+  "kind": "header",
+  "section": "contract_services",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 296,
+  "curve": null
+ },
+ {
+  "code": "6908",
+  "name": "CARPET CLEANING/REPAIRS CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 242,
+  "display_order": 298,
+  "curve": "flat"
+ },
+ {
+  "code": "6902",
+  "name": "ALARM SERVICE",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 237,
+  "display_order": 299,
+  "curve": "flat"
+ },
+ {
+  "code": "6904",
+  "name": "ANSWERING SERVICE",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 238,
+  "display_order": 300,
+  "curve": "flat"
+ },
+ {
+  "code": "6905",
+  "name": "APPLIANCE REPAIR CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 239,
+  "display_order": 301,
+  "curve": "flat"
+ },
+ {
+  "code": "6906",
+  "name": "BOILER CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 240,
+  "display_order": 302,
+  "curve": "flat"
+ },
+ {
+  "code": "6907",
+  "name": "CABINETS/COUNTERTOP CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 241,
+  "display_order": 303,
+  "curve": "flat"
+ },
+ {
+  "code": "6910",
+  "name": "COURTESY PATROL/SECURITY",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 243,
+  "display_order": 304,
+  "curve": "flat"
+ },
+ {
+  "code": "6912",
+  "name": "DRAPE / BLINDS CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 244,
+  "display_order": 305,
+  "curve": "flat"
+ },
+ {
+  "code": "6914",
+  "name": "ELECTRICAL CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 245,
+  "display_order": 306,
+  "curve": "flat"
+ },
+ {
+  "code": "6916",
+  "name": "ELEVATOR SERVICE",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 246,
+  "display_order": 307,
+  "curve": "flat"
+ },
+ {
+  "code": "6917",
+  "name": "FIRE/SAFETY CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 247,
+  "display_order": 308,
+  "curve": "flat"
+ },
+ {
+  "code": "6918",
+  "name": "EXTERMINATING CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 248,
+  "display_order": 309,
+  "curve": "flat"
+ },
+ {
+  "code": "6919",
+  "name": "GARAGE DOOR CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 249,
+  "display_order": 310,
+  "curve": "flat"
+ },
+ {
+  "code": "6920",
+  "name": "HVAC CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 250,
+  "display_order": 311,
+  "curve": "flat"
+ },
+ {
+  "code": "6921",
+  "name": "INSPECTIONS",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 251,
+  "display_order": 312,
+  "curve": "flat"
+ },
+ {
+  "code": "6922",
+  "name": "JANITORIAL CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 252,
+  "display_order": 313,
+  "curve": "flat"
+ },
+ {
+  "code": "6924",
+  "name": "LANDSCAPING CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 253,
+  "display_order": 315,
+  "curve": "summer"
+ },
+ {
+  "code": "6926",
+  "name": "PAINTING CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 254,
+  "display_order": 316,
+  "curve": "flat"
+ },
+ {
+  "code": "6928",
+  "name": "PLUMBING CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 255,
+  "display_order": 317,
+  "curve": "flat"
+ },
+ {
+  "code": "6930",
+  "name": "POOL CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 256,
+  "display_order": 318,
+  "curve": "flat"
+ },
+ {
+  "code": "6932",
+  "name": "ROOFING CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 257,
+  "display_order": 319,
+  "curve": "flat"
+ },
+ {
+  "code": "6934",
+  "name": "SNOW REMOVAL CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 258,
+  "display_order": 320,
+  "curve": "snow"
+ },
+ {
+  "code": "6935",
+  "name": "TUB RESURFACING CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 259,
+  "display_order": 321,
+  "curve": "flat"
+ },
+ {
+  "code": "6936",
+  "name": "WINDOWS CONTRACTOR",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 260,
+  "display_order": 322,
+  "curve": "flat"
+ },
+ {
+  "code": "6965",
+  "name": "OTHER CONTRACTORS",
+  "kind": "detail",
+  "section": "contract_services",
+  "pcode": "13",
+  "csv_order": 261,
+  "display_order": 323,
+  "curve": "flat"
+ },
+ {
+  "code": "6970",
+  "name": "TOTAL CONTRACT EXPENSES",
+  "kind": "total",
+  "section": "contract_services",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 324,
+  "curve": null
+ },
+ {
+  "code": "7000",
+  "name": "REHAB / REPLACEMENT",
+  "kind": "header",
+  "section": "rehab_replacement",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 326,
+  "curve": null
+ },
+ {
+  "code": "7002",
+  "name": "RR - APPLIANCES",
+  "kind": "detail",
+  "section": "rehab_replacement",
+  "pcode": "14",
+  "csv_order": 262,
+  "display_order": 327,
+  "curve": "flat"
+ },
+ {
+  "code": "7004",
+  "name": "RR - CABINETS/COUNTERTOPS",
+  "kind": "detail",
+  "section": "rehab_replacement",
+  "pcode": "14",
+  "csv_order": 263,
+  "display_order": 328,
+  "curve": "flat"
+ },
+ {
+  "code": "7006",
+  "name": "RR - CARPET/VINYL",
+  "kind": "detail",
+  "section": "rehab_replacement",
+  "pcode": "14",
+  "csv_order": 264,
+  "display_order": 329,
+  "curve": "flat"
+ },
+ {
+  "code": "7008",
+  "name": "RR - DOORS(INTERIOR/ENTRY)",
+  "kind": "detail",
+  "section": "rehab_replacement",
+  "pcode": "14",
+  "csv_order": 265,
+  "display_order": 330,
+  "curve": "flat"
+ },
+ {
+  "code": "7009",
+  "name": "RR - FURNITURE",
+  "kind": "detail",
+  "section": "rehab_replacement",
+  "pcode": "14",
+  "csv_order": 266,
+  "display_order": 331,
+  "curve": "flat"
+ },
+ {
+  "code": "7010",
+  "name": "RR - DRAPES/BLINDS",
+  "kind": "detail",
+  "section": "rehab_replacement",
+  "pcode": "14",
+  "csv_order": 267,
+  "display_order": 332,
+  "curve": "flat"
+ },
+ {
+  "code": "7012",
+  "name": "RR - ELECTRICAL FIXTURES",
+  "kind": "detail",
+  "section": "rehab_replacement",
+  "pcode": "14",
+  "csv_order": 268,
+  "display_order": 334,
+  "curve": "flat"
+ },
+ {
+  "code": "7013",
+  "name": "RR - GARAGE/EXTERIOR DOORS",
+  "kind": "detail",
+  "section": "rehab_replacement",
+  "pcode": "14",
+  "csv_order": 269,
+  "display_order": 335,
+  "curve": "flat"
+ },
+ {
+  "code": "7014",
+  "name": "RR - HVAC/BOILER",
+  "kind": "detail",
+  "section": "rehab_replacement",
+  "pcode": "14",
+  "csv_order": 270,
+  "display_order": 336,
+  "curve": "flat"
+ },
+ {
+  "code": "7015",
+  "name": "RR - PAINTING",
+  "kind": "detail",
+  "section": "rehab_replacement",
+  "pcode": "14",
+  "csv_order": 271,
+  "display_order": 337,
+  "curve": "flat"
+ },
+ {
+  "code": "7016",
+  "name": "RR - PLUMBING FIXTURES",
+  "kind": "detail",
+  "section": "rehab_replacement",
+  "pcode": "14",
+  "csv_order": 272,
+  "display_order": 340,
+  "curve": "flat"
+ },
+ {
+  "code": "7018",
+  "name": "RR - PARKING/SIDEWALK",
+  "kind": "detail",
+  "section": "rehab_replacement",
+  "pcode": "14",
+  "csv_order": 273,
+  "display_order": 341,
+  "curve": "flat"
+ },
+ {
+  "code": "7019",
+  "name": "RR - ROOFING",
+  "kind": "detail",
+  "section": "rehab_replacement",
+  "pcode": "14",
+  "csv_order": 274,
+  "display_order": 342,
+  "curve": "flat"
+ },
+ {
+  "code": "7020",
+  "name": "RR - FENCING",
+  "kind": "detail",
+  "section": "rehab_replacement",
+  "pcode": "14",
+  "csv_order": 275,
+  "display_order": 343,
+  "curve": "flat"
+ },
+ {
+  "code": "7025",
+  "name": "RR - POOL",
+  "kind": "detail",
+  "section": "rehab_replacement",
+  "pcode": "14",
+  "csv_order": 276,
+  "display_order": 344,
+  "curve": "flat"
+ },
+ {
+  "code": "7069",
+  "name": "REHAB CAPITALIZATION CONTRA",
+  "kind": "detail",
+  "section": "rehab_replacement",
+  "pcode": "14",
+  "csv_order": 277,
+  "display_order": 345,
+  "curve": "flat"
+ },
+ {
+  "code": "7070",
+  "name": "TOTAL REHAB / REPLACE EXP",
+  "kind": "total",
+  "section": "rehab_replacement",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 346,
+  "curve": null
+ },
+ {
+  "code": "7098",
+  "name": "SUB-TOTAL MAINTENANCE EXP",
+  "kind": "total",
+  "section": "totals",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 348,
+  "curve": null
+ },
+ {
+  "code": "7099",
+  "name": "TOTAL OPERATING EXPENSES",
+  "kind": "total",
+  "section": "totals",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 350,
+  "curve": null
+ },
+ {
+  "code": "7279",
+  "name": "TOTAL EXPENSE",
+  "kind": "total",
+  "section": "totals",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 351,
+  "curve": null
+ },
+ {
+  "code": "7280",
+  "name": "NET OPERATING INCOME",
+  "kind": "total",
+  "section": "totals",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 352,
+  "curve": null
+ },
+ {
+  "code": "7290",
+  "name": "INTEREST EXPENSE",
+  "kind": "header",
+  "section": "interest",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 354,
+  "curve": null
+ },
+ {
+  "code": "7300",
+  "name": "GENERAL INTEREST EXPENSE",
+  "kind": "detail",
+  "section": "interest",
+  "pcode": null,
+  "csv_order": 278,
+  "display_order": 355,
+  "curve": "flat"
+ },
+ {
+  "code": "7301",
+  "name": "REFI INTEREST EXPENSE",
+  "kind": "detail",
+  "section": "interest",
+  "pcode": null,
+  "csv_order": 279,
+  "display_order": 356,
+  "curve": "flat"
+ },
+ {
+  "code": "7302",
+  "name": "INTEREST ON SECURITY DEPOSITS",
+  "kind": "detail",
+  "section": "interest",
+  "pcode": null,
+  "csv_order": 280,
+  "display_order": 357,
+  "curve": "flat"
+ },
+ {
+  "code": "7315",
+  "name": "TOTAL INTEREST EXPENSE",
+  "kind": "total",
+  "section": "interest",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 358,
+  "curve": null
+ },
+ {
+  "code": "7320",
+  "name": "SPECIAL PROJECTS",
+  "kind": "header",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 360,
+  "curve": null
+ },
+ {
+  "code": "7321",
+  "name": "SP COMM. LEASE COMMISSIONS",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 281,
+  "display_order": 361,
+  "curve": "flat"
+ },
+ {
+  "code": "7322",
+  "name": "SP BUILDING REPAIRS",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 282,
+  "display_order": 362,
+  "curve": "flat"
+ },
+ {
+  "code": "7323",
+  "name": "SP CABINETS/COUNTERTOPS",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 283,
+  "display_order": 363,
+  "curve": "flat"
+ },
+ {
+  "code": "7324",
+  "name": "SP DOORS/WINDOWS",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 284,
+  "display_order": 364,
+  "curve": "flat"
+ },
+ {
+  "code": "7325",
+  "name": "SP GENERAL",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 285,
+  "display_order": 365,
+  "curve": "flat"
+ },
+ {
+  "code": "7326",
+  "name": "SP  APPLIANCES",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 286,
+  "display_order": 366,
+  "curve": "flat"
+ },
+ {
+  "code": "7327",
+  "name": "SP DRAPES/BLINDS",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 287,
+  "display_order": 367,
+  "curve": "flat"
+ },
+ {
+  "code": "7328",
+  "name": "SP CARPETS/VINYL",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 288,
+  "display_order": 368,
+  "curve": "flat"
+ },
+ {
+  "code": "7329",
+  "name": "SP FENCING",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 289,
+  "display_order": 369,
+  "curve": "flat"
+ },
+ {
+  "code": "7330",
+  "name": "SP HVAC",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 290,
+  "display_order": 370,
+  "curve": "flat"
+ },
+ {
+  "code": "7331",
+  "name": "SP INSPECTION EXPENSES",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 291,
+  "display_order": 371,
+  "curve": "flat"
+ },
+ {
+  "code": "7332",
+  "name": "SP LABOR",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 292,
+  "display_order": 372,
+  "curve": "flat"
+ },
+ {
+  "code": "7333",
+  "name": "SP ELECTRICAL-EXTERIOR",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 293,
+  "display_order": 373,
+  "curve": "flat"
+ },
+ {
+  "code": "7334",
+  "name": "SP LANDSCAPING",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 294,
+  "display_order": 374,
+  "curve": "flat"
+ },
+ {
+  "code": "7335",
+  "name": "SP ELECTRICAL-INTERIOR",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 295,
+  "display_order": 375,
+  "curve": "flat"
+ },
+ {
+  "code": "7336",
+  "name": "SP PAINTING- EXTERIOR",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 296,
+  "display_order": 376,
+  "curve": "flat"
+ },
+ {
+  "code": "7337",
+  "name": "SP FURNITURE/EQUIPMENT",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 297,
+  "display_order": 377,
+  "curve": "flat"
+ },
+ {
+  "code": "7338",
+  "name": "SP PARKING",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 298,
+  "display_order": 378,
+  "curve": "flat"
+ },
+ {
+  "code": "7339",
+  "name": "SP PLUMBING",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 299,
+  "display_order": 379,
+  "curve": "flat"
+ },
+ {
+  "code": "7340",
+  "name": "SP SUPPLIES",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 300,
+  "display_order": 380,
+  "curve": "flat"
+ },
+ {
+  "code": "7341",
+  "name": "SP WOOD REPLACEMENT",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 301,
+  "display_order": 381,
+  "curve": "flat"
+ },
+ {
+  "code": "7342",
+  "name": "SP OTHER EXPENSES",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 302,
+  "display_order": 382,
+  "curve": "flat"
+ },
+ {
+  "code": "7343",
+  "name": "SP PAINTING- INTERIOR",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 303,
+  "display_order": 383,
+  "curve": "flat"
+ },
+ {
+  "code": "7344",
+  "name": "SP OTHER CONTRACTORS",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 304,
+  "display_order": 384,
+  "curve": "flat"
+ },
+ {
+  "code": "7345",
+  "name": "SP POOL",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 305,
+  "display_order": 385,
+  "curve": "flat"
+ },
+ {
+  "code": "7346",
+  "name": "SP REPAIR DOWN UNITS",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 306,
+  "display_order": 386,
+  "curve": "flat"
+ },
+ {
+  "code": "7347",
+  "name": "SP ROOFING",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 307,
+  "display_order": 387,
+  "curve": "flat"
+ },
+ {
+  "code": "7348",
+  "name": "SP SECURITY CAMERA",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 308,
+  "display_order": 388,
+  "curve": "flat"
+ },
+ {
+  "code": "7349",
+  "name": "SP SIGNAGE",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 309,
+  "display_order": 389,
+  "curve": "flat"
+ },
+ {
+  "code": "7350",
+  "name": "SP JANITORIAL",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 310,
+  "display_order": 390,
+  "curve": "flat"
+ },
+ {
+  "code": "7351",
+  "name": "SP REFINANCE",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 311,
+  "display_order": 391,
+  "curve": "flat"
+ },
+ {
+  "code": "7352",
+  "name": "SP FIRE",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 312,
+  "display_order": 392,
+  "curve": "flat"
+ },
+ {
+  "code": "7353",
+  "name": "SP UTILITY CREDITS",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 313,
+  "display_order": 393,
+  "curve": "flat"
+ },
+ {
+  "code": "7354",
+  "name": "SP ACQUISITION COSTS",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 314,
+  "display_order": 394,
+  "curve": "flat"
+ },
+ {
+  "code": "7355",
+  "name": "SP REMODEL",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 315,
+  "display_order": 395,
+  "curve": "flat"
+ },
+ {
+  "code": "7356",
+  "name": "SP MIMG ROVING MAINT CREW",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 316,
+  "display_order": 396,
+  "curve": "flat"
+ },
+ {
+  "code": "7357",
+  "name": "SP FLOOD DAMAGE",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 317,
+  "display_order": 397,
+  "curve": "flat"
+ },
+ {
+  "code": "7358",
+  "name": "SP EMERGENCY",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 318,
+  "display_order": 398,
+  "curve": "flat"
+ },
+ {
+  "code": "7359",
+  "name": "SP INSURANCE REIMBURSEMENT",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 319,
+  "display_order": 399,
+  "curve": "flat"
+ },
+ {
+  "code": "7375",
+  "name": "SP CLUBHOUSE REMODEL",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 320,
+  "display_order": 400,
+  "curve": "flat"
+ },
+ {
+  "code": "7385",
+  "name": "SP COMMON AREA UPGRADES",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 321,
+  "display_order": 401,
+  "curve": "flat"
+ },
+ {
+  "code": "7400",
+  "name": "SP ELEVATORS",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 322,
+  "display_order": 402,
+  "curve": "flat"
+ },
+ {
+  "code": "7430",
+  "name": "SP SIDEWALKS",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 323,
+  "display_order": 403,
+  "curve": "flat"
+ },
+ {
+  "code": "7450",
+  "name": "SP UNIT AMENITIES/UPGRADES",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 324,
+  "display_order": 404,
+  "curve": "flat"
+ },
+ {
+  "code": "7451",
+  "name": "SP SUPPLIES COVID-19",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 325,
+  "display_order": 405,
+  "curve": "flat"
+ },
+ {
+  "code": "7470",
+  "name": "SP PRIOR YEAR RE TAX ADJ",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 326,
+  "display_order": 406,
+  "curve": "flat"
+ },
+ {
+  "code": "7480",
+  "name": "SP ADMIN",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 327,
+  "display_order": 407,
+  "curve": "flat"
+ },
+ {
+  "code": "7485",
+  "name": "SP PROPERTY SALE PREP",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 328,
+  "display_order": 408,
+  "curve": "flat"
+ },
+ {
+  "code": "7490",
+  "name": "SP OTHER INCOME",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 329,
+  "display_order": 409,
+  "curve": "flat"
+ },
+ {
+  "code": "7499",
+  "name": "SP CAPITALIZATION CONTRA",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 410,
+  "curve": "flat"
+ },
+ {
+  "code": "7500",
+  "name": "TOTAL SPECIAL PROJECT EXP",
+  "kind": "total",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 411,
+  "curve": null
+ },
+ {
+  "code": "8200",
+  "name": "NET INCOME BEFORE DEPRECIATION",
+  "kind": "total",
+  "section": "below_noi",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 413,
+  "curve": null
+ },
+ {
+  "code": "8499",
+  "name": "DEP/AMOR EXPENSE",
+  "kind": "header",
+  "section": "below_noi",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 415,
+  "curve": null
+ },
+ {
+  "code": "8500",
+  "name": "DEPRECIATION EXPENSE",
+  "kind": "detail",
+  "section": "below_noi",
+  "pcode": null,
+  "csv_order": 331,
+  "display_order": 416,
+  "curve": "flat"
+ },
+ {
+  "code": "8502",
+  "name": "LOSS/GAIN ON DISPOSAL OF FIXED ASSETS",
+  "kind": "detail",
+  "section": "below_noi",
+  "pcode": null,
+  "csv_order": 332,
+  "display_order": 417,
+  "curve": "flat"
+ },
+ {
+  "code": "8503",
+  "name": "SELLING EXPENSES",
+  "kind": "detail",
+  "section": "below_noi",
+  "pcode": null,
+  "csv_order": 333,
+  "display_order": 418,
+  "curve": "flat"
+ },
+ {
+  "code": "8601",
+  "name": "AMORTIZATION EXPENSE",
+  "kind": "detail",
+  "section": "below_noi",
+  "pcode": null,
+  "csv_order": 334,
+  "display_order": 419,
+  "curve": "flat"
+ },
+ {
+  "code": "8602",
+  "name": "TOTAL DEP/AMOR EXPENSE",
+  "kind": "total",
+  "section": "below_noi",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 420,
+  "curve": null
+ },
+ {
+  "code": "8900",
+  "name": "OTHER INCOME/EXPENSES",
+  "kind": "header",
+  "section": "below_noi",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 422,
+  "curve": null
+ },
+ {
+  "code": "8930",
+  "name": "ASSET MGMT FEE EXP",
+  "kind": "detail",
+  "section": "below_noi",
+  "pcode": null,
+  "csv_order": 335,
+  "display_order": 423,
+  "curve": "flat"
+ },
+ {
+  "code": "8950",
+  "name": "TOTAL OTHER INCOME/EXPENSE",
+  "kind": "total",
+  "section": "below_noi",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 424,
+  "curve": null
+ },
+ {
+  "code": "9000",
+  "name": "NET PROFIT / LOSS",
+  "kind": "total",
+  "section": "below_noi",
+  "pcode": null,
+  "csv_order": null,
+  "display_order": 425,
+  "curve": null
+ },
+ {
+  "code": "3080",
+  "name": "1ST MORTGAGE",
+  "kind": "detail",
+  "section": "principal",
+  "pcode": null,
+  "csv_order": 1,
+  "display_order": 428,
+  "curve": "flat"
+ },
+ {
+  "code": "3090",
+  "name": "2ND MORTGAGE",
+  "kind": "detail",
+  "section": "principal",
+  "pcode": null,
+  "csv_order": 2,
+  "display_order": 429,
+  "curve": "flat"
+ },
+ {
+  "code": "3091",
+  "name": "3rd MORTGAGE",
+  "kind": "detail",
+  "section": "principal",
+  "pcode": null,
+  "csv_order": 3,
+  "display_order": 430,
+  "curve": "flat"
+ },
+ {
+  "code": "7491",
+  "name": "SP INTEREST INCOME",
+  "kind": "detail",
+  "section": "special_projects",
+  "pcode": null,
+  "csv_order": 330,
+  "display_order": 107491,
+  "curve": "flat"
+ }
+]
