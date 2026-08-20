@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseUwBook, parseRentRoll, parseComparison } from '../src/importers.js';
+import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12 } from '../src/importers.js';
+import { t12CategoryShapes } from '../shared/domain.js';
 
 const fx = (name: string): Buffer => readFileSync(join(process.cwd(), 'test', 'fixtures', name));
 
@@ -79,6 +80,61 @@ describe('parseRentRoll — OneSite unit level', () => {
     // the FHND workbook's first sheet isn't a rent roll, so this asserts graceful failure...
     // unit-level parsing is covered via the dedicated export when available.
     expect(() => parseRentRoll(fx('fhnd-budget-workbook.xlsx'))).toThrow();
+  });
+});
+
+describe('parseSellerT12 — Deer Ridge Jun-26', () => {
+  const t = parseSellerT12(fx('deerridge-t12.xlsx'));
+  it('captures the statement header', () => {
+    expect(t.label.toLowerCase()).toContain('deer ridge');
+    expect(t.period).toContain('Jun 2026');
+    expect(t.monthCal).toEqual([7, 8, 9, 10, 11, 12, 1, 2, 3, 4, 5, 6]); // Jul 2025 → Jun 2026
+  });
+  it('parses detail rows only (no -999/-000)', () => {
+    expect(t.rows.length).toBeGreaterThan(30);
+    expect(t.rows.every((r) => !r.gl.endsWith('-999') && !r.gl.endsWith('-000'))).toBe(true);
+    const mkt = t.rows.find((r) => r.gl === '410100-020')!;
+    expect(mkt.total).toBeCloseTo(3148515, 0);
+    expect(mkt.months.reduce((a, b) => a + b, 0)).toBeCloseTo(3148515, 0);
+  });
+  it('produces category shapes via the UW T12 pcode mapping', () => {
+    const uw = parseUwBook(fx('jamestown-uw.xlsx')).find((s) => /deer ridge/i.test(s.sheetName))!;
+    const glToPcode: Record<string, string> = {};
+    for (const r of uw.data.t12!) glToPcode[r.gl] = r.pcode;
+    const shapes = t12CategoryShapes(t.rows, t.monthCal, glToPcode);
+    // utilities must have a real winter-heavy shape summing to 1, in calendar order
+    expect(shapes['12']).toBeTruthy();
+    const s12 = shapes['12']!;
+    expect(s12.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 6);
+    const winter = s12[0] + s12[1] + s12[11]; // Jan+Feb+Dec
+    const summer = s12[5] + s12[6] + s12[7];  // Jun+Jul+Aug
+    expect(winter).toBeGreaterThan(summer);
+    // several other categories get shapes too
+    expect(Object.keys(shapes).length).toBeGreaterThanOrEqual(5);
+  });
+});
+
+describe('parseComparison — Minot 4 12-Month Budget (monthly variant)', () => {
+  const c = parseComparison(fx('minot4-12mo-budget.xlsx'));
+  it('detects the monthly layout', () => {
+    expect(c.monthly).toBe(true);
+    expect(c.monthCal).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(c.rows.length).toBeGreaterThan(80);
+  });
+  it('captures GPR with monthly values', () => {
+    const gpr = c.rows.find((r) => r.gl === '4994')!;
+    expect(gpr.total).toBeCloseTo(12274765.85, 1);
+    expect(gpr.months!.length).toBe(12);
+    expect(gpr.months!.reduce((a, b) => a + b, 0)).toBeCloseTo(gpr.total, 1);
+  });
+  it('snow removal has a winter-heavy shape', () => {
+    const snow = c.rows.find((r) => r.gl === '6818' || r.gl === '6934');
+    if (snow) {
+      const m = snow.months!;
+      const winter = m[0] + m[1] + m[10] + m[11];
+      const summer = m[5] + m[6] + m[7];
+      expect(Math.abs(winter)).toBeGreaterThan(Math.abs(summer));
+    }
   });
 });
 

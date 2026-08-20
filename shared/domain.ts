@@ -36,6 +36,7 @@ export type Driver =
   | { method: 'ltl' }
   | { method: 'vacancy' }
   | { method: 'catShare'; pcode: string; share: number }     // share of a UW-tied category
+  | { method: 'perUnitComp'; pcode: string; perUnit: number } // comp $/unit × subject units
   | { method: 'mgmtPct'; pct: number }
   | { method: 'interest'; loan: number; rate: number }
   | { method: 'zero' };
@@ -56,6 +57,9 @@ export interface BudgetInputs {
   mgmtPct: number;            // of total income — UW-derived (3% Y1)
   /** absolute UW Year-1 category totals for the abs-tied categories */
   uwAbs: Partial<Record<string, number>>;  // pcodes 4,5,6,8,9,10,11,12,13,14 → annual $
+  /** per-category level basis: 'uw' (default — hard tie to uwAbs, comp-weighted)
+      or 'perUnit' (each line = comp $/unit × subject units; UW shown as variance) */
+  catBasis?: Partial<Record<string, 'uw' | 'perUnit'>>;
 }
 
 export const PCODES = ['1', 'loss', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14'] as const;
@@ -74,6 +78,35 @@ export const CATEGORY_FALLBACK_GL: Record<string, string> = {
   '2': '5024', '3': '5035', '4': '5170', '5': '5130', '6': '6108', '8': '6116',
   '9': '6365', '10': '6402', '11': '6501', '12': '6620', '13': '6765', '14': '7002',
 };
+
+/* Categories whose monthly spread comes from seller-T12 actuals when a T12 is
+   linked. 13 (R&M) and 14 (rehab) are deliberately excluded: they mix lines
+   with opposite seasonality (snow vs turnover), so per-GL curves stay smarter
+   than the category's blended actual shape. */
+export const T12_SHAPE_PCODES = new Set(['4', '5', '6', '8', '9', '10', '11', '12']);
+
+export interface T12Row { gl: string; name: string; months: number[]; total: number }
+
+/** Per-category monthly weights (calendar order, Jan..Dec) from seller-T12
+    actuals. glToPcode comes from the UW book's coded T12 panel. */
+export function t12CategoryShapes(rows: T12Row[], monthCal: number[], glToPcode: Record<string, string>): Record<string, Months> {
+  const acc: Record<string, Months> = {};
+  for (const row of rows) {
+    const p = glToPcode[row.gl];
+    if (!p || !T12_SHAPE_PCODES.has(p)) continue;
+    if (!acc[p]) acc[p] = zero12();
+    row.months.forEach((v, i) => {
+      const cal = (monthCal[i] || i + 1) - 1;
+      acc[p][cal] += Math.abs(v);
+    });
+  }
+  const out: Record<string, Months> = {};
+  for (const [p, m] of Object.entries(acc)) {
+    const tot = m.reduce((a, b) => a + b, 0);
+    if (tot > 0) out[p] = m.map((v) => v / tot);
+  }
+  return out;
+}
 
 /* ---------------- seasonal spread curves (12 relative weights) ------------ */
 export const CURVES: Record<string, Months> = {
@@ -251,8 +284,12 @@ export function computeTieout(lines: BudgetLine[], coa: Map<string, CoaAccount>,
    GENERATION — build all detail lines from inputs + UW + comp weights.
    ========================================================================== */
 export interface CompWeights {
-  /** gl code → weight (abs annual $ across the comp set). Only detail GLs. */
+  /** gl code → SIGNED annual $ across the comp set (weights take abs of this). */
   byGl: Record<string, number>;
+  /** gl code → normalized monthly weights (12 Month Budget uploads only). */
+  glShapes?: Record<string, Months>;
+  /** total units across the comp set — enables the per-unit basis. */
+  units?: number;
 }
 
 /** Default inputs derived from a UW snapshot (+ rent roll when available). */
@@ -280,6 +317,7 @@ export function defaultInputs(year: number, uw: UwSnapshotData, rent: { marketMo
 /** Weights for detail GLs of one category, from a comp set (abs $), with fallback. */
 function categoryItems(pcode: string, coa: CoaAccount[], comps: CompWeights | null): { key: string; weight: number }[] {
   const members = coa.filter((a) => a.kind === 'detail' && a.pcode === pcode && a.csv_order != null);
+  // byGl is signed — weights are magnitudes
   let items = members.map((a) => ({ key: a.code, weight: comps ? Math.abs(comps.byGl[a.code] || 0) : 0 }));
   if (!items.some((it) => it.weight > 0)) {
     const fb = CATEGORY_FALLBACK_GL[pcode];
@@ -289,7 +327,7 @@ function categoryItems(pcode: string, coa: CoaAccount[], comps: CompWeights | nu
   return items;
 }
 
-export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null): BudgetLine[] {
+export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null): BudgetLine[] {
   const lines = new Map<string, BudgetLine>();
   const mk = (gl: string, months: Months, driver: Driver, note = ''): void => {
     lines.set(gl, { gl_code: gl, months: months.map(r2), driver, override: false, note });
@@ -343,20 +381,40 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
     }
   }
 
-  /* ---- absolute UW-tied categories (income 4 & 5, expenses 6, 8..14 minus specials) ---- */
+  /* ---- absolute categories (income 4 & 5, expenses 6, 8..14 minus specials) ----
+     Basis per category: 'uw' = hard tie to the UW total, comp-weighted across GLs;
+     'perUnit' = each GL at comp $/unit × subject units (UW becomes a variance). */
   const liveWeights = (base: Months): Months => base.map((w, i) => (live(i) ? w : 0));
   const curveOf = (a: CoaAccount): Months => CURVES[a.curve || 'flat'] || CURVES.flat;
   const coaByCode = new Map(coaList.map((a) => [a.code, a]));
+  const shapeFor = (gl: string, p: string): Months => {
+    const glShape = comps?.glShapes?.[gl];
+    if (glShape && glShape.some((v) => v > 0)) return glShape;
+    if (catShapes && T12_SHAPE_PCODES.has(p) && catShapes[p]) return catShapes[p];
+    return curveOf(coaByCode.get(gl)!);
+  };
 
   for (const p of ['4', '5', '6', '8', '9', '10', '11', '12', '13', '14']) {
+    const basis = inputs.catBasis?.[p] === 'perUnit' && comps?.units && inputs.units ? 'perUnit' : 'uw';
+    if (basis === 'perUnit') {
+      const members = coaList.filter((a) => a.kind === 'detail' && a.pcode === p && a.csv_order != null);
+      for (const a of members) {
+        const compVal = comps!.byGl[a.code] || 0;
+        if (!compVal) continue;
+        const annual = r2((compVal / comps!.units!) * inputs.units);
+        if (!annual) continue;
+        mk(a.code, spreadMonthly(annual, liveWeights(shapeFor(a.code, p))),
+          { method: 'perUnitComp', pcode: p, perUnit: r2(compVal / comps!.units!) } as any);
+      }
+      continue;
+    }
     const target = r2(inputs.uwAbs[p] || 0);
     if (!target) continue;
     const items = categoryItems(p, coaList, comps);
     const alloc = allocateWeighted(target, items);
     for (const [gl, amt] of Object.entries(alloc)) {
       if (!amt) continue;
-      const acc = coaByCode.get(gl)!;
-      mk(gl, spreadMonthly(amt, liveWeights(curveOf(acc))), { method: 'catShare', pcode: p, share: target ? amt / target : 0 });
+      mk(gl, spreadMonthly(amt, liveWeights(shapeFor(gl, p))), { method: 'catShare', pcode: p, share: target ? amt / target : 0 });
     }
   }
 
@@ -377,8 +435,8 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
 }
 
 /** Re-generate all non-overridden lines; keep overrides untouched. */
-export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null): BudgetLine[] {
-  const fresh = new Map(generateLines(coaList, inputs, uw, comps).map((l) => [l.gl_code, l]));
+export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null): BudgetLine[] {
+  const fresh = new Map(generateLines(coaList, inputs, uw, comps, catShapes).map((l) => [l.gl_code, l]));
   const out: BudgetLine[] = [];
   const seen = new Set<string>();
   for (const old of existing) {

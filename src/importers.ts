@@ -254,16 +254,74 @@ export function parseRentRoll(buf: Buffer): RentParsedProperty[] {
   }];
 }
 
+/* ========================= SELLER T12 STATEMENT ========================= */
+
+export interface SellerT12Parsed {
+  label: string;                 // e.g. "Deer Ridge (13880)"
+  period: string;
+  book: string;
+  monthCal: number[];            // calendar month (1-12) for each of the 12 value columns
+  rows: { gl: string; name: string; months: number[]; total: number }[];
+}
+
+const MONTH_NAMES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/** Seller 12-month statement export: rows = seller GLs (nnnnnn-nnn), cols = months.
+    Skips -000 section headers and -999 subtotal rows — detail lines only. */
+export function parseSellerT12(buf: Buffer): SellerT12Parsed {
+  const g = grids(buf)[0].g;
+  const label = s(g[0]?.[0]);
+  let period = '', book = '';
+  for (const row of g.slice(0, 6)) {
+    const t = s(row?.[0]);
+    if (/period\s*=/i.test(t)) period = t.replace(/.*period\s*=\s*/i, '').trim();
+    if (/book\s*=/i.test(t)) book = t.replace(/.*book\s*=\s*/i, '').trim();
+  }
+  // month header row: >= 10 cells parsing as "Mon YYYY"
+  let h = -1;
+  let monthCols: number[] = [];
+  let monthCal: number[] = [];
+  for (let r = 0; r < Math.min(g.length, 10); r++) {
+    const cols: number[] = [];
+    const cal: number[] = [];
+    for (let c = 1; c < (g[r] || []).length; c++) {
+      const m = low(g[r]?.[c]).match(/^([a-z]{3})[a-z]*\s+\d{4}$/);
+      if (m) {
+        const mi = MONTH_NAMES.indexOf(m[1]);
+        if (mi >= 0) { cols.push(c); cal.push(mi + 1); }
+      }
+    }
+    if (cols.length >= 10) { h = r; monthCols = cols.slice(0, 12); monthCal = cal.slice(0, 12); break; }
+  }
+  if (h < 0) throw new Error('Seller T12: month header row not found');
+  const totalCol = monthCols[monthCols.length - 1] + 1;
+  const rows: SellerT12Parsed['rows'] = [];
+  for (let r = h + 1; r < g.length; r++) {
+    const gl = s(g[r]?.[0]);
+    if (!/^\d{6}-\d{3}$/.test(gl)) continue;
+    if (gl.endsWith('-999') || gl.endsWith('-000')) continue;   // subtotals / section headers
+    const months = monthCols.map((c) => num(g[r]?.[c]));
+    if (!months.some((v) => v)) continue;
+    rows.push({ gl, name: s(g[r]?.[1]), months, total: num(g[r]?.[totalCol]) });
+  }
+  if (!rows.length) throw new Error('Seller T12: no detail GL rows parsed');
+  return { label, period, book, monthCal, rows };
+}
+
 /* ========================= PROPERTY COMPARISON ========================= */
 
 export interface ComparisonParsed {
   label: string;
   period: string;
   book: string;
-  properties: string[];                       // yardi codes, column order
-  rows: { gl: string; name: string; values: number[]; total: number }[];
+  properties: string[];                       // yardi codes (annual comparison) or [label] (monthly budget)
+  rows: { gl: string; name: string; values: number[]; total: number; months?: number[] }[];
+  monthly?: boolean;                          // true = 12-month budget export (per-GL monthly shapes available)
+  monthCal?: number[];
 }
 
+/** Comp-set upload: either a Property Comparison (per-property annual columns)
+    or a 12 Month Budget export (monthly columns, Monarch GLs). Auto-detected. */
 export function parseComparison(buf: Buffer): ComparisonParsed {
   const g = grids(buf)[0].g;
   const label = s(g[0]?.[0]);
@@ -272,6 +330,33 @@ export function parseComparison(buf: Buffer): ComparisonParsed {
     const t = s(row?.[0]);
     if (/period\s*=/i.test(t)) period = t.replace(/.*period\s*=\s*/i, '').trim();
     if (/book\s*=/i.test(t)) book = t.replace(/.*book\s*=\s*/i, '').split(';')[0].trim();
+  }
+  // 12-month variant: a header row of >=10 "Mon YYYY" cells
+  for (let r = 0; r < Math.min(g.length, 10); r++) {
+    const cols: number[] = [];
+    const cal: number[] = [];
+    for (let c = 1; c < (g[r] || []).length; c++) {
+      const m = low(g[r]?.[c]).match(/^([a-z]{3})[a-z]*\s+\d{4}$/);
+      if (m) {
+        const mi = MONTH_NAMES.indexOf(m[1]);
+        if (mi >= 0) { cols.push(c); cal.push(mi + 1); }
+      }
+    }
+    if (cols.length >= 10) {
+      const monthCols = cols.slice(0, 12);
+      const totalCol = monthCols[monthCols.length - 1] + 1;
+      const rows: ComparisonParsed['rows'] = [];
+      for (let rr = r + 1; rr < g.length; rr++) {
+        const gl = s(g[rr]?.[0]);
+        if (!/^\d{3,4}$/.test(gl)) continue;
+        const months = monthCols.map((c) => num(g[rr]?.[c]));
+        if (!months.some((v) => v)) continue;
+        const total = num(g[rr]?.[totalCol]) || months.reduce((a, b) => a + b, 0);
+        rows.push({ gl, name: s(g[rr]?.[1]), values: [total], total, months });
+      }
+      if (!rows.length) throw new Error('12 Month Budget: no GL rows parsed');
+      return { label, period, book, properties: [label], rows, monthly: true, monthCal: cal.slice(0, 12) };
+    }
   }
   // property-code header row: >=2 short lowercase codes from col C on
   let h = -1;

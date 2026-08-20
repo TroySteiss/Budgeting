@@ -109,6 +109,30 @@ describe('rebalanceCategory', () => {
   });
 });
 
+describe('per-unit comp basis', () => {
+  it('sets category lines at comp $/unit × subject units and rebalance target follows', () => {
+    const inputs = {
+      ...defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 }),
+      catBasis: { '10': 'perUnit' as const },
+    };
+    // comp: payroll GLs total 712,000 over 712 units = $1,000/unit → 100 units = 100,000
+    const comps = { byGl: { '6402': 500000, '6404': 212000 }, units: 712 };
+    const lines = generateLines(coaList, inputs, fakeUw, comps);
+    const cats = categoryTotals(lines, coaMap);
+    expect(cats['10']).toBeCloseTo((712000 / 712) * 100, 0);
+    // other categories still hard-tie to UW
+    expect(cats['12']).toBeCloseTo(fakeUw.y1['12'], 2);
+  });
+  it('per-GL monthly shapes from a monthly comp set drive the spread', () => {
+    const shape = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]; // all in December
+    const comps = { byGl: { '6402': 712000 }, units: 712, glShapes: { '6402': shape } };
+    const inputs = { ...defaultInputs(2027, fakeUw, null), catBasis: { '10': 'perUnit' as const } };
+    const lines = generateLines(coaList, inputs, fakeUw, comps);
+    const l = lines.find((x) => x.gl_code === '6402')!;
+    expect(l.months[11]).toBeCloseTo(sum(l.months), 2);
+  });
+});
+
 describe('startMonth (mid-year budgets)', () => {
   it('zeroes months before the start month', () => {
     const inputs = { ...defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 }), startMonth: 5 };

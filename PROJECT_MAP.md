@@ -2,7 +2,7 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-08-20 (initial build — new-acquisition mode end-to-end).
+> Last updated: 2026-08-20 (initial build + seller-T12 monthly shapes).
 
 ## What this is
 
@@ -60,6 +60,14 @@ shared/domain.ts          ALL business math (pure, unit-tested): rollup, curves,
 | Mgmt fee 6112 (7) | % × monthly total income (recomputed from generated income) |
 | Interest 7300 | loan × rate / 360 × days-in-month |
 | startMonth > 1 | all generated months before it are zero (mid-year acquisitions) |
+
+**Seller T12 statements** (`t12_snapshots`, upload kind `seller_t12`): monthly operating
+actuals per property (seller GL rows `nnnnnn-nnn`, 12 month cols; `-000`/`-999` rows skipped).
+**Used ONLY for monthly seasonality, never dollar levels** — Troy's explicit guidance: these are
+the old owner's financials; levels will change and land closer to the Minot comps. When a budget
+links a T12, `t12CategoryShapes()` (seller GL → pcode via the UW book's coded T12 panel) replaces
+the generic curves for categories 4,5,6,8,9,10,11,12; categories 13/14 keep per-GL curves because
+they mix opposite seasonalities (snow vs turnover) that the blended category shape would smear.
 
 Manual cell edit ⇒ `override=true`, driver `manual` (purple in UI, 🔓 clears).
 `regenerate()` recomputes only non-overridden lines. `rebalanceCategory()` (the tie-out panel's

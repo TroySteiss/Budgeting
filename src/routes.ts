@@ -2,13 +2,13 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import multer from 'multer';
 import { query, tx } from './db.js';
 import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
-import { parseUwBook, parseRentRoll, parseComparison } from './importers.js';
+import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12 } from './importers.js';
 import { buildBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook } from './xlsx-export.js';
 import {
   CoaAccount, BudgetLine, BudgetInputs, UwSnapshotData, CompWeights, Months,
   generateLines, regenerate, rebalanceCategory, defaultInputs, computeTieout,
-  kpis, categoryTotals, zero12, r2, sum,
+  kpis, categoryTotals, t12CategoryShapes, zero12, r2, sum,
 } from '../shared/domain.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -34,7 +34,7 @@ async function loadCoa(): Promise<CoaAccount[]> {
 }
 
 router.get('/state', h(async (_req, res) => {
-  const [coa, portfolios, properties, budgets, uws, comps, rents] = await Promise.all([
+  const [coa, portfolios, properties, budgets, uws, comps, t12s, rents] = await Promise.all([
     loadCoa(),
     query('select * from portfolios order by name'),
     query('select * from properties order by code'),
@@ -45,6 +45,7 @@ router.get('/state', h(async (_req, res) => {
                   (u.data->>'noi')::numeric as noi, (u.data->>'units')::int as units
            from uw_snapshots u order by u.created_at desc`),
     query('select id, name, period, book, created_at from comp_sets order by created_at desc'),
+    query('select id, property_code, label, period, book, created_at from t12_snapshots order by created_at desc'),
     query(`select id, property_code, as_of, created_at,
                   (data->>'marketMonthly')::numeric as market_monthly,
                   (data->>'inPlaceMonthly')::numeric as inplace_monthly,
@@ -53,7 +54,8 @@ router.get('/state', h(async (_req, res) => {
   ]);
   res.json({
     coa, portfolios: portfolios.rows, properties: properties.rows,
-    budgets: budgets.rows, uwSnapshots: uws.rows, compSets: comps.rows, rentSnapshots: rents.rows,
+    budgets: budgets.rows, uwSnapshots: uws.rows, compSets: comps.rows,
+    t12Snapshots: t12s.rows, rentSnapshots: rents.rows,
   });
 }));
 
@@ -74,6 +76,10 @@ router.post('/uploads/parse', upload.single('file'), h(async (req, res) => {
   if (kind === 'comparison') {
     const parsed = parseComparison(buf);
     return res.json({ kind, filename: req.file.originalname, comparison: parsed });
+  }
+  if (kind === 'seller_t12') {
+    const parsed = parseSellerT12(buf);
+    return res.json({ kind, filename: req.file.originalname, t12: parsed });
   }
   res.status(400).json({ error: `Unknown upload kind "${kind}"` });
 }));
@@ -119,12 +125,31 @@ router.post('/uploads/apply', h(async (req, res) => {
   if (kind === 'comparison') {
     const c = payload.comparison;
     if (!c) return res.status(400).json({ error: 'No comparison payload' });
+    // comp-set units: explicit from the client, else summed from matched property codes
+    let units = Number(req.body?.units) || 0;
+    if (!units && Array.isArray(c.properties)) {
+      const r = await query('select coalesce(sum(units),0)::int as u from properties where code = any($1)', [c.properties]);
+      units = r.rows[0].u;
+    }
     const row = (await query(
       'insert into comp_sets(name, upload_id, period, book, data) values($1,$2,$3,$4,$5) returning id',
-      [name || c.label || filename || 'Comp set', uploadId, c.period || '', c.book || '', JSON.stringify({ properties: c.properties, rows: c.rows })]
+      [name || c.label || filename || 'Comp set', uploadId, c.period || '', c.book || '',
+       JSON.stringify({ properties: c.properties, rows: c.rows, monthly: !!c.monthly, monthCal: c.monthCal || null, units })]
     )).rows[0];
-    logChange(user, 'upload comparison', { filename, compSetId: row.id });
-    return res.json({ ok: true, uploadId, compSetId: row.id });
+    logChange(user, 'upload comparison', { filename, compSetId: row.id, units });
+    return res.json({ ok: true, uploadId, compSetId: row.id, units });
+  }
+  if (kind === 'seller_t12') {
+    const t = payload.t12;
+    const propertyCode = (mappings && mappings[0]?.propertyCode) || null;
+    if (!t || !propertyCode) return res.status(400).json({ error: 'seller_t12 needs a parsed payload and a property mapping' });
+    const row = (await query(
+      'insert into t12_snapshots(property_code, upload_id, label, period, book, data) values($1,$2,$3,$4,$5,$6) returning id',
+      [propertyCode, uploadId, t.label || filename || 'T12', t.period || '', t.book || '',
+       JSON.stringify({ monthCal: t.monthCal, rows: t.rows })]
+    )).rows[0];
+    logChange(user, 'upload seller_t12', { filename, propertyCode, t12Id: row.id });
+    return res.json({ ok: true, uploadId, t12Id: row.id });
   }
   res.status(400).json({ error: `Unknown upload kind "${kind}"` });
 }));
@@ -132,7 +157,7 @@ router.post('/uploads/apply', h(async (req, res) => {
 /* ---------------- budgets ---------------- */
 interface LoadedBudget {
   budget: any; lines: BudgetLine[]; coa: CoaAccount[]; coaMap: Map<string, CoaAccount>;
-  uw: UwSnapshotData | null; comps: CompWeights | null;
+  uw: UwSnapshotData | null; comps: CompWeights | null; catShapes: Record<string, Months> | null;
 }
 
 async function loadBudget(id: number): Promise<LoadedBudget | null> {
@@ -155,11 +180,31 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
     const c = (await query('select data from comp_sets where id=$1', [budget.comp_set_id])).rows[0];
     if (c) {
       const byGl: Record<string, number> = {};
-      for (const row of c.data.rows || []) byGl[row.gl] = Math.abs(row.total || 0);
-      comps = { byGl };
+      const glShapes: Record<string, Months> = {};
+      const monthCal: number[] = c.data.monthCal || [];
+      for (const row of c.data.rows || []) {
+        byGl[row.gl] = row.total || 0;                       // SIGNED comp totals
+        if (c.data.monthly && Array.isArray(row.months)) {   // per-GL calendar shape
+          const cal = Array(12).fill(0);
+          row.months.forEach((v: number, i: number) => { cal[(monthCal[i] || i + 1) - 1] += Math.abs(v || 0); });
+          const tot = cal.reduce((a: number, b: number) => a + b, 0);
+          if (tot > 0) glShapes[row.gl] = cal.map((v: number) => v / tot);
+        }
+      }
+      comps = { byGl, glShapes: c.data.monthly ? glShapes : undefined, units: Number(c.data.units) || undefined };
     }
   }
-  return { budget, lines, coa, coaMap: new Map(coa.map((a) => [a.code, a])), uw, comps };
+  // seller-T12 monthly shapes (seller GL → pcode map comes from the UW book's coded T12 panel)
+  let catShapes: Record<string, Months> | null = null;
+  if (budget.t12_snapshot_id && uw?.t12?.length) {
+    const t = (await query('select data from t12_snapshots where id=$1', [budget.t12_snapshot_id])).rows[0];
+    if (t?.data?.rows?.length) {
+      const glToPcode: Record<string, string> = {};
+      for (const r of uw.t12) glToPcode[r.gl] = r.pcode;
+      catShapes = t12CategoryShapes(t.data.rows, t.data.monthCal || [], glToPcode);
+    }
+  }
+  return { budget, lines, coa, coaMap: new Map(coa.map((a) => [a.code, a])), uw, comps, catShapes };
 }
 
 async function saveLines(budgetId: number, lines: BudgetLine[]): Promise<void> {
@@ -185,11 +230,12 @@ function budgetView(lb: LoadedBudget) {
     categoryTotals: categoryTotals(lb.lines, lb.coaMap),
     uw: lb.uw,
     compWeights: lb.comps?.byGl || null,
+    compUnits: lb.comps?.units || null,
   };
 }
 
 router.post('/budgets', h(async (req, res) => {
-  const { propertyCode, year, label, uwSnapshotId, compSetId, rentSnapshotId } = req.body || {};
+  const { propertyCode, year, label, uwSnapshotId, compSetId, rentSnapshotId, t12SnapshotId } = req.body || {};
   if (!propertyCode || !year) return res.status(400).json({ error: 'propertyCode and year are required' });
   const prop = (await query('select * from properties where code=$1', [propertyCode])).rows[0];
   if (!prop) return res.status(400).json({ error: `Unknown property ${propertyCode}` });
@@ -213,14 +259,14 @@ router.post('/budgets', h(async (req, res) => {
       };
 
   const id = (await query(
-    `insert into budgets(property_code, year, label, budget_type, inputs, uw_snapshot_id, comp_set_id, rent_snapshot_id, created_by)
-     values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning id`,
+    `insert into budgets(property_code, year, label, budget_type, inputs, uw_snapshot_id, comp_set_id, rent_snapshot_id, t12_snapshot_id, created_by)
+     values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning id`,
     [propertyCode, year, label || `${propertyCode} ${year} Budget`, 'new_acq', JSON.stringify(inputs),
-     uwSnapshotId || null, compSetId || null, rentSnapshotId || null, req.session.username || '']
+     uwSnapshotId || null, compSetId || null, rentSnapshotId || null, t12SnapshotId || null, req.session.username || '']
   )).rows[0].id;
 
   const lb = await loadBudget(id);
-  const lines = generateLines(lb!.coa, inputs, lb!.uw, lb!.comps);
+  const lines = generateLines(lb!.coa, inputs, lb!.uw, lb!.comps, lb!.catShapes);
   await saveLines(id, lines);
   logChange(req.session.username || '', 'create budget', { id, propertyCode, year });
   res.json(budgetView((await loadBudget(id))!));
@@ -243,7 +289,7 @@ router.put('/budgets/:id', h(async (req, res) => {
   if (inputs) {
     const merged: BudgetInputs = { ...lb.budget.inputs, ...inputs };
     await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(merged)]);
-    const lines = regenerate(lb.lines, lb.coa, merged, lb.uw, lb.comps);
+    const lines = regenerate(lb.lines, lb.coa, merged, lb.uw, lb.comps, lb.catShapes);
     await saveLines(id, lines);
     logChange(req.session.username || '', 'update budget inputs', { id });
   }
@@ -280,7 +326,7 @@ router.post('/budgets/:id/recalc', h(async (req, res) => {
   const id = Number(req.params.id);
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
-  const lines = regenerate(lb.lines, lb.coa, lb.budget.inputs, lb.uw, lb.comps);
+  const lines = regenerate(lb.lines, lb.coa, lb.budget.inputs, lb.uw, lb.comps, lb.catShapes);
   await saveLines(id, lines);
   res.json(budgetView((await loadBudget(id))!));
 }));
@@ -294,7 +340,19 @@ router.post('/budgets/:id/rebalance', h(async (req, res) => {
   // target: abs categories tie to UW $; GPR-relative categories tie to pct × current GPR
   let target: number | null = null;
   const gprAnnual = sum(lb.lines.find((l) => l.gl_code === '4994')?.months || zero12());
-  if (['4', '5', '6', '8', '9', '10', '11', '12', '13', '14'].includes(pcode)) target = r2(inputs.uwAbs?.[pcode] || 0);
+  if (['4', '5', '6', '8', '9', '10', '11', '12', '13', '14'].includes(pcode)) {
+    if (inputs.catBasis?.[pcode] === 'perUnit' && lb.comps?.units && inputs.units) {
+      // per-unit basis: tie to comp $/unit × subject units across the category's detail GLs
+      let compCat = 0;
+      for (const [gl, v] of Object.entries(lb.comps.byGl)) {
+        const acc = lb.coaMap.get(gl);
+        if (acc?.kind === 'detail' && acc.pcode === pcode) compCat += v;
+      }
+      target = r2((compCat / lb.comps.units) * inputs.units);
+    } else {
+      target = r2(inputs.uwAbs?.[pcode] || 0);
+    }
+  }
   else if (pcode === '2') target = -r2(inputs.concessionPct * gprAnnual);
   else if (pcode === '3') target = -r2(inputs.rentalLossPct * gprAnnual);
   else if (pcode === 'loss') target = -r2(inputs.ltl.targetPct * gprAnnual);

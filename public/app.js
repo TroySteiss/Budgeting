@@ -128,6 +128,9 @@ function renderDash(el) {
       <h3>Rent snapshots</h3>
       ${st.rentSnapshots.length ? `<table class="list"><tr><th>Property</th><th>As of</th><th>Units</th><th>Market / mo</th><th>In-place / mo</th></tr>
         ${st.rentSnapshots.map((r) => `<tr><td>${esc(r.property_code)}</td><td>${r.as_of ? new Date(r.as_of).toLocaleDateString() : ''}</td><td>${r.units ?? ''}</td><td>${money(r.market_monthly)}</td><td>${money(r.inplace_monthly)}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
+      <h3>Seller T12s</h3>
+      ${(st.t12Snapshots || []).length ? `<table class="list"><tr><th>Property</th><th>Statement</th><th>Period</th><th>Book</th></tr>
+        ${st.t12Snapshots.map((t) => `<tr><td>${esc(t.property_code)}</td><td>${esc(t.label)}</td><td>${esc(t.period)}</td><td>${esc(t.book)}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
       <h3>Comp sets</h3>
       ${st.compSets.length ? `<table class="list"><tr><th>Name</th><th>Period</th><th>Book</th><th>Added</th></tr>
         ${st.compSets.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.period)}</td><td>${esc(c.book)}</td><td class="muted">${new Date(c.created_at).toLocaleDateString()}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
@@ -162,6 +165,7 @@ function newBudgetDialog() {
       <div class="fld"><label>UW snapshot (tie-out target)</label><select id="nb-uw"></select></div>
       <div class="fld"><label>Rent snapshot (GPR anchor)</label><select id="nb-rent"></select></div>
       <div class="fld"><label>Comp set (line distribution)</label><select id="nb-comp"><option value="">— none —</option>${st.compSets.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+      <div class="fld"><label>Seller T12 (monthly shapes)</label><select id="nb-t12"></select></div>
     </div>
     <div class="err" id="nb-err"></div>
     <div class="row" style="margin-top:12px">
@@ -172,10 +176,13 @@ function newBudgetDialog() {
     const code = dlg.querySelector('#nb-prop').value;
     const uws = st.uwSnapshots.filter((u) => u.property_code === code);
     const rents = st.rentSnapshots.filter((r) => r.property_code === code);
+    const t12s = (st.t12Snapshots || []).filter((t) => t.property_code === code);
     dlg.querySelector('#nb-uw').innerHTML = `<option value="">— none —</option>` + uws.map((u) => `<option value="${u.id}">${esc(u.label)} (NOI ${money(u.noi)})</option>`).join('');
     dlg.querySelector('#nb-rent').innerHTML = `<option value="">— none —</option>` + rents.map((r) => `<option value="${r.id}">${r.as_of ? new Date(r.as_of).toLocaleDateString() : ''} · mkt ${money(r.market_monthly)}/mo</option>`).join('');
+    dlg.querySelector('#nb-t12').innerHTML = `<option value="">— none —</option>` + t12s.map((t) => `<option value="${t.id}">${esc(t.label)} (${esc(t.period)})</option>`).join('');
     if (uws.length) dlg.querySelector('#nb-uw').value = uws[0].id;
     if (rents.length) dlg.querySelector('#nb-rent').value = rents[0].id;
+    if (t12s.length) dlg.querySelector('#nb-t12').value = t12s[0].id;
   };
   fillSnaps();
   dlg.querySelector('#nb-prop').addEventListener('change', fillSnaps);
@@ -188,6 +195,7 @@ function newBudgetDialog() {
         uwSnapshotId: Number(dlg.querySelector('#nb-uw').value) || null,
         compSetId: Number(dlg.querySelector('#nb-comp').value) || null,
         rentSnapshotId: Number(dlg.querySelector('#nb-rent').value) || null,
+        t12SnapshotId: Number(dlg.querySelector('#nb-t12').value) || null,
       });
       dlg.close();
       await refreshState();
@@ -215,6 +223,7 @@ function renderUploads(el) {
             <option value="uw_book" ${u.kind === 'uw_book' ? 'selected' : ''}>UW book model (.xlsx)</option>
             <option value="rent_roll" ${u.kind === 'rent_roll' ? 'selected' : ''}>Rent roll (Yardi summary or OneSite detail)</option>
             <option value="comparison" ${u.kind === 'comparison' ? 'selected' : ''}>Property comparison (comp set)</option>
+            <option value="seller_t12" ${u.kind === 'seller_t12' ? 'selected' : ''}>Seller T12 statement (monthly actuals)</option>
           </select></div>
         <div class="fld"><label>File</label><input type="file" id="up-file" accept=".xlsx,.xls,.xlsm"></div>
         <button class="btn" id="up-parse" ${u.busy ? 'disabled' : ''}>${u.busy ? 'Parsing…' : 'Parse'}</button>
@@ -296,16 +305,41 @@ function renderUploadPreview(el, parsed) {
       S.upload.msg = `Saved ${mappings.length} rent snapshot(s)`; S.upload.parsed = null;
       await refreshState(); render();
     });
+  } else if (parsed.kind === 'seller_t12') {
+    const t = parsed.t12;
+    el.innerHTML = `<h3>Seller T12 preview</h3>
+      <p>${esc(t.label)} · ${esc(t.period)} · ${esc(t.book)} · ${t.rows.length} detail GL rows</p>
+      <div class="row">
+        <div class="fld"><label>Property</label><select id="t12-prop">${propOptions(guessProp(t.label))}</select></div>
+        <button class="btn" id="up-apply">Save T12 snapshot</button>
+      </div>
+      <p class="muted">Monthly shapes from this statement drive seasonality for admin, payroll, marketing, utilities, insurance, taxes and utility/other income on budgets that link it.</p>`;
+    el.querySelector('#up-apply').addEventListener('click', async () => {
+      const code = el.querySelector('#t12-prop').value;
+      if (!code) { S.upload.err = 'Pick a property'; render(); return; }
+      await POST('/uploads/apply', { kind: 'seller_t12', filename: parsed.filename, payload: parsed, mappings: [{ propertyCode: code }] });
+      S.upload.msg = 'T12 snapshot saved'; S.upload.parsed = null;
+      await refreshState(); render();
+    });
   } else if (parsed.kind === 'comparison') {
     const c = parsed.comparison;
-    el.innerHTML = `<h3>Comp set preview</h3>
-      <p>${esc(c.label)} · ${esc(c.period)} · Book ${esc(c.book)} · properties: <b>${c.properties.join(', ')}</b> · ${c.rows.length} GL rows</p>
+    const guessUnits = c.properties
+      .map((code) => S.state.properties.find((p) => p.code === code))
+      .filter(Boolean).reduce((a, p) => a + (p.units || 0), 0);
+    el.innerHTML = `<h3>Comp set preview ${c.monthly ? '<span class="badge">12-month budget — per-GL seasonality</span>' : ''}</h3>
+      <p>${esc(c.label)} · ${esc(c.period)} · Book ${esc(c.book)} · ${c.monthly ? '' : `properties: <b>${c.properties.join(', ')}</b> · `}${c.rows.length} GL rows</p>
       <div class="row">
         <div class="fld"><label>Comp set name</label><input id="cs-name" value="${esc(c.label || parsed.filename)}" style="min-width:280px"></div>
+        <div class="fld"><label>Total comp units (for $/unit basis)</label><input id="cs-units" value="${guessUnits || ''}" style="width:110px"></div>
         <button class="btn" id="up-apply">Save comp set</button>
-      </div>`;
+      </div>
+      ${c.monthly ? '<p class="muted">Line-level monthly shapes from this budget will drive seasonality; enter the comp portfolio\'s total units to enable the $/unit level basis.</p>' : ''}`;
     el.querySelector('#up-apply').addEventListener('click', async () => {
-      await POST('/uploads/apply', { kind: 'comparison', filename: parsed.filename, payload: parsed, name: el.querySelector('#cs-name').value });
+      await POST('/uploads/apply', {
+        kind: 'comparison', filename: parsed.filename, payload: parsed,
+        name: el.querySelector('#cs-name').value,
+        units: Number(el.querySelector('#cs-units').value) || 0,
+      });
       S.upload.msg = 'Comp set saved'; S.upload.parsed = null;
       await refreshState(); render();
     });
@@ -390,8 +424,15 @@ function renderEditor(el) {
     S.bv = await POST(`/budgets/${b.id}/recalc`);
     render();
   }));
-  el.querySelectorAll('.tie .rb').forEach((btn) => btn.addEventListener('click', async () => {
+  el.querySelectorAll('.tie .rb:not(.basis)').forEach((btn) => btn.addEventListener('click', async () => {
     S.bv = await POST(`/budgets/${b.id}/rebalance`, { pcode: btn.dataset.p });
+    render();
+  }));
+  el.querySelectorAll('.tie .rb.basis').forEach((btn) => btn.addEventListener('click', async () => {
+    const p = btn.dataset.b;
+    const cur = { ...((S.bv.budget.inputs || {}).catBasis || {}) };
+    cur[p] = cur[p] === 'perUnit' ? 'uw' : 'perUnit';
+    S.bv = await PUT(`/budgets/${b.id}`, { inputs: { catBasis: cur } });
     render();
   }));
 }
@@ -482,19 +523,25 @@ function tieHtml(bv) {
   if (!bv.uw) return '<p class="muted">No UW snapshot linked — tie-out unavailable.</p>';
   const t = bv.tieout;
   const rebalanceable = new Set(['loss', '2', '3', '4', '5', '6', '8', '9', '10', '11', '12', '13', '14']);
+  const basisable = new Set(['4', '5', '6', '8', '9', '10', '11', '12', '13', '14']);
+  const catBasis = (bv.budget.inputs || {}).catBasis || {};
+  const canPerUnit = !!bv.compUnits;
   const row = (r, big) => {
     const cls = Math.abs(r.variance) < 1 ? 'good' : (Math.abs(r.variance) / (Math.abs(r.uw) || 1) > 0.02 ? 'bad' : '');
+    const basis = catBasis[r.pcode] === 'perUnit' ? 'perUnit' : 'uw';
+    const basisCtl = !big && basisable.has(r.pcode) && canPerUnit
+      ? `<button class="rb basis" data-b="${r.pcode}" title="Level basis — click to switch">${basis === 'perUnit' ? '$/unit' : 'UW'}</button>` : '';
     return `<tr class="${big ? 'big' : ''}"><td>${esc(r.label)}</td>
       <td>${money(r.budget)}</td><td>${money(r.uw)}</td>
       <td class="var ${cls}">${money(r.variance)}</td>
-      <td>${!big && rebalanceable.has(r.pcode) && Math.abs(r.variance) >= 1 ? `<button class="rb" data-p="${r.pcode}">tie</button>` : ''}</td></tr>`;
+      <td>${basisCtl}${!big && rebalanceable.has(r.pcode) && Math.abs(r.variance) >= 1 ? `<button class="rb" data-p="${r.pcode}">tie</button>` : ''}</td></tr>`;
   };
   return `<table>
     <tr><th>Category</th><th>Budget</th><th>UW Y1</th><th>Δ</th><th></th></tr>
     ${t.rows.map((r) => row(r, false)).join('')}
     ${row(t.egi, true)}${row(t.toe, true)}${row(t.noi, true)}
   </table>
-  <p class="muted" style="font-size:11px">“tie” scales the category's non-overridden lines to the UW-derived target. GPR ties to the rent roll, so income % categories target UW% × budget GPR.</p>`;
+  <p class="muted" style="font-size:11px">“tie” scales a category's non-overridden lines back to its target. Basis buttons switch a category between hard-tying to <b>UW</b> and <b>Minot comp $/unit × units</b> (UW stays visible as variance). GPR always anchors to the rent roll.</p>`;
 }
 
 function inputsHtml(inp) {
