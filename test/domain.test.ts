@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   spreadMonthly, allocateWeighted, rollup, generateLines, rebalanceCategory,
-  categoryTotals, computeTieout, defaultInputs, tieNoiToUw, sum, zero12,
+  categoryTotals, computeTieout, defaultInputs, tieNoiToUw, tieIncomeToUw,
+  stubTruncate, stubProration, prorateUw, sum, zero12,
   CoaAccount, UwSnapshotData, Months,
 } from '../shared/domain.js';
 
@@ -183,12 +184,61 @@ describe('tieNoiToUw', () => {
   });
 });
 
-describe('startMonth (mid-year budgets)', () => {
-  it('zeroes months before the start month', () => {
-    const inputs = { ...defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 }), startMonth: 5 };
-    const lines = generateLines(coaList, inputs, fakeUw, null);
+describe('stub years (mid-year budgets, e.g. start in August)', () => {
+  const mkInputs = () => ({ ...defaultInputs(2026, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 }), startMonth: 8 });
+  // cat-13 comps: snow removal (winter curve) + janitorial supplies (flat) split 50/50
+  const comps = { byGl: { '6818': 60000, '6722': 60000 }, units: 712 };
+
+  it('is the seasonal TAIL of a full-year plan — annual targets are never compressed', () => {
+    const inputs = mkInputs();
+    let lines = generateLines(coaList, inputs, fakeUw, comps);
+    lines = stubTruncate(lines, 8);
     const gpr = lines.find((l) => l.gl_code === '4994')!;
-    expect(gpr.months.slice(0, 4).every((v) => v === 0)).toBe(true);
-    expect(gpr.months[4]).toBeGreaterThan(0);
+    expect(gpr.months.slice(0, 7).every((v) => v === 0)).toBe(true);
+    expect(gpr.months[7]).toBeCloseTo(100000, 0);       // GPR anchors to the rent roll at the start month
+    // snow removal: full-year 62,500 on the snow curve → Aug–Dec share = 40% = 25,000; August = 0
+    const snow = lines.find((l) => l.gl_code === '6818')!;
+    expect(snow.months[7]).toBe(0);
+    expect(sum(snow.months)).toBeCloseTo(25000, 0);
+    expect(snow.months[11]).toBeCloseTo(12500, 0);      // December carries its real winter weight
+    // janitorial (flat): Aug–Dec = 5/12 of 62,500
+    const jan = lines.find((l) => l.gl_code === '6722')!;
+    expect(sum(jan.months)).toBeCloseTo(62500 * 5 / 12, 0);
+  });
+
+  it('prorates UW by each category\'s own seasonal calendar', () => {
+    const inputs = mkInputs();
+    const full = generateLines(coaList, inputs, fakeUw, comps);
+    const factors = stubProration(full, coaMap, 8);
+    // cat 13 = snow (40% live) + flat (5/12 live) → blended factor ≈ 0.40833
+    expect(factors['13']).toBeCloseTo((25000 + 62500 * 5 / 12) / 125000, 3);
+    expect(factors['12']).toBeCloseTo(5 / 12, 2);       // flat category
+    const uwP = prorateUw(fakeUw, factors);
+    expect(uwP.y1['13']).toBeCloseTo(125000 * factors['13'], 0);
+    expect(uwP.noi).toBeCloseTo(uwP.egi - uwP.toe, 2);
+  });
+
+  it('income ties to prorated UW EGI via LTL, and NOI ties to prorated UW NOI', () => {
+    const inputs = mkInputs();
+    let lines = generateLines(coaList, inputs, fakeUw, comps);
+    const factors = stubProration(lines, coaMap, 8);
+    lines = stubTruncate(lines, 8);
+    const uwP = prorateUw(fakeUw, factors);
+    lines = tieIncomeToUw(lines, coaMap, uwP.egi);
+    let monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
+    expect(sum(rollup(monthsMap).get('5500')!)).toBeCloseTo(uwP.egi, 1);
+    lines = tieNoiToUw(lines, coaMap, uwP.noi);
+    monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
+    expect(sum(rollup(monthsMap).get('7280')!)).toBeCloseTo(uwP.noi, 1);
+    // pre-start months stay zero all the way through
+    for (const l of lines) expect(l.months.slice(0, 7).every((v) => v === 0)).toBe(true);
+  });
+
+  it('full-year budgets are unchanged (factors all 1)', () => {
+    const inputs = defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 });
+    const full = generateLines(coaList, inputs, fakeUw, null);
+    const factors = stubProration(full, coaMap, 1);
+    expect(Object.values(factors).every((f) => f === 1)).toBe(true);
+    expect(stubTruncate(full, 1)).toBe(full);
   });
 });

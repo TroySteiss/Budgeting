@@ -97,3 +97,11 @@ table.grid tr.zero.show { display: table-row; }
 .badge { display: inline-block; background: #eef1f5; border-radius: 10px; padding: 1px 8px; font-size: 11px; color: var(--dim); margin-left: 6px; }
 dialog { border: 1px solid var(--line); border-radius: 12px; padding: 18px; max-width: 560px; box-shadow: 0 12px 40px rgba(0,0,0,.18); }
 dialog::backdrop { background: rgba(15,23,32,.35); }
+
+/* ---------- row quick tools ---------- */
+button.rowtool { background: none; border: none; color: #a7b0bc; font-size: 12px; padding: 0 3px; border-radius: 4px; }
+button.rowtool:hover { background: #e8ecf2; color: var(--ink); }
+.rowmenu { position: absolute; z-index: 200; background: #fff; border: 1px solid var(--line); border-radius: 9px; box-shadow: 0 10px 30px rgba(0,0,0,.16); min-width: 260px; padding: 4px; }
+.rowmenu .rm-head { font-size: 11px; color: var(--dim); padding: 5px 9px; border-bottom: 1px solid #f1f3f6; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
+.rowmenu button { display: block; width: 100%; text-align: left; background: none; border: none; padding: 6px 9px; border-radius: 6px; font-size: 12.5px; }
+.rowmenu button:hover { background: #f2f6fd; color: var(--accent); }

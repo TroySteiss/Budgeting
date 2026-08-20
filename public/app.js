@@ -450,10 +450,16 @@ function renderEditor(el) {
     S.bv = await POST(`/budgets/${b.id}/recalc`);
     render();
   }));
+  el.querySelectorAll('[data-tools]').forEach((btn) => btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openRowTools(b, btn.dataset.tools, btn);
+  }));
   el.querySelectorAll('.tie .rb:not(.basis)').forEach((btn) => btn.addEventListener('click', async () => {
     S.bv = btn.dataset.noi
       ? await POST(`/budgets/${b.id}/tie-noi`)
-      : await POST(`/budgets/${b.id}/rebalance`, { pcode: btn.dataset.p });
+      : btn.dataset.egi
+        ? await POST(`/budgets/${b.id}/tie-income`)
+        : await POST(`/budgets/${b.id}/rebalance`, { pcode: btn.dataset.p });
     render();
   }));
   el.querySelectorAll('.tie .rb.basis').forEach((btn) => btn.addEventListener('click', async () => {
@@ -537,7 +543,7 @@ function gridHtml(bv, totals) {
     if (isZero && !S.showZero) continue;
     rows.push(`<tr>
       <td class="code">${a.code}</td>
-      <td class="name" title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}">${esc(a.name)}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
+      <td class="name" title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}"><button class="rowtool" data-tools="${a.code}" title="Quick row tools">⋯</button> ${esc(a.name)}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
       ${m.map((v, i) => `<td class="m"><input data-gl="${a.code}" data-i="${i}" value="${v ? money2(v) : ''}" class="${l && l.override ? 'ovr' : ''}"></td>`).join('')}
       <td class="${ann < 0 ? 'neg' : ''}"><b>${money(ann)}</b></td>
       <td>${ann ? money(ann / units) : ''}</td>
@@ -561,13 +567,16 @@ function tieHtml(bv) {
       ? `<button class="rb basis" data-b="${r.pcode}" title="Level basis — click to switch">${basis === 'perUnit' ? '$/unit' : 'UW'}</button>` : '';
     const isNoi = r.label === 'Net Operating Income';
     const noiCtl = isNoi && Math.abs(r.variance) >= 1 ? `<button class="rb" data-noi="1" title="Scale the flex categories (admin, marketing, R&M, rehab) so NOI equals UW exactly">tie NOI</button>` : '';
+    const isEgi = r.label === 'Effective Gross Income';
+    const egiCtl = isEgi && Math.abs(r.variance) >= 1 ? `<button class="rb" data-egi="1" title="Adjust loss-to-lease so Total Income equals UW exactly (GPR stays on the rent roll)">tie income</button>` : '';
     return `<tr class="${big ? 'big' : ''}"><td>${esc(r.label)}</td>
       <td>${money(r.budget)}</td><td>${money(r.uw)}</td>
       <td class="var ${cls}">${money(r.variance)}</td>
-      <td>${noiCtl}${basisCtl}${!big && rebalanceable.has(r.pcode) && Math.abs(r.variance) >= 1 ? `<button class="rb" data-p="${r.pcode}">tie</button>` : ''}</td></tr>`;
+      <td>${noiCtl}${egiCtl}${basisCtl}${!big && rebalanceable.has(r.pcode) && Math.abs(r.variance) >= 1 ? `<button class="rb" data-p="${r.pcode}">tie</button>` : ''}</td></tr>`;
   };
+  const stub = (bv.budget.inputs || {}).startMonth > 1;
   return `<table>
-    <tr><th>Category</th><th>Budget</th><th>UW Y1</th><th>Δ</th><th></th></tr>
+    <tr><th>Category</th><th>Budget</th><th>UW${stub ? ' (prorated)' : ' Y1'}</th><th>Δ</th><th></th></tr>
     ${t.rows.map((r) => row(r, false)).join('')}
     ${row(t.egi, true)}${row(t.toe, true)}${row(t.noi, true)}
   </table>
@@ -602,6 +611,10 @@ function inputsHtml(inp) {
       <div class="fld"><label>Rate %</label><input id="in-rate" value="${((inp.rate || 0) * 100).toFixed(2)}" style="width:70px"></div>
       <div class="fld"><label>Capital $ (CoC)</label><input id="in-cap" value="${inp.capital ?? 0}" style="width:110px"></div>
     </div>
+    <div class="row" style="margin-top:6px">
+      <label title="Adjust loss-to-lease so Total Income equals the (prorated) UW EGI"><input type="checkbox" id="in-tieinc" ${inp.tieIncome !== false ? 'checked' : ''}> Tie income (via LTL)</label>
+      <label title="Scale the flex categories so NOI equals the (prorated) UW NOI"><input type="checkbox" id="in-tienoi" ${inp.tieNoi !== false ? 'checked' : ''}> Tie NOI (via flex cats)</label>
+    </div>
     <h3>UW category targets ($/yr)</h3>
     <div class="row">
       ${['4', '5', '6', '8', '9', '10', '11', '12', '13', '14'].map((p) => `
@@ -626,10 +639,84 @@ async function applyInputs(b, el) {
     concessionPct: num('#in-conc') / 100,
     rentalLossPct: num('#in-rloss') / 100,
     mgmtPct: num('#in-mgmt') / 100,
+    tieIncome: el.querySelector('#in-tieinc').checked,
+    tieNoi: el.querySelector('#in-tienoi').checked,
     uwAbs,
   };
   S.bv = await PUT(`/budgets/${b.id}`, { inputs });
   render();
+}
+
+/* ---------------- row quick tools ---------------- */
+function openRowTools(b, gl, anchorBtn) {
+  document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
+  const inp = S.bv.budget.inputs || {};
+  const start = inp.startMonth || 1;
+  const liveMonths = 13 - start;
+  const acc = S.state.coa.find((a) => a.code === gl) || {};
+  const hasComp = S.bv.compWeights && S.bv.compUnits && S.bv.compWeights[gl];
+  const menu = document.createElement('div');
+  menu.className = 'rowmenu';
+  menu.innerHTML = `
+    <div class="rm-head">${gl} ${esc(acc.name || '')}</div>
+    <button data-act="zero">Zero out row</button>
+    <button data-act="flatAnnual">Flat — annual $ over ${liveMonths} live months…</button>
+    <button data-act="flatMonthly">Flat — $ per month…</button>
+    <button data-act="grow">Start $ /mo + growth %/mo…</button>
+    ${hasComp ? `<button data-act="minot">Minot $/unit × units (${money((S.bv.compWeights[gl] / S.bv.compUnits) * inp.units)}/yr, seasonal)</button>` : ''}
+    <button data-act="reset">Reset to engine (clear override)</button>`;
+  const r = anchorBtn.getBoundingClientRect();
+  menu.style.left = `${r.left + window.scrollX}px`;
+  menu.style.top = `${r.bottom + window.scrollY + 2}px`;
+  document.body.appendChild(menu);
+  const close = () => menu.remove();
+  setTimeout(() => document.addEventListener('click', close, { once: true }), 0);
+
+  const put = async (months) => {
+    S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { months });
+    render();
+  };
+  const liveFill = (fn) => Array.from({ length: 12 }, (_, i) => (i + 1 >= start ? fn(i) : 0));
+
+  menu.querySelectorAll('button[data-act]').forEach((mb) => mb.addEventListener('click', async (e) => {
+    e.stopPropagation(); close();
+    const act = mb.dataset.act;
+    if (act === 'zero') return put(Array(12).fill(0));
+    if (act === 'flatAnnual') {
+      const v = parseFloat(String(prompt('Annual amount ($) — spread evenly over the live months:') || '').replace(/,/g, ''));
+      if (!Number.isFinite(v)) return;
+      return put(liveFill(() => Math.round((v / liveMonths) * 100) / 100));
+    }
+    if (act === 'flatMonthly') {
+      const v = parseFloat(String(prompt('Amount per month ($):') || '').replace(/,/g, ''));
+      if (!Number.isFinite(v)) return;
+      return put(liveFill(() => v));
+    }
+    if (act === 'grow') {
+      const base = parseFloat(String(prompt('Starting amount for the first live month ($/mo):') || '').replace(/,/g, ''));
+      if (!Number.isFinite(base)) return;
+      const g = parseFloat(String(prompt('Growth % per month (e.g. 0.5):') || '').replace(/,/g, '')) || 0;
+      let cur = base;
+      return put(liveFill((i) => {
+        const val = Math.round(cur * 100) / 100;
+        cur = cur * (1 + g / 100);
+        return val;
+      }));
+    }
+    if (act === 'minot') {
+      const annual = (S.bv.compWeights[gl] / S.bv.compUnits) * (inp.units || 0);
+      const shape = (S.bv.compShapes && S.bv.compShapes[gl]) || Array(12).fill(1);
+      const liveShape = shape.map((w, i) => (i + 1 >= start ? w : 0));
+      const wsum = shape.reduce((a, x) => a + x, 0) || 1;
+      // full-year seasonal spread, truncated to live months (stub gets its seasonal share)
+      return put(liveShape.map((w) => Math.round(((annual * w) / wsum) * 100) / 100));
+    }
+    if (act === 'reset') {
+      S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { override: false });
+      S.bv = await POST(`/budgets/${b.id}/recalc`);
+      render();
+    }
+  }));
 }
 
 /* ---------------- settings ---------------- */

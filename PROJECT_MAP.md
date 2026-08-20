@@ -86,6 +86,27 @@ holds the aggregates, not the file). When linked, wage GLs come straight from th
 the Minot per-GL cadence); the rest of category 10 (taxes/benefits/fees) follows the basis —
 under 'uw' the remainder is allocated so cat 10 still ties exactly (floored at 0 if wages exceed UW).
 
+**Tie-out policy (Troy, 2026-08-20)**: NOI must tie **100%** to UW — `tieNoiToUw()` scales the
+non-overridden lines of the flex categories (`DEFAULT_NOI_FLEX` = 9 admin, 11 marketing, 13 R&M,
+14 rehab) at (re)generation (`inputs.tieNoi`, default true) and via the "tie NOI" button.
+**Total Income also ties at generation** (`inputs.tieIncome`, default true; "tie income" button):
+GPR stays anchored to the rent roll at the start month, `tieIncomeToUw()` adjusts loss-to-lease
+(spread ∝ GPR) so EGI hits the (prorated) UW EGI. Category totals only need to be *in line* —
+they show variance, they are not forced. Payroll benefits/bonuses = **Minot ratio × subject wage
+total** (`burdenRatio` driver); cat 10 floats vs UW (UW-remainder fallback without a comp set).
+
+**Stub years (mid-year starts)**: generation is ALWAYS full-year; `stubTruncate()` zeroes months
+before `inputs.startMonth` and `stubProration()` computes per-category live-month shares of each
+category's own seasonal calendar (stored as `inputs.uwProration`). All UW targets — tie-out panel,
+rebalance, tie-income/tie-NOI, workbook UW column — are scaled by these factors, so an August
+start gets Aug–Dec's real seasonal share (December is never an artifact of compressing annual
+targets into fewer months). GPR growth anchors at the start month (pre-start backfill is flat
+base, truncated away). Changing "Start month" in Assumptions regenerates the whole thing.
+
+**Row quick tools** (⋯ button on every detail row): zero out, flat annual over live months,
+flat $/mo, start-$ + %/mo growth fill, Minot $/unit × units with its seasonal shape, reset to
+engine. All write overrides via PUT /budgets/:id/lines/:gl.
+
 Manual cell edit ⇒ `override=true`, driver `manual` (purple in UI, 🔓 clears).
 `regenerate()` recomputes only non-overridden lines. `rebalanceCategory()` (the tie-out panel's
 "tie" button) scales a category's non-overridden lines so the total hits the UW-derived target,

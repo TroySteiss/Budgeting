@@ -65,8 +65,15 @@ export interface BudgetInputs {
   /** NOI must tie 100% to UW: the gap is absorbed by scaling the non-overridden
       lines of the flex categories at (re)generation. Default true. */
   tieNoi?: boolean;
+  /** Total Income ties to (prorated) UW EGI at generation — GPR stays on the
+      rent roll, loss-to-lease absorbs the gap. Default true. */
+  tieIncome?: boolean;
   /** categories that flex to absorb the NOI gap (default 9, 11, 13, 14) */
   noiFlexPcodes?: string[];
+  /** stub-year proration factors per pcode (live-month share of each category's
+      full-year seasonal calendar) — written by the generation pipeline when
+      startMonth > 1; UW targets are scaled by these for tie-out/rebalance. */
+  uwProration?: Record<string, number>;
 }
 
 export const PCODES = ['1', 'loss', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14'] as const;
@@ -268,7 +275,8 @@ export function categoryTotals(lines: BudgetLine[], coa: Map<string, CoaAccount>
   return cat;
 }
 
-export function computeTieout(lines: BudgetLine[], coa: Map<string, CoaAccount>, uw: UwSnapshotData | null): Tieout {
+export function computeTieout(lines: BudgetLine[], coa: Map<string, CoaAccount>, uwRaw: UwSnapshotData | null, proration?: Record<string, number> | null): Tieout {
+  const uw = uwRaw && proration ? prorateUw(uwRaw, proration) : uwRaw;
   const cat = categoryTotals(lines, coa);
   const rows: TieoutRow[] = PCODES.map((p) => {
     const budget = cat[p] || 0;
@@ -310,7 +318,7 @@ export function defaultInputs(year: number, uw: UwSnapshotData, rent: { marketMo
   for (const p of ['4', '5', '6', '8', '9', '10', '11', '12', '13', '14']) uwAbs[p] = r2(uw.y1[p] || 0);
   const egi = uw.egi || 1;
   return {
-    year, units: uw.units, capital: 0, loan: 0, rate: 0.06, startMonth: 1, tieNoi: true,
+    year, units: uw.units, capital: 0, loan: 0, rate: 0.06, startMonth: 1, tieNoi: true, tieIncome: true,
     gpr: { baseMonthly, growthPct: zero12() },
     ltl: { startMonthly: startLtl, targetPct: pctOf('loss'), rampMonths: 12 },
     vacancyPct: Array(12).fill(vac) as Months,
@@ -335,6 +343,10 @@ function categoryItems(pcode: string, coa: CoaAccount[], comps: CompWeights | nu
 }
 
 export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null): BudgetLine[] {
+  /* GENERATION IS ALWAYS FULL-YEAR. A budget that starts mid-year is the
+     seasonal TAIL of a full 12-month plan: callers truncate with stubTruncate()
+     and prorate UW targets with stubProration() — annual targets are never
+     compressed into the live months. */
   const lines = new Map<string, BudgetLine>();
   const mk = (gl: string, months: Months, driver: Driver, note = ''): void => {
     lines.set(gl, { gl_code: gl, months: months.map(r2), driver, override: false, note });
@@ -342,24 +354,24 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
   // start every uploadable detail GL at zero/manual
   for (const a of coaList) if (a.kind === 'detail') mk(a.code, zero12(), { method: 'manual' });
 
-  const live = (i: number): boolean => i + 1 >= inputs.startMonth; // month index live in budget?
+  const s0 = Math.max(0, (inputs.startMonth || 1) - 1); // growth anchors at the start month
 
   /* ---- income ---- */
   const gpr = zero12();
   let cum = inputs.gpr.baseMonthly;
   for (let i = 0; i < 12; i++) {
-    cum = i === 0 ? inputs.gpr.baseMonthly * (1 + (inputs.gpr.growthPct[0] || 0)) : cum * (1 + (inputs.gpr.growthPct[i] || 0));
-    gpr[i] = live(i) ? r2(cum) : 0;
+    if (i < s0) { gpr[i] = r2(inputs.gpr.baseMonthly); continue; }  // pre-start backfill, flat at base
+    cum = i === s0 ? inputs.gpr.baseMonthly * (1 + (inputs.gpr.growthPct[i] || 0)) : cum * (1 + (inputs.gpr.growthPct[i] || 0));
+    gpr[i] = r2(cum);
   }
   mk('4994', gpr, { method: 'gpr' });
 
   const gprAnnual = sum(gpr);
 
-  // Loss to lease: linear ramp from startMonthly to targetPct×GPR over rampMonths
+  // Loss to lease: linear ramp from startMonthly to targetPct×GPR over rampMonths (from the start month)
   const ltl = zero12();
   for (let i = 0; i < 12; i++) {
-    if (!live(i)) continue;
-    const k = i - (inputs.startMonth - 1);
+    const k = Math.max(0, i - s0);
     const t = inputs.ltl.rampMonths > 1 ? Math.min(1, k / (inputs.ltl.rampMonths - 1)) : 1;
     const target = -inputs.ltl.targetPct * gpr[i];
     ltl[i] = r2(inputs.ltl.startMonthly + (target - inputs.ltl.startMonthly) * t);
@@ -391,7 +403,6 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
   /* ---- absolute categories (income 4 & 5, expenses 6, 8..14 minus specials) ----
      Basis per category: 'uw' = hard tie to the UW total, comp-weighted across GLs;
      'perUnit' = each GL at comp $/unit × subject units (UW becomes a variance). */
-  const liveWeights = (base: Months): Months => base.map((w, i) => (live(i) ? w : 0));
   const curveOf = (a: CoaAccount): Months => CURVES[a.curve || 'flat'] || CURVES.flat;
   const coaByCode = new Map(coaList.map((a) => [a.code, a]));
   const shapeFor = (gl: string, p: string): Months => {
@@ -410,7 +421,7 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
     for (const [gl, annual] of Object.entries(payrollWages)) {
       if (!annual) continue;
       wagesTotal = r2(wagesTotal + annual);
-      mk(gl, spreadMonthly(r2(annual), liveWeights((comps?.glShapes?.[gl]) || CURVES.flat)),
+      mk(gl, spreadMonthly(r2(annual), (comps?.glShapes?.[gl]) || CURVES.flat),
         { method: 'payrollModel' } as any);
     }
   }
@@ -430,7 +441,7 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
         const ratio = Math.abs(comps.byGl[a.code] || 0) / compWages;
         const annual = r2(ratio * wagesTotal);
         if (!annual) continue;
-        mk(a.code, spreadMonthly(annual, liveWeights(shapeFor(a.code, '10'))), { method: 'burdenRatio', ratio: Math.round(ratio * 100000) / 100000 } as any);
+        mk(a.code, spreadMonthly(annual, shapeFor(a.code, '10')), { method: 'burdenRatio', ratio: Math.round(ratio * 100000) / 100000 } as any);
       }
     }
   }
@@ -446,7 +457,7 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
         if (!compVal) continue;
         const annual = r2((compVal / comps!.units!) * inputs.units);
         if (!annual) continue;
-        mk(a.code, spreadMonthly(annual, liveWeights(shapeFor(a.code, p))),
+        mk(a.code, spreadMonthly(annual, shapeFor(a.code, p)),
           { method: 'perUnitComp', pcode: p, perUnit: r2(compVal / comps!.units!) } as any);
       }
       continue;
@@ -458,7 +469,7 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
     const alloc = allocateWeighted(target, items);
     for (const [gl, amt] of Object.entries(alloc)) {
       if (!amt) continue;
-      mk(gl, spreadMonthly(amt, liveWeights(shapeFor(gl, p))), { method: 'catShare', pcode: p, share: target ? amt / target : 0 });
+      mk(gl, spreadMonthly(amt, shapeFor(gl, p)), { method: 'catShare', pcode: p, share: target ? amt / target : 0 });
     }
   }
 
@@ -471,7 +482,7 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
   /* ---- interest: loan × rate / 360 × days ---- */
   if (inputs.loan && inputs.rate) {
     const int = zero12();
-    for (let i = 0; i < 12; i++) int[i] = live(i) ? r2((inputs.loan * inputs.rate / 360) * daysInMonth(inputs.year, i + 1)) : 0;
+    for (let i = 0; i < 12; i++) int[i] = r2((inputs.loan * inputs.rate / 360) * daysInMonth(inputs.year, i + 1));
     mk('7300', int, { method: 'interest', loan: inputs.loan, rate: inputs.rate });
   }
 
@@ -491,6 +502,71 @@ export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs
   }
   for (const [gl, f] of fresh) if (!seen.has(gl)) out.push(f);
   return out;
+}
+
+/* ============================================================================
+   STUB YEARS — a budget starting mid-year is the seasonal TAIL of the full
+   12-month plan generateLines builds. Truncate the plan to the live window and
+   prorate every UW target by each category's own seasonal calendar, so August
+   starts get August–December's real share of the year (December is never an
+   artifact of compressing annual targets into fewer months).
+   ========================================================================== */
+
+/** Zero out the months before startMonth (1 = full year, no-op). */
+export function stubTruncate(lines: BudgetLine[], startMonth: number): BudgetLine[] {
+  const s = Math.max(1, startMonth || 1);
+  if (s === 1) return lines;
+  return lines.map((l) => ({ ...l, months: l.months.map((v, i) => (i + 1 < s ? 0 : v)) }));
+}
+
+/** Per-pcode live-month share of each category's full-year seasonal calendar.
+    Run on the FULL-YEAR lines (before stubTruncate). */
+export function stubProration(lines: BudgetLine[], coa: Map<string, CoaAccount>, startMonth: number): Record<string, number> {
+  const s = Math.max(1, startMonth || 1);
+  const out: Record<string, number> = {};
+  if (s === 1) { for (const p of PCODES) out[p] = 1; return out; }
+  const full: Record<string, number> = {};
+  const live: Record<string, number> = {};
+  for (const l of lines) {
+    const a = coa.get(l.gl_code);
+    if (!a || a.kind !== 'detail' || !a.pcode) continue;
+    full[a.pcode] = (full[a.pcode] || 0) + l.months.reduce((x, y) => x + y, 0);
+    live[a.pcode] = (live[a.pcode] || 0) + l.months.reduce((x, y, i) => (i + 1 >= s ? x + y : x), 0);
+  }
+  const defaultShare = (13 - s) / 12;
+  for (const p of PCODES) out[p] = full[p] ? Math.round((live[p] / full[p]) * 100000) / 100000 : defaultShare;
+  return out;
+}
+
+/** UW snapshot scaled to the live window by per-category proration factors. */
+export function prorateUw(uw: UwSnapshotData, factors: Record<string, number> | null | undefined): UwSnapshotData {
+  if (!factors) return uw;
+  const y1: Record<string, number> = {};
+  for (const p of PCODES) y1[p] = r2((uw.y1[p] || 0) * (factors[p] ?? 1));
+  const egi = r2(['1', 'loss', '2', '3', '4', '5'].reduce((a, p) => a + (y1[p] || 0), 0));
+  const toe = r2(['6', '7', '8', '9', '10', '11', '12', '13', '14'].reduce((a, p) => a + (y1[p] || 0), 0));
+  return { ...uw, y1, egi, toe, noi: r2(egi - toe) };
+}
+
+/** Tie Total Income to the (prorated) UW EGI by adjusting the loss-to-lease
+    line — GPR stays anchored to the rent roll, LTL absorbs the gap, spread
+    across the live months in proportion to GPR. Skipped if 5003 is overridden. */
+export function tieIncomeToUw(lines: BudgetLine[], coa: Map<string, CoaAccount>, targetEgi: number): BudgetLine[] {
+  const ltl = lines.find((l) => l.gl_code === '5003');
+  if (!ltl || ltl.override) return lines;
+  const monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
+  const income = sum(rollup(monthsMap).get('5500') || zero12());
+  const gap = r2(targetEgi - income);
+  if (Math.abs(gap) < 0.01) return lines;
+  const gpr = lines.find((l) => l.gl_code === '4994')?.months || zero12();
+  const weights = gpr.map((v, i) => (ltl.months[i] !== 0 || v > 0 ? Math.max(0, v) : 0));
+  // only adjust months that are live (GPR > 0 there); spreadMonthly keeps it penny-exact
+  const liveMask = ltl.months.map((_, i) => weights[i] > 0);
+  const adjWeights = weights.map((w, i) => (liveMask[i] ? w : 0));
+  if (!adjWeights.some((w) => w > 0)) return lines;
+  const adj = spreadMonthly(gap, adjWeights);
+  const newMonths = ltl.months.map((v, i) => r2(v + adj[i]));
+  return lines.map((l) => (l.gl_code === '5003' ? { ...l, months: newMonths } : l));
 }
 
 export const DEFAULT_NOI_FLEX = ['9', '11', '13', '14'];

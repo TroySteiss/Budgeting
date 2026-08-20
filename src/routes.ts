@@ -8,7 +8,8 @@ import { buildReviewWorkbook } from './xlsx-export.js';
 import {
   CoaAccount, BudgetLine, BudgetInputs, UwSnapshotData, CompWeights, Months,
   generateLines, regenerate, rebalanceCategory, defaultInputs, computeTieout,
-  kpis, categoryTotals, t12CategoryShapes, tieNoiToUw, DEFAULT_NOI_FLEX, zero12, r2, sum,
+  kpis, categoryTotals, t12CategoryShapes, tieNoiToUw, tieIncomeToUw, DEFAULT_NOI_FLEX,
+  stubTruncate, stubProration, prorateUw, zero12, r2, sum,
 } from '../shared/domain.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -251,14 +252,31 @@ function budgetView(lb: LoadedBudget) {
   return {
     budget: lb.budget,
     lines: lb.lines,
-    tieout: computeTieout(lb.lines, lb.coaMap, lb.uw),
+    tieout: computeTieout(lb.lines, lb.coaMap, lb.uw, lb.budget.inputs?.uwProration),
     kpis: kpis(monthsMap, Number(lb.budget.inputs?.capital) || 0),
     categoryTotals: categoryTotals(lb.lines, lb.coaMap),
     uw: lb.uw,
     compWeights: lb.comps?.byGl || null,
     compUnits: lb.comps?.units || null,
+    compShapes: lb.comps?.glShapes || null,
     payrollWages: lb.payrollWages,
   };
+}
+
+/** Full generation pipeline: full-year plan → stub proration+truncation →
+    income tie (LTL) → NOI tie (flex). Returns lines + the factors to persist. */
+function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLine[]): { lines: BudgetLine[]; factors: Record<string, number> } {
+  const start = inputs.startMonth || 1;
+  const freshFull = generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages);
+  const factors = stubProration(freshFull, lb.coaMap, start);
+  let lines = existing ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages) : freshFull;
+  lines = stubTruncate(lines, start);
+  if (lb.uw) {
+    const uwP = prorateUw(lb.uw, factors);
+    if (inputs.tieIncome !== false) lines = tieIncomeToUw(lines, lb.coaMap, uwP.egi);
+    if (inputs.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, uwP.noi, inputs.noiFlexPcodes || DEFAULT_NOI_FLEX);
+  }
+  return { lines, factors };
 }
 
 router.post('/budgets', h(async (req, res) => {
@@ -293,9 +311,9 @@ router.post('/budgets', h(async (req, res) => {
   )).rows[0].id;
 
   const lb = await loadBudget(id);
-  let lines = generateLines(lb!.coa, inputs, lb!.uw, lb!.comps, lb!.catShapes, lb!.payrollWages);
-  if (lb!.uw && inputs.tieNoi !== false) lines = tieNoiToUw(lines, lb!.coaMap, lb!.uw.noi, inputs.noiFlexPcodes || DEFAULT_NOI_FLEX);
-  await saveLines(id, lines);
+  const built = buildLines(lb!, inputs);
+  await query('update budgets set inputs=$2 where id=$1', [id, JSON.stringify({ ...inputs, uwProration: built.factors })]);
+  await saveLines(id, built.lines);
   logChange(req.session.username || '', 'create budget', { id, propertyCode, year });
   res.json(budgetView((await loadBudget(id))!));
 }));
@@ -316,10 +334,9 @@ router.put('/budgets/:id', h(async (req, res) => {
   }
   if (inputs) {
     const merged: BudgetInputs = { ...lb.budget.inputs, ...inputs };
-    await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(merged)]);
-    let lines = regenerate(lb.lines, lb.coa, merged, lb.uw, lb.comps, lb.catShapes, lb.payrollWages);
-    if (lb.uw && merged.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, lb.uw.noi, merged.noiFlexPcodes || DEFAULT_NOI_FLEX);
-    await saveLines(id, lines);
+    const built = buildLines(lb, merged, lb.lines);
+    await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify({ ...merged, uwProration: built.factors })]);
+    await saveLines(id, built.lines);
     logChange(req.session.username || '', 'update budget inputs', { id });
   }
   res.json(budgetView((await loadBudget(id))!));
@@ -355,9 +372,9 @@ router.post('/budgets/:id/recalc', h(async (req, res) => {
   const id = Number(req.params.id);
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
-  let lines = regenerate(lb.lines, lb.coa, lb.budget.inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages);
-  if (lb.uw && lb.budget.inputs?.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, lb.uw.noi, lb.budget.inputs?.noiFlexPcodes || DEFAULT_NOI_FLEX);
-  await saveLines(id, lines);
+  const built = buildLines(lb, lb.budget.inputs, lb.lines);
+  await query('update budgets set inputs=$2 where id=$1', [id, JSON.stringify({ ...lb.budget.inputs, uwProration: built.factors })]);
+  await saveLines(id, built.lines);
   res.json(budgetView((await loadBudget(id))!));
 }));
 
@@ -366,9 +383,22 @@ router.post('/budgets/:id/tie-noi', h(async (req, res) => {
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
   if (!lb.uw) return res.status(400).json({ error: 'No UW snapshot linked' });
-  const lines = tieNoiToUw(lb.lines, lb.coaMap, lb.uw.noi, lb.budget.inputs?.noiFlexPcodes || DEFAULT_NOI_FLEX);
+  const uwP = prorateUw(lb.uw, lb.budget.inputs?.uwProration);
+  const lines = tieNoiToUw(lb.lines, lb.coaMap, uwP.noi, lb.budget.inputs?.noiFlexPcodes || DEFAULT_NOI_FLEX);
   await saveLines(id, lines);
-  logChange(req.session.username || '', 'tie NOI to UW', { id, uwNoi: lb.uw.noi });
+  logChange(req.session.username || '', 'tie NOI to UW', { id, target: uwP.noi });
+  res.json(budgetView((await loadBudget(id))!));
+}));
+
+router.post('/budgets/:id/tie-income', h(async (req, res) => {
+  const id = Number(req.params.id);
+  const lb = await loadBudget(id);
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  if (!lb.uw) return res.status(400).json({ error: 'No UW snapshot linked' });
+  const uwP = prorateUw(lb.uw, lb.budget.inputs?.uwProration);
+  const lines = tieIncomeToUw(lb.lines, lb.coaMap, uwP.egi);
+  await saveLines(id, lines);
+  logChange(req.session.username || '', 'tie income to UW', { id, target: uwP.egi });
   res.json(budgetView((await loadBudget(id))!));
 }));
 
@@ -381,6 +411,7 @@ router.post('/budgets/:id/rebalance', h(async (req, res) => {
   // target: abs categories tie to UW $; GPR-relative categories tie to pct × current GPR
   let target: number | null = null;
   const gprAnnual = sum(lb.lines.find((l) => l.gl_code === '4994')?.months || zero12());
+  const factor = inputs.uwProration?.[pcode] ?? 1;
   if (['4', '5', '6', '8', '9', '10', '11', '12', '13', '14'].includes(pcode)) {
     if (inputs.catBasis?.[pcode] === 'perUnit' && lb.comps?.units && inputs.units) {
       // per-unit basis: tie to comp $/unit × subject units across the category's detail GLs
@@ -389,9 +420,9 @@ router.post('/budgets/:id/rebalance', h(async (req, res) => {
         const acc = lb.coaMap.get(gl);
         if (acc?.kind === 'detail' && acc.pcode === pcode) compCat += v;
       }
-      target = r2((compCat / lb.comps.units) * inputs.units);
+      target = r2((compCat / lb.comps.units) * inputs.units * factor);
     } else {
-      target = r2(inputs.uwAbs?.[pcode] || 0);
+      target = r2((inputs.uwAbs?.[pcode] || 0) * factor);
     }
   }
   else if (pcode === '2') target = -r2(inputs.concessionPct * gprAnnual);
@@ -440,7 +471,8 @@ router.get('/budgets/:id/export.xlsx', h(async (req, res) => {
   const buf = buildReviewWorkbook({
     propertyCode: lb.budget.property_code, propertyName: prop?.name || lb.budget.property_code,
     year: lb.budget.year, units: Number(lb.budget.inputs?.units) || prop?.units || 0,
-    coa: lb.coa, lines: lb.lines, inputs: lb.budget.inputs, uw: lb.uw,
+    coa: lb.coa, lines: lb.lines, inputs: lb.budget.inputs,
+    uw: lb.uw ? prorateUw(lb.uw, lb.budget.inputs?.uwProration) : null,
     compWeights: lb.comps?.byGl || null, compUnits: lb.comps?.units || null, compName,
   });
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
