@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   spreadMonthly, allocateWeighted, rollup, generateLines, rebalanceCategory,
-  categoryTotals, computeTieout, defaultInputs, sum, zero12, CoaAccount, UwSnapshotData, Months,
+  categoryTotals, computeTieout, defaultInputs, tieNoiToUw, sum, zero12,
+  CoaAccount, UwSnapshotData, Months,
 } from '../shared/domain.js';
 
 const coaList: CoaAccount[] = JSON.parse(readFileSync(join(process.cwd(), 'seed', 'coa.json'), 'utf8'));
@@ -133,27 +134,52 @@ describe('per-unit comp basis', () => {
   });
 });
 
-describe('payroll model wages', () => {
-  it('wage GLs come from the model; category 10 still ties to UW via the remainder', () => {
+describe('payroll model wages + Minot burden ratios', () => {
+  it('benefits/bonuses follow Minot ratios on the subject wage total (not the UW category)', () => {
     const inputs = defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 });
+    const wages = { '6402': 80000, '6404': 70000 };            // subject wages 150,000
+    // Minot: wages 712,000; payroll taxes 71,200 (10%); medical 35,600 (5%)
+    const comps = { byGl: { '6402': 500000, '6404': 212000, '6418': 71200, '6422': 35600 }, units: 712 };
+    const lines = generateLines(coaList, inputs, fakeUw, comps, null, wages);
+    expect(sum(lines.find((l) => l.gl_code === '6402')!.months)).toBe(80000);
+    expect(sum(lines.find((l) => l.gl_code === '6418')!.months)).toBeCloseTo(15000, 0); // 10% of 150k
+    expect(sum(lines.find((l) => l.gl_code === '6422')!.months)).toBeCloseTo(7500, 0);  // 5% of 150k
+    const cats = categoryTotals(lines, coaMap);
+    expect(cats['10']).toBeCloseTo(172500, 0); // wages + burden — NOT forced to UW's 190,000
+  });
+  it('without comps the UW-remainder fallback still applies', () => {
+    const inputs = defaultInputs(2027, fakeUw, null);
     const wages = { '6402': 80000, '6404': 70000, '6405': 5000 };
     const lines = generateLines(coaList, inputs, fakeUw, null, null, wages);
-    expect(sum(lines.find((l) => l.gl_code === '6402')!.months)).toBe(80000);
-    expect(sum(lines.find((l) => l.gl_code === '6404')!.months)).toBe(70000);
     const cats = categoryTotals(lines, coaMap);
-    // remainder (190,000 − 155,000 = 35,000) goes to the non-wage payroll GLs → category still ties
     expect(cats['10']).toBeCloseTo(fakeUw.y1['10'], 2);
   });
-  it('wages exceeding the UW category produce no negative remainder lines', () => {
-    const inputs = defaultInputs(2027, fakeUw, null);
-    const wages = { '6402': 150000, '6404': 90000 }; // 240k > UW 190k
-    const lines = generateLines(coaList, inputs, fakeUw, null, null, wages);
+});
+
+describe('tieNoiToUw', () => {
+  it('forces NOI to UW exactly by scaling the flex categories, keeping overrides', () => {
+    const inputs = defaultInputs(2027, fakeUw, { marketMonthly: 98000, inPlaceMonthly: 95000 }); // income ≠ UW
+    let lines = generateLines(coaList, inputs, fakeUw, null);
+    // override one marketing line — it must survive untouched
+    const idx = lines.findIndex((l) => coaMap.get(l.gl_code)?.pcode === '11' && sum(l.months) > 0);
+    const frozen = sum(lines[idx].months);
+    lines[idx] = { ...lines[idx], override: true };
+    lines = tieNoiToUw(lines, coaMap, fakeUw.noi);
+    const monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
+    const noi = sum(rollup(monthsMap).get('7280')!);
+    expect(noi).toBeCloseTo(fakeUw.noi, 2);
+    expect(sum(lines[idx].months)).toBe(frozen);
+    // non-flex categories untouched
     const cats = categoryTotals(lines, coaMap);
-    expect(cats['10']).toBeCloseTo(240000, 2); // wages stand; variance shows in tie-out
-    for (const l of lines) {
-      const acc = coaMap.get(l.gl_code);
-      if (acc?.pcode === '10') expect(sum(l.months)).toBeGreaterThanOrEqual(0);
-    }
+    expect(cats['12']).toBeCloseTo(fakeUw.y1['12'], 2);
+    expect(cats['6']).toBeCloseTo(fakeUw.y1['6'], 2);
+  });
+  it('no-ops when NOI already ties', () => {
+    const inputs = defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 });
+    let lines = generateLines(coaList, inputs, fakeUw, null);
+    lines = tieNoiToUw(lines, coaMap, fakeUw.noi);
+    const again = tieNoiToUw(lines, coaMap, fakeUw.noi);
+    expect(JSON.stringify(again.map((l) => l.months))).toBe(JSON.stringify(lines.map((l) => l.months)));
   });
 });
 

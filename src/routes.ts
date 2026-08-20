@@ -8,7 +8,7 @@ import { buildReviewWorkbook } from './xlsx-export.js';
 import {
   CoaAccount, BudgetLine, BudgetInputs, UwSnapshotData, CompWeights, Months,
   generateLines, regenerate, rebalanceCategory, defaultInputs, computeTieout,
-  kpis, categoryTotals, t12CategoryShapes, zero12, r2, sum,
+  kpis, categoryTotals, t12CategoryShapes, tieNoiToUw, DEFAULT_NOI_FLEX, zero12, r2, sum,
 } from '../shared/domain.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -293,7 +293,8 @@ router.post('/budgets', h(async (req, res) => {
   )).rows[0].id;
 
   const lb = await loadBudget(id);
-  const lines = generateLines(lb!.coa, inputs, lb!.uw, lb!.comps, lb!.catShapes, lb!.payrollWages);
+  let lines = generateLines(lb!.coa, inputs, lb!.uw, lb!.comps, lb!.catShapes, lb!.payrollWages);
+  if (lb!.uw && inputs.tieNoi !== false) lines = tieNoiToUw(lines, lb!.coaMap, lb!.uw.noi, inputs.noiFlexPcodes || DEFAULT_NOI_FLEX);
   await saveLines(id, lines);
   logChange(req.session.username || '', 'create budget', { id, propertyCode, year });
   res.json(budgetView((await loadBudget(id))!));
@@ -316,7 +317,8 @@ router.put('/budgets/:id', h(async (req, res) => {
   if (inputs) {
     const merged: BudgetInputs = { ...lb.budget.inputs, ...inputs };
     await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(merged)]);
-    const lines = regenerate(lb.lines, lb.coa, merged, lb.uw, lb.comps, lb.catShapes, lb.payrollWages);
+    let lines = regenerate(lb.lines, lb.coa, merged, lb.uw, lb.comps, lb.catShapes, lb.payrollWages);
+    if (lb.uw && merged.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, lb.uw.noi, merged.noiFlexPcodes || DEFAULT_NOI_FLEX);
     await saveLines(id, lines);
     logChange(req.session.username || '', 'update budget inputs', { id });
   }
@@ -353,8 +355,20 @@ router.post('/budgets/:id/recalc', h(async (req, res) => {
   const id = Number(req.params.id);
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
-  const lines = regenerate(lb.lines, lb.coa, lb.budget.inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages);
+  let lines = regenerate(lb.lines, lb.coa, lb.budget.inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages);
+  if (lb.uw && lb.budget.inputs?.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, lb.uw.noi, lb.budget.inputs?.noiFlexPcodes || DEFAULT_NOI_FLEX);
   await saveLines(id, lines);
+  res.json(budgetView((await loadBudget(id))!));
+}));
+
+router.post('/budgets/:id/tie-noi', h(async (req, res) => {
+  const id = Number(req.params.id);
+  const lb = await loadBudget(id);
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  if (!lb.uw) return res.status(400).json({ error: 'No UW snapshot linked' });
+  const lines = tieNoiToUw(lb.lines, lb.coaMap, lb.uw.noi, lb.budget.inputs?.noiFlexPcodes || DEFAULT_NOI_FLEX);
+  await saveLines(id, lines);
+  logChange(req.session.username || '', 'tie NOI to UW', { id, uwNoi: lb.uw.noi });
   res.json(budgetView((await loadBudget(id))!));
 }));
 
@@ -419,10 +433,15 @@ router.get('/budgets/:id/export.xlsx', h(async (req, res) => {
   const lb = await loadBudget(Number(req.params.id));
   if (!lb) return res.status(404).json({ error: 'Not found' });
   const prop = (await query('select * from properties where code=$1', [lb.budget.property_code])).rows[0];
+  let compName = '';
+  if (lb.budget.comp_set_id) {
+    compName = (await query('select name from comp_sets where id=$1', [lb.budget.comp_set_id])).rows[0]?.name || '';
+  }
   const buf = buildReviewWorkbook({
     propertyCode: lb.budget.property_code, propertyName: prop?.name || lb.budget.property_code,
     year: lb.budget.year, units: Number(lb.budget.inputs?.units) || prop?.units || 0,
     coa: lb.coa, lines: lb.lines, inputs: lb.budget.inputs, uw: lb.uw,
+    compWeights: lb.comps?.byGl || null, compUnits: lb.comps?.units || null, compName,
   });
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="${lb.budget.property_code.toUpperCase()} ${lb.budget.year} Budget Review.xlsx"`);

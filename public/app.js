@@ -451,7 +451,9 @@ function renderEditor(el) {
     render();
   }));
   el.querySelectorAll('.tie .rb:not(.basis)').forEach((btn) => btn.addEventListener('click', async () => {
-    S.bv = await POST(`/budgets/${b.id}/rebalance`, { pcode: btn.dataset.p });
+    S.bv = btn.dataset.noi
+      ? await POST(`/budgets/${b.id}/tie-noi`)
+      : await POST(`/budgets/${b.id}/rebalance`, { pcode: btn.dataset.p });
     render();
   }));
   el.querySelectorAll('.tie .rb.basis').forEach((btn) => btn.addEventListener('click', async () => {
@@ -557,17 +559,19 @@ function tieHtml(bv) {
     const basis = catBasis[r.pcode] === 'perUnit' ? 'perUnit' : 'uw';
     const basisCtl = !big && basisable.has(r.pcode) && canPerUnit
       ? `<button class="rb basis" data-b="${r.pcode}" title="Level basis — click to switch">${basis === 'perUnit' ? '$/unit' : 'UW'}</button>` : '';
+    const isNoi = r.label === 'Net Operating Income';
+    const noiCtl = isNoi && Math.abs(r.variance) >= 1 ? `<button class="rb" data-noi="1" title="Scale the flex categories (admin, marketing, R&M, rehab) so NOI equals UW exactly">tie NOI</button>` : '';
     return `<tr class="${big ? 'big' : ''}"><td>${esc(r.label)}</td>
       <td>${money(r.budget)}</td><td>${money(r.uw)}</td>
       <td class="var ${cls}">${money(r.variance)}</td>
-      <td>${basisCtl}${!big && rebalanceable.has(r.pcode) && Math.abs(r.variance) >= 1 ? `<button class="rb" data-p="${r.pcode}">tie</button>` : ''}</td></tr>`;
+      <td>${noiCtl}${basisCtl}${!big && rebalanceable.has(r.pcode) && Math.abs(r.variance) >= 1 ? `<button class="rb" data-p="${r.pcode}">tie</button>` : ''}</td></tr>`;
   };
   return `<table>
     <tr><th>Category</th><th>Budget</th><th>UW Y1</th><th>Δ</th><th></th></tr>
     ${t.rows.map((r) => row(r, false)).join('')}
     ${row(t.egi, true)}${row(t.toe, true)}${row(t.noi, true)}
   </table>
-  <p class="muted" style="font-size:11px">“tie” scales a category's non-overridden lines back to its target. Basis buttons switch a category between hard-tying to <b>UW</b> and <b>Minot comp $/unit × units</b> (UW stays visible as variance). GPR always anchors to the rent roll.</p>`;
+  <p class="muted" style="font-size:11px"><b>NOI ties 100% to UW</b> — at generation and via “tie NOI”, the flex categories (admin, marketing, R&M, rehab) absorb the gap; other categories stay in line with their basis. Category “tie” scales that category's non-overridden lines to its own target. Basis buttons switch a category between <b>UW</b> and <b>Minot $/unit × units</b>. Payroll benefits/bonuses follow Minot ratios on the property's wage totals. GPR always anchors to the rent roll.</p>`;
 }
 
 function inputsHtml(inp) {

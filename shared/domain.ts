@@ -38,6 +38,7 @@ export type Driver =
   | { method: 'catShare'; pcode: string; share: number }     // share of a UW-tied category
   | { method: 'perUnitComp'; pcode: string; perUnit: number } // comp $/unit × subject units
   | { method: 'payrollModel' }                                 // property-level wages from the ND payroll model
+  | { method: 'burdenRatio'; ratio: number }                   // Minot benefit/bonus ratio × subject wage total
   | { method: 'mgmtPct'; pct: number }
   | { method: 'interest'; loan: number; rate: number }
   | { method: 'zero' };
@@ -61,6 +62,11 @@ export interface BudgetInputs {
   /** per-category level basis: 'uw' (default — hard tie to uwAbs, comp-weighted)
       or 'perUnit' (each line = comp $/unit × subject units; UW shown as variance) */
   catBasis?: Partial<Record<string, 'uw' | 'perUnit'>>;
+  /** NOI must tie 100% to UW: the gap is absorbed by scaling the non-overridden
+      lines of the flex categories at (re)generation. Default true. */
+  tieNoi?: boolean;
+  /** categories that flex to absorb the NOI gap (default 9, 11, 13, 14) */
+  noiFlexPcodes?: string[];
 }
 
 export const PCODES = ['1', 'loss', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14'] as const;
@@ -304,7 +310,7 @@ export function defaultInputs(year: number, uw: UwSnapshotData, rent: { marketMo
   for (const p of ['4', '5', '6', '8', '9', '10', '11', '12', '13', '14']) uwAbs[p] = r2(uw.y1[p] || 0);
   const egi = uw.egi || 1;
   return {
-    year, units: uw.units, capital: 0, loan: 0, rate: 0.06, startMonth: 1,
+    year, units: uw.units, capital: 0, loan: 0, rate: 0.06, startMonth: 1, tieNoi: true,
     gpr: { baseMonthly, growthPct: zero12() },
     ltl: { startMonthly: startLtl, targetPct: pctOf('loss'), rampMonths: 12 },
     vacancyPct: Array(12).fill(vac) as Months,
@@ -409,7 +415,28 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
     }
   }
 
+  /* Payroll benefits/bonuses (Troy's rule): every non-wage cat-10 GL follows
+     Minot's ratio to wages — (comp GL $ / comp wage $) × subject wage total.
+     Cat 10 is therefore NOT UW-tied when a payroll model + comps are linked;
+     the NOI tie (below) absorbs the difference. */
+  const WAGE_GLS = ['6402', '6404', '6405', '6407'];
+  let cat10Done = false;
+  if (payrollWages && comps) {
+    const compWages = WAGE_GLS.reduce((a, g) => a + Math.abs(comps.byGl[g] || 0), 0);
+    if (compWages > 0) {
+      cat10Done = true;
+      const members = coaList.filter((a) => a.kind === 'detail' && a.pcode === '10' && a.csv_order != null && !modelWageGls.has(a.code));
+      for (const a of members) {
+        const ratio = Math.abs(comps.byGl[a.code] || 0) / compWages;
+        const annual = r2(ratio * wagesTotal);
+        if (!annual) continue;
+        mk(a.code, spreadMonthly(annual, liveWeights(shapeFor(a.code, '10'))), { method: 'burdenRatio', ratio: Math.round(ratio * 100000) / 100000 } as any);
+      }
+    }
+  }
+
   for (const p of ['4', '5', '6', '8', '9', '10', '11', '12', '13', '14']) {
+    if (p === '10' && cat10Done) continue;
     const skipGls = p === '10' ? modelWageGls : new Set<string>();
     const basis = inputs.catBasis?.[p] === 'perUnit' && comps?.units && inputs.units ? 'perUnit' : 'uw';
     if (basis === 'perUnit') {
@@ -464,6 +491,40 @@ export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs
   }
   for (const [gl, f] of fresh) if (!seen.has(gl)) out.push(f);
   return out;
+}
+
+export const DEFAULT_NOI_FLEX = ['9', '11', '13', '14'];
+
+/** Force NOI to equal the UW NOI exactly by scaling the non-overridden lines of
+    the flex categories. Overrides and every other category stay untouched; the
+    scaled flex total gets a penny-fix so the tie is exact. If the gap exceeds
+    the whole flex pool, flex is floored at zero and a residual variance remains. */
+export function tieNoiToUw(lines: BudgetLine[], coa: Map<string, CoaAccount>, uwNoi: number, flexPcodes: string[] = DEFAULT_NOI_FLEX): BudgetLine[] {
+  const monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
+  const noi = sum(rollup(monthsMap).get('7280') || zero12());
+  const gap = r2(uwNoi - noi);            // positive → lower expenses to raise NOI
+  if (Math.abs(gap) < 0.01) return lines;
+  const flex = lines.filter((l) => {
+    const a = coa.get(l.gl_code);
+    return a?.kind === 'detail' && a.pcode != null && flexPcodes.includes(a.pcode) && !l.override && sum(l.months) !== 0;
+  });
+  const flexSum = flex.reduce((a, l) => r2(a + sum(l.months)), 0);
+  if (flexSum <= 0) return lines;
+  const targetFlex = Math.max(0, r2(flexSum - gap));
+  const f = targetFlex / flexSum;
+  const scaled = new Map<string, Months>(flex.map((l) => [l.gl_code, l.months.map((v) => r2(v * f))]));
+  let newSum = 0;
+  for (const m of scaled.values()) newSum = r2(newSum + sum(m));
+  const drift = r2(targetFlex - newSum);
+  if (drift !== 0 && flex.length) {
+    const host = flex.reduce((a, b) => (Math.abs(sum(scaled.get(a.gl_code)!)) >= Math.abs(sum(scaled.get(b.gl_code)!)) ? a : b));
+    const m = scaled.get(host.gl_code)!.slice();
+    let idx = 11;
+    for (let i = 11; i >= 0; i--) if (m[i] !== 0) { idx = i; break; }
+    m[idx] = r2(m[idx] + drift);
+    scaled.set(host.gl_code, m);
+  }
+  return lines.map((l) => (scaled.has(l.gl_code) ? { ...l, months: scaled.get(l.gl_code)!, driver: l.driver } : l));
 }
 
 /** Scale the non-overridden lines of one category so its annual total hits `target`. */
