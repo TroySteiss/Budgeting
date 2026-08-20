@@ -7,11 +7,10 @@
 import * as XLSX from 'xlsx';
 import {
   CoaAccount, BudgetLine, UwSnapshotData, BudgetInputs, PCODES, PCODE_LABELS,
-  rollup, sum, zero12, r2, Months,
+  rollup, sum, zero12, r2, Months, monthLabels,
 } from '../shared/domain.js';
 
 const colLetter = (i: number): string => XLSX.utils.encode_col(i);
-const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 /* Budget-sheet columns (0-based): A code, B name, C notes, D driver,
    E..P months (4..15), Q spacer, R annual, S spacer, T UW, U comp,
@@ -84,7 +83,7 @@ export function buildReviewWorkbook(args: {
   aoa.push([null, 'Capital:', inputs.capital || 0]);                                                  // r4
   aoa.push(blank());                                                                                  // r5
   aoa.push(['GL Code', 'GL Name', 'Notes', 'Driver',
-            ...MONTH_ABBR.map((m) => `${m}-${String(args.year).slice(2)}`), null,
+            ...monthLabels(args.year, inputs.startMonth || 1), null,
             'Total Year 1 Budget', null, 'Year 1 UW Budget',
             `Minot Budget at ${units} units`, null, null, 'Total Per Unit', 'Total Per Unit Per Month',
             'Notes for Budget Upload']);                                                              // r6

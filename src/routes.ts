@@ -9,7 +9,7 @@ import {
   CoaAccount, BudgetLine, BudgetInputs, UwSnapshotData, CompWeights, Months,
   generateLines, regenerate, rebalanceCategory, defaultInputs, computeTieout,
   kpis, categoryTotals, t12CategoryShapes, tieNoiToUw, tieIncomeToUw, DEFAULT_NOI_FLEX,
-  stubTruncate, stubProration, prorateUw, zero12, r2, sum,
+  calendarSlice, monthLabels, zero12, r2, sum,
 } from '../shared/domain.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -252,7 +252,8 @@ function budgetView(lb: LoadedBudget) {
   return {
     budget: lb.budget,
     lines: lb.lines,
-    tieout: computeTieout(lb.lines, lb.coaMap, lb.uw, lb.budget.inputs?.uwProration),
+    tieout: computeTieout(lb.lines, lb.coaMap, lb.uw),
+    monthLabels: monthLabels(lb.budget.year, lb.budget.inputs?.startMonth || 1),
     kpis: kpis(monthsMap, Number(lb.budget.inputs?.capital) || 0),
     categoryTotals: categoryTotals(lb.lines, lb.coaMap),
     uw: lb.uw,
@@ -263,20 +264,17 @@ function budgetView(lb: LoadedBudget) {
   };
 }
 
-/** Full generation pipeline: full-year plan → stub proration+truncation →
-    income tie (LTL) → NOI tie (flex). Returns lines + the factors to persist. */
-function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLine[]): { lines: BudgetLine[]; factors: Record<string, number> } {
-  const start = inputs.startMonth || 1;
-  const freshFull = generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages);
-  const factors = stubProration(freshFull, lb.coaMap, start);
-  let lines = existing ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages) : freshFull;
-  lines = stubTruncate(lines, start);
+/** Full generation pipeline: ownership-year plan (UW Year 1) → income tie
+    (LTL) → NOI tie (flex). The whole 12-month window ties to UW Y1 in full. */
+function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLine[]): { lines: BudgetLine[] } {
+  let lines = existing
+    ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages)
+    : generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages);
   if (lb.uw) {
-    const uwP = prorateUw(lb.uw, factors);
-    if (inputs.tieIncome !== false) lines = tieIncomeToUw(lines, lb.coaMap, uwP.egi);
-    if (inputs.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, uwP.noi, inputs.noiFlexPcodes || DEFAULT_NOI_FLEX);
+    if (inputs.tieIncome !== false) lines = tieIncomeToUw(lines, lb.coaMap, lb.uw.egi);
+    if (inputs.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, lb.uw.noi, inputs.noiFlexPcodes || DEFAULT_NOI_FLEX);
   }
-  return { lines, factors };
+  return { lines };
 }
 
 router.post('/budgets', h(async (req, res) => {
@@ -312,7 +310,6 @@ router.post('/budgets', h(async (req, res) => {
 
   const lb = await loadBudget(id);
   const built = buildLines(lb!, inputs);
-  await query('update budgets set inputs=$2 where id=$1', [id, JSON.stringify({ ...inputs, uwProration: built.factors })]);
   await saveLines(id, built.lines);
   logChange(req.session.username || '', 'create budget', { id, propertyCode, year });
   res.json(budgetView((await loadBudget(id))!));
@@ -335,7 +332,7 @@ router.put('/budgets/:id', h(async (req, res) => {
   if (inputs) {
     const merged: BudgetInputs = { ...lb.budget.inputs, ...inputs };
     const built = buildLines(lb, merged, lb.lines);
-    await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify({ ...merged, uwProration: built.factors })]);
+    await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(merged)]);
     await saveLines(id, built.lines);
     logChange(req.session.username || '', 'update budget inputs', { id });
   }
@@ -373,7 +370,6 @@ router.post('/budgets/:id/recalc', h(async (req, res) => {
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
   const built = buildLines(lb, lb.budget.inputs, lb.lines);
-  await query('update budgets set inputs=$2 where id=$1', [id, JSON.stringify({ ...lb.budget.inputs, uwProration: built.factors })]);
   await saveLines(id, built.lines);
   res.json(budgetView((await loadBudget(id))!));
 }));
@@ -383,10 +379,9 @@ router.post('/budgets/:id/tie-noi', h(async (req, res) => {
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
   if (!lb.uw) return res.status(400).json({ error: 'No UW snapshot linked' });
-  const uwP = prorateUw(lb.uw, lb.budget.inputs?.uwProration);
-  const lines = tieNoiToUw(lb.lines, lb.coaMap, uwP.noi, lb.budget.inputs?.noiFlexPcodes || DEFAULT_NOI_FLEX);
+  const lines = tieNoiToUw(lb.lines, lb.coaMap, lb.uw.noi, lb.budget.inputs?.noiFlexPcodes || DEFAULT_NOI_FLEX);
   await saveLines(id, lines);
-  logChange(req.session.username || '', 'tie NOI to UW', { id, target: uwP.noi });
+  logChange(req.session.username || '', 'tie NOI to UW', { id, target: lb.uw.noi });
   res.json(budgetView((await loadBudget(id))!));
 }));
 
@@ -395,10 +390,9 @@ router.post('/budgets/:id/tie-income', h(async (req, res) => {
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
   if (!lb.uw) return res.status(400).json({ error: 'No UW snapshot linked' });
-  const uwP = prorateUw(lb.uw, lb.budget.inputs?.uwProration);
-  const lines = tieIncomeToUw(lb.lines, lb.coaMap, uwP.egi);
+  const lines = tieIncomeToUw(lb.lines, lb.coaMap, lb.uw.egi);
   await saveLines(id, lines);
-  logChange(req.session.username || '', 'tie income to UW', { id, target: uwP.egi });
+  logChange(req.session.username || '', 'tie income to UW', { id, target: lb.uw.egi });
   res.json(budgetView((await loadBudget(id))!));
 }));
 
@@ -411,7 +405,6 @@ router.post('/budgets/:id/rebalance', h(async (req, res) => {
   // target: abs categories tie to UW $; GPR-relative categories tie to pct × current GPR
   let target: number | null = null;
   const gprAnnual = sum(lb.lines.find((l) => l.gl_code === '4994')?.months || zero12());
-  const factor = inputs.uwProration?.[pcode] ?? 1;
   if (['4', '5', '6', '8', '9', '10', '11', '12', '13', '14'].includes(pcode)) {
     if (inputs.catBasis?.[pcode] === 'perUnit' && lb.comps?.units && inputs.units) {
       // per-unit basis: tie to comp $/unit × subject units across the category's detail GLs
@@ -420,9 +413,9 @@ router.post('/budgets/:id/rebalance', h(async (req, res) => {
         const acc = lb.coaMap.get(gl);
         if (acc?.kind === 'detail' && acc.pcode === pcode) compCat += v;
       }
-      target = r2((compCat / lb.comps.units) * inputs.units * factor);
+      target = r2((compCat / lb.comps.units) * inputs.units);
     } else {
-      target = r2((inputs.uwAbs?.[pcode] || 0) * factor);
+      target = r2(inputs.uwAbs?.[pcode] || 0);
     }
   }
   else if (pcode === '2') target = -r2(inputs.concessionPct * gprAnnual);
@@ -446,15 +439,25 @@ router.delete('/budgets/:id', requireAdmin, h(async (req, res) => {
 router.get('/budgets/:id/export.csv', h(async (req, res) => {
   const lb = await loadBudget(Number(req.params.id));
   if (!lb) return res.status(404).json({ error: 'Not found' });
+  const start = lb.budget.inputs?.startMonth || 1;
+  // an ownership-year budget uploads as calendar-year slices: ?calYear=<year|year+1>
+  const calYear = Number(req.query.calYear) || lb.budget.year;
+  if (calYear !== lb.budget.year && calYear !== lb.budget.year + 1) {
+    return res.status(400).json({ error: `calYear must be ${lb.budget.year} or ${lb.budget.year + 1}` });
+  }
   const cutoff = Math.max(0, Math.min(11, Number(req.query.cutoff) || 0));
+  const sliced: BudgetLine[] = lb.lines.map((l) => ({
+    ...l, months: calendarSlice(l.months, lb.budget.year, start, calYear),
+  }));
   const now = new Date();
   const mmddyyyy = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}-${now.getFullYear()}`;
+  const isRevision = cutoff > 0 || (calYear === lb.budget.year && start > 1);
   const desc = String(req.query.desc || '') ||
-    `${lb.budget.property_code} ${lb.budget.year} Budget ${cutoff ? 'Revision' : 'Upload'} ${mmddyyyy}`;
-  const csv = buildBudgetCsv(lb.coa, lb.lines, {
-    propertyId: lb.budget.property_code, year: lb.budget.year, description: desc, cutoffMonth: cutoff,
+    `${lb.budget.property_code} ${calYear} Budget ${isRevision ? 'Revision' : 'Upload'} ${mmddyyyy}`;
+  const csv = buildBudgetCsv(lb.coa, sliced, {
+    propertyId: lb.budget.property_code, year: calYear, description: desc, cutoffMonth: cutoff,
   });
-  const fname = `${lb.budget.property_code.toUpperCase()} ${lb.budget.year} Budget ${cutoff ? 'Revision' : 'Upload'} ${mmddyyyy}.csv`;
+  const fname = `${lb.budget.property_code.toUpperCase()} ${calYear} Budget ${isRevision ? 'Revision' : 'Upload'} ${mmddyyyy}.csv`;
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
   res.send(csv);
@@ -471,8 +474,7 @@ router.get('/budgets/:id/export.xlsx', h(async (req, res) => {
   const buf = buildReviewWorkbook({
     propertyCode: lb.budget.property_code, propertyName: prop?.name || lb.budget.property_code,
     year: lb.budget.year, units: Number(lb.budget.inputs?.units) || prop?.units || 0,
-    coa: lb.coa, lines: lb.lines, inputs: lb.budget.inputs,
-    uw: lb.uw ? prorateUw(lb.uw, lb.budget.inputs?.uwProration) : null,
+    coa: lb.coa, lines: lb.lines, inputs: lb.budget.inputs, uw: lb.uw,
     compWeights: lb.comps?.byGl || null, compUnits: lb.comps?.units || null, compName,
   });
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

@@ -95,13 +95,15 @@ GPR stays anchored to the rent roll at the start month, `tieIncomeToUw()` adjust
 they show variance, they are not forced. Payroll benefits/bonuses = **Minot ratio × subject wage
 total** (`burdenRatio` driver); cat 10 floats vs UW (UW-remainder fallback without a comp set).
 
-**Stub years (mid-year starts)**: generation is ALWAYS full-year; `stubTruncate()` zeroes months
-before `inputs.startMonth` and `stubProration()` computes per-category live-month shares of each
-category's own seasonal calendar (stored as `inputs.uwProration`). All UW targets — tie-out panel,
-rebalance, tie-income/tie-NOI, workbook UW column — are scaled by these factors, so an August
-start gets Aug–Dec's real seasonal share (December is never an artifact of compressing annual
-targets into fewer months). GPR growth anchors at the start month (pre-start backfill is flat
-base, truncated away). Changing "Start month" in Assumptions regenerates the whole thing.
+**Ownership year (the core frame, Troy 2026-08-20)**: a budget IS UW Year 1 — 12 months starting
+at `inputs.startMonth` of `inputs.year` (Aug 2026 → Jul 2027 for an August close). Month index 0 =
+the start month; seasonal calendar shapes are rotated into ownership order (`rotate12`), interest
+day-counts are calendar-aware, GPR anchors to the rent roll in month 0. **The full window ties to
+UW Y1 100%** (income via LTL, NOI via flex) — no proration anywhere. Yardi uploads are CALENDAR
+slices of the one plan (`calendarSlice`): `export.csv?calYear=2026` → Aug–Dec (a Revision that
+replaces the seller budget), `?calYear=2027` → Jan–Jul (an Upload; Aug–Dec 2027 stays zero for the
+normal fall budget cycle). Grid columns are labeled Aug-26…Jul-27 (`monthLabels`). startMonth=1
+degenerates to a plain calendar year.
 
 **Row quick tools** (⋯ button on every detail row): zero out, flat annual over live months,
 flat $/mo, start-$ + %/mo growth fill, Minot $/unit × units with its seasonal shape, reset to

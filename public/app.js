@@ -383,13 +383,17 @@ function renderEditor(el) {
   const linesByGl = new Map(bv.lines.map((l) => [l.gl_code, l]));
   const totals = clientRollup(linesByGl);
 
+  const labels = S.bv.monthLabels || MONTHS;
+  const start = inp.startMonth || 1;
+  const windowLabel = start > 1 ? `${labels[0]} – ${labels[11]}` : `${b.year}`;
   el.innerHTML = `
     <div class="row" style="justify-content:space-between; margin-bottom:10px">
-      <h2 style="margin:0">${esc(prop.name)} <span class="muted">(${esc(b.property_code)}) — ${b.year} budget</span></h2>
+      <h2 style="margin:0">${esc(prop.name)} <span class="muted">(${esc(b.property_code)}) — Year 1 budget · ${windowLabel}</span></h2>
       <div class="row">
-        <div class="fld"><label>Export CSV (zero months through)</label>
-          <select id="ex-cutoff"><option value="0">Full year</option>${MONTHS.slice(0, 11).map((m, i) => `<option value="${i + 1}">${m}</option>`).join('')}</select></div>
-        <button class="btn sub" id="ex-csv">⬇ Yardi CSV</button>
+        <div class="fld"><label>CSV: zero calendar months through</label>
+          <select id="ex-cutoff"><option value="0">— none —</option>${MONTHS.slice(0, 11).map((m, i) => `<option value="${i + 1}">${m}</option>`).join('')}</select></div>
+        <button class="btn sub" id="ex-csv">⬇ ${b.year} Yardi CSV${start > 1 ? ` (${labels[0]}–Dec)` : ''}</button>
+        ${start > 1 ? `<button class="btn sub" id="ex-csv2">⬇ ${b.year + 1} Yardi CSV (Jan–${labels[11].split('-')[0]})</button>` : ''}
         <button class="btn sub" id="ex-xlsx">⬇ Review workbook</button>
         <button class="btn sub" id="recalc">↻ Recalc</button>
         <label style="align-self:center"><input type="checkbox" id="showzero" ${S.showZero ? 'checked' : ''}> show zero rows</label>
@@ -423,7 +427,12 @@ function renderEditor(el) {
 
   document.getElementById('ex-csv').addEventListener('click', () => {
     const c = document.getElementById('ex-cutoff').value;
-    window.open(`/api/budgets/${b.id}/export.csv?cutoff=${c}`, '_blank');
+    window.open(`/api/budgets/${b.id}/export.csv?calYear=${b.year}&cutoff=${c}`, '_blank');
+  });
+  const ex2 = document.getElementById('ex-csv2');
+  if (ex2) ex2.addEventListener('click', () => {
+    const c = document.getElementById('ex-cutoff').value;
+    window.open(`/api/budgets/${b.id}/export.csv?calYear=${b.year + 1}&cutoff=${c}`, '_blank');
   });
   document.getElementById('ex-xlsx').addEventListener('click', () => window.open(`/api/budgets/${b.id}/export.xlsx`, '_blank'));
   document.getElementById('recalc').addEventListener('click', async () => { S.bv = await POST(`/budgets/${b.id}/recalc`); render(); });
@@ -513,9 +522,9 @@ function clientRollup(linesByGl) {
 function gridHtml(bv, totals) {
   const coa = S.state.coa;
   const linesByGl = new Map(bv.lines.map((l) => [l.gl_code, l]));
-  const uwByCat = bv.uw ? bv.uw.y1 : null;
+  const labels = bv.monthLabels || MONTHS;
   const rows = [];
-  rows.push(`<tr><th>GL</th><th style="min-width:210px">Account</th>${MONTHS.map((m) => `<th>${m}</th>`).join('')}<th>Annual</th><th>$/Unit</th><th>Note</th></tr>`);
+  rows.push(`<tr><th>GL</th><th style="min-width:210px">Account</th>${labels.map((m) => `<th>${m}</th>`).join('')}<th>Year 1</th><th>$/Unit</th><th>Note</th></tr>`);
   const units = Number(bv.budget.inputs?.units) || 1;
   const GRAND = new Set(['5500', '7279', '7280', '8200', '9000']);
   for (const a of coa) {
@@ -574,9 +583,8 @@ function tieHtml(bv) {
       <td class="var ${cls}">${money(r.variance)}</td>
       <td>${noiCtl}${egiCtl}${basisCtl}${!big && rebalanceable.has(r.pcode) && Math.abs(r.variance) >= 1 ? `<button class="rb" data-p="${r.pcode}">tie</button>` : ''}</td></tr>`;
   };
-  const stub = (bv.budget.inputs || {}).startMonth > 1;
   return `<table>
-    <tr><th>Category</th><th>Budget</th><th>UW${stub ? ' (prorated)' : ' Y1'}</th><th>Δ</th><th></th></tr>
+    <tr><th>Category</th><th>Budget</th><th>UW Y1</th><th>Δ</th><th></th></tr>
     ${t.rows.map((r) => row(r, false)).join('')}
     ${row(t.egi, true)}${row(t.toe, true)}${row(t.noi, true)}
   </table>
@@ -652,7 +660,6 @@ function openRowTools(b, gl, anchorBtn) {
   document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
   const inp = S.bv.budget.inputs || {};
   const start = inp.startMonth || 1;
-  const liveMonths = 13 - start;
   const acc = S.state.coa.find((a) => a.code === gl) || {};
   const hasComp = S.bv.compWeights && S.bv.compUnits && S.bv.compWeights[gl];
   const menu = document.createElement('div');
@@ -660,7 +667,7 @@ function openRowTools(b, gl, anchorBtn) {
   menu.innerHTML = `
     <div class="rm-head">${gl} ${esc(acc.name || '')}</div>
     <button data-act="zero">Zero out row</button>
-    <button data-act="flatAnnual">Flat — annual $ over ${liveMonths} live months…</button>
+    <button data-act="flatAnnual">Flat — annual $ over the year…</button>
     <button data-act="flatMonthly">Flat — $ per month…</button>
     <button data-act="grow">Start $ /mo + growth %/mo…</button>
     ${hasComp ? `<button data-act="minot">Minot $/unit × units (${money((S.bv.compWeights[gl] / S.bv.compUnits) * inp.units)}/yr, seasonal)</button>` : ''}
@@ -676,28 +683,27 @@ function openRowTools(b, gl, anchorBtn) {
     S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { months });
     render();
   };
-  const liveFill = (fn) => Array.from({ length: 12 }, (_, i) => (i + 1 >= start ? fn(i) : 0));
 
   menu.querySelectorAll('button[data-act]').forEach((mb) => mb.addEventListener('click', async (e) => {
     e.stopPropagation(); close();
     const act = mb.dataset.act;
     if (act === 'zero') return put(Array(12).fill(0));
     if (act === 'flatAnnual') {
-      const v = parseFloat(String(prompt('Annual amount ($) — spread evenly over the live months:') || '').replace(/,/g, ''));
+      const v = parseFloat(String(prompt('Annual amount ($) — spread evenly over the 12 months:') || '').replace(/,/g, ''));
       if (!Number.isFinite(v)) return;
-      return put(liveFill(() => Math.round((v / liveMonths) * 100) / 100));
+      return put(Array(12).fill(Math.round((v / 12) * 100) / 100));
     }
     if (act === 'flatMonthly') {
       const v = parseFloat(String(prompt('Amount per month ($):') || '').replace(/,/g, ''));
       if (!Number.isFinite(v)) return;
-      return put(liveFill(() => v));
+      return put(Array(12).fill(v));
     }
     if (act === 'grow') {
-      const base = parseFloat(String(prompt('Starting amount for the first live month ($/mo):') || '').replace(/,/g, ''));
+      const base = parseFloat(String(prompt('Starting amount for the first month ($/mo):') || '').replace(/,/g, ''));
       if (!Number.isFinite(base)) return;
       const g = parseFloat(String(prompt('Growth % per month (e.g. 0.5):') || '').replace(/,/g, '')) || 0;
       let cur = base;
-      return put(liveFill((i) => {
+      return put(Array.from({ length: 12 }, () => {
         const val = Math.round(cur * 100) / 100;
         cur = cur * (1 + g / 100);
         return val;
@@ -705,11 +711,11 @@ function openRowTools(b, gl, anchorBtn) {
     }
     if (act === 'minot') {
       const annual = (S.bv.compWeights[gl] / S.bv.compUnits) * (inp.units || 0);
-      const shape = (S.bv.compShapes && S.bv.compShapes[gl]) || Array(12).fill(1);
-      const liveShape = shape.map((w, i) => (i + 1 >= start ? w : 0));
+      const cal = (S.bv.compShapes && S.bv.compShapes[gl]) || Array(12).fill(1);
+      // rotate the Jan-Dec shape into ownership-month order
+      const shape = cal.map((_, i) => cal[(start - 1 + i) % 12]);
       const wsum = shape.reduce((a, x) => a + x, 0) || 1;
-      // full-year seasonal spread, truncated to live months (stub gets its seasonal share)
-      return put(liveShape.map((w) => Math.round(((annual * w) / wsum) * 100) / 100));
+      return put(shape.map((w) => Math.round(((annual * w) / wsum) * 100) / 100));
     }
     if (act === 'reset') {
       S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { override: false });

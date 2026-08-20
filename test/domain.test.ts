@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import {
   spreadMonthly, allocateWeighted, rollup, generateLines, rebalanceCategory,
   categoryTotals, computeTieout, defaultInputs, tieNoiToUw, tieIncomeToUw,
-  stubTruncate, stubProration, prorateUw, sum, zero12,
+  calendarSlice, monthLabels, rotate12, sum, zero12,
   CoaAccount, UwSnapshotData, Months,
 } from '../shared/domain.js';
 
@@ -184,61 +184,66 @@ describe('tieNoiToUw', () => {
   });
 });
 
-describe('stub years (mid-year budgets, e.g. start in August)', () => {
+describe('ownership year (UW Year 1, e.g. Aug 2026 – Jul 2027)', () => {
   const mkInputs = () => ({ ...defaultInputs(2026, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 }), startMonth: 8 });
   // cat-13 comps: snow removal (winter curve) + janitorial supplies (flat) split 50/50
   const comps = { byGl: { '6818': 60000, '6722': 60000 }, units: 712 };
 
-  it('is the seasonal TAIL of a full-year plan — annual targets are never compressed', () => {
+  it('month 0 = the start month; the FULL Year-1 targets land in the 12 ownership months', () => {
     const inputs = mkInputs();
-    let lines = generateLines(coaList, inputs, fakeUw, comps);
-    lines = stubTruncate(lines, 8);
+    const lines = generateLines(coaList, inputs, fakeUw, comps);
     const gpr = lines.find((l) => l.gl_code === '4994')!;
-    expect(gpr.months.slice(0, 7).every((v) => v === 0)).toBe(true);
-    expect(gpr.months[7]).toBeCloseTo(100000, 0);       // GPR anchors to the rent roll at the start month
-    // snow removal: full-year 62,500 on the snow curve → Aug–Dec share = 40% = 25,000; August = 0
+    expect(gpr.months[0]).toBeCloseTo(100000, 0);       // GPR anchors to the rent roll in August
+    // snow removal: FULL 62,500 across the ownership year, on the rotated winter curve
     const snow = lines.find((l) => l.gl_code === '6818')!;
-    expect(snow.months[7]).toBe(0);
-    expect(sum(snow.months)).toBeCloseTo(25000, 0);
-    expect(snow.months[11]).toBeCloseTo(12500, 0);      // December carries its real winter weight
-    // janitorial (flat): Aug–Dec = 5/12 of 62,500
-    const jan = lines.find((l) => l.gl_code === '6722')!;
-    expect(sum(jan.months)).toBeCloseTo(62500 * 5 / 12, 0);
+    expect(sum(snow.months)).toBeCloseTo(62500, 0);
+    expect(snow.months[0]).toBe(0);                     // August (ownership month 0) = no snow
+    expect(snow.months[4]).toBeCloseTo(12500, 0);       // December (ownership month 4) = winter weight
+    expect(snow.months[6]).toBeCloseTo(12500, 0);       // February (ownership month 6)
+    // every category carries its full UW Y1 total
+    const cats = categoryTotals(lines, coaMap);
+    expect(cats['12']).toBeCloseTo(fakeUw.y1['12'], 2);
+    expect(cats['13']).toBeCloseTo(fakeUw.y1['13'], 2);
   });
 
-  it('prorates UW by each category\'s own seasonal calendar', () => {
-    const inputs = mkInputs();
-    const full = generateLines(coaList, inputs, fakeUw, comps);
-    const factors = stubProration(full, coaMap, 8);
-    // cat 13 = snow (40% live) + flat (5/12 live) → blended factor ≈ 0.40833
-    expect(factors['13']).toBeCloseTo((25000 + 62500 * 5 / 12) / 125000, 3);
-    expect(factors['12']).toBeCloseTo(5 / 12, 2);       // flat category
-    const uwP = prorateUw(fakeUw, factors);
-    expect(uwP.y1['13']).toBeCloseTo(125000 * factors['13'], 0);
-    expect(uwP.noi).toBeCloseTo(uwP.egi - uwP.toe, 2);
-  });
-
-  it('income ties to prorated UW EGI via LTL, and NOI ties to prorated UW NOI', () => {
+  it('income ties to full UW EGI via LTL, and NOI ties to full UW NOI', () => {
     const inputs = mkInputs();
     let lines = generateLines(coaList, inputs, fakeUw, comps);
-    const factors = stubProration(lines, coaMap, 8);
-    lines = stubTruncate(lines, 8);
-    const uwP = prorateUw(fakeUw, factors);
-    lines = tieIncomeToUw(lines, coaMap, uwP.egi);
+    lines = tieIncomeToUw(lines, coaMap, fakeUw.egi);
     let monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
-    expect(sum(rollup(monthsMap).get('5500')!)).toBeCloseTo(uwP.egi, 1);
-    lines = tieNoiToUw(lines, coaMap, uwP.noi);
+    expect(sum(rollup(monthsMap).get('5500')!)).toBeCloseTo(fakeUw.egi, 1);
+    lines = tieNoiToUw(lines, coaMap, fakeUw.noi);
     monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
-    expect(sum(rollup(monthsMap).get('7280')!)).toBeCloseTo(uwP.noi, 1);
-    // pre-start months stay zero all the way through
-    for (const l of lines) expect(l.months.slice(0, 7).every((v) => v === 0)).toBe(true);
+    expect(sum(rollup(monthsMap).get('7280')!)).toBeCloseTo(fakeUw.noi, 1);
   });
 
-  it('full-year budgets are unchanged (factors all 1)', () => {
+  it('calendarSlice splits the plan into the two calendar-year uploads', () => {
+    const months = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] as Months; // Aug'26..Jul'27
+    const y26 = calendarSlice(months, 2026, 8, 2026);
+    const y27 = calendarSlice(months, 2026, 8, 2027);
+    expect(y26).toEqual([0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5]);       // Aug–Dec 2026
+    expect(y27).toEqual([6, 7, 8, 9, 10, 11, 12, 0, 0, 0, 0, 0]);    // Jan–Jul 2027
+    // the two slices together carry the whole Year 1
+    expect(sum(y26) + sum(y27)).toBe(sum(months));
+  });
+
+  it('monthLabels and rotate12 line up', () => {
+    const labels = monthLabels(2026, 8);
+    expect(labels[0]).toBe('Aug-26');
+    expect(labels[4]).toBe('Dec-26');
+    expect(labels[5]).toBe('Jan-27');
+    expect(labels[11]).toBe('Jul-27');
+    const cal = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] as Months;
+    expect(rotate12(cal, 8)[0]).toBe(8);                // ownership month 0 = August
+    expect(monthLabels(2027, 1)[0]).toBe('Jan-27');     // full-calendar budgets unchanged
+  });
+
+  it('start month 1 behaves exactly like a calendar year', () => {
     const inputs = defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 });
-    const full = generateLines(coaList, inputs, fakeUw, null);
-    const factors = stubProration(full, coaMap, 1);
-    expect(Object.values(factors).every((f) => f === 1)).toBe(true);
-    expect(stubTruncate(full, 1)).toBe(full);
+    const lines = generateLines(coaList, inputs, fakeUw, null);
+    const cats = categoryTotals(lines, coaMap);
+    for (const p of ['4', '5', '6', '8', '9', '10', '11', '12', '13', '14']) {
+      expect(cats[p], `category ${p}`).toBeCloseTo(fakeUw.y1[p], 2);
+    }
   });
 });
