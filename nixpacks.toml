@@ -1,8 +1,10 @@
 [phases.setup]
 nixPkgs = ["nodejs_20"]
 
+# nixpacks' default install phase runs `npm ci` — don't repeat it here
+# (a second `npm ci` can't clear the mounted node_modules/.cache and EBUSYs).
 [phases.build]
-cmds = ["npm ci", "npm run build"]
+cmds = ["npm run build"]
 
 [start]
 cmd = "npm run start"
