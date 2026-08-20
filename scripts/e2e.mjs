@@ -4,7 +4,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const BASE = 'http://localhost:3100/api';
+const BASE = (process.argv[2] || 'http://localhost:3100') + '/api';
 let cookie = '';
 
 async function call(path, opts = {}) {
