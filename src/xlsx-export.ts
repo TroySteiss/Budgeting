@@ -1,21 +1,33 @@
-/* Excel review workbook — mirrors the FHND/PHND budget workbook layout:
-   "Budget" sheet ≈ the PHNDBudget tab (row-3 KPI strip, GL rows in Monarch
-   order, months E:P, R = Total Year 1 Budget, T = Year 1 UW Budget, U = Minot
-   comp scaled to subject units, X/Y per-unit, Z = Notes for Budget Upload),
-   "Summary" ≈ SummaryPHND (section totals vs UW down to CoC), plus "Raw Data"
-   (org rule: show the work — formulas + the raw inputs). */
-import * as XLSX from 'xlsx';
+/* Excel review workbook — styled to match the FHND/PHND budget workbook that
+   everyone reads: 8pt grid, $-currency red-negative detail cells with the
+   light-green input fill, bold accounting-format section totals with thin top
+   borders, the row-3 KPI strip (9pt labels / 11pt values), frozen panes at the
+   header, light-blue tab. Built with ExcelJS (SheetJS can't write styles).
+   Sheets: Budget (PHNDBudget-style), Summary (SummaryPHND-style), Raw Data
+   (org rule: show the work — formulas + raw inputs). */
+import ExcelJS from 'exceljs';
 import {
   CoaAccount, BudgetLine, UwSnapshotData, BudgetInputs, PCODES, PCODE_LABELS,
-  rollup, sum, zero12, r2, Months, monthLabels,
+  sum, zero12, r2, Months, monthLabels,
 } from '../shared/domain.js';
 
-const colLetter = (i: number): string => XLSX.utils.encode_col(i);
+/* Budget-sheet columns (1-based): A code, B name, C notes, D driver,
+   E..P months (5..16), Q spacer, R annual, S spacer, T UW, U comp,
+   V/W spacers, X $/unit, Y $/unit/mo, Z upload note */
+const C = { code: 1, name: 2, notes: 3, driver: 4, m1: 5, annual: 18, uw: 20, comp: 21, perUnit: 24, perUnitMo: 25, note: 26 };
 
-/* Budget-sheet columns (0-based): A code, B name, C notes, D driver,
-   E..P months (4..15), Q spacer, R annual, S spacer, T UW, U comp,
-   V spacer, W spacer, X $/unit, Y $/unit/mo, Z upload note */
-const COL = { code: 0, name: 1, notes: 2, driver: 3, m0: 4, annual: 17, uw: 19, comp: 20, perUnit: 23, perUnitMo: 24, note: 25 };
+const CUR = '"$"#,##0_);[Red]("$"#,##0)';
+const ACCT = '_(* #,##0_);_(* (#,##0);_(* "-"??_);_(@_)';
+const PU = '#,##0.00';
+const PCT = '0.00%';
+const GREEN = 'FFEBF1DE';   // FHND input-cell fill
+const HEAD = 'FFF2F2F2';    // header row fill
+const UWFILL = 'FFFFF2CC';  // UW column tint
+const COMPFILL = 'FFDDEBF7';// Minot comp column tint
+const GRAND = 'FFE3EBF7';   // grand-total row fill
+
+const f8 = { size: 8 };
+const f8b = { size: 8, bold: true };
 
 function driverLabel(d: any): string {
   switch (d?.method) {
@@ -32,9 +44,9 @@ function driverLabel(d: any): string {
   }
 }
 
-/** UW Year-1 $ placed on Budget-sheet rows, FHND-style. Split categories are
-    apportioned across their Monarch sections by budget share. */
-function uwColumnValues(uw: UwSnapshotData, catBudget: (codes: string[]) => number): Record<string, number> {
+/** UW Year-1 $ placed on Budget-sheet rows, FHND-style (split categories
+    apportioned across their Monarch sections by budget share). */
+function uwColumnValues(uw: UwSnapshotData, catBudget: (range: [number, number]) => number): Record<string, number> {
   const y = uw.y1;
   const out: Record<string, number> = {
     '4994': y['1'] || 0, '5003': y['loss'] || 0, '5029': y['2'] || 0, '5049': y['3'] || 0,
@@ -45,7 +57,7 @@ function uwColumnValues(uw: UwSnapshotData, catBudget: (codes: string[]) => numb
     '7099': uw.toe, '7279': uw.toe, '7280': uw.noi,
   };
   const split = (uwTotal: number, sections: [string, [number, number]][]) => {
-    const budgets = sections.map(([, range]) => Math.abs(catBudget([String(range[0]), String(range[1])])));
+    const budgets = sections.map(([, range]) => Math.abs(catBudget(range)));
     const tot = budgets.reduce((a, b) => a + b, 0);
     sections.forEach(([code], i) => { out[code] = tot ? r2((uwTotal * budgets[i]) / tot) : (i === 0 ? uwTotal : 0); });
   };
@@ -54,74 +66,90 @@ function uwColumnValues(uw: UwSnapshotData, catBudget: (codes: string[]) => numb
   return out;
 }
 
-export function buildReviewWorkbook(args: {
+export async function buildReviewWorkbook(args: {
   propertyCode: string; propertyName: string; year: number; units: number;
   coa: CoaAccount[]; lines: BudgetLine[]; inputs: BudgetInputs;
   uw: UwSnapshotData | null; compWeights?: Record<string, number> | null; compUnits?: number | null;
   compName?: string;
-}): Buffer {
+}): Promise<Buffer> {
   const { coa, lines, inputs, uw, units } = args;
   const byGl = new Map(lines.map((l) => [l.gl_code, l]));
   const ordered = [...coa].filter((a) => a.active).sort((a, b) => a.display_order - b.display_order);
-  const monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
-  const totals = rollup(monthsMap);
-  const catBudget = (range: string[]): number => {
-    const lo = parseInt(range[0], 10), hi = parseInt(range[1], 10);
+  const labels = monthLabels(args.year, inputs.startMonth || 1);
+  const catBudget = ([lo, hi]: [number, number]): number => {
     let acc = 0;
-    for (const [gl, m] of monthsMap) { const n = parseInt(gl, 10); if (n >= lo && n <= hi) acc = r2(acc + sum(m)); }
+    for (const l of lines) { const n = parseInt(l.gl_code, 10); if (n >= lo && n <= hi) acc = r2(acc + sum(l.months)); }
     return acc;
   };
   const uwCol = uw ? uwColumnValues(uw, catBudget) : {};
 
-  /* ---------------- Budget sheet (PHNDBudget-style) ---------------- */
-  const aoa: any[][] = [];
-  const blank = (): any[] => [];
-  aoa.push([null, args.propertyName, `(${args.propertyCode})`, null, `Budget Year ${args.year}`]);   // r1
-  aoa.push(blank());                                                                                  // r2
-  aoa.push([null, 'Units:', units, 'Total Income', null, 'Total Expense', null, 'NOI', null,
-            'Interest', null, 'Principal', null, 'Cash Flow', null, 'Cash on Cash', null]);           // r3
-  aoa.push([null, 'Capital:', inputs.capital || 0]);                                                  // r4
-  aoa.push(blank());                                                                                  // r5
-  aoa.push(['GL Code', 'GL Name', 'Notes', 'Driver',
-            ...monthLabels(args.year, inputs.startMonth || 1), null,
-            'Total Year 1 Budget', null, 'Year 1 UW Budget',
-            `Minot Budget at ${units} units`, null, null, 'Total Per Unit', 'Total Per Unit Per Month',
-            'Notes for Budget Upload']);                                                              // r6
-  const headerRow = 6;
-  const rowOf = new Map<string, number>();
-  for (const a of ordered) {
-    const r = aoa.length + 1;
-    rowOf.set(a.code, r);
-    const row: any[] = Array(26).fill(null);
-    row[COL.code] = a.code;
-    row[COL.name] = (a.kind === 'detail' ? '    ' : a.kind === 'total' ? '  ' : ' ') + a.name;
-    if (a.kind === 'detail') {
-      const ln = byGl.get(a.code);
-      row[COL.driver] = ln ? driverLabel(ln.driver) + (ln.override ? ' (manual)' : '') : '';
-      (ln?.months || zero12()).forEach((v, i) => { row[COL.m0 + i] = v || null; });
-      row[COL.note] = ln?.note || null;
-      if (args.compWeights && args.compUnits && args.compWeights[a.code]) {
-        row[COL.comp] = r2((args.compWeights[a.code] / args.compUnits) * units);
-      }
-    }
-    if (uwCol[a.code] != null && uwCol[a.code] !== 0) row[COL.uw] = uwCol[a.code];
-    aoa.push(row);
-  }
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  const setF = (r: number, c: number, f: string, fmt?: string): void => {
-    const addr = XLSX.utils.encode_cell({ r: r - 1, c });
-    ws[addr] = { t: 'n', f, ...(fmt ? { z: fmt } : {}) };
-  };
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'nd-budget-tool';
 
-  // detail + total row formulas (annual, per-unit)
-  for (const a of ordered) {
-    const r = rowOf.get(a.code)!;
-    if (a.kind === 'header') continue;
-    setF(r, COL.annual, `SUM(E${r}:P${r})`, '#,##0');
-    setF(r, COL.perUnit, units ? `R${r}/$C$3` : `R${r}`, '#,##0.00');
-    setF(r, COL.perUnitMo, units ? `R${r}/$C$3/12` : `R${r}/12`, '#,##0.00');
+  /* ================= Budget sheet ================= */
+  const ws = wb.addWorksheet('Budget', {
+    properties: { tabColor: { argb: 'FF00B0F0' }, defaultRowHeight: 12 },
+    views: [{ state: 'frozen', xSplit: 4, ySplit: 6 }],
+  });
+  const widths = [8, 40, 16, 20, ...Array(12).fill(10.5), 1.5, 13, 1.5, 13, 13, 1.5, 1.5, 9.5, 9.5, 26];
+  widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+
+  // r1: title
+  ws.getCell(1, 2).value = args.propertyName;
+  ws.getCell(1, 2).font = { size: 12, bold: true };
+  ws.getCell(1, 3).value = `(${args.propertyCode})`;
+  ws.getCell(1, 3).font = { size: 10, color: { argb: 'FF808080' } };
+  ws.getCell(1, 5).value = `Year 1 Budget · ${labels[0]} – ${labels[11]}`;
+  ws.getCell(1, 5).font = { size: 10, bold: true, color: { argb: 'FF505050' } };
+
+  // r3 KPI strip (FHND row 3: 9pt bold labels, 11pt bold $ values off the R column)
+  const rowOf = new Map<string, number>();
+  let rr = 7;
+  for (const a of ordered) rowOf.set(a.code, rr++);
+  const kpi = (col: number, label: string, formula: string, fmt = CUR) => {
+    ws.getCell(3, col).value = label;
+    ws.getCell(3, col).font = { size: 9, bold: true };
+    ws.getCell(3, col).alignment = { horizontal: 'right' };
+    ws.getCell(3, col + 1).value = { formula } as any;
+    ws.getCell(3, col + 1).font = { size: 11, bold: true };
+    ws.getCell(3, col + 1).numFmt = fmt;
+  };
+  ws.getCell(3, 2).value = 'Units:';
+  ws.getCell(3, 2).font = { size: 8, bold: true, color: { argb: 'FF505050' } };
+  ws.getCell(3, 3).value = units;
+  ws.getCell(3, 3).font = { size: 11, bold: true };
+  const principalRows = ['3080', '3090', '3091'].map((c) => rowOf.get(c)).filter(Boolean) as number[];
+  kpi(4, 'Total Income -', `R${rowOf.get('5500')}`);
+  kpi(6, 'Total Expense -', `R${rowOf.get('7279')}`);
+  kpi(8, 'NOI -', `R${rowOf.get('7280')}`);
+  kpi(10, 'Interest -', `R${rowOf.get('7315')}`);
+  kpi(12, 'Principal -', principalRows.length ? `ABS(${principalRows.map((r) => `R${r}`).join('+')})` : '0');
+  kpi(14, 'Cash Flow -', 'I3-K3-M3');
+  kpi(16, 'Cash on Cash -', 'IF($C$4>0,O3/$C$4,"")', PCT);
+  ws.getCell(4, 2).value = 'Capital:';
+  ws.getCell(4, 2).font = { size: 8, bold: true, color: { argb: 'FF505050' } };
+  ws.getCell(4, 3).value = inputs.capital || 0;
+  ws.getCell(4, 3).font = f8b;
+  ws.getCell(4, 3).numFmt = CUR;
+
+  // r6 column headers
+  const heads: [number, string][] = [
+    [C.code, 'GL Code'], [C.name, 'GL Name'], [C.notes, 'Notes'], [C.driver, 'Driver'],
+    ...labels.map((m, i) => [C.m1 + i, m] as [number, string]),
+    [C.annual, 'Total Year 1 Budget'], [C.uw, 'Year 1 UW Budget'],
+    [C.comp, `Minot Budget at ${units} units`],
+    [C.perUnit, 'Total Per Unit'], [C.perUnitMo, 'Per Unit / Month'], [C.note, 'Notes for Budget Upload'],
+  ];
+  for (const [col, text] of heads) {
+    const cell = ws.getCell(6, col);
+    cell.value = text;
+    cell.font = f8b;
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD } };
+    cell.border = { bottom: { style: 'thin' } };
+    cell.alignment = { horizontal: col >= C.m1 ? 'right' : 'left', wrapText: col >= C.annual };
   }
-  // section totals: month-by-month formulas over detail rows
+
+  const GRAND_TOTALS = new Set(['5500', '7099', '7279', '7280', '8200', '9000']);
   const rangeTotals: Record<string, [number, number]> = {
     '5004': [4994, 5003], '5029': [5018, 5028], '5049': [5031, 5048], '5190': [5101, 5189],
     '6170': [6101, 6169], '6370': [6301, 6369], '6399': [6374, 6398], '6470': [6401, 6469],
@@ -136,49 +164,108 @@ export function buildReviewWorkbook(args: {
   };
   const detailRowsIn = (lo: number, hi: number): number[] =>
     ordered.filter((a) => a.kind === 'detail' && parseInt(a.code, 10) >= lo && parseInt(a.code, 10) <= hi).map((a) => rowOf.get(a.code)!);
-  for (let c = COL.m0; c <= COL.m0 + 11; c++) {
-    const L = colLetter(c);
-    for (const [code, [lo, hi]] of Object.entries(rangeTotals)) {
-      const r = rowOf.get(code);
-      if (!r) continue;
-      const rows = detailRowsIn(lo, hi);
-      if (rows.length) setF(r, c, `SUM(${L}${Math.min(...rows)}:${L}${Math.max(...rows)})`, '#,##0');
-    }
-    for (const [code, parts] of Object.entries(compositeTotals)) {
-      const r = rowOf.get(code);
-      if (!r) continue;
-      setF(r, c, parts.map((p) => `${L}${rowOf.get(p)}`).join('+'), '#,##0');
-    }
-    const rNoi = rowOf.get('7280'), rInc = rowOf.get('5500'), rExp = rowOf.get('7279');
-    if (rNoi && rInc && rExp) setF(rNoi, c, `${L}${rInc}-${L}${rExp}`, '#,##0');
-    const r8200 = rowOf.get('8200'), r7315 = rowOf.get('7315'), r7500 = rowOf.get('7500');
-    if (r8200 && rNoi && r7315 && r7500) setF(r8200, c, `${L}${rNoi}-${L}${r7315}-${L}${r7500}`, '#,##0');
-    const r9000 = rowOf.get('9000'), r8602 = rowOf.get('8602'), r8950 = rowOf.get('8950');
-    if (r9000 && r8200 && r8602 && r8950) setF(r9000, c, `${L}${r8200}-${L}${r8602}-${L}${r8950}`, '#,##0');
-  }
-  // KPI strip (row 3) — live formulas off the R column, like FHNDBudget row 3
-  const principalRows = ['3080', '3090', '3091'].map((c) => rowOf.get(c)).filter(Boolean) as number[];
-  const kpiRefs: [number, string][] = [
-    [4, `R${rowOf.get('5500')}`], [6, `R${rowOf.get('7279')}`], [8, `R${rowOf.get('7280')}`],
-    [10, `R${rowOf.get('7315')}`],
-    [12, principalRows.length ? `ABS(${principalRows.map((r) => `R${r}`).join('+')})` : '0'],
-    [14, `I3-K3-M3`],
-  ];
-  for (const [c, f] of kpiRefs) setF(3, c, f, '#,##0');
-  setF(3, 16, `IF($C$4>0,O3/$C$4,"")`, '0.00%');
-  ws['!cols'] = [
-    { wch: 8 }, { wch: 38 }, { wch: 16 }, { wch: 22 },
-    ...Array(12).fill({ wch: 10 }), { wch: 2 }, { wch: 14 }, { wch: 2 }, { wch: 14 },
-    { wch: 14 }, { wch: 2 }, { wch: 2 }, { wch: 10 }, { wch: 10 }, { wch: 26 },
-  ];
-  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: aoa.length - 1, c: 25 } });
+  const colL = (n: number): string => ws.getColumn(n).letter;
 
-  /* ---------------- Summary sheet (SummaryPHND-style) ---------------- */
-  const S: any[][] = [];
-  S.push([null, `${args.propertyName} Year ${args.year} Budget Analysis`]);
-  S.push([null, null, null, null, null, null, 'Unit Count', units]);
-  S.push([]);
-  S.push([null, 'Account Summary', null, 'Year 1 UW Budget', 'Year 1 Budget', 'Δ vs UW', 'Per Unit', 'Per Unit / Month']);
+  for (const a of ordered) {
+    const r = rowOf.get(a.code)!;
+    const row = ws.getRow(r);
+    row.font = a.kind === 'detail' ? f8 : f8b;
+    ws.getCell(r, C.code).value = a.code;
+    ws.getCell(r, C.code).font = { size: 8, color: { argb: 'FF808080' } };
+    ws.getCell(r, C.name).value = (a.kind === 'detail' ? '    ' : a.kind === 'total' ? '  ' : ' ') + a.name;
+    ws.getCell(r, C.name).font = a.kind === 'detail' ? f8 : f8b;
+
+    if (a.kind === 'header') continue;
+
+    if (a.kind === 'detail') {
+      const ln = byGl.get(a.code);
+      ws.getCell(r, C.driver).value = ln ? driverLabel(ln.driver) + (ln.override ? ' (manual)' : '') : '';
+      ws.getCell(r, C.driver).font = { size: 7.5, italic: true, color: { argb: 'FF808080' } };
+      (ln?.months || zero12()).forEach((v, i) => {
+        const cell = ws.getCell(r, C.m1 + i);
+        if (v) cell.value = v;
+        cell.numFmt = CUR;
+        cell.font = f8;
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GREEN } };
+      });
+      if (ln?.note) {
+        ws.getCell(r, C.note).value = ln.note;
+        ws.getCell(r, C.note).font = { size: 8, italic: true, color: { argb: 'FF505050' } };
+      }
+      if (args.compWeights && args.compUnits && args.compWeights[a.code]) {
+        const cc = ws.getCell(r, C.comp);
+        cc.value = r2((args.compWeights[a.code] / args.compUnits) * units);
+        cc.numFmt = ACCT; cc.font = f8;
+        cc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COMPFILL } };
+      }
+    } else {
+      // total row: month formulas
+      for (let i = 0; i < 12; i++) {
+        const col = C.m1 + i;
+        const L = colL(col);
+        let formula = '';
+        if (rangeTotals[a.code]) {
+          const rows = detailRowsIn(...rangeTotals[a.code]);
+          if (rows.length) formula = `SUM(${L}${Math.min(...rows)}:${L}${Math.max(...rows)})`;
+        } else if (compositeTotals[a.code]) {
+          formula = compositeTotals[a.code].map((p) => `${L}${rowOf.get(p)}`).join('+');
+        } else if (a.code === '7280') formula = `${L}${rowOf.get('5500')}-${L}${rowOf.get('7279')}`;
+        else if (a.code === '8200') formula = `${L}${rowOf.get('7280')}-${L}${rowOf.get('7315')}-${L}${rowOf.get('7500')}`;
+        else if (a.code === '9000') formula = `${L}${rowOf.get('8200')}-${L}${rowOf.get('8602')}-${L}${rowOf.get('8950')}`;
+        const cell = ws.getCell(r, col);
+        if (formula) cell.value = { formula } as any;
+        cell.numFmt = ACCT;
+        cell.font = f8b;
+        cell.border = { top: { style: 'thin' } };
+        if (GRAND_TOTALS.has(a.code)) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRAND } };
+          cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' } };
+        }
+      }
+    }
+    // annual + per-unit + UW on every non-header row
+    const annual = ws.getCell(r, C.annual);
+    annual.value = { formula: `SUM(${colL(C.m1)}${r}:${colL(C.m1 + 11)}${r})` } as any;
+    annual.numFmt = a.kind === 'total' ? ACCT : CUR;
+    annual.font = a.kind === 'total' ? f8b : f8;
+    if (a.kind === 'total') annual.border = { top: { style: 'thin' } };
+    if (GRAND_TOTALS.has(a.code)) {
+      annual.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRAND } };
+      annual.border = { top: { style: 'thin' }, bottom: { style: 'thin' } };
+    }
+    const pu = ws.getCell(r, C.perUnit);
+    pu.value = { formula: units ? `R${r}/$C$3` : `R${r}` } as any;
+    pu.numFmt = PU; pu.font = a.kind === 'total' ? f8b : f8;
+    const pum = ws.getCell(r, C.perUnitMo);
+    pum.value = { formula: units ? `R${r}/$C$3/12` : `R${r}/12` } as any;
+    pum.numFmt = PU; pum.font = a.kind === 'total' ? f8b : f8;
+    if (uwCol[a.code] != null && uwCol[a.code] !== 0) {
+      const uc = ws.getCell(r, C.uw);
+      uc.value = uwCol[a.code];
+      uc.numFmt = ACCT; uc.font = f8b;
+      uc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: UWFILL } };
+    }
+  }
+
+  /* ================= Summary sheet ================= */
+  const wsS = wb.addWorksheet('Summary', { properties: { tabColor: { argb: 'FF92D050' } }, views: [{ state: 'frozen', ySplit: 4 }] });
+  [3, 34, 2, 15, 15, 13, 11, 13].forEach((w, i) => { wsS.getColumn(i + 1).width = w; });
+  wsS.getCell(1, 2).value = `${args.propertyName} Year 1 Budget Analysis (${labels[0]} – ${labels[11]})`;
+  wsS.getCell(1, 2).font = { size: 12, bold: true };
+  wsS.getCell(2, 7).value = 'Unit Count';
+  wsS.getCell(2, 7).font = f8b;
+  wsS.getCell(2, 8).value = units;
+  wsS.getCell(2, 8).font = { size: 10, bold: true };
+  const sHeads = ['', 'Account Summary', '', 'Year 1 UW Budget', 'Year 1 Budget', 'Δ vs UW', 'Per Unit', 'Per Unit / Month'];
+  sHeads.forEach((t, i) => {
+    if (!t) return;
+    const cell = wsS.getCell(4, i + 1);
+    cell.value = t;
+    cell.font = { size: 8.5, bold: true };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD } };
+    cell.border = { bottom: { style: 'thin' } };
+    cell.alignment = { horizontal: i >= 3 ? 'right' : 'left' };
+  });
   const sumRows: [string, string][] = [
     ['5070', 'TOTAL RENTAL INCOME'], ['5190', 'NET OTHER INCOME'], ['5500', 'TOTAL INCOME'],
     ['6170', 'TOTAL FIXED ADMINISTRATIVE'], ['6370', 'TOTAL ADMINISTRATIVE'], ['6399', 'TOTAL CORPORATE EVENTS'],
@@ -194,76 +281,97 @@ export function buildReviewWorkbook(args: {
     '6770': uwCol['6770'] || 0, '6870': uwCol['6870'] || 0, '6970': uwCol['6970'] || 0,
     '7070': uw.y1['14'] || 0, '7099': uw.toe, '7280': uw.noi,
   } : {};
-  const sumStart = S.length + 1;
-  for (const [code, label] of sumRows) S.push([code, label, null, uw ? uwSummary[code] : null]);
-  S.push([]);
-  const debtStart = S.length + 1;
-  S.push([null, 'Interest Expense']);
-  S.push([null, 'Principal']);
-  S.push([null, 'Special Projects']);
-  S.push([null, 'Cash Flow (NOI − debt service)']);
-  S.push([]);
-  S.push([null, 'Capital Contributions', null, inputs.capital || 0]);
-  S.push([null, 'Cash on Cash Return']);
-  const wsS = XLSX.utils.aoa_to_sheet(S);
-  const setFS = (r: number, c: number, f: string, fmt?: string): void => {
-    const addr = XLSX.utils.encode_cell({ r: r - 1, c });
-    wsS[addr] = { t: 'n', f, ...(fmt ? { z: fmt } : {}) };
-  };
-  sumRows.forEach(([code], i) => {
-    const r = sumStart + i;
-    const bRow = rowOf.get(code);
-    if (bRow) setFS(r, 4, `Budget!R${bRow}`, '#,##0');
-    setFS(r, 5, `E${r}-D${r}`, '#,##0');
-    setFS(r, 6, `E${r}/$H$2`, '#,##0.00');
-    setFS(r, 7, `E${r}/$H$2/12`, '#,##0.00');
-  });
-  setFS(debtStart, 4, `Budget!R${rowOf.get('7315')}`, '#,##0');
-  setFS(debtStart + 1, 4, principalRows.length ? `ABS(${principalRows.map((r) => `Budget!R${r}`).join('+')})` : '0', '#,##0');
-  setFS(debtStart + 2, 4, `Budget!R${rowOf.get('7500')}`, '#,##0');
-  setFS(debtStart + 3, 4, `E${sumStart + sumRows.length - 1}-E${debtStart}-E${debtStart + 1}`, '#,##0');
-  setFS(debtStart + 6, 4, `IF(D${debtStart + 5}>0,E${debtStart + 3}/D${debtStart + 5},"")`, '0.00%');
-  wsS['!cols'] = [{ wch: 7 }, { wch: 32 }, { wch: 2 }, { wch: 15 }, { wch: 15 }, { wch: 13 }, { wch: 11 }, { wch: 13 }];
-  wsS['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: S.length - 1, c: 7 } });
+  const BOLD_SUM = new Set(['5500', '7099', '7280']);
+  let sr = 5;
+  for (const [code, label] of sumRows) {
+    const bold = BOLD_SUM.has(code);
+    const font = { size: 8.5, bold };
+    wsS.getCell(sr, 1).value = code;
+    wsS.getCell(sr, 1).font = { size: 8, color: { argb: 'FF808080' } };
+    wsS.getCell(sr, 2).value = label;
+    wsS.getCell(sr, 2).font = font;
+    if (uw) { wsS.getCell(sr, 4).value = uwSummary[code]; }
+    wsS.getCell(sr, 5).value = { formula: `Budget!R${rowOf.get(code)}` } as any;
+    wsS.getCell(sr, 6).value = { formula: `E${sr}-D${sr}` } as any;
+    wsS.getCell(sr, 7).value = { formula: `E${sr}/$H$2` } as any;
+    wsS.getCell(sr, 8).value = { formula: `E${sr}/$H$2/12` } as any;
+    for (const c2 of [4, 5, 6]) { const cell = wsS.getCell(sr, c2); cell.numFmt = ACCT; cell.font = font; }
+    for (const c2 of [7, 8]) { const cell = wsS.getCell(sr, c2); cell.numFmt = PU; cell.font = font; }
+    if (bold) for (let c2 = 1; c2 <= 8; c2++) wsS.getCell(sr, c2).border = { top: { style: 'thin' } };
+    sr++;
+  }
+  sr++;
+  const debtRows: [string, string | null][] = [
+    ['Interest Expense', `Budget!R${rowOf.get('7315')}`],
+    ['Principal', principalRows.length ? `ABS(${principalRows.map((r) => `Budget!R${r}`).join('+')})` : '0'],
+    ['Special Projects', `Budget!R${rowOf.get('7500')}`],
+    ['Cash Flow (NOI − debt service)', null],
+  ];
+  const noiRowS = 5 + sumRows.length - 1;
+  const debtStart = sr;
+  for (const [label, formula] of debtRows) {
+    wsS.getCell(sr, 2).value = label;
+    wsS.getCell(sr, 2).font = { size: 8.5 };
+    const cell = wsS.getCell(sr, 5);
+    cell.value = { formula: formula || `E${noiRowS}-E${debtStart}-E${debtStart + 1}` } as any;
+    cell.numFmt = ACCT;
+    cell.font = label.startsWith('Cash Flow') ? { size: 8.5, bold: true } : { size: 8.5 };
+    sr++;
+  }
+  sr++;
+  wsS.getCell(sr, 2).value = 'Capital Contributions';
+  wsS.getCell(sr, 2).font = { size: 8.5 };
+  wsS.getCell(sr, 4).value = inputs.capital || 0;
+  wsS.getCell(sr, 4).numFmt = CUR;
+  const capRow = sr;
+  sr++;
+  wsS.getCell(sr, 2).value = 'Cash on Cash Return';
+  wsS.getCell(sr, 2).font = { size: 8.5, bold: true };
+  wsS.getCell(sr, 5).value = { formula: `IF(D${capRow}>0,E${debtStart + 3}/D${capRow},"")` } as any;
+  wsS.getCell(sr, 5).numFmt = PCT;
+  wsS.getCell(sr, 5).font = { size: 8.5, bold: true };
 
-  /* ---------------- Raw Data sheet ---------------- */
-  const raw: any[][] = [];
-  raw.push(['Generated inputs (budgets.inputs)']);
-  raw.push(['key', 'value']);
+  /* ================= Raw Data sheet ================= */
+  const wsR = wb.addWorksheet('Raw Data');
+  [26, 42, 12, 60].forEach((w, i) => { wsR.getColumn(i + 1).width = w; });
+  let rrw = 1;
+  const rawRow = (vals: any[], bold = false) => {
+    vals.forEach((v, i) => { const cell = wsR.getCell(rrw, i + 1); cell.value = v; cell.font = { size: 8.5, bold }; });
+    rrw++;
+  };
+  rawRow(['Generated inputs (budgets.inputs)'], true);
+  rawRow(['key', 'value'], true);
   const flat = (obj: any, prefix = ''): void => {
     for (const [k, v] of Object.entries(obj || {})) {
       if (v && typeof v === 'object' && !Array.isArray(v)) flat(v, `${prefix}${k}.`);
-      else raw.push([`${prefix}${k}`, Array.isArray(v) ? (v as any[]).join(', ') : (v as any)]);
+      else rawRow([`${prefix}${k}`, Array.isArray(v) ? (v as any[]).join(', ') : (v as any)]);
     }
   };
   flat(inputs);
-  raw.push([]);
-  raw.push(['UW Year-1 by category (tie-out targets)']);
-  raw.push(['pcode', 'label', 'UW Y1']);
-  if (uw) for (const p of PCODES) raw.push([p, PCODE_LABELS[p], uw.y1[p] ?? '']);
-  if (uw) { raw.push(['', 'EGI', uw.egi]); raw.push(['', 'TOE', uw.toe]); raw.push(['', 'NOI', uw.noi]); }
-  raw.push([]);
-  raw.push([`Comp set${args.compName ? `: ${args.compName}` : ''} (annual $, ${args.compUnits || '?'} units)`]);
-  raw.push(['gl', 'comp annual $', 'comp $/unit', `scaled to ${units} units`]);
+  rrw++;
+  rawRow(['UW Year-1 by category (tie-out targets)'], true);
+  rawRow(['pcode', 'label', 'UW Y1'], true);
+  if (uw) {
+    for (const p of PCODES) rawRow([p, PCODE_LABELS[p], uw.y1[p] ?? '']);
+    rawRow(['', 'EGI', uw.egi]); rawRow(['', 'TOE', uw.toe]); rawRow(['', 'NOI', uw.noi]);
+  }
+  rrw++;
+  rawRow([`Comp set${args.compName ? `: ${args.compName}` : ''} (annual $, ${args.compUnits || '?'} units)`], true);
+  rawRow(['gl', 'comp annual $', 'comp $/unit', `scaled to ${units} units`], true);
   if (args.compWeights && args.compUnits) {
     for (const [gl, v] of Object.entries(args.compWeights)) {
       if (!v) continue;
-      raw.push([gl, v, r2(v / args.compUnits), r2((v / args.compUnits) * units)]);
+      rawRow([gl, v, r2(v / args.compUnits), r2((v / args.compUnits) * units)]);
     }
   }
-  raw.push([]);
-  raw.push(['Budget lines (raw)']);
-  raw.push(['gl', 'annual', 'override', 'driver json']);
+  rrw++;
+  rawRow(['Budget lines (raw)'], true);
+  rawRow(['gl', 'annual', 'override', 'driver json'], true);
   for (const l of lines) {
     const t = sum(l.months);
-    if (t || l.override) raw.push([l.gl_code, t, l.override ? 'Y' : '', JSON.stringify(l.driver)]);
+    if (t || l.override) rawRow([l.gl_code, t, l.override ? 'Y' : '', JSON.stringify(l.driver)]);
   }
-  const wsRaw = XLSX.utils.aoa_to_sheet(raw);
-  wsRaw['!cols'] = [{ wch: 26 }, { wch: 40 }, { wch: 12 }, { wch: 60 }];
 
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Budget');
-  XLSX.utils.book_append_sheet(wb, wsS, 'Summary');
-  XLSX.utils.book_append_sheet(wb, wsRaw, 'Raw Data');
-  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  const buf = await wb.xlsx.writeBuffer();
+  return Buffer.from(buf as ArrayBuffer);
 }

@@ -471,7 +471,7 @@ router.get('/budgets/:id/export.xlsx', h(async (req, res) => {
   if (lb.budget.comp_set_id) {
     compName = (await query('select name from comp_sets where id=$1', [lb.budget.comp_set_id])).rows[0]?.name || '';
   }
-  const buf = buildReviewWorkbook({
+  const buf = await buildReviewWorkbook({
     propertyCode: lb.budget.property_code, propertyName: prop?.name || lb.budget.property_code,
     year: lb.budget.year, units: Number(lb.budget.inputs?.units) || prop?.units || 0,
     coa: lb.coa, lines: lb.lines, inputs: lb.budget.inputs, uw: lb.uw,
