@@ -2,7 +2,8 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-08-20 (initial build + seller-T12 monthly shapes).
+> Last updated: 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
+> w/ per-unit basis + ND payroll model).
 
 ## What this is
 
@@ -68,6 +69,22 @@ the old owner's financials; levels will change and land closer to the Minot comp
 links a T12, `t12CategoryShapes()` (seller GL → pcode via the UW book's coded T12 panel) replaces
 the generic curves for categories 4,5,6,8,9,10,11,12; categories 13/14 keep per-GL curves because
 they mix opposite seasonalities (snow vs turnover) that the blended category shape would smear.
+
+**Monthly comp sets & the per-unit basis**: the comp-set upload auto-detects the Yardi
+*12 Month Budget* / *12 Month Statement* export (Monarch GLs, monthly cols) vs the annual
+*Property Comparison*. Monthly comp sets contribute per-GL monthly shapes; comp sets store total
+units (Minot 4 = 712). Spread priority per line: Minot per-GL shape > seller-T12 category shape
+(cats 4–12) > named curve. Each abs category has a level **basis** (`inputs.catBasis`): `'uw'`
+(default, hard tie) or `'perUnit'` (comp $/unit × subject units, UW as variance) — toggled per
+category in the tie-out panel; rebalance targets follow the basis.
+
+**ND payroll model** (`payroll_models`, upload kind `payroll`): parses the "North Dakota
+Payroll - Ongoing" workbook's Wages sheet. **RESTRICTED-DATA GUARD — the importer aggregates the
+roster to property-level totals by wage GL (position→GL: admin-ish→6402, grounds→6405,
+rover→6407, rest→6404) and returns ONLY those; names/rates/rows are never stored** (uploads.payload
+holds the aggregates, not the file). When linked, wage GLs come straight from the model (spread by
+the Minot per-GL cadence); the rest of category 10 (taxes/benefits/fees) follows the basis —
+under 'uw' the remainder is allocated so cat 10 still ties exactly (floored at 0 if wages exceed UW).
 
 Manual cell edit ⇒ `override=true`, driver `manual` (purple in UI, 🔓 clears).
 `regenerate()` recomputes only non-overridden lines. `rebalanceCategory()` (the tie-out panel's

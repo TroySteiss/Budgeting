@@ -133,6 +133,30 @@ describe('per-unit comp basis', () => {
   });
 });
 
+describe('payroll model wages', () => {
+  it('wage GLs come from the model; category 10 still ties to UW via the remainder', () => {
+    const inputs = defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 });
+    const wages = { '6402': 80000, '6404': 70000, '6405': 5000 };
+    const lines = generateLines(coaList, inputs, fakeUw, null, null, wages);
+    expect(sum(lines.find((l) => l.gl_code === '6402')!.months)).toBe(80000);
+    expect(sum(lines.find((l) => l.gl_code === '6404')!.months)).toBe(70000);
+    const cats = categoryTotals(lines, coaMap);
+    // remainder (190,000 − 155,000 = 35,000) goes to the non-wage payroll GLs → category still ties
+    expect(cats['10']).toBeCloseTo(fakeUw.y1['10'], 2);
+  });
+  it('wages exceeding the UW category produce no negative remainder lines', () => {
+    const inputs = defaultInputs(2027, fakeUw, null);
+    const wages = { '6402': 150000, '6404': 90000 }; // 240k > UW 190k
+    const lines = generateLines(coaList, inputs, fakeUw, null, null, wages);
+    const cats = categoryTotals(lines, coaMap);
+    expect(cats['10']).toBeCloseTo(240000, 2); // wages stand; variance shows in tie-out
+    for (const l of lines) {
+      const acc = coaMap.get(l.gl_code);
+      if (acc?.pcode === '10') expect(sum(l.months)).toBeGreaterThanOrEqual(0);
+    }
+  });
+});
+
 describe('startMonth (mid-year budgets)', () => {
   it('zeroes months before the start month', () => {
     const inputs = { ...defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 }), startMonth: 5 };

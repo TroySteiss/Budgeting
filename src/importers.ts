@@ -254,6 +254,67 @@ export function parseRentRoll(buf: Buffer): RentParsedProperty[] {
   }];
 }
 
+/* ========================= ND PAYROLL MODEL ========================= */
+
+/* Position → Monarch wage GL. Anything unrecognized lands in 6404 and is
+   reported in unmappedPositions so the mapping can be extended. */
+const POSITION_GL: [RegExp, string][] = [
+  [/regional|lms|arm|bookkeep|office|leasing|apm|\bpm\b|manager|market/i, '6402'],
+  [/ground|landscap/i, '6405'],
+  [/rover/i, '6407'],
+  [/supervisor|tech|housekeep|maint|janitor|porter/i, '6404'],
+];
+
+export interface PayrollModelParsed {
+  label: string;
+  /** property code (lowercase) → wage GL → allocated annual $ (aggregated). */
+  properties: Record<string, Record<string, number>>;
+  unmappedPositions: string[];
+  employeeRows: number;
+}
+
+/** North Dakota Payroll workbook ('Wages' sheet): roster rows with per-property
+    allocated annual wages. RESTRICTED-DATA GUARD: this parser aggregates to
+    property totals by GL and returns ONLY those — no names, rates, or rows. */
+export function parsePayrollModel(buf: Buffer): PayrollModelParsed {
+  const all = grids(buf);
+  const sheet = all.find((x) => /wages/i.test(x.name)) || all[0];
+  const g = sheet.g;
+  // header row: >=8 short uppercase property codes
+  let h = -1;
+  let cols: { c: number; code: string }[] = [];
+  for (let r = 0; r < Math.min(g.length, 10); r++) {
+    const found: { c: number; code: string }[] = [];
+    for (let c = 1; c < (g[r] || []).length; c++) {
+      const v = s(g[r]?.[c]);
+      if (/^[A-Z]{4,6}$/.test(v) && !['MIMG', 'TOTAL', 'CHECK'].includes(v)) found.push({ c, code: v.toLowerCase() });
+    }
+    if (found.length >= 8) { h = r; cols = found; break; }
+  }
+  if (h < 0) throw new Error('Payroll model: property-code header row not found on the Wages sheet');
+  const agg: Record<string, Record<string, number>> = {};
+  const unmapped = new Set<string>();
+  let employeeRows = 0;
+  for (let r = h + 1; r < g.length; r++) {
+    const position = s(g[r]?.[1]);
+    if (!position || /count|check|total/i.test(position)) continue;
+    const values = cols.map(({ c }) => num(g[r]?.[c]));
+    if (!values.some((v) => v)) continue;
+    employeeRows++;
+    let gl = '';
+    for (const [re, code] of POSITION_GL) if (re.test(position)) { gl = code; break; }
+    if (!gl) { unmapped.add(position); gl = '6404'; }
+    cols.forEach(({ code }, i) => {
+      const v = values[i];
+      if (!v) return;
+      if (!agg[code]) agg[code] = {};
+      agg[code][gl] = Math.round(((agg[code][gl] || 0) + v) * 100) / 100;
+    });
+  }
+  if (!employeeRows) throw new Error('Payroll model: no roster rows parsed');
+  return { label: s(g[0]?.[0]) || sheet.name, properties: agg, unmappedPositions: [...unmapped], employeeRows };
+}
+
 /* ========================= SELLER T12 STATEMENT ========================= */
 
 export interface SellerT12Parsed {

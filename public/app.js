@@ -131,6 +131,9 @@ function renderDash(el) {
       <h3>Seller T12s</h3>
       ${(st.t12Snapshots || []).length ? `<table class="list"><tr><th>Property</th><th>Statement</th><th>Period</th><th>Book</th></tr>
         ${st.t12Snapshots.map((t) => `<tr><td>${esc(t.property_code)}</td><td>${esc(t.label)}</td><td>${esc(t.period)}</td><td>${esc(t.book)}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
+      <h3>Payroll models</h3>
+      ${(st.payrollModels || []).length ? `<table class="list"><tr><th>Model</th><th>Added</th></tr>
+        ${st.payrollModels.map((p) => `<tr><td>${esc(p.label)}</td><td class="muted">${new Date(p.created_at).toLocaleDateString()}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
       <h3>Comp sets</h3>
       ${st.compSets.length ? `<table class="list"><tr><th>Name</th><th>Period</th><th>Book</th><th>Added</th></tr>
         ${st.compSets.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.period)}</td><td>${esc(c.book)}</td><td class="muted">${new Date(c.created_at).toLocaleDateString()}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
@@ -166,6 +169,7 @@ function newBudgetDialog() {
       <div class="fld"><label>Rent snapshot (GPR anchor)</label><select id="nb-rent"></select></div>
       <div class="fld"><label>Comp set (line distribution)</label><select id="nb-comp"><option value="">— none —</option>${st.compSets.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
       <div class="fld"><label>Seller T12 (monthly shapes)</label><select id="nb-t12"></select></div>
+      <div class="fld"><label>Payroll model (wages)</label><select id="nb-pay"><option value="">— none —</option>${(st.payrollModels || []).map((p) => `<option value="${p.id}">${esc(p.label)}</option>`).join('')}</select></div>
     </div>
     <div class="err" id="nb-err"></div>
     <div class="row" style="margin-top:12px">
@@ -183,6 +187,7 @@ function newBudgetDialog() {
     if (uws.length) dlg.querySelector('#nb-uw').value = uws[0].id;
     if (rents.length) dlg.querySelector('#nb-rent').value = rents[0].id;
     if (t12s.length) dlg.querySelector('#nb-t12').value = t12s[0].id;
+    if ((st.payrollModels || []).length) dlg.querySelector('#nb-pay').value = st.payrollModels[0].id;
   };
   fillSnaps();
   dlg.querySelector('#nb-prop').addEventListener('change', fillSnaps);
@@ -196,6 +201,7 @@ function newBudgetDialog() {
         compSetId: Number(dlg.querySelector('#nb-comp').value) || null,
         rentSnapshotId: Number(dlg.querySelector('#nb-rent').value) || null,
         t12SnapshotId: Number(dlg.querySelector('#nb-t12').value) || null,
+        payrollModelId: Number(dlg.querySelector('#nb-pay').value) || null,
       });
       dlg.close();
       await refreshState();
@@ -224,6 +230,7 @@ function renderUploads(el) {
             <option value="rent_roll" ${u.kind === 'rent_roll' ? 'selected' : ''}>Rent roll (Yardi summary or OneSite detail)</option>
             <option value="comparison" ${u.kind === 'comparison' ? 'selected' : ''}>Property comparison (comp set)</option>
             <option value="seller_t12" ${u.kind === 'seller_t12' ? 'selected' : ''}>Seller T12 statement (monthly actuals)</option>
+            <option value="payroll" ${u.kind === 'payroll' ? 'selected' : ''}>ND payroll model (wage aggregates)</option>
           </select></div>
         <div class="fld"><label>File</label><input type="file" id="up-file" accept=".xlsx,.xls,.xlsm"></div>
         <button class="btn" id="up-parse" ${u.busy ? 'disabled' : ''}>${u.busy ? 'Parsing…' : 'Parse'}</button>
@@ -319,6 +326,25 @@ function renderUploadPreview(el, parsed) {
       if (!code) { S.upload.err = 'Pick a property'; render(); return; }
       await POST('/uploads/apply', { kind: 'seller_t12', filename: parsed.filename, payload: parsed, mappings: [{ propertyCode: code }] });
       S.upload.msg = 'T12 snapshot saved'; S.upload.parsed = null;
+      await refreshState(); render();
+    });
+  } else if (parsed.kind === 'payroll') {
+    const p = parsed.payroll;
+    const subjects = S.state.properties.filter((x) => x.role === 'subject').map((x) => x.code);
+    const rows = Object.entries(p.properties).filter(([code]) => subjects.includes(code));
+    const gls = ['6402', '6404', '6405', '6407'];
+    el.innerHTML = `<h3>Payroll model preview <span class="badge">property-level aggregates only</span></h3>
+      <p>${p.employeeRows} roster rows aggregated. Individual compensation is never stored (org data policy).</p>
+      ${p.unmappedPositions.length ? `<p class="err">Unmapped positions (defaulted to 6404): ${p.unmappedPositions.map(esc).join(', ')}</p>` : ''}
+      <table class="list"><tr><th>Property</th><th>6402 Admin</th><th>6404 Maint</th><th>6405 Landscaping</th><th>6407 Rover</th><th>Total</th></tr>
+      ${rows.map(([code, w]) => `<tr><td><b>${code}</b></td>${gls.map((g) => `<td>${money(w[g] || 0)}</td>`).join('')}<td><b>${money(gls.reduce((a, g) => a + (w[g] || 0), 0))}</b></td></tr>`).join('')}</table>
+      <div class="row" style="margin-top:10px">
+        <div class="fld"><label>Model name</label><input id="pm-name" value="${esc(parsed.filename.replace(/\.xlsx?$/i, ''))}" style="min-width:280px"></div>
+        <button class="btn" id="up-apply">Save payroll model</button>
+      </div>`;
+    el.querySelector('#up-apply').addEventListener('click', async () => {
+      await POST('/uploads/apply', { kind: 'payroll', filename: parsed.filename, payload: parsed, name: el.querySelector('#pm-name').value });
+      S.upload.msg = 'Payroll model saved'; S.upload.parsed = null;
       await refreshState(); render();
     });
   } else if (parsed.kind === 'comparison') {

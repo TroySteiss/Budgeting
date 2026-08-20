@@ -37,6 +37,7 @@ export type Driver =
   | { method: 'vacancy' }
   | { method: 'catShare'; pcode: string; share: number }     // share of a UW-tied category
   | { method: 'perUnitComp'; pcode: string; perUnit: number } // comp $/unit × subject units
+  | { method: 'payrollModel' }                                 // property-level wages from the ND payroll model
   | { method: 'mgmtPct'; pct: number }
   | { method: 'interest'; loan: number; rate: number }
   | { method: 'zero' };
@@ -315,8 +316,8 @@ export function defaultInputs(year: number, uw: UwSnapshotData, rent: { marketMo
 }
 
 /** Weights for detail GLs of one category, from a comp set (abs $), with fallback. */
-function categoryItems(pcode: string, coa: CoaAccount[], comps: CompWeights | null): { key: string; weight: number }[] {
-  const members = coa.filter((a) => a.kind === 'detail' && a.pcode === pcode && a.csv_order != null);
+function categoryItems(pcode: string, coa: CoaAccount[], comps: CompWeights | null, exclude?: Set<string>): { key: string; weight: number }[] {
+  const members = coa.filter((a) => a.kind === 'detail' && a.pcode === pcode && a.csv_order != null && !(exclude?.has(a.code)));
   // byGl is signed — weights are magnitudes
   let items = members.map((a) => ({ key: a.code, weight: comps ? Math.abs(comps.byGl[a.code] || 0) : 0 }));
   if (!items.some((it) => it.weight > 0)) {
@@ -327,7 +328,7 @@ function categoryItems(pcode: string, coa: CoaAccount[], comps: CompWeights | nu
   return items;
 }
 
-export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null): BudgetLine[] {
+export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null): BudgetLine[] {
   const lines = new Map<string, BudgetLine>();
   const mk = (gl: string, months: Months, driver: Driver, note = ''): void => {
     lines.set(gl, { gl_code: gl, months: months.map(r2), driver, override: false, note });
@@ -394,10 +395,25 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
     return curveOf(coaByCode.get(gl)!);
   };
 
+  // Payroll model (category 10 only): wage GLs come straight from the regional
+  // payroll model's property-level aggregates; the rest of the category (taxes,
+  // benefits, fees) still follows the basis. Wage $ never comes from comps/UW.
+  const modelWageGls = new Set(Object.keys(payrollWages || {}));
+  let wagesTotal = 0;
+  if (payrollWages) {
+    for (const [gl, annual] of Object.entries(payrollWages)) {
+      if (!annual) continue;
+      wagesTotal = r2(wagesTotal + annual);
+      mk(gl, spreadMonthly(r2(annual), liveWeights((comps?.glShapes?.[gl]) || CURVES.flat)),
+        { method: 'payrollModel' } as any);
+    }
+  }
+
   for (const p of ['4', '5', '6', '8', '9', '10', '11', '12', '13', '14']) {
+    const skipGls = p === '10' ? modelWageGls : new Set<string>();
     const basis = inputs.catBasis?.[p] === 'perUnit' && comps?.units && inputs.units ? 'perUnit' : 'uw';
     if (basis === 'perUnit') {
-      const members = coaList.filter((a) => a.kind === 'detail' && a.pcode === p && a.csv_order != null);
+      const members = coaList.filter((a) => a.kind === 'detail' && a.pcode === p && a.csv_order != null && !skipGls.has(a.code));
       for (const a of members) {
         const compVal = comps!.byGl[a.code] || 0;
         if (!compVal) continue;
@@ -408,9 +424,10 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
       }
       continue;
     }
-    const target = r2(inputs.uwAbs[p] || 0);
+    let target = r2(inputs.uwAbs[p] || 0);
+    if (p === '10' && payrollWages) target = Math.max(0, r2(target - wagesTotal)); // remainder after model wages
     if (!target) continue;
-    const items = categoryItems(p, coaList, comps);
+    const items = categoryItems(p, coaList, comps, skipGls);
     const alloc = allocateWeighted(target, items);
     for (const [gl, amt] of Object.entries(alloc)) {
       if (!amt) continue;
@@ -435,8 +452,8 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
 }
 
 /** Re-generate all non-overridden lines; keep overrides untouched. */
-export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null): BudgetLine[] {
-  const fresh = new Map(generateLines(coaList, inputs, uw, comps, catShapes).map((l) => [l.gl_code, l]));
+export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null): BudgetLine[] {
+  const fresh = new Map(generateLines(coaList, inputs, uw, comps, catShapes, payrollWages).map((l) => [l.gl_code, l]));
   const out: BudgetLine[] = [];
   const seen = new Set<string>();
   for (const old of existing) {

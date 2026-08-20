@@ -2,7 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import multer from 'multer';
 import { query, tx } from './db.js';
 import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
-import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12 } from './importers.js';
+import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel } from './importers.js';
 import { buildBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook } from './xlsx-export.js';
 import {
@@ -34,7 +34,7 @@ async function loadCoa(): Promise<CoaAccount[]> {
 }
 
 router.get('/state', h(async (_req, res) => {
-  const [coa, portfolios, properties, budgets, uws, comps, t12s, rents] = await Promise.all([
+  const [coa, portfolios, properties, budgets, uws, comps, t12s, payrolls, rents] = await Promise.all([
     loadCoa(),
     query('select * from portfolios order by name'),
     query('select * from properties order by code'),
@@ -46,6 +46,7 @@ router.get('/state', h(async (_req, res) => {
            from uw_snapshots u order by u.created_at desc`),
     query('select id, name, period, book, created_at from comp_sets order by created_at desc'),
     query('select id, property_code, label, period, book, created_at from t12_snapshots order by created_at desc'),
+    query('select id, label, created_at from payroll_models order by created_at desc'),
     query(`select id, property_code, as_of, created_at,
                   (data->>'marketMonthly')::numeric as market_monthly,
                   (data->>'inPlaceMonthly')::numeric as inplace_monthly,
@@ -55,7 +56,7 @@ router.get('/state', h(async (_req, res) => {
   res.json({
     coa, portfolios: portfolios.rows, properties: properties.rows,
     budgets: budgets.rows, uwSnapshots: uws.rows, compSets: comps.rows,
-    t12Snapshots: t12s.rows, rentSnapshots: rents.rows,
+    t12Snapshots: t12s.rows, payrollModels: payrolls.rows, rentSnapshots: rents.rows,
   });
 }));
 
@@ -80,6 +81,12 @@ router.post('/uploads/parse', upload.single('file'), h(async (req, res) => {
   if (kind === 'seller_t12') {
     const parsed = parseSellerT12(buf);
     return res.json({ kind, filename: req.file.originalname, t12: parsed });
+  }
+  if (kind === 'payroll') {
+    // importer returns property-level aggregates only — restricted individual
+    // compensation never leaves the parser
+    const parsed = parsePayrollModel(buf);
+    return res.json({ kind, filename: req.file.originalname, payroll: parsed });
   }
   res.status(400).json({ error: `Unknown upload kind "${kind}"` });
 }));
@@ -151,6 +158,17 @@ router.post('/uploads/apply', h(async (req, res) => {
     logChange(user, 'upload seller_t12', { filename, propertyCode, t12Id: row.id });
     return res.json({ ok: true, uploadId, t12Id: row.id });
   }
+  if (kind === 'payroll') {
+    const p = payload.payroll;
+    if (!p) return res.status(400).json({ error: 'No payroll payload' });
+    // store ONLY the aggregates (uploads.payload also gets just the aggregates)
+    const row = (await query(
+      'insert into payroll_models(upload_id, label, data) values($1,$2,$3) returning id',
+      [uploadId, name || p.label || filename || 'ND Payroll', JSON.stringify({ properties: p.properties, unmappedPositions: p.unmappedPositions, employeeRows: p.employeeRows })]
+    )).rows[0];
+    logChange(user, 'upload payroll model', { filename, payrollModelId: row.id });
+    return res.json({ ok: true, uploadId, payrollModelId: row.id });
+  }
   res.status(400).json({ error: `Unknown upload kind "${kind}"` });
 }));
 
@@ -158,6 +176,7 @@ router.post('/uploads/apply', h(async (req, res) => {
 interface LoadedBudget {
   budget: any; lines: BudgetLine[]; coa: CoaAccount[]; coaMap: Map<string, CoaAccount>;
   uw: UwSnapshotData | null; comps: CompWeights | null; catShapes: Record<string, Months> | null;
+  payrollWages: Record<string, number> | null;
 }
 
 async function loadBudget(id: number): Promise<LoadedBudget | null> {
@@ -204,7 +223,14 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
       catShapes = t12CategoryShapes(t.data.rows, t.data.monthCal || [], glToPcode);
     }
   }
-  return { budget, lines, coa, coaMap: new Map(coa.map((a) => [a.code, a])), uw, comps, catShapes };
+  // payroll model: property-level wage aggregates for this budget's property
+  let payrollWages: Record<string, number> | null = null;
+  if (budget.payroll_model_id) {
+    const pm = (await query('select data from payroll_models where id=$1', [budget.payroll_model_id])).rows[0];
+    const wages = pm?.data?.properties?.[budget.property_code];
+    if (wages && Object.keys(wages).length) payrollWages = wages;
+  }
+  return { budget, lines, coa, coaMap: new Map(coa.map((a) => [a.code, a])), uw, comps, catShapes, payrollWages };
 }
 
 async function saveLines(budgetId: number, lines: BudgetLine[]): Promise<void> {
@@ -231,11 +257,12 @@ function budgetView(lb: LoadedBudget) {
     uw: lb.uw,
     compWeights: lb.comps?.byGl || null,
     compUnits: lb.comps?.units || null,
+    payrollWages: lb.payrollWages,
   };
 }
 
 router.post('/budgets', h(async (req, res) => {
-  const { propertyCode, year, label, uwSnapshotId, compSetId, rentSnapshotId, t12SnapshotId } = req.body || {};
+  const { propertyCode, year, label, uwSnapshotId, compSetId, rentSnapshotId, t12SnapshotId, payrollModelId } = req.body || {};
   if (!propertyCode || !year) return res.status(400).json({ error: 'propertyCode and year are required' });
   const prop = (await query('select * from properties where code=$1', [propertyCode])).rows[0];
   if (!prop) return res.status(400).json({ error: `Unknown property ${propertyCode}` });
@@ -259,14 +286,14 @@ router.post('/budgets', h(async (req, res) => {
       };
 
   const id = (await query(
-    `insert into budgets(property_code, year, label, budget_type, inputs, uw_snapshot_id, comp_set_id, rent_snapshot_id, t12_snapshot_id, created_by)
-     values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning id`,
+    `insert into budgets(property_code, year, label, budget_type, inputs, uw_snapshot_id, comp_set_id, rent_snapshot_id, t12_snapshot_id, payroll_model_id, created_by)
+     values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning id`,
     [propertyCode, year, label || `${propertyCode} ${year} Budget`, 'new_acq', JSON.stringify(inputs),
-     uwSnapshotId || null, compSetId || null, rentSnapshotId || null, t12SnapshotId || null, req.session.username || '']
+     uwSnapshotId || null, compSetId || null, rentSnapshotId || null, t12SnapshotId || null, payrollModelId || null, req.session.username || '']
   )).rows[0].id;
 
   const lb = await loadBudget(id);
-  const lines = generateLines(lb!.coa, inputs, lb!.uw, lb!.comps, lb!.catShapes);
+  const lines = generateLines(lb!.coa, inputs, lb!.uw, lb!.comps, lb!.catShapes, lb!.payrollWages);
   await saveLines(id, lines);
   logChange(req.session.username || '', 'create budget', { id, propertyCode, year });
   res.json(budgetView((await loadBudget(id))!));
@@ -289,7 +316,7 @@ router.put('/budgets/:id', h(async (req, res) => {
   if (inputs) {
     const merged: BudgetInputs = { ...lb.budget.inputs, ...inputs };
     await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(merged)]);
-    const lines = regenerate(lb.lines, lb.coa, merged, lb.uw, lb.comps, lb.catShapes);
+    const lines = regenerate(lb.lines, lb.coa, merged, lb.uw, lb.comps, lb.catShapes, lb.payrollWages);
     await saveLines(id, lines);
     logChange(req.session.username || '', 'update budget inputs', { id });
   }
@@ -326,7 +353,7 @@ router.post('/budgets/:id/recalc', h(async (req, res) => {
   const id = Number(req.params.id);
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
-  const lines = regenerate(lb.lines, lb.coa, lb.budget.inputs, lb.uw, lb.comps, lb.catShapes);
+  const lines = regenerate(lb.lines, lb.coa, lb.budget.inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages);
   await saveLines(id, lines);
   res.json(budgetView((await loadBudget(id))!));
 }));
