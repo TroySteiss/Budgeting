@@ -50,6 +50,12 @@ describe('parseUwBook — Jamestown', () => {
     expect(d.data.noi).toBeCloseTo(2017940.95, 1);
     expect(d.data.egi).toBeCloseTo(3316417.03, 1);
   });
+  it('Deer Ridge financing block parses (drives budgeted interest)', () => {
+    const d = sheets.find((s) => /deer ridge/i.test(s.sheetName))!;
+    expect(d.data.assumptions['loanAmount']).toBe(22725000);
+    expect(d.data.assumptions['interestRate']).toBeCloseTo(0.0556, 4);
+    expect(d.data.assumptions['ltv']).toBeCloseTo(0.75, 2);
+  });
   it('Deer Ridge picks up "Less:"-prefixed LTL and concessions', () => {
     const d = sheets.find((s) => /deer ridge/i.test(s.sheetName))!;
     expect(d.data.y1['loss']).toBeCloseTo(-80477.32, 1);

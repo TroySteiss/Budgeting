@@ -122,6 +122,19 @@ export function parseUwBook(buf: Buffer): UwParsedSheet[] {
     const y1: Record<string, number> = {};
     for (const [k, v] of Object.entries(found)) if (!['egi', 'toe', 'noi'].includes(k)) y1[k] = v.y1;
 
+    // financing block (labels in the X..AB zone; row offsets vary by sheet)
+    let loanAmount = 0, interestRate = 0, ltv = 0;
+    for (let r = 0; r < g.length; r++) {
+      for (let c = 20; c < Math.min((g[r] || []).length, 32); c++) {
+        const lbl = low(g[r]?.[c]);
+        if (!lbl) continue;
+        const val = num(g[r]?.[c + 2]) || num(g[r]?.[c + 1]);
+        if (!loanAmount && lbl.startsWith('loan amount')) loanAmount = val;
+        else if (!interestRate && lbl.startsWith('interest rate')) interestRate = val;
+        else if (!ltv && lbl.startsWith('loan to value')) ltv = val;
+      }
+    }
+
     const isPortfolio = g.slice(0, 12).some((row) => (row || []).some((c) => low(c).includes('portfolio')));
     const gpr1 = y1['1'] || 1;
     const data: UwSnapshotData = {
@@ -139,6 +152,7 @@ export function parseUwBook(buf: Buffer): UwParsedSheet[] {
         mgmtPct: found['7'] ? found['7'].assumption || (found['egi'].y1 ? (y1['7'] || 0) / found['egi'].y1 : 0) : 0,
         gprAdjPct: found['1'] ? found['1'].assumption : 0,
         t12Gpr: found['1'] ? found['1'].t12 : 0,
+        loanAmount, interestRate, ltv,
       },
       unitMix,
       t12,

@@ -12,7 +12,13 @@ app.use(sessionMiddleware());
 app.use('/api', router);
 app.use('/api', apiErrors);
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
-app.use(express.static(join(process.cwd(), 'public')));
+// no-cache on app assets: browsers must revalidate so deploys take effect
+// immediately (a stale cached app.js made edits look like they weren't saving)
+app.use(express.static(join(process.cwd(), 'public'), {
+  setHeaders: (res, path) => {
+    if (/\.(js|css|html)$/.test(path)) res.setHeader('Cache-Control', 'no-cache');
+  },
+}));
 app.get('*', (_req, res) => res.sendFile(join(process.cwd(), 'public', 'index.html')));
 
 const port = Number(process.env.PORT) || 3100;

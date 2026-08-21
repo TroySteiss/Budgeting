@@ -13,6 +13,9 @@ const S = {
   theme: localStorage.getItem('bt-theme') || 'light',
   hiddenCols: new Set(JSON.parse(localStorage.getItem('bt-hidecols') || '[]')),
   undo: { budgetId: null, stack: [] },   // snapshots of {lines, inputs} before each change
+  showDist: localStorage.getItem('bt-dist') === '1',
+  pendingRow: null,                      // in-progress row edit buffer {gl, months, dirty}
+  gridScroll: null,
 };
 
 function applyTheme() {
@@ -106,6 +109,8 @@ async function refreshState() { S.state = await GET('/state'); }
 
 /* ---------------- render root ---------------- */
 function render() {
+  const gw = document.querySelector('.gridwrap');
+  if (gw) S.gridScroll = { top: gw.scrollTop, left: gw.scrollLeft };
   const app = document.getElementById('app');
   if (!S.auth || !S.auth.authed) { app.innerHTML = loginView(); wireLogin(); return; }
   app.innerHTML = `
@@ -449,6 +454,7 @@ function renderEditor(el) {
         <button class="btn sub" id="cols-btn">▦ Columns</button>
         <button class="btn" id="assump-open">⚙ Assumptions</button>
         <label style="align-self:center"><input type="checkbox" id="showzero" ${S.showZero ? 'checked' : ''}> show zero rows</label>
+        <label style="align-self:center" title="Show each total row's monthly % of Year 1"><input type="checkbox" id="showdist" ${S.showDist ? 'checked' : ''}> % dist</label>
       </div>
     </div>
     <div class="kpis">
@@ -476,6 +482,10 @@ function renderEditor(el) {
         <div class="gridwrap">${gridHtml(bv, totals)}</div>
       </div>
       <div class="side">
+        <div class="card">
+          <h2>Monthly trend</h2>
+          ${trendSvg(bv)}
+        </div>
         <div class="card tie">
           <h2>Tie-out vs UW</h2>
           ${tieHtml(bv)}
@@ -496,6 +506,7 @@ function renderEditor(el) {
   document.getElementById('ex-xlsx').addEventListener('click', () => window.open(`/api/budgets/${b.id}/export.xlsx`, '_blank'));
   document.getElementById('recalc').addEventListener('click', async () => { pushUndo(); S.bv = await POST(`/budgets/${b.id}/recalc`); render(); });
   document.getElementById('showzero').addEventListener('change', (e) => { S.showZero = e.target.checked; render(); });
+  document.getElementById('showdist').addEventListener('change', (e) => { S.showDist = e.target.checked; localStorage.setItem('bt-dist', S.showDist ? '1' : '0'); render(); });
   document.getElementById('undo-btn').addEventListener('click', () => doUndo(b.id));
   document.getElementById('cols-btn').addEventListener('click', (e) => { e.stopPropagation(); openColsMenu(e.currentTarget, labels); });
   document.getElementById('assump-open').addEventListener('click', () => {
@@ -503,6 +514,7 @@ function renderEditor(el) {
     dlg.innerHTML = `
       <h2>Assumptions — ${esc(prop.name)} (${esc(b.property_code)}) ${b.year}</h2>
       ${inputsHtml(S.bv.budget.inputs || {})}
+      <div class="err" id="assump-err"></div>
       <div class="foot">
         <span class="muted" style="align-self:center; margin-right:auto; font-size:11.5px">Apply recomputes every non-overridden line; manual cell edits (purple) are kept.</span>
         <button class="btn sub" id="assump-x">Cancel</button>
@@ -510,25 +522,60 @@ function renderEditor(el) {
       </div>`;
     dlg.querySelector('#assump-x').addEventListener('click', () => dlg.close());
     dlg.querySelector('#inp-apply').addEventListener('click', async () => {
-      await applyInputs(b, dlg);
+      const btn = dlg.querySelector('#inp-apply');
+      btn.disabled = true; btn.textContent = 'Applying…';
+      try {
+        await applyInputs(b, dlg);
+      } catch (e) {
+        btn.disabled = false; btn.textContent = 'Apply & regenerate';
+        const errEl = dlg.querySelector('#assump-err');
+        if (errEl) errEl.textContent = 'Not saved: ' + e.message;
+      }
     });
     dlg.showModal();
   });
 
-  // month-cell + note editing (hidden-column safe: months come from the line
-  // data with only the edited index replaced)
+  /* Month-cell editing is ROW-BUFFERED for fast tabbing: focus selects the
+     cell's text (type to replace, no ctrl+a), Tab moves along the row with no
+     server round-trip, and the row saves ONCE when focus leaves it (or on
+     Enter). Hidden-column safe: the buffer starts from the line data. */
+  const commitRow = async () => {
+    const p = S.pendingRow;
+    if (!p || !p.dirty) { S.pendingRow = null; return; }
+    S.pendingRow = null;
+    pushUndo();
+    S.bv = await PUT(`/budgets/${b.id}/lines/${p.gl}`, { months: p.months });
+    render();
+  };
+  const gridwrapEl = el.querySelector('.gridwrap');
   el.querySelectorAll('td.m input').forEach((box) => {
-    box.addEventListener('change', async () => {
+    box.addEventListener('focus', () => {
+      box.select();
       const gl = box.dataset.gl;
-      const i = Number(box.dataset.i);
-      const line = S.bv.lines.find((l) => l.gl_code === gl);
-      const months = (line ? line.months : Array(12).fill(0)).slice();
-      months[i] = parseFloat(String(box.value).replace(/,/g, '')) || 0;
-      pushUndo();
-      S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { months });
-      render();
+      if (S.pendingRow && S.pendingRow.gl !== gl && S.pendingRow.dirty) commitRow();
+      if (!S.pendingRow || S.pendingRow.gl !== gl) {
+        const line = S.bv.lines.find((l) => l.gl_code === gl);
+        S.pendingRow = { gl, months: (line ? line.months : Array(12).fill(0)).slice(), dirty: false };
+      }
     });
+    box.addEventListener('input', () => {
+      const p = S.pendingRow;
+      if (!p || p.gl !== box.dataset.gl) return;
+      p.months[Number(box.dataset.i)] = parseFloat(String(box.value).replace(/,/g, '')) || 0;
+      p.dirty = true;
+    });
+    box.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); box.blur(); commitRow(); } });
   });
+  if (gridwrapEl) {
+    gridwrapEl.addEventListener('focusout', (e) => {
+      const t = e.target;
+      if (!t || !t.matches || !t.matches('td.m input')) return;
+      const to = e.relatedTarget;
+      const sameRow = to && to.matches && to.matches('td.m input') && to.dataset.gl === t.dataset.gl;
+      if (!sameRow) commitRow();
+    });
+    if (S.gridScroll) { gridwrapEl.scrollTop = S.gridScroll.top; gridwrapEl.scrollLeft = S.gridScroll.left; }
+  }
   el.querySelectorAll('td.note input').forEach((box) => {
     box.addEventListener('change', async () => {
       S.bv = await PUT(`/budgets/${b.id}/lines/${box.dataset.gl}`, { note: box.value });
@@ -631,6 +678,12 @@ function gridHtml(bv, totals) {
         ${cols.annual ? `<td class="${ann < 0 ? 'neg' : ''}"><b>${money(ann)}</b></td>` : ''}
         ${cols.punit ? `<td>${money(ann / units)}</td>` : ''}
         ${cols.note ? '<td></td>' : ''}</tr>`);
+      if (S.showDist && ann) {
+        rows.push(`<tr class="dist"><td></td><td class="name">% of Year 1</td>
+          ${cols.fx ? '<td></td>' : ''}
+          ${monthIdx.map((i) => `<td>${((m[i] / ann) * 100).toFixed(1)}%</td>`).join('')}
+          ${cols.annual ? '<td>100%</td>' : ''}${cols.punit ? '<td></td>' : ''}${cols.note ? '<td></td>' : ''}</tr>`);
+      }
       continue;
     }
     const l = linesByGl.get(a.code);
@@ -650,6 +703,31 @@ function gridHtml(bv, totals) {
     </tr>`);
   }
   return `<table class="grid">${rows.join('')}</table>`;
+}
+
+/* Inline SVG chart of monthly Income / Expense / NOI (theme-aware). */
+function trendSvg(bv) {
+  const mo = (bv.kpis && bv.kpis.monthly) || {};
+  const series = [
+    { name: 'Income', vals: mo.income || [], color: 'var(--good)' },
+    { name: 'Expense', vals: mo.expense || [], color: 'var(--bad)' },
+    { name: 'NOI', vals: mo.noi || [], color: 'var(--accent)' },
+  ].filter((s) => s.vals.length === 12);
+  if (!series.length) return '<p class="muted">No data.</p>';
+  const labels = bv.monthLabels || MONTHS;
+  const W = 396, H = 150, padL = 8, padR = 8, padT = 10, padB = 20;
+  const all = series.flatMap((s) => s.vals);
+  const max = Math.max(...all, 1), min = Math.min(...all, 0);
+  const x = (i) => padL + (i * (W - padL - padR)) / 11;
+  const y = (v) => padT + (H - padT - padB) * (1 - (v - min) / (max - min || 1));
+  const lines = series.map((s) =>
+    `<polyline fill="none" stroke="${s.color}" stroke-width="2" points="${s.vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}"/>` +
+    s.vals.map((v, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.4" fill="${s.color}"><title>${s.name} ${labels[i]}: ${money(v)}</title></circle>`).join('')
+  ).join('');
+  const zero = min < 0 ? `<line x1="${padL}" y1="${y(0)}" x2="${W - padR}" y2="${y(0)}" stroke="var(--line)" stroke-dasharray="3 3"/>` : '';
+  const ticks = [0, 3, 6, 9, 11].map((i) => `<text x="${x(i)}" y="${H - 5}" font-size="9" fill="var(--dim)" text-anchor="middle">${labels[i]}</text>`).join('');
+  const legend = series.map((s) => `<span style="margin-right:12px; font-size:11px; color:var(--dim)"><span style="display:inline-block;width:10px;height:3px;background:${s.color};vertical-align:3px;margin-right:4px"></span>${s.name}</span>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%; display:block">${zero}${lines}${ticks}</svg><div style="margin-top:4px">${legend}</div>`;
 }
 
 function openColsMenu(anchorBtn, labels) {
@@ -836,6 +914,7 @@ function openRowTools(b, gl, anchorBtn) {
     <button data-act="flatMonthly">${dot('drv-man')}Flat — $ per month…</button>
     <button data-act="grow">${dot('drv-man')}Start $ /mo + growth %/mo…</button>
     ${hasComp ? `<button data-act="minot">${dot('drv-comp')}Minot $/unit × units (${money((S.bv.compWeights[gl] / S.bv.compUnits) * inp.units)}/yr, seasonal)</button>` : ''}
+    ${hasComp && S.bv.compShapes && S.bv.compShapes[gl] ? `<button data-act="t3avg" title="Weighted average of the comp's last 3 months (1-2-1), per-unit scaled, × (1+growth), rounded to $250 — your MROUND formula">${dot('drv-comp')}T3 actuals avg × growth → MROUND $250…</button>` : ''}
     <button data-act="reset">${dot('drv-uw')}Reset to engine formula (clear override)</button>`;
   const r = anchorBtn.getBoundingClientRect();
   menu.style.left = `${r.left + window.scrollX}px`;
@@ -882,6 +961,20 @@ function openRowTools(b, gl, anchorBtn) {
       const shape = cal.map((_, i) => cal[(start - 1 + i) % 12]);
       const wsum = shape.reduce((a, x) => a + x, 0) || 1;
       return put(shape.map((w) => Math.round(((annual * w) / wsum) * 100) / 100));
+    }
+    if (act === 't3avg') {
+      // Troy's formula, rewritten: AVERAGE of the comp's most recent 3 months
+      // (middle month double-weighted), per-unit → subject units, × (1+increase),
+      // MROUND to $250, filled flat across the year.
+      const g = parseFloat(String(prompt('Increase factor % (the (1+$D) in your formula, e.g. 3):') || '').replace(/,/g, '')) || 0;
+      const shape = S.bv.compShapes[gl];
+      const wsum = shape.reduce((a, x) => a + x, 0) || 1;
+      const annualComp = S.bv.compWeights[gl];
+      const monthly = shape.map((w) => (annualComp * w) / wsum);       // comp $ by calendar month
+      const t3 = (monthly[9] + 2 * monthly[10] + monthly[11]) / 4;     // last 3, mid ×2
+      const scaled = (t3 / S.bv.compUnits) * (inp.units || 0) * (1 + g / 100);
+      const rounded = Math.round(scaled / 250) * 250;
+      return put(Array(12).fill(rounded));
     }
     if (act === 'reset') {
       pushUndo();

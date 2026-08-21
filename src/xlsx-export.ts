@@ -44,9 +44,12 @@ function driverLabel(d: any): string {
   }
 }
 
-/** UW Year-1 $ placed on Budget-sheet rows, FHND-style (split categories
-    apportioned across their Monarch sections by budget share). */
-function uwColumnValues(uw: UwSnapshotData, catBudget: (range: [number, number]) => number): Record<string, number> {
+/** UW Year-1 $ placed on Budget-sheet rows, FHND-style. Split categories are
+    apportioned across their Monarch sections by the budget of THAT CATEGORY's
+    lines only, and section totals add the other categories they contain —
+    Monarch's FIXED ADMIN section holds insurance (6), mgmt fee (7) and taxes
+    (8) on top of its cat-9 lines, so its UW total must too. */
+function uwColumnValues(uw: UwSnapshotData, catBudget: (pcode: string, range: [number, number]) => number): Record<string, number> {
   const y = uw.y1;
   const out: Record<string, number> = {
     '4994': y['1'] || 0, '5003': y['loss'] || 0, '5029': y['2'] || 0, '5049': y['3'] || 0,
@@ -56,13 +59,15 @@ function uwColumnValues(uw: UwSnapshotData, catBudget: (range: [number, number])
     '7070': y['14'] || 0, '7098': r2((y['13'] || 0) + (y['14'] || 0)),
     '7099': uw.toe, '7279': uw.toe, '7280': uw.noi,
   };
-  const split = (uwTotal: number, sections: [string, [number, number]][]) => {
-    const budgets = sections.map(([, range]) => Math.abs(catBudget(range)));
+  const split = (pcode: string, uwTotal: number, sections: [string, [number, number]][]) => {
+    const budgets = sections.map(([, range]) => Math.abs(catBudget(pcode, range)));
     const tot = budgets.reduce((a, b) => a + b, 0);
     sections.forEach(([code], i) => { out[code] = tot ? r2((uwTotal * budgets[i]) / tot) : (i === 0 ? uwTotal : 0); });
   };
-  split(y['9'] || 0, [['6170', [6101, 6169]], ['6370', [6301, 6369]], ['6399', [6374, 6398]]]);
-  split(y['13'] || 0, [['6770', [6701, 6769]], ['6870', [6801, 6869]], ['6970', [6901, 6969]]]);
+  split('9', y['9'] || 0, [['6170', [6101, 6169]], ['6370', [6301, 6369]], ['6399', [6374, 6398]]]);
+  split('13', y['13'] || 0, [['6770', [6701, 6769]], ['6870', [6801, 6869]], ['6970', [6901, 6969]]]);
+  // FIXED ADMIN's UW total = its cat-9 slice + insurance + mgmt fee + taxes
+  out['6170'] = r2((out['6170'] || 0) + (y['6'] || 0) + (y['7'] || 0) + (y['8'] || 0));
   return out;
 }
 
@@ -76,9 +81,13 @@ export async function buildReviewWorkbook(args: {
   const byGl = new Map(lines.map((l) => [l.gl_code, l]));
   const ordered = [...coa].filter((a) => a.active).sort((a, b) => a.display_order - b.display_order);
   const labels = monthLabels(args.year, inputs.startMonth || 1);
-  const catBudget = ([lo, hi]: [number, number]): number => {
+  const coaByCode = new Map(coa.map((a) => [a.code, a]));
+  const catBudget = (pcode: string, [lo, hi]: [number, number]): number => {
     let acc = 0;
-    for (const l of lines) { const n = parseInt(l.gl_code, 10); if (n >= lo && n <= hi) acc = r2(acc + sum(l.months)); }
+    for (const l of lines) {
+      const n = parseInt(l.gl_code, 10);
+      if (n >= lo && n <= hi && coaByCode.get(l.gl_code)?.pcode === pcode) acc = r2(acc + sum(l.months));
+    }
     return acc;
   };
   const uwCol = uw ? uwColumnValues(uw, catBudget) : {};

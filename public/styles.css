@@ -110,6 +110,7 @@ table.grid td.m input:focus { border-color: var(--accent); background: var(--inp
 table.grid td.note input { width: 130px; border: 1px solid transparent; background: transparent; border-radius: 4px; padding: 2px 4px; text-align: left; color: var(--dim); }
 table.grid td.note input:focus { border-color: var(--accent); background: var(--input); outline: none; color: var(--ink); }
 table.grid td.neg, .neg { color: var(--bad); }
+table.grid tr.dist td { background: color-mix(in srgb, var(--accent) 10%, var(--panel)); color: var(--accent); font-size: 10.5px; padding-top: 0; padding-bottom: 3px; border-top: none; }
 
 /* driver fills — month cells + chip carry the row's formula colour */
 td.m.drv-rr { background: var(--drv-rr); }   td.m.drv-rr input { color: var(--drv-rr-ink); }

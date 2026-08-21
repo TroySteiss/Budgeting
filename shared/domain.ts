@@ -513,12 +513,18 @@ export function defaultInputs(year: number, uw: UwSnapshotData, rent: { marketMo
   const baseMonthly = rent ? rent.marketMonthly : r2(gpr1 / 12);
   const startLtl = rent ? -Math.max(0, r2(rent.marketMonthly - rent.inPlaceMonthly)) : -r2((Math.abs(uw.y1['loss'] || 0)) / 12);
   const ltlDefaults = { mode: 'leases' as const, renewalPct: 0.7, burnoffRenew: 0.5, burnoffNew: 1 };
+  // financing from the UW book: loan + rate drive interest; equity estimate
+  // = price − loan via LTV (closing costs excluded — user refines capital)
+  const loan = Number(uw.assumptions['loanAmount']) || 0;
+  const rate = Number(uw.assumptions['interestRate']) || 0.06;
+  const ltv = Number(uw.assumptions['ltv']) || 0;
+  const capital = loan && ltv ? r2(loan / ltv - loan) : 0;
   const vac = Number(uw.assumptions['vacancyPct']) || 0.05;
   const uwAbs: Partial<Record<string, number>> = {};
   for (const p of ['4', '5', '6', '8', '9', '10', '11', '12', '13', '14']) uwAbs[p] = r2(uw.y1[p] || 0);
   const egi = uw.egi || 1;
   return {
-    year, units: uw.units, capital: 0, loan: 0, rate: 0.06, startMonth: 1, tieNoi: true, tieIncome: true,
+    year, units: uw.units, capital, loan, rate, startMonth: 1, tieNoi: true, tieIncome: true,
     gpr: { baseMonthly, growthPct: zero12() },
     ltl: { ...ltlDefaults, startMonthly: startLtl, targetPct: pctOf('loss'), rampMonths: 12 },
     vacancyPct: Array(12).fill(vac) as Months,
