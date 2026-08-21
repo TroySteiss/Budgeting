@@ -79,6 +79,8 @@ export interface BudgetInputs {
   /** Total Income ties to (prorated) UW EGI at generation — GPR stays on the
       rent roll, loss-to-lease absorbs the gap. Default true. */
   tieIncome?: boolean;
+  /** which contra-income GL absorbs the income tie (default 5003 LTL) */
+  tieIncomeGl?: string;
   /** categories that flex to absorb the NOI gap (default 9, 11, 13, 14) */
   noiFlexPcodes?: string[];
   /** utilities model: 'seller' = levels from the seller statements with
@@ -574,10 +576,20 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
 
   const gprAnnual = sum(gpr);
 
-  // Loss to lease: per-lease burnoff at each turnover (preferred, needs a
-  // unit-level rent roll) or the linear-ramp fallback.
+  // Loss to lease is ALWAYS rent-roll anchored: per-lease burnoff when a
+  // unit-level roll is linked; otherwise a uniform-expiry burnoff of the
+  // actual market-vs-in-place gap (1/12 of leases turn each month, renewals
+  // burn burnoffRenew, move-ins burn burnoffNew). 'ramp' keeps the legacy
+  // linear ramp to a % of GPR.
   if (inputs.ltl.mode !== 'ramp' && leases && leases.length) {
     mk('5003', ltlMonths(leases, inputs.year, startMonth, inputs.ltl), { method: 'ltl' });
+  } else if (inputs.ltl.mode !== 'ramp') {
+    const rp = inputs.ltl.renewalPct ?? 0.7;
+    const blend = rp * (inputs.ltl.burnoffRenew ?? 0.5) + (1 - rp) * (inputs.ltl.burnoffNew ?? 1);
+    const g0 = Math.abs(inputs.ltl.startMonthly || 0);   // starting gap from the rent roll
+    const ltl = zero12();
+    for (let i = 0; i < 12; i++) ltl[i] = -r2(Math.max(0, g0 * (1 - (blend * (i + 1)) / 12)));
+    mk('5003', ltl, { method: 'ltl' });
   } else {
     const ltl = zero12();
     for (let i = 0; i < 12; i++) {
@@ -752,24 +764,36 @@ export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs
   return out;
 }
 
-/** Tie Total Income to UW Y1 EGI by adjusting the loss-to-lease line — GPR
-    stays anchored to the rent roll, LTL absorbs the gap. When LTL has a
-    modeled shape (lease burnoff / ramp) it is SCALED so the shape survives;
-    otherwise the gap is spread ∝ GPR. Skipped if 5003 is overridden. */
-export function tieIncomeToUw(lines: BudgetLine[], coa: Map<string, CoaAccount>, targetEgi: number): BudgetLine[] {
-  const ltl = lines.find((l) => l.gl_code === '5003');
-  if (!ltl || ltl.override) return lines;
+/** GLs that may absorb the income tie — contra-income lines by nature. */
+export const INCOME_ABSORB_GLS = ['5003', '5031', '5035', '5036', '5040', '5020', '5021'];
+
+/** Tie Total Income to UW Y1 EGI by adjusting ONE absorber line (Troy picks
+    which — default loss-to-lease; vacancy, delinquency, write-offs and
+    concessions are the alternatives). GPR stays anchored to the rent roll.
+    When the absorber already has a modeled shape it is SCALED so the pattern
+    survives; otherwise the gap is spread ∝ GPR. Skipped if it's overridden. */
+export function tieIncomeToUw(lines: BudgetLine[], coa: Map<string, CoaAccount>, targetEgi: number, absorbGl = '5003'): BudgetLine[] {
+  const line = lines.find((l) => l.gl_code === absorbGl);
+  if (!line || line.override) return lines;
   const monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
   const income = sum(rollup(monthsMap).get('5500') || zero12());
   const gap = r2(targetEgi - income);
   if (Math.abs(gap) < 0.01) return lines;
   let newMonths: Months | null = null;
-  const ltlSum = sum(ltl.months);
-  const newSum = r2(ltlSum + gap);
-  if (ltlSum !== 0 && ltlSum * newSum > 0) {
-    // proportional rescale keeps the burnoff pattern
-    const f = newSum / ltlSum;
-    newMonths = ltl.months.map((v) => r2(v * f));
+  const cur = sum(line.months);
+  const newSum = r2(cur + gap);
+  if (absorbGl === '5003') {
+    // LTL stays rent-roll anchored: month 0 is the ACTUAL gap and never moves;
+    // the burn trajectory absorbs (weights grow with the month index)
+    const weights = line.months.map((_, i) => i) as Months;
+    const adj = spreadMonthly(gap, weights);
+    newMonths = line.months.map((v, i) => r2(v + adj[i]));
+    return lines.map((l) => (l.gl_code === absorbGl ? { ...l, months: newMonths! } : l));
+  }
+  if (cur !== 0 && cur * newSum > 0) {
+    // proportional rescale keeps the line's monthly pattern
+    const f = newSum / cur;
+    newMonths = line.months.map((v) => r2(v * f));
     const drift = r2(newSum - sum(newMonths));
     if (drift !== 0) {
       let idx = 11;
@@ -781,9 +805,9 @@ export function tieIncomeToUw(lines: BudgetLine[], coa: Map<string, CoaAccount>,
     const weights = gpr.map((v) => Math.max(0, v));
     if (!weights.some((w) => w > 0)) return lines;
     const adj = spreadMonthly(gap, weights);
-    newMonths = ltl.months.map((v, i) => r2(v + adj[i]));
+    newMonths = line.months.map((v, i) => r2(v + adj[i]));
   }
-  return lines.map((l) => (l.gl_code === '5003' ? { ...l, months: newMonths! } : l));
+  return lines.map((l) => (l.gl_code === absorbGl ? { ...l, months: newMonths! } : l));
 }
 
 export const DEFAULT_NOI_FLEX = ['9', '11', '13', '14'];

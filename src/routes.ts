@@ -179,6 +179,7 @@ interface LoadedBudget {
   uw: UwSnapshotData | null; comps: CompWeights | null; catShapes: Record<string, Months> | null;
   payrollWages: Record<string, number> | null; leases: Lease[] | null;
   sellerUtil: SellerUtilRow[] | null; charges: Record<string, number> | null;
+  sellerRows: any[] | null;
 }
 
 async function loadBudget(id: number): Promise<LoadedBudget | null> {
@@ -219,6 +220,7 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
   // from the UW book's coded T12 panel)
   let catShapes: Record<string, Months> | null = null;
   let sellerUtil: SellerUtilRow[] | null = null;
+  let sellerRows: any[] | null = null;
   if (budget.t12_snapshot_id && uw?.t12?.length) {
     const t = (await query('select data from t12_snapshots where id=$1', [budget.t12_snapshot_id])).rows[0];
     if (t?.data?.rows?.length) {
@@ -230,6 +232,10 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
         .filter((r) => glToPcode[r.gl] === '4' || glToPcode[r.gl] === '12')
         .map((r) => ({ name: r.name || glToName[r.gl] || '', months: r.months, monthCal: t.data.monthCal || [], pcode: glToPcode[r.gl] }));
       if (!sellerUtil.length) sellerUtil = null;
+      sellerRows = (t.data.rows as any[]).map((r) => ({
+        gl: r.gl, name: (r.name || glToName[r.gl] || '').trim(), months: r.months,
+        monthCal: t.data.monthCal || [], pcode: glToPcode[r.gl] || null, total: r.total || 0,
+      }));
     }
   }
   // payroll model: property-level wage aggregates for this budget's property
@@ -247,7 +253,7 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
     if (Array.isArray(rs?.data?.leases) && rs.data.leases.length) leases = rs.data.leases;
     if (rs?.data?.charges && Object.keys(rs.data.charges).length) charges = rs.data.charges;
   }
-  return { budget, lines, coa, coaMap: new Map(coa.map((a) => [a.code, a])), uw, comps, catShapes, payrollWages, leases, sellerUtil, charges };
+  return { budget, lines, coa, coaMap: new Map(coa.map((a) => [a.code, a])), uw, comps, catShapes, payrollWages, leases, sellerUtil, charges, sellerRows };
 }
 
 async function saveLines(budgetId: number, lines: BudgetLine[]): Promise<void> {
@@ -280,6 +286,7 @@ function budgetView(lb: LoadedBudget) {
     leaseCount: lb.leases?.length || 0,
     hasSellerUtil: !!(lb.sellerUtil && lb.sellerUtil.length),
     charges: lb.charges,
+    sellerT12: lb.sellerRows,
   };
 }
 
@@ -290,7 +297,7 @@ function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLin
     ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages, lb.leases, lb.sellerUtil, lb.charges)
     : generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages, lb.leases, lb.sellerUtil, lb.charges);
   if (lb.uw) {
-    if (inputs.tieIncome !== false) lines = tieIncomeToUw(lines, lb.coaMap, lb.uw.egi);
+    if (inputs.tieIncome !== false) lines = tieIncomeToUw(lines, lb.coaMap, lb.uw.egi, inputs.tieIncomeGl || '5003');
     if (inputs.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, lb.uw.noi, inputs.noiFlexPcodes || DEFAULT_NOI_FLEX);
   }
   return { lines };
@@ -445,9 +452,15 @@ router.post('/budgets/:id/tie-noi', h(async (req, res) => {
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
   if (!lb.uw) return res.status(400).json({ error: 'No UW snapshot linked' });
-  const lines = tieNoiToUw(lb.lines, lb.coaMap, lb.uw.noi, lb.budget.inputs?.noiFlexPcodes || DEFAULT_NOI_FLEX);
+  // optional chooser: which categories flex — persisted for future ties/regens
+  let flex: string[] = lb.budget.inputs?.noiFlexPcodes || DEFAULT_NOI_FLEX;
+  if (Array.isArray(req.body?.flexPcodes) && req.body.flexPcodes.length) {
+    flex = req.body.flexPcodes.map(String);
+    await query('update budgets set inputs=$2 where id=$1', [id, JSON.stringify({ ...lb.budget.inputs, noiFlexPcodes: flex })]);
+  }
+  const lines = tieNoiToUw(lb.lines, lb.coaMap, lb.uw.noi, flex);
   await saveLines(id, lines);
-  logChange(req.session.username || '', 'tie NOI to UW', { id, target: lb.uw.noi });
+  logChange(req.session.username || '', 'tie NOI to UW', { id, target: lb.uw.noi, flex });
   res.json(budgetView((await loadBudget(id))!));
 }));
 
@@ -456,9 +469,15 @@ router.post('/budgets/:id/tie-income', h(async (req, res) => {
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
   if (!lb.uw) return res.status(400).json({ error: 'No UW snapshot linked' });
-  const lines = tieIncomeToUw(lb.lines, lb.coaMap, lb.uw.egi);
+  // optional chooser: which contra-income line absorbs — persisted as the default
+  let gl = lb.budget.inputs?.tieIncomeGl || '5003';
+  if (typeof req.body?.gl === 'string' && req.body.gl) {
+    gl = req.body.gl;
+    await query('update budgets set inputs=$2 where id=$1', [id, JSON.stringify({ ...lb.budget.inputs, tieIncomeGl: gl })]);
+  }
+  const lines = tieIncomeToUw(lb.lines, lb.coaMap, lb.uw.egi, gl);
   await saveLines(id, lines);
-  logChange(req.session.username || '', 'tie income to UW', { id, target: lb.uw.egi });
+  logChange(req.session.username || '', 'tie income to UW', { id, target: lb.uw.egi, gl });
   res.json(budgetView((await loadBudget(id))!));
 }));
 

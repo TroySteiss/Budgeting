@@ -20,11 +20,38 @@ const CUR = '"$"#,##0_);[Red]("$"#,##0)';
 const ACCT = '_(* #,##0_);_(* (#,##0);_(* "-"??_);_(@_)';
 const PU = '#,##0.00';
 const PCT = '0.00%';
-const GREEN = 'FFEBF1DE';   // FHND input-cell fill
 const HEAD = 'FFF2F2F2';    // header row fill
 const UWFILL = 'FFFFF2CC';  // UW column tint
 const COMPFILL = 'FFDDEBF7';// Minot comp column tint
 const GRAND = 'FFE3EBF7';   // grand-total row fill
+
+/* Driver fills — same palette as the app grid, so the workbook shows what
+   each row references (Troy: "colors pull through into the review workbook") */
+const DRIVER_FILLS: Record<string, { fill: string; label: string }> = {
+  rr: { fill: 'FFE3F1DE', label: 'Rent roll / income engine' },
+  uw: { fill: 'FFFDF3D2', label: 'UW tie' },
+  comp: { fill: 'FFDDEAF9', label: 'Minot comps' },
+  pay: { fill: 'FFEBE2F8', label: 'Payroll model' },
+  fee: { fill: 'FFDCF1EE', label: '% of income' },
+  int: { fill: 'FFE9E9EC', label: 'Interest' },
+  t12: { fill: 'FFFBE8D9', label: 'Seller stmt / recovery' },
+  man: { fill: 'FFF6E3F2', label: 'Manual override' },
+};
+function driverKind(l: BudgetLine | undefined): string {
+  if (!l) return 'man';
+  const m = (l.driver as any)?.method;
+  if (l.override && (!m || m === 'manual')) return 'man';
+  switch (m) {
+    case 'gpr': case 'ltl': case 'vacancy': case 'charges': return 'rr';
+    case 'catShare': return 'uw';
+    case 'perUnitComp': case 't3avg': return 'comp';
+    case 'payrollModel': case 'burdenRatio': return 'pay';
+    case 'mgmtPct': return 'fee';
+    case 'interest': return 'int';
+    case 'sellerUtil': case 'recovery': case 'sellerLine': return 't12';
+    default: return 'man';
+  }
+}
 
 const f8 = { size: 8 };
 const f8b = { size: 8, bold: true };
@@ -140,6 +167,16 @@ export async function buildReviewWorkbook(args: {
   ws.getCell(4, 3).value = inputs.capital || 0;
   ws.getCell(4, 3).font = f8b;
   ws.getCell(4, 3).numFmt = CUR;
+  // row 5: formula-colour legend (mirrors the app's fills)
+  ws.getCell(5, 2).value = 'Fill = formula source:';
+  ws.getCell(5, 2).font = { size: 7.5, italic: true, color: { argb: 'FF808080' } };
+  Object.values(DRIVER_FILLS).forEach((d, i) => {
+    const cell = ws.getCell(5, C.m1 + i);
+    cell.value = d.label;
+    cell.font = { size: 7 };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: d.fill } };
+    cell.alignment = { horizontal: 'center' };
+  });
 
   // r6 column headers
   const heads: [number, string][] = [
@@ -190,12 +227,14 @@ export async function buildReviewWorkbook(args: {
       const ln = byGl.get(a.code);
       ws.getCell(r, C.driver).value = ln ? driverLabel(ln.driver) + (ln.override ? ' (manual)' : '') : '';
       ws.getCell(r, C.driver).font = { size: 7.5, italic: true, color: { argb: 'FF808080' } };
+      const hasVals = ln && (ln.months.some((v) => v) || ln.override);
+      const dFill = DRIVER_FILLS[driverKind(hasVals ? ln : undefined)].fill;
       (ln?.months || zero12()).forEach((v, i) => {
         const cell = ws.getCell(r, C.m1 + i);
         if (v) cell.value = v;
         cell.numFmt = CUR;
         cell.font = f8;
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GREEN } };
+        if (hasVals) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: dFill } };
       });
       if (ln?.note) {
         ws.getCell(r, C.note).value = ln.note;

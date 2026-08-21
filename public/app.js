@@ -42,6 +42,7 @@ function drvMeta(l) {
     case 'mgmtPct': return { cls: 'drv-fee', tag: '%INC', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of income` };
     case 'interest': return { cls: 'drv-int', tag: 'INT', label: 'Interest (loan × rate × days)' };
     case 'sellerUtil': return { cls: 'drv-t12', tag: 'SLR', label: 'Seller statement level (× growth)' };
+    case 'sellerLine': return { cls: 'drv-t12', tag: 'SLR', label: `Seller: ${l.driver.name || ''} × ${(l.driver.pct || 0).toFixed(1)}%` };
     case 'recovery': return { cls: 'drv-t12', tag: 'REC', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% recovery of prior-month billing` };
     case 'charges': return { cls: 'drv-rr', tag: 'CHG', label: 'Rent-roll charges × 12' };
     default: return { cls: 'drv-none', tag: '—', label: 'No formula (zero / manual)' };
@@ -601,13 +602,23 @@ function renderEditor(el) {
     e.stopPropagation();
     openRowTools(b, btn.dataset.tools, btn);
   }));
-  el.querySelectorAll('.tie .rb:not(.basis)').forEach((btn) => btn.addEventListener('click', async () => {
+  // inline formula params: change → patch inputs → regenerate
+  el.querySelectorAll('input.fxp').forEach((box) => box.addEventListener('change', async () => {
+    const gl = box.dataset.fxp;
+    const line = S.bv.lines.find((l) => l.gl_code === gl);
+    const prm = paramFor(gl, line, S.bv.budget.inputs || {});
+    if (!prm) return;
+    const v = parseFloat(String(box.value).replace(/,/g, ''));
+    if (!Number.isFinite(v)) return;
     pushUndo();
-    S.bv = btn.dataset.noi
-      ? await POST(`/budgets/${b.id}/tie-noi`)
-      : btn.dataset.egi
-        ? await POST(`/budgets/${b.id}/tie-income`)
-        : await POST(`/budgets/${b.id}/rebalance`, { pcode: btn.dataset.p });
+    S.bv = await PUT(`/budgets/${b.id}`, { inputs: prm.patch(v) });
+    render();
+  }));
+  el.querySelectorAll('.tie .rb:not(.basis)').forEach((btn) => btn.addEventListener('click', async (e) => {
+    if (btn.dataset.noi) { e.stopPropagation(); return openTieNoiMenu(b, btn); }
+    if (btn.dataset.egi) { e.stopPropagation(); return openTieIncomeMenu(b, btn); }
+    pushUndo();
+    S.bv = await POST(`/budgets/${b.id}/rebalance`, { pcode: btn.dataset.p });
     render();
   }));
   el.querySelectorAll('.tie .rb.basis').forEach((btn) => btn.addEventListener('click', async () => {
@@ -702,10 +713,11 @@ function gridHtml(bv, totals) {
     const isZero = !ann && !m.some((v) => v) && !(l && l.note);
     if (isZero && !S.showZero) continue;
     const dm = drvMeta(l && (ann || l.override) ? l : null);
+    const prm = cols.fx && l && !l.override ? paramFor(a.code, l, bv.budget.inputs || {}) : null;
     rows.push(`<tr>
       <td class="code">${a.code}</td>
       <td class="name" title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}">${esc(a.name)}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
-      ${cols.fx ? `<td><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button></td>` : ''}
+      ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${prm ? `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">` : ''}</td>` : ''}
       ${monthIdx.map((i) => `<td class="m ${dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money2(m[i]) : ''}"></td>`).join('')}
       ${cols.annual ? `<td class="${ann < 0 ? 'neg' : ''}"><b>${money(ann)}</b></td>` : ''}
       ${cols.punit ? `<td>${ann ? money(ann / units) : ''}</td>` : ''}
@@ -760,6 +772,44 @@ function trendSvg(bv) {
     <button class="trend-chip ${sel.has(s.name) ? 'on' : ''}" data-trend="${s.name}" style="--c:${s.color}">
       <span style="display:inline-block;width:10px;height:3px;background:${s.color};vertical-align:3px;margin-right:4px"></span>${s.name}</button>`).join('');
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%; display:block">${body}</svg><div style="margin-top:5px">${legend}</div>`;
+}
+
+/* Inline formula parameter for a row: shown next to the Fx chip so e.g.
+   vacancy % is adjustable without opening Assumptions. Returns null when the
+   row's formula has no single adjustable number. */
+function paramFor(gl, line, inp) {
+  const m = line && line.driver ? line.driver.method : null;
+  const pct = (v) => (v == null ? '' : +(v * 100).toFixed(2));
+  if (gl === '4994' && m === 'gpr') {
+    const g = (inp.gpr || {}).growthPct || [];
+    return { label: 'growth %/mo', value: pct(g[1] || 0), patch: (v) => ({ gpr: { ...(inp.gpr || {}), growthPct: Array(12).fill(v / 100) } }) };
+  }
+  if (gl === '5003' && m === 'ltl') {
+    return { label: 'renewal %', value: pct((inp.ltl || {}).renewalPct ?? 0.7), patch: (v) => ({ ltl: { ...(inp.ltl || {}), renewalPct: v / 100 } }) };
+  }
+  if (gl === '5031' && m === 'vacancy') {
+    const vac = inp.vacancyPct || [];
+    return { label: 'vacancy %', value: pct(vac[0] || 0), patch: (v) => ({ vacancyPct: Array(12).fill(v / 100) }) };
+  }
+  if (gl === '6112' && m === 'mgmtPct') {
+    return { label: '% of income', value: pct(inp.mgmtPct || 0), patch: (v) => ({ mgmtPct: v / 100 }) };
+  }
+  if (m === 'sellerUtil') {
+    return { label: 'growth %', value: pct((inp.utilities || {}).growthPct ?? 0.03), patch: (v) => ({ utilities: { ...(inp.utilities || {}), growthPct: v / 100 } }) };
+  }
+  if (m === 'recovery') {
+    return { label: 'recovery %', value: pct(line.driver.pct || 0), patch: (v) => ({ utilities: { ...(inp.utilities || {}), recoveryPct: v / 100 } }) };
+  }
+  if (m === 'catShare' && line.driver.pcode === '2') {
+    return { label: 'concessions % of GPR', value: pct(inp.concessionPct || 0), patch: (v) => ({ concessionPct: v / 100 }) };
+  }
+  if (m === 'catShare' && line.driver.pcode === '3') {
+    return { label: 'rental loss % of GPR (total)', value: pct(inp.rentalLossPct || 0), patch: (v) => ({ rentalLossPct: v / 100 }) };
+  }
+  if (m === 'interest') {
+    return { label: 'rate %', value: pct(inp.rate || 0), patch: (v) => ({ rate: v / 100 }) };
+  }
+  return null;
 }
 
 function openColsMenu(anchorBtn, labels) {
@@ -960,6 +1010,7 @@ function openRowTools(b, gl, anchorBtn) {
     <button data-act="grow">${dot('drv-man')}Start $ /mo + growth %/mo…</button>
     ${hasComp ? `<button data-act="minot">${dot('drv-comp')}Minot $/unit × units (${money((S.bv.compWeights[gl] / S.bv.compUnits) * inp.units)}/yr, seasonal)</button>` : ''}
     ${hasComp && S.bv.compShapes && S.bv.compShapes[gl] ? `<button data-act="t3avg" title="Weighted average of the comp's last 3 months (1-2-1), per-unit scaled, × (1+growth), rounded to $250 — your MROUND formula">${dot('drv-comp')}T3 actuals avg × growth → MROUND $250…</button>` : ''}
+    ${(S.bv.sellerT12 || []).length ? `<button data-act="seller" title="Match this GL to a seller T12 line and take its monthly actuals × growth">${dot('drv-t12')}Seller actuals — match a seller line…</button>` : ''}
     <button data-act="reset">${dot('drv-uw')}Reset to engine formula (clear override)</button>`;
   const r = anchorBtn.getBoundingClientRect();
   menu.style.left = `${r.left + window.scrollX}px`;
@@ -1022,6 +1073,10 @@ function openRowTools(b, gl, anchorBtn) {
       const rounded = Math.round(scaled / 250) * 250;
       return put(Array(12).fill(rounded), { method: 't3avg', pct: g });
     }
+    if (act === 'seller') {
+      openSellerMatch(b, gl, acc, anchorBtn, put);
+      return;
+    }
     if (act === 'reset') {
       pushUndo();
       S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { override: false });
@@ -1029,6 +1084,111 @@ function openRowTools(b, gl, anchorBtn) {
       render();
     }
   }));
+}
+
+/* Seller-line matcher: browse the seller T12's lines (same-category first),
+   pick one, grow it — the row takes the seller's monthly actuals, aligned to
+   the ownership calendar. */
+function openSellerMatch(b, gl, acc, anchorBtn, put) {
+  document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
+  const start = (S.bv.budget.inputs || {}).startMonth || 1;
+  const rows = (S.bv.sellerT12 || []).filter((r) => r.months && r.months.some((v) => v));
+  rows.sort((a, z) => {
+    const am = a.pcode === acc.pcode ? 0 : 1, zm = z.pcode === acc.pcode ? 0 : 1;
+    return am - zm || Math.abs(z.total) - Math.abs(a.total);
+  });
+  const menu = document.createElement('div');
+  menu.className = 'rowmenu';
+  menu.style.maxHeight = '420px';
+  menu.style.overflow = 'auto';
+  menu.innerHTML = `
+    <div class="rm-head">Match ${gl} ${esc(acc.name || '')} to a seller line</div>
+    <div style="padding:4px 6px"><input id="sm-filter" placeholder="filter…" style="width:100%; border:1px solid var(--line); border-radius:6px; padding:4px 7px"></div>
+    ${rows.map((r, i) => `<button data-sm="${i}" ${r.pcode === acc.pcode ? '' : 'style="opacity:.75"'}>
+      ${esc(r.name.slice(0, 34))} <span class="muted" style="float:right">${money(r.total)}${r.pcode === acc.pcode ? ' · suggested' : ''}</span></button>`).join('')}`;
+  const rct = anchorBtn.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, rct.left + window.scrollX - 60)}px`;
+  menu.style.top = `${rct.bottom + window.scrollY + 2}px`;
+  document.body.appendChild(menu);
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+  menu.querySelector('#sm-filter').addEventListener('input', (e) => {
+    const q = e.target.value.toLowerCase();
+    menu.querySelectorAll('button[data-sm]').forEach((btn) => {
+      btn.style.display = btn.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+  menu.querySelectorAll('button[data-sm]').forEach((btn) => btn.addEventListener('click', async () => {
+    const r = rows[Number(btn.dataset.sm)];
+    menu.remove();
+    const g = parseFloat(String(prompt(`Growth % on "${r.name}" (0 = seller actuals as-is):`, '3') || '').replace(/,/g, ''));
+    if (!Number.isFinite(g)) return;
+    // seller months → calendar buckets → ownership-month order × growth
+    const cal = Array(12).fill(0);
+    r.months.forEach((v, i) => { cal[((r.monthCal && r.monthCal[i]) || i + 1) - 1] += v || 0; });
+    const months = Array.from({ length: 12 }, (_, i) => Math.round(cal[(start - 1 + i) % 12] * (1 + g / 100) * 100) / 100);
+    await put(months, { method: 'sellerLine', name: r.name.slice(0, 40), pct: g });
+  }));
+}
+
+/* Tie choosers: pick WHERE the gap goes instead of the app deciding. */
+function openTieIncomeMenu(b, anchorBtn) {
+  document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
+  const gap = S.bv.tieout.egi.variance;
+  const current = (S.bv.budget.inputs || {}).tieIncomeGl || '5003';
+  const CANDIDATES = ['5003', '5031', '5035', '5036', '5040', '5020', '5021'];
+  const linesByGl = new Map(S.bv.lines.map((l) => [l.gl_code, l]));
+  const menu = document.createElement('div');
+  menu.className = 'rowmenu';
+  menu.innerHTML = `
+    <div class="rm-head">Income is ${gap > 0 ? 'over' : 'under'} UW by ${money(Math.abs(gap))} — absorb via:</div>
+    ${CANDIDATES.map((gl) => {
+      const a = S.state.coa.find((x) => x.code === gl);
+      if (!a) return '';
+      const l = linesByGl.get(gl);
+      const cur = l ? sumM(l.months) : 0;
+      const locked = l && l.override;
+      return `<button data-tg="${gl}" ${locked ? 'disabled title="overridden — unlock first"' : ''}>
+        ${gl === current ? '✓ ' : ''}${gl} ${esc(a.name.slice(0, 26))} <span class="muted" style="float:right">${money(cur)}</span></button>`;
+    }).join('')}`;
+  const rct = anchorBtn.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, rct.left + window.scrollX - 180)}px`;
+  menu.style.top = `${rct.bottom + window.scrollY + 2}px`;
+  document.body.appendChild(menu);
+  setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+  menu.querySelectorAll('button[data-tg]').forEach((btn) => btn.addEventListener('click', async (e) => {
+    e.stopPropagation(); menu.remove();
+    pushUndo();
+    S.bv = await POST(`/budgets/${b.id}/tie-income`, { gl: btn.dataset.tg });
+    render();
+  }));
+}
+
+function openTieNoiMenu(b, anchorBtn) {
+  document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
+  const gap = S.bv.tieout.noi.variance;
+  const sel = new Set((S.bv.budget.inputs || {}).noiFlexPcodes || ['9', '11', '13', '14']);
+  const CATS = [['6', 'Insurance'], ['8', 'RE & PP Taxes'], ['9', 'Admin & Acct'], ['10', 'Payroll'], ['11', 'Marketing'], ['12', 'Utilities'], ['13', 'R&M'], ['14', 'Rehab / Reserves']];
+  const menu = document.createElement('div');
+  menu.className = 'rowmenu';
+  menu.innerHTML = `
+    <div class="rm-head">NOI is ${gap > 0 ? 'over' : 'under'} UW by ${money(Math.abs(gap))} — scale these categories:</div>
+    ${CATS.map(([p, label]) => `<label><input type="checkbox" data-tf="${p}" ${sel.has(p) ? 'checked' : ''}> ${label}</label>`).join('')}
+    <button data-go="1" style="color:var(--accent); font-weight:600">Tie NOI</button>`;
+  const rct = anchorBtn.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, rct.left + window.scrollX - 180)}px`;
+  menu.style.top = `${rct.bottom + window.scrollY + 2}px`;
+  document.body.appendChild(menu);
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+  menu.querySelector('[data-go]').addEventListener('click', async () => {
+    const flex = [...menu.querySelectorAll('[data-tf]')].filter((c) => c.checked).map((c) => c.dataset.tf);
+    menu.remove();
+    if (!flex.length) return;
+    pushUndo();
+    S.bv = await POST(`/budgets/${b.id}/tie-noi`, { flexPcodes: flex });
+    render();
+  });
 }
 
 /* ---------------- settings ---------------- */

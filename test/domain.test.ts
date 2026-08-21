@@ -268,6 +268,39 @@ describe('utilities integration in generateLines', () => {
   });
 });
 
+describe('LTL without lease detail — rent-roll-anchored uniform-expiry burnoff', () => {
+  it('starts at the actual rent-roll gap and burns 1/12 of leases per month', () => {
+    const inputs = defaultInputs(2026, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 73526 }); // gap 26,474
+    inputs.tieIncome = false;
+    const lines = generateLines(coaList, inputs, fakeUw, null);   // no leases → uniform burnoff
+    const ltl = lines.find((l) => l.gl_code === '5003')!;
+    const blend = 0.7 * 0.5 + 0.3 * 1;   // .65 with defaults
+    expect(ltl.months[0]).toBeCloseTo(-26474 * (1 - blend / 12), 0);
+    expect(ltl.months[11]).toBeCloseTo(-26474 * (1 - blend), 0);  // 35% of the gap left after a year
+  });
+  it('the income tie NEVER moves LTL month 0 (rent-roll anchor)', () => {
+    const inputs = defaultInputs(2026, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 73526 });
+    inputs.tieIncome = false;
+    let lines = generateLines(coaList, inputs, fakeUw, null);
+    const before0 = lines.find((l) => l.gl_code === '5003')!.months[0];
+    lines = tieIncomeToUw(lines, coaMap, fakeUw.egi, '5003');
+    const ltl = lines.find((l) => l.gl_code === '5003')!;
+    expect(ltl.months[0]).toBe(before0);
+    const monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
+    expect(sum(rollup(monthsMap).get('5500')!)).toBeCloseTo(fakeUw.egi, 1);
+  });
+  it('tie via a different absorber (vacancy) leaves LTL alone', () => {
+    const inputs = defaultInputs(2026, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 });
+    inputs.tieIncome = false;
+    let lines = generateLines(coaList, inputs, fakeUw, null);
+    const ltlBefore = sum(lines.find((l) => l.gl_code === '5003')!.months);
+    lines = tieIncomeToUw(lines, coaMap, fakeUw.egi, '5031');
+    expect(sum(lines.find((l) => l.gl_code === '5003')!.months)).toBe(ltlBefore);
+    const monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
+    expect(sum(rollup(monthsMap).get('5500')!)).toBeCloseTo(fakeUw.egi, 1);
+  });
+});
+
 describe('ltlMonths — per-lease burnoff at turnover', () => {
   // ownership year Sep 2026 – Aug 2027
   const leases: Lease[] = [
