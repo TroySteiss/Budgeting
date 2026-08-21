@@ -9,7 +9,7 @@ import {
   CoaAccount, BudgetLine, BudgetInputs, UwSnapshotData, CompWeights, Months,
   generateLines, regenerate, rebalanceCategory, defaultInputs, computeTieout,
   kpis, categoryTotals, t12CategoryShapes, tieNoiToUw, tieIncomeToUw, DEFAULT_NOI_FLEX,
-  calendarSlice, monthLabels, zero12, r2, sum, type Lease, type SellerUtilRow,
+  calendarSlice, monthLabels, applyRounding, zero12, r2, sum, type Lease, type SellerUtilRow,
 } from '../shared/domain.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -186,11 +186,12 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
   const budget = (await query('select * from budgets where id=$1', [id])).rows[0];
   if (!budget) return null;
   const [lineRows, coa] = await Promise.all([
-    query('select gl_code, months, driver, override, note from budget_lines where budget_id=$1', [id]),
+    query('select gl_code, months, driver, override, note, round from budget_lines where budget_id=$1', [id]),
     loadCoa(),
   ]);
   const lines: BudgetLine[] = lineRows.rows.map((r: any) => ({
     gl_code: r.gl_code, months: r.months as Months, driver: r.driver, override: r.override, note: r.note,
+    round: Number(r.round) || 0,
   }));
   let uw: UwSnapshotData | null = null;
   if (budget.uw_snapshot_id) {
@@ -261,8 +262,8 @@ async function saveLines(budgetId: number, lines: BudgetLine[]): Promise<void> {
     await c.query('delete from budget_lines where budget_id=$1', [budgetId]);
     for (const l of lines) {
       await c.query(
-        'insert into budget_lines(budget_id, gl_code, months, driver, override, note) values($1,$2,$3,$4,$5,$6)',
-        [budgetId, l.gl_code, JSON.stringify(l.months), JSON.stringify(l.driver), l.override, l.note || '']
+        'insert into budget_lines(budget_id, gl_code, months, driver, override, note, round) values($1,$2,$3,$4,$5,$6,$7)',
+        [budgetId, l.gl_code, JSON.stringify(l.months), JSON.stringify(l.driver), l.override, l.note || '', l.round || 0]
       );
     }
     await c.query('update budgets set updated_at=now() where id=$1', [budgetId]);
@@ -300,6 +301,8 @@ function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLin
     if (inputs.tieIncome !== false) lines = tieIncomeToUw(lines, lb.coaMap, lb.uw.egi, inputs.tieIncomeGl || '5003');
     if (inputs.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, lb.uw.noi, inputs.noiFlexPcodes || DEFAULT_NOI_FLEX);
   }
+  // standing per-line MROUND re-applies as the final step (not a lock)
+  lines = applyRounding(lines);
   return { lines };
 }
 
@@ -394,6 +397,9 @@ router.put('/budgets/:id/lines/:gl', h(async (req, res) => {
   if (months) {
     if (!Array.isArray(months) || months.length !== 12) return res.status(400).json({ error: 'months must be an array of 12 numbers' });
     existing.months = months.map((v: any) => r2(Number(v) || 0));
+    if (existing.round && existing.round > 0) {
+      existing.months = existing.months.map((v) => r2(Math.round(v / existing.round!) * existing.round!));
+    }
     existing.override = true;
     existing.driver = { method: 'manual' };
   }
@@ -401,8 +407,8 @@ router.put('/budgets/:id/lines/:gl', h(async (req, res) => {
   if (typeof note === 'string') existing.note = note;
   if (driver) existing.driver = driver;
   await query(
-    'update budget_lines set months=$3, driver=$4, override=$5, note=$6 where budget_id=$1 and gl_code=$2',
-    [id, gl, JSON.stringify(existing.months), JSON.stringify(existing.driver), existing.override, existing.note]
+    'update budget_lines set months=$3, driver=$4, override=$5, note=$6, round=$7 where budget_id=$1 and gl_code=$2',
+    [id, gl, JSON.stringify(existing.months), JSON.stringify(existing.driver), existing.override, existing.note, existing.round || 0]
   );
   await query('update budgets set updated_at=now() where id=$1', [id]);
   logChange(req.session.username || '', 'edit line', { id, gl, annual: sum(existing.months) });
@@ -427,6 +433,7 @@ router.post('/budgets/:id/restore', h(async (req, res) => {
       driver: l.driver && typeof l.driver === 'object' ? l.driver : { method: 'manual' },
       override: !!l.override,
       note: typeof l.note === 'string' ? l.note : '',
+      round: Number(l.round) || 0,
     });
   }
   if (!restored.length) return res.status(400).json({ error: 'no valid lines in snapshot' });
@@ -458,7 +465,7 @@ router.post('/budgets/:id/tie-noi', h(async (req, res) => {
     flex = req.body.flexPcodes.map(String);
     await query('update budgets set inputs=$2 where id=$1', [id, JSON.stringify({ ...lb.budget.inputs, noiFlexPcodes: flex })]);
   }
-  const lines = tieNoiToUw(lb.lines, lb.coaMap, lb.uw.noi, flex);
+  const lines = applyRounding(tieNoiToUw(lb.lines, lb.coaMap, lb.uw.noi, flex));
   await saveLines(id, lines);
   logChange(req.session.username || '', 'tie NOI to UW', { id, target: lb.uw.noi, flex });
   res.json(budgetView((await loadBudget(id))!));
@@ -475,37 +482,42 @@ router.post('/budgets/:id/tie-income', h(async (req, res) => {
     gl = req.body.gl;
     await query('update budgets set inputs=$2 where id=$1', [id, JSON.stringify({ ...lb.budget.inputs, tieIncomeGl: gl })]);
   }
-  const lines = tieIncomeToUw(lb.lines, lb.coaMap, lb.uw.egi, gl);
+  const lines = applyRounding(tieIncomeToUw(lb.lines, lb.coaMap, lb.uw.egi, gl));
   await saveLines(id, lines);
   logChange(req.session.username || '', 'tie income to UW', { id, target: lb.uw.egi, gl });
   res.json(budgetView((await loadBudget(id))!));
 }));
 
-/* Bulk MROUND: round every month of the SELECTED lines to a multiple
-   ($100/$250/$500…). Rounded lines become overrides but keep their driver
-   identity (chips stay UW/MINOT/SLR…, not MAN). */
+/* Bulk MROUND: sets a STANDING per-line rounding multiple — a modifier that
+   applies immediately and re-applies after every regeneration / formula
+   change. NOT a lock: lines stay live on their formulas. multiple=0 clears. */
 router.post('/budgets/:id/round', h(async (req, res) => {
   const id = Number(req.params.id);
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
   const multiple = Number(req.body?.multiple);
   const gls: string[] = Array.isArray(req.body?.gls) ? req.body.gls.map(String) : [];
-  if (!multiple || multiple <= 0) return res.status(400).json({ error: 'multiple must be a positive number' });
+  if (!Number.isFinite(multiple) || multiple < 0) return res.status(400).json({ error: 'multiple must be ≥ 0 (0 clears rounding)' });
   if (!gls.length) return res.status(400).json({ error: 'pick at least one line' });
   const glSet = new Set(gls);
   let touched = 0;
-  const lines = lb.lines.map((l) => {
+  let lines = lb.lines.map((l) => {
     if (!glSet.has(l.gl_code)) return l;
     touched++;
-    return {
-      ...l,
-      months: l.months.map((v) => r2(Math.round(v / multiple) * multiple)),
-      override: true,
-    };
+    return { ...l, round: multiple };
   });
   if (!touched) return res.status(400).json({ error: 'no matching lines' });
-  await saveLines(id, lines);
-  logChange(req.session.username || '', 'bulk MROUND', { id, multiple, lines: touched });
+  if (multiple === 0) {
+    // clearing: regenerate so non-overridden lines return to unrounded values
+    await saveLines(id, lines);
+    const lb2 = (await loadBudget(id))!;
+    const built = buildLines(lb2, lb2.budget.inputs, lb2.lines);
+    await saveLines(id, built.lines);
+  } else {
+    lines = applyRounding(lines);
+    await saveLines(id, lines);
+  }
+  logChange(req.session.username || '', 'set standing MROUND', { id, multiple, lines: touched });
   res.json(budgetView((await loadBudget(id))!));
 }));
 
@@ -536,7 +548,7 @@ router.post('/budgets/:id/rebalance', h(async (req, res) => {
   else if (pcode === 'loss') target = -r2(inputs.ltl.targetPct * gprAnnual);
   else if (pcode === '7') target = null; // mgmt fee is % of income — use recalc instead
   if (target == null) return res.status(400).json({ error: `Category ${pcode} cannot be rebalanced directly` });
-  const lines = rebalanceCategory(lb.lines, lb.coaMap, pcode, target);
+  const lines = applyRounding(rebalanceCategory(lb.lines, lb.coaMap, pcode, target));
   await saveLines(id, lines);
   logChange(req.session.username || '', 'rebalance category', { id, pcode, target });
   res.json(budgetView((await loadBudget(id))!));

@@ -5,7 +5,7 @@ import {
   spreadMonthly, allocateWeighted, rollup, generateLines, rebalanceCategory,
   categoryTotals, computeTieout, defaultInputs, tieNoiToUw, tieIncomeToUw,
   calendarSlice, monthLabels, rotate12, ltlMonths, buildUtilityModel, chargeGlMonthly,
-  sum, zero12, CoaAccount, UwSnapshotData, Months, Lease, SellerUtilRow,
+  applyRounding, regenerate, sum, zero12, CoaAccount, UwSnapshotData, Months, Lease, SellerUtilRow,
 } from '../shared/domain.js';
 
 const coaList: CoaAccount[] = JSON.parse(readFileSync(join(process.cwd(), 'seed', 'coa.json'), 'utf8'));
@@ -94,6 +94,26 @@ describe('generateLines + tie-out', () => {
     const tie = computeTieout(lines, coaMap, fakeUw);
     // GPR/LTL anchor to the rent roll rather than UW, so small variance is expected — but not huge
     expect(Math.abs(tie.noi.variance)).toBeLessThan(20000);
+  });
+});
+
+describe('standing MROUND (applyRounding)', () => {
+  it('rounds only lines with a round set, without locking them', () => {
+    const inputs = defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 });
+    let lines = generateLines(coaList, inputs, fakeUw, null);
+    const target = lines.find((l) => coaMap.get(l.gl_code)?.pcode === '10' && sum(l.months) > 0)!;
+    target.round = 250;
+    lines = applyRounding(lines);
+    const rounded = lines.find((l) => l.gl_code === target.gl_code)!;
+    expect(rounded.months.every((v) => Math.abs(v % 250) < 0.001)).toBe(true);
+    expect(rounded.override).toBe(false);                       // NOT a lock
+    // survives regeneration: round carries over and re-applies
+    let regen = regenerate(lines, coaList, inputs, fakeUw, null);
+    regen = applyRounding(regen);
+    const after = regen.find((l) => l.gl_code === target.gl_code)!;
+    expect(after.round).toBe(250);
+    expect(after.months.every((v) => Math.abs(v % 250) < 0.001)).toBe(true);
+    expect(after.override).toBe(false);
   });
 });
 

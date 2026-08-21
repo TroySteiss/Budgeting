@@ -28,6 +28,18 @@ export interface BudgetLine {
   driver: Driver;
   override: boolean;
   note: string;
+  /** standing MROUND multiple (0/undefined = none) — applied after the
+      formula computes, re-applies on every regeneration; NOT a lock */
+  round?: number;
+}
+
+/** Apply each line's standing MROUND to its months (the final pipeline step —
+    ties run first, so rounding drift shows as small honest variance). */
+export function applyRounding(lines: BudgetLine[]): BudgetLine[] {
+  return lines.map((l) => {
+    if (!l.round || l.round <= 0) return l;
+    return { ...l, months: l.months.map((v) => r2(Math.round(v / l.round!) * l.round!)) };
+  });
 }
 
 export type Driver =
@@ -760,7 +772,7 @@ export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs
     seen.add(old.gl_code);
     if (old.override) { out.push(old); continue; }
     const f = fresh.get(old.gl_code);
-    out.push(f ? { ...f, note: old.note } : old);
+    out.push(f ? { ...f, note: old.note, round: old.round } : old);   // standing round survives
   }
   for (const [gl, f] of fresh) if (!seen.has(gl)) out.push(f);
   return out;

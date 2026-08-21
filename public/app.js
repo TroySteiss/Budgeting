@@ -721,7 +721,7 @@ function gridHtml(bv, totals) {
     rows.push(`<tr>
       <td class="code">${a.code}</td>
       <td class="name" title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}">${esc(a.name)}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
-      ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${prm ? `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">` : ''}</td>` : ''}
+      ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">` : ''}</td>` : ''}
       ${monthIdx.map((i) => `<td class="m ${dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money2(m[i]) : ''}"></td>`).join('')}
       ${cols.annual ? `<td class="${ann < 0 ? 'neg' : ''}"><b>${money(ann)}</b></td>` : ''}
       ${cols.punit ? `<td>${ann ? money(ann / units) : ''}</td>` : ''}
@@ -1330,22 +1330,24 @@ function openRoundDialog(b) {
   const coaByCode = new Map(S.state.coa.map((a) => [a.code, a]));
   const AUTO = new Set(['catShare', 'perUnitComp', 't3avg', 'sellerLine', 'sellerUtil', 'burdenRatio']);
   const cands = S.bv.lines
-    .filter((l) => l.months.some((v) => v))
+    .filter((l) => l.months.some((v) => v) || l.round)
     .map((l) => {
       const a = coaByCode.get(l.gl_code) || {};
       return { gl: l.gl_code, name: a.name || '', section: a.section || '', annual: sumM(l.months),
-               suggested: AUTO.has((l.driver || {}).method) && !l.override, tag: drvMeta(l).tag };
+               suggested: AUTO.has((l.driver || {}).method) && !l.override, tag: drvMeta(l).tag, round: l.round || 0 };
     })
     .sort((x, y) => Number(x.gl) - Number(y.gl));
   const bySection = {};
   for (const c of cands) (bySection[c.section] = bySection[c.section] || []).push(c);
   dlg.innerHTML = `
-    <h2>Bulk MROUND — round months to a multiple</h2>
+    <h2>Bulk MROUND — standing rounding (not a lock)</h2>
+    <p class="muted" style="margin:0 0 8px; font-size:12px">Sets a rounding multiple ON the selected lines: applies now and re-applies automatically whenever formulas regenerate. Lines stay live on their formulas. Multiple 0 clears rounding.</p>
     <div class="row">
-      <div class="fld"><label>Multiple $</label><input id="rd-mult" value="250" style="width:90px"></div>
-      ${[100, 250, 300, 500, 1000].map((m) => `<button class="btn sub" data-preset="${m}">$${m}</button>`).join('')}
+      <div class="fld"><label>Multiple $ (0 = clear)</label><input id="rd-mult" value="250" style="width:90px"></div>
+      ${[0, 100, 250, 300, 500, 1000].map((m) => `<button class="btn sub" data-preset="${m}">${m === 0 ? 'Clear' : '$' + m}</button>`).join('')}
       <span class="spacer" style="flex:1"></span>
       <button class="btn sub" id="rd-sugg">Suggested</button>
+      <button class="btn sub" id="rd-rounded">Currently rounded</button>
       <button class="btn sub" id="rd-all">All</button>
       <button class="btn sub" id="rd-none">None</button>
     </div>
@@ -1354,18 +1356,19 @@ function openRoundDialog(b) {
         <div style="margin:6px 0 2px"><label style="font-weight:650; font-size:12px; color:var(--dim); text-transform:uppercase">
           <input type="checkbox" data-sec="${esc(sec)}"> ${esc(sec.replace(/_/g, ' '))}</label></div>
         ${list.map((c) => `<label style="display:inline-block; width:49%; font-size:12.3px; padding:1px 0">
-          <input type="checkbox" data-rd="${c.gl}" data-secof="${esc(c.section)}" data-sugg="${c.suggested ? 1 : 0}" ${c.suggested ? 'checked' : ''}>
-          ${c.gl} ${esc(c.name.slice(0, 24))} <span class="muted">${money(c.annual)} · ${c.tag}</span></label>`).join('')}`).join('')}
+          <input type="checkbox" data-rd="${c.gl}" data-secof="${esc(c.section)}" data-sugg="${c.suggested ? 1 : 0}" data-rounded="${c.round ? 1 : 0}" ${c.suggested ? 'checked' : ''}>
+          ${c.gl} ${esc(c.name.slice(0, 24))} <span class="muted">${money(c.annual)} · ${c.tag}${c.round ? ` · ≈$${c.round}` : ''}</span></label>`).join('')}`).join('')}
     </div>
     <div class="err" id="rd-err"></div>
     <div class="foot">
-      <span class="muted" style="align-self:center; margin-right:auto; font-size:11.5px">Rounded lines become overrides but keep their formula chip. Re-tie NOI after if needed.</span>
+      <span class="muted" style="align-self:center; margin-right:auto; font-size:11.5px">Rounding drift shows as small tie-out variance — re-tie NOI if you want it exact.</span>
       <button class="btn sub" id="rd-x">Cancel</button>
-      <button class="btn" id="rd-go">Round selected</button>
+      <button class="btn" id="rd-go">Apply</button>
     </div>`;
   const boxes = () => [...dlg.querySelectorAll('[data-rd]')];
   dlg.querySelectorAll('[data-preset]').forEach((p) => p.addEventListener('click', () => { dlg.querySelector('#rd-mult').value = p.dataset.preset; }));
   dlg.querySelector('#rd-sugg').addEventListener('click', () => boxes().forEach((c) => { c.checked = c.dataset.sugg === '1'; }));
+  dlg.querySelector('#rd-rounded').addEventListener('click', () => boxes().forEach((c) => { c.checked = c.dataset.rounded === '1'; }));
   dlg.querySelector('#rd-all').addEventListener('click', () => boxes().forEach((c) => { c.checked = true; }));
   dlg.querySelector('#rd-none').addEventListener('click', () => boxes().forEach((c) => { c.checked = false; }));
   dlg.querySelectorAll('[data-sec]').forEach((s) => s.addEventListener('change', () => {
@@ -1375,7 +1378,7 @@ function openRoundDialog(b) {
   dlg.querySelector('#rd-go').addEventListener('click', async () => {
     const multiple = parseFloat(String(dlg.querySelector('#rd-mult').value).replace(/,/g, ''));
     const gls = boxes().filter((c) => c.checked).map((c) => c.dataset.rd);
-    if (!multiple || multiple <= 0) { dlg.querySelector('#rd-err').textContent = 'Enter a positive multiple'; return; }
+    if (!Number.isFinite(multiple) || multiple < 0) { dlg.querySelector('#rd-err').textContent = 'Enter a multiple ≥ 0 (0 clears)'; return; }
     if (!gls.length) { dlg.querySelector('#rd-err').textContent = 'Pick at least one line'; return; }
     try {
       pushUndo();
