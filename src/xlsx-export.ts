@@ -79,7 +79,8 @@ function driverLabel(d: any): string {
 function uwColumnValues(uw: UwSnapshotData, catBudget: (pcode: string, range: [number, number]) => number): Record<string, number> {
   const y = uw.y1;
   const out: Record<string, number> = {
-    '4994': y['1'] || 0, '5003': y['loss'] || 0, '5029': y['2'] || 0, '5049': y['3'] || 0,
+    '4994': y['1'] || 0, '5003': y['loss'] || 0, '5004': r2((y['1'] || 0) + (y['loss'] || 0)),
+    '5029': y['2'] || 0, '5049': y['3'] || 0,
     '5190': r2((y['4'] || 0) + (y['5'] || 0)), '5500': uw.egi,
     '6108': y['6'] || 0, '6112': y['7'] || 0, '6116': y['8'] || 0,
     '6470': y['10'] || 0, '6570': y['11'] || 0, '6670': y['12'] || 0,
@@ -315,6 +316,7 @@ export async function buildReviewWorkbook(args: {
     cell.alignment = { horizontal: i >= 3 ? 'right' : 'left' };
   });
   const sumRows: [string, string][] = [
+    ['5004', 'TOTAL NET GROSS POTENTIAL RENT'],
     ['5070', 'TOTAL RENTAL INCOME'], ['5190', 'NET OTHER INCOME'], ['5500', 'TOTAL INCOME'],
     ['6170', 'TOTAL FIXED ADMINISTRATIVE'], ['6370', 'TOTAL ADMINISTRATIVE'], ['6399', 'TOTAL CORPORATE EVENTS'],
     ['6470', 'TOTAL PAYROLL'], ['6570', 'TOTAL MARKETING'], ['6670', 'TOTAL UTILITIES'],
@@ -322,6 +324,7 @@ export async function buildReviewWorkbook(args: {
     ['7070', 'TOTAL REHAB/REPLACEMENT'], ['7099', 'TOTAL OPERATING EXPENSES'], ['7280', 'NET OPERATING INCOME'],
   ];
   const uwSummary: Record<string, number> = uw ? {
+    '5004': r2((uw.y1['1'] || 0) + (uw.y1['loss'] || 0)),
     '5070': r2((uw.y1['1'] || 0) + (uw.y1['loss'] || 0) + (uw.y1['2'] || 0) + (uw.y1['3'] || 0)),
     '5190': r2((uw.y1['4'] || 0) + (uw.y1['5'] || 0)), '5500': uw.egi,
     '6170': uwCol['6170'] || 0, '6370': uwCol['6370'] || 0, '6399': uwCol['6399'] || 0,

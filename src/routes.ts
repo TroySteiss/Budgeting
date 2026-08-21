@@ -481,6 +481,34 @@ router.post('/budgets/:id/tie-income', h(async (req, res) => {
   res.json(budgetView((await loadBudget(id))!));
 }));
 
+/* Bulk MROUND: round every month of the SELECTED lines to a multiple
+   ($100/$250/$500…). Rounded lines become overrides but keep their driver
+   identity (chips stay UW/MINOT/SLR…, not MAN). */
+router.post('/budgets/:id/round', h(async (req, res) => {
+  const id = Number(req.params.id);
+  const lb = await loadBudget(id);
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  const multiple = Number(req.body?.multiple);
+  const gls: string[] = Array.isArray(req.body?.gls) ? req.body.gls.map(String) : [];
+  if (!multiple || multiple <= 0) return res.status(400).json({ error: 'multiple must be a positive number' });
+  if (!gls.length) return res.status(400).json({ error: 'pick at least one line' });
+  const glSet = new Set(gls);
+  let touched = 0;
+  const lines = lb.lines.map((l) => {
+    if (!glSet.has(l.gl_code)) return l;
+    touched++;
+    return {
+      ...l,
+      months: l.months.map((v) => r2(Math.round(v / multiple) * multiple)),
+      override: true,
+    };
+  });
+  if (!touched) return res.status(400).json({ error: 'no matching lines' });
+  await saveLines(id, lines);
+  logChange(req.session.username || '', 'bulk MROUND', { id, multiple, lines: touched });
+  res.json(budgetView((await loadBudget(id))!));
+}));
+
 router.post('/budgets/:id/rebalance', h(async (req, res) => {
   const id = Number(req.params.id);
   const pcode = String(req.body?.pcode || '');

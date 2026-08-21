@@ -457,6 +457,7 @@ function renderEditor(el) {
         <button class="btn sub" id="recalc">↻ Recalc</button>
         <button class="btn sub" id="undo-btn" ${S.undo.budgetId === b.id && S.undo.stack.length ? '' : 'disabled'}>↶ Undo${S.undo.budgetId === b.id && S.undo.stack.length ? ` (${S.undo.stack.length})` : ''}</button>
         <button class="btn sub" id="cols-btn">▦ Columns</button>
+        <button class="btn sub" id="round-btn" title="Round selected lines' months to a multiple">⌁ MROUND…</button>
         <button class="btn" id="assump-open">⚙ Assumptions</button>
         <label style="align-self:center"><input type="checkbox" id="showzero" ${S.showZero ? 'checked' : ''}> show zero rows</label>
         <label style="align-self:center" title="Show each total row's monthly % of Year 1"><input type="checkbox" id="showdist" ${S.showDist ? 'checked' : ''}> % dist</label>
@@ -497,7 +498,8 @@ function renderEditor(el) {
         </div>
       </div>
     </div>
-    <dialog class="assump" id="assump-dlg"></dialog>`;
+    <dialog class="assump" id="assump-dlg"></dialog>
+    <dialog class="assump" id="round-dlg"></dialog>`;
 
   document.getElementById('ex-csv').addEventListener('click', () => {
     const c = document.getElementById('ex-cutoff').value;
@@ -513,6 +515,7 @@ function renderEditor(el) {
   document.getElementById('showzero').addEventListener('change', (e) => { S.showZero = e.target.checked; render(); });
   document.getElementById('showdist').addEventListener('change', (e) => { S.showDist = e.target.checked; localStorage.setItem('bt-dist', S.showDist ? '1' : '0'); render(); });
   document.getElementById('undo-btn').addEventListener('click', () => doUndo(b.id));
+  document.getElementById('round-btn').addEventListener('click', () => openRoundDialog(b));
   document.getElementById('cols-btn').addEventListener('click', (e) => { e.stopPropagation(); openColsMenu(e.currentTarget, labels); });
   el.querySelectorAll('.trend-chip').forEach((chip) => chip.addEventListener('click', () => {
     const sel = trendSeriesSel();
@@ -875,13 +878,16 @@ function tieHtml(bv) {
     const uw = ps.reduce((a, p) => a + ((byP[p] || {}).uw || 0), 0);
     return { pcode: label, label, budget, uw, variance: budget - uw, pct: uw ? (budget - uw) / Math.abs(uw) : null };
   };
-  const rentalRows = ['1', 'loss', '2', '3'].map((p) => byP[p]).filter(Boolean);
+  const gprRows = ['1', 'loss'].map((p) => byP[p]).filter(Boolean);
+  const lossRows = ['2', '3'].map((p) => byP[p]).filter(Boolean);
   const otherRows = ['4', '5'].map((p) => byP[p]).filter(Boolean);
   const expenseRows = t.rows.filter((r) => !INCOME.has(r.pcode));
   const subRow = (r) => row(r, false).replace('<tr class="">', '<tr class="sub">');
   return `<table>
     <tr><th>Category</th><th>Budget</th><th>UW Y1</th><th>Δ</th><th></th></tr>
-    ${rentalRows.map((r) => row(r, false)).join('')}
+    ${gprRows.map((r) => row(r, false)).join('')}
+    ${subRow(agg(['1', 'loss'], 'Net Gross Potential Rent'))}
+    ${lossRows.map((r) => row(r, false)).join('')}
     ${subRow(agg(['1', 'loss', '2', '3'], 'Total Rental Income'))}
     ${otherRows.map((r) => row(r, false)).join('')}
     ${subRow(agg(['4', '5'], 'Total Other + Utility Inc'))}
@@ -1189,6 +1195,70 @@ function openTieNoiMenu(b, anchorBtn) {
     S.bv = await POST(`/budgets/${b.id}/tie-noi`, { flexPcodes: flex });
     render();
   });
+}
+
+/* Bulk MROUND dialog: pick a multiple, tick exactly which lines it applies
+   to. Engine-allocated lines are pre-checked; the "specific" formulas (GPR,
+   LTL, vacancy, mgmt fee, interest, wages, recovery, charges) are not. */
+function openRoundDialog(b) {
+  const dlg = document.getElementById('round-dlg');
+  const coaByCode = new Map(S.state.coa.map((a) => [a.code, a]));
+  const AUTO = new Set(['catShare', 'perUnitComp', 't3avg', 'sellerLine', 'sellerUtil', 'burdenRatio']);
+  const cands = S.bv.lines
+    .filter((l) => l.months.some((v) => v))
+    .map((l) => {
+      const a = coaByCode.get(l.gl_code) || {};
+      return { gl: l.gl_code, name: a.name || '', section: a.section || '', annual: sumM(l.months),
+               suggested: AUTO.has((l.driver || {}).method) && !l.override, tag: drvMeta(l).tag };
+    })
+    .sort((x, y) => Number(x.gl) - Number(y.gl));
+  const bySection = {};
+  for (const c of cands) (bySection[c.section] = bySection[c.section] || []).push(c);
+  dlg.innerHTML = `
+    <h2>Bulk MROUND — round months to a multiple</h2>
+    <div class="row">
+      <div class="fld"><label>Multiple $</label><input id="rd-mult" value="250" style="width:90px"></div>
+      ${[100, 250, 300, 500, 1000].map((m) => `<button class="btn sub" data-preset="${m}">$${m}</button>`).join('')}
+      <span class="spacer" style="flex:1"></span>
+      <button class="btn sub" id="rd-sugg">Suggested</button>
+      <button class="btn sub" id="rd-all">All</button>
+      <button class="btn sub" id="rd-none">None</button>
+    </div>
+    <div style="max-height:46vh; overflow:auto; margin-top:10px; border:1px solid var(--line); border-radius:8px; padding:6px 10px">
+      ${Object.entries(bySection).map(([sec, list]) => `
+        <div style="margin:6px 0 2px"><label style="font-weight:650; font-size:12px; color:var(--dim); text-transform:uppercase">
+          <input type="checkbox" data-sec="${esc(sec)}"> ${esc(sec.replace(/_/g, ' '))}</label></div>
+        ${list.map((c) => `<label style="display:inline-block; width:49%; font-size:12.3px; padding:1px 0">
+          <input type="checkbox" data-rd="${c.gl}" data-secof="${esc(c.section)}" data-sugg="${c.suggested ? 1 : 0}" ${c.suggested ? 'checked' : ''}>
+          ${c.gl} ${esc(c.name.slice(0, 24))} <span class="muted">${money(c.annual)} · ${c.tag}</span></label>`).join('')}`).join('')}
+    </div>
+    <div class="err" id="rd-err"></div>
+    <div class="foot">
+      <span class="muted" style="align-self:center; margin-right:auto; font-size:11.5px">Rounded lines become overrides but keep their formula chip. Re-tie NOI after if needed.</span>
+      <button class="btn sub" id="rd-x">Cancel</button>
+      <button class="btn" id="rd-go">Round selected</button>
+    </div>`;
+  const boxes = () => [...dlg.querySelectorAll('[data-rd]')];
+  dlg.querySelectorAll('[data-preset]').forEach((p) => p.addEventListener('click', () => { dlg.querySelector('#rd-mult').value = p.dataset.preset; }));
+  dlg.querySelector('#rd-sugg').addEventListener('click', () => boxes().forEach((c) => { c.checked = c.dataset.sugg === '1'; }));
+  dlg.querySelector('#rd-all').addEventListener('click', () => boxes().forEach((c) => { c.checked = true; }));
+  dlg.querySelector('#rd-none').addEventListener('click', () => boxes().forEach((c) => { c.checked = false; }));
+  dlg.querySelectorAll('[data-sec]').forEach((s) => s.addEventListener('change', () => {
+    boxes().filter((c) => c.dataset.secof === s.dataset.sec).forEach((c) => { c.checked = s.checked; });
+  }));
+  dlg.querySelector('#rd-x').addEventListener('click', () => dlg.close());
+  dlg.querySelector('#rd-go').addEventListener('click', async () => {
+    const multiple = parseFloat(String(dlg.querySelector('#rd-mult').value).replace(/,/g, ''));
+    const gls = boxes().filter((c) => c.checked).map((c) => c.dataset.rd);
+    if (!multiple || multiple <= 0) { dlg.querySelector('#rd-err').textContent = 'Enter a positive multiple'; return; }
+    if (!gls.length) { dlg.querySelector('#rd-err').textContent = 'Pick at least one line'; return; }
+    try {
+      pushUndo();
+      S.bv = await POST(`/budgets/${b.id}/round`, { multiple, gls });
+      render();
+    } catch (e) { dlg.querySelector('#rd-err').textContent = e.message; }
+  });
+  dlg.showModal();
 }
 
 /* ---------------- settings ---------------- */
