@@ -79,12 +79,16 @@ architecture detail; this is the operational summary.
 
 Fx chips (color = data source; legend above grid) with row menu: zero, flat
 annual/monthly, growth fill, Minot $/unit seasonal, **T3 weighted avg of a
-pickable comp line × growth → MROUND $250** (Troy's Excel formula), **seller
-actuals matched to a pickable seller line × growth**, reset to engine. Inline
-param inputs beside chips (vacancy %, GPR growth, renewal %, mgmt %, utility
-growth/recovery, rate). Row-buffered editing (focus selects, Tab flows, saves on
-row exit). Bulk **MROUND dialog** (multiple + selectable lines; suggested =
-engine-allocated only). **Undo** (25 snapshots). Column picker. Dark mode.
+pickable comp line × growth → MROUND $250** (flat), **weighted-avg DISTRIBUTION
+(WAVG)** — Troy's Excel formula: each month = (2×month + prev + next)/4 of a
+pickable source (seller T12 line or Minot comp line, per-unit scaled) × growth,
+MROUND to a prompted multiple — **seller actuals matched to a pickable seller
+line × growth**, reset to engine. Inline param inputs beside chips (vacancy %,
+GPR growth, renewal %, mgmt %, utility growth/recovery, rate). Row-buffered
+editing (focus selects, Tab flows, saves on row exit). Bulk **MROUND is a
+STANDING modifier, not a lock**: sets a per-line rounding multiple that
+re-applies after every regeneration/tie (≈$250 badge; 0 clears; lines stay live
+on their formulas). **Undo** (25 snapshots). Column picker. Dark mode.
 Tie-out panel with UW-native subtotals (Net GPR, Total Rental Income, Vacancy
 split from Delinq & Other, Total Other+Utility, EGI/OpEx/NOI). Monthly trend
 chart (toggle series, tight scale). Assumptions dialog (⚙). Exports: 2 Yardi
@@ -105,9 +109,13 @@ the tie-NOI checklist, or accepting the variance.
 
 ## Known gaps / next steps
 
-- **Unit-level rent rolls per property not yet uploaded** — needed for per-lease
-  LTL burnoff and charge-driven other income (OneSite "RENT ROLL DETAIL" format,
-  like the FHNDRR tab; parser ready, snapshots relinkable without recreating budgets).
+- **Unit-level rent rolls per property not yet uploaded — TOP PRIORITY, Troy has
+  flagged LTL repeatedly.** LTL is NOT lease-end-date-based today: the summary
+  roll has no leases, so all six use the uniform-expiry approximation. The
+  per-lease engine is built and tested; needs Unit / Market Rent / Lease Rent /
+  Lease End columns (OneSite "RENT ROLL DETAIL" like the FHNDRR tab, or Yardi
+  unit-level). Upload via Uploads → Rent roll, then relink budgets (PUT
+  /budgets/:id {rentSnapshotId}) — also unlocks charge-driven other income.
 - After budgets are final: export 2026 Revision CSVs to replace the seller
   budgets in Yardi + 2027 CSVs for Jan–Aug.
 - Phase 3 annual-budget mode needs a monthly-actuals export (Property Comparison
