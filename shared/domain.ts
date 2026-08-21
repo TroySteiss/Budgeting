@@ -526,7 +526,9 @@ export function defaultInputs(year: number, uw: UwSnapshotData, rent: { marketMo
   for (const p of ['4', '5', '6', '8', '9', '10', '11', '12', '13', '14']) uwAbs[p] = r2(uw.y1[p] || 0);
   const egi = uw.egi || 1;
   return {
-    year, units: uw.units, capital, loan, rate, startMonth: 1, tieNoi: true, tieIncome: true,
+    // tieIncome defaults OFF: LTL is purely mechanical (rent-roll burnoff) and
+    // income variance stays visible until Troy places it via the chooser
+    year, units: uw.units, capital, loan, rate, startMonth: 1, tieNoi: true, tieIncome: false,
     gpr: { baseMonthly, growthPct: zero12() },
     ltl: { ...ltlDefaults, startMonthly: startLtl, targetPct: pctOf('loss'), rampMonths: 12 },
     vacancyPct: Array(12).fill(vac) as Months,
@@ -782,34 +784,6 @@ export function tieIncomeToUw(lines: BudgetLine[], coa: Map<string, CoaAccount>,
   let newMonths: Months | null = null;
   const cur = sum(line.months);
   const newSum = r2(cur + gap);
-  if (absorbGl === '5003') {
-    // LTL stays rent-roll anchored: month 0 is the ACTUAL gap and never moves;
-    // the burn trajectory absorbs (weights grow with the month index). LTL is
-    // clamped at zero — it never flips into fabricated gain-to-lease; any
-    // residual spills into vacancy ∝ GPR so both lines stay sensible.
-    const weights = line.months.map((_, i) => i) as Months;
-    const adj = spreadMonthly(gap, weights);
-    let residual = 0;
-    newMonths = line.months.map((v, i) => {
-      const nv = r2(v + adj[i]);
-      if (nv > 0) { residual = r2(residual + nv); return 0; }
-      return nv;
-    });
-    let out = lines.map((l) => (l.gl_code === absorbGl ? { ...l, months: newMonths! } : l));
-    if (residual > 0.01) {
-      // LTL hit zero before the gap closed — the leftover income need reduces
-      // vacancy loss instead (also clamped at zero; anything beyond shows as
-      // variance for the user to place deliberately)
-      const vac = out.find((l) => l.gl_code === '5031');
-      if (vac && !vac.override) {
-        const gpr = out.find((l) => l.gl_code === '4994')?.months || zero12();
-        const spill = spreadMonthly(residual, gpr.map((v) => Math.max(0, v)));
-        const vm = vac.months.map((v, i) => Math.min(0, r2(v + spill[i])));
-        out = out.map((l) => (l.gl_code === '5031' ? { ...l, months: vm } : l));
-      }
-    }
-    return out;
-  }
   if (cur !== 0 && cur * newSum > 0) {
     // proportional rescale keeps the line's monthly pattern
     const f = newSum / cur;
@@ -827,6 +801,9 @@ export function tieIncomeToUw(lines: BudgetLine[], coa: Map<string, CoaAccount>,
     const adj = spreadMonthly(gap, weights);
     newMonths = line.months.map((v, i) => r2(v + adj[i]));
   }
+  // absorbers are contra-income lines — never let a tie fabricate positive
+  // income on them; an unabsorbable remainder stays as visible variance
+  newMonths = newMonths.map((v) => Math.min(0, v));
   return lines.map((l) => (l.gl_code === absorbGl ? { ...l, months: newMonths! } : l));
 }
 

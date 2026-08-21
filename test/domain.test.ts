@@ -278,36 +278,46 @@ describe('LTL without lease detail — rent-roll-anchored uniform-expiry burnoff
     expect(ltl.months[0]).toBeCloseTo(-26474 * (1 - blend / 12), 0);
     expect(ltl.months[11]).toBeCloseTo(-26474 * (1 - blend), 0);  // 35% of the gap left after a year
   });
-  it('the income tie NEVER moves LTL month 0 (rent-roll anchor) and never overshoots', () => {
+  it('an EXPLICIT LTL tie rescales the burnoff shape — monotone, never positive, nothing else touched', () => {
     const inputs = defaultInputs(2026, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 73526 });
-    inputs.tieIncome = false;
-    let lines = generateLines(coaList, inputs, fakeUw, null);
-    const before0 = lines.find((l) => l.gl_code === '5003')!.months[0];
+    let lines = generateLines(coaList, inputs, fakeUw, null);   // tieIncome defaults OFF now
+    const before = lines.find((l) => l.gl_code === '5003')!.months.slice();
+    const vacBefore = sum(lines.find((l) => l.gl_code === '5031')!.months);
     lines = tieIncomeToUw(lines, coaMap, fakeUw.egi, '5003');
     const ltl = lines.find((l) => l.gl_code === '5003')!;
-    expect(ltl.months[0]).toBe(before0);
     expect(ltl.months.every((v) => v <= 0)).toBe(true);
-    const monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
-    const income = sum(rollup(monthsMap).get('5500')!);
-    // clamps (LTL ≤ 0, vacancy ≤ 0) may leave a small honest shortfall — but never overshoot
+    // burnoff stays monotone (|LTL| declining) — no growing-LTL artifacts
+    for (let i = 1; i < 12; i++) expect(Math.abs(ltl.months[i])).toBeLessThanOrEqual(Math.abs(ltl.months[i - 1]) + 0.01);
+    expect(sum(lines.find((l) => l.gl_code === '5031')!.months)).toBe(vacBefore);  // vacancy untouched
+    const income = sum(rollup(new Map(lines.map((l) => [l.gl_code, l.months]))).get('5500')!);
     expect(income).toBeLessThanOrEqual(fakeUw.egi + 1);
-    expect(income).toBeGreaterThan(fakeUw.egi - 5000);
+    expect(before[0]).not.toBe(0); // sanity: there was a real burnoff to rescale
   });
-  it('LTL never flips positive on a big tie — the residual reduces vacancy instead', () => {
-    // small gap (3k/mo) but income far under UW → LTL alone cannot absorb
+
+  it('generation does NOT auto-tie income by default (LTL purely mechanical)', () => {
+    const inputs = defaultInputs(2026, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 73526 });
+    expect(inputs.tieIncome).toBe(false);
+    const lines = generateLines(coaList, inputs, fakeUw, null);
+    const ltl = lines.find((l) => l.gl_code === '5003')!;
+    const blend = 0.7 * 0.5 + 0.3 * 1;
+    // pure uniform-expiry burnoff of the rent-roll gap, untouched by any tie
+    expect(ltl.months[0]).toBeCloseTo(-26474 * (1 - blend / 12), 0);
+    for (let i = 1; i < 12; i++) expect(Math.abs(ltl.months[i])).toBeLessThan(Math.abs(ltl.months[i - 1]));
+  });
+  it('LTL never flips positive on a big tie — and NOTHING else is auto-adjusted', () => {
+    // income far under UW → LTL alone cannot absorb; the leftover must stay
+    // as visible variance, NOT silently pushed into vacancy or anywhere else
     const inputs = defaultInputs(2026, fakeUw, { marketMonthly: 90000, inPlaceMonthly: 87000 });
     inputs.tieIncome = false;
     let lines = generateLines(coaList, inputs, fakeUw, null);
+    const vacBefore = sum(lines.find((l) => l.gl_code === '5031')!.months);
     lines = tieIncomeToUw(lines, coaMap, fakeUw.egi, '5003');
     const ltl = lines.find((l) => l.gl_code === '5003')!;
     expect(ltl.months.every((v) => v <= 0)).toBe(true);           // clamped — no fabricated GTL
-    const vac = lines.find((l) => l.gl_code === '5031')!;
-    expect(vac.months.every((v) => v <= 0)).toBe(true);           // vacancy clamped too
+    expect(sum(lines.find((l) => l.gl_code === '5031')!.months)).toBe(vacBefore);  // untouched
     const monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
     const income = sum(rollup(monthsMap).get('5500')!);
-    // ties exactly when absorbable, otherwise gets as close as the clamps allow
-    expect(income).toBeLessThanOrEqual(fakeUw.egi + 1);
-    expect(income).toBeGreaterThan(fakeUw.egi - 200000);
+    expect(income).toBeLessThanOrEqual(fakeUw.egi + 1);           // never overshoots
   });
 
   it('tie via a different absorber (vacancy) leaves LTL alone', () => {
