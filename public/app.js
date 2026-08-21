@@ -31,7 +31,7 @@ function drvMeta(l) {
   // only free-typed cells show as MAN
   if (l.override && (!method || method === 'manual')) return { cls: 'drv-man', tag: 'MAN', label: 'Manual override' };
   switch (method) {
-    case 't3avg': return { cls: 'drv-comp', tag: 'T3', label: `T3 comp avg × ${(((l.driver || {}).pct || 0)).toFixed(1)}% → MROUND $250` };
+    case 't3avg': return { cls: 'drv-comp', tag: 'T3', label: `T3 avg of ${l.driver.srcName || 'this GL'} × ${(((l.driver || {}).pct || 0)).toFixed(1)}% → MROUND $250` };
     case 'gpr': return { cls: 'drv-rr', tag: 'RR', label: 'Rent roll — GPR growth' };
     case 'ltl': return { cls: 'drv-rr', tag: 'LTL', label: 'Rent roll — lease burnoff' };
     case 'vacancy': return { cls: 'drv-rr', tag: '%GPR', label: '% of GPR' };
@@ -850,7 +850,7 @@ function tieHtml(bv) {
   const catBasis = (bv.budget.inputs || {}).catBasis || {};
   const canPerUnit = !!bv.compUnits;
   const SHORT = {
-    '1': 'Gross Potential Rent', loss: 'Loss to Lease', '2': 'Concessions', '3': 'Rental Loss',
+    '1': 'Gross Potential Rent', loss: 'Loss to Lease', '2': 'Concessions', '3': 'Delinq & Other Loss',
     '4': 'Utility Income', '5': 'Other Income', '6': 'Insurance', '7': 'Mgmt Fee', '8': 'RE & PP Taxes',
     '9': 'Admin & Acct', '10': 'Payroll', '11': 'Marketing', '12': 'Utilities', '13': 'R&M', '14': 'Rehab / Reserves',
     'Effective Gross Income': 'Total Income (EGI)', 'Total Operating Expenses': 'Total OpEx', 'Net Operating Income': 'NOI',
@@ -879,7 +879,15 @@ function tieHtml(bv) {
     return { pcode: label, label, budget, uw, variance: budget - uw, pct: uw ? (budget - uw) / Math.abs(uw) : null };
   };
   const gprRows = ['1', 'loss'].map((p) => byP[p]).filter(Boolean);
-  const lossRows = ['2', '3'].map((p) => byP[p]).filter(Boolean);
+  // split cat 3 for display: Vacancy (5031) vs Delinquency & other rental loss.
+  // UW-side split uses the UW's vacancy % assumption × UW GPR.
+  const vacLine = bv.lines.find((l) => l.gl_code === '5031');
+  const vacBudget = vacLine ? sumM(vacLine.months) : 0;
+  const cat3 = byP['3'] || { budget: 0, uw: 0 };
+  const uwVac = bv.uw ? -Math.abs((Number(bv.uw.assumptions?.vacancyPct) || 0) * (bv.uw.y1['1'] || 0)) : 0;
+  const vacRow = { pcode: 'Vacancy', label: 'Vacancy', budget: vacBudget, uw: uwVac, variance: vacBudget - uwVac, pct: uwVac ? (vacBudget - uwVac) / Math.abs(uwVac) : null };
+  const badRow = { pcode: '3', label: 'Delinquency & Other Loss', budget: cat3.budget - vacBudget, uw: cat3.uw - uwVac, variance: (cat3.budget - vacBudget) - (cat3.uw - uwVac), pct: null };
+  const lossRows = [byP['2'], vacRow, badRow].filter(Boolean);
   const otherRows = ['4', '5'].map((p) => byP[p]).filter(Boolean);
   const expenseRows = t.rows.filter((r) => !INCOME.has(r.pcode));
   const subRow = (r) => row(r, false).replace('<tr class="">', '<tr class="sub">');
@@ -1066,18 +1074,10 @@ function openRowTools(b, gl, anchorBtn) {
         { method: 'perUnitComp', pcode: acc.pcode || '', perUnit: Math.round((S.bv.compWeights[gl] / S.bv.compUnits) * 100) / 100 });
     }
     if (act === 't3avg') {
-      // Troy's formula, rewritten: AVERAGE of the comp's most recent 3 months
-      // (middle month double-weighted), per-unit → subject units, × (1+increase),
-      // MROUND to $250, filled flat across the year.
-      const g = parseFloat(String(prompt('Increase factor % (the (1+$D) in your formula, e.g. 3):') || '').replace(/,/g, '')) || 0;
-      const shape = S.bv.compShapes[gl];
-      const wsum = shape.reduce((a, x) => a + x, 0) || 1;
-      const annualComp = S.bv.compWeights[gl];
-      const monthly = shape.map((w) => (annualComp * w) / wsum);       // comp $ by calendar month
-      const t3 = (monthly[9] + 2 * monthly[10] + monthly[11]) / 4;     // last 3, mid ×2
-      const scaled = (t3 / S.bv.compUnits) * (inp.units || 0) * (1 + g / 100);
-      const rounded = Math.round(scaled / 250) * 250;
-      return put(Array(12).fill(rounded), { method: 't3avg', pct: g });
+      // Troy's formula: T3 weighted average of a PICKABLE comp line,
+      // per-unit → subject units, × (1+increase), MROUND $250, flat.
+      openCompT3Match(b, gl, acc, anchorBtn, put, inp);
+      return;
     }
     if (act === 'seller') {
       openSellerMatch(b, gl, acc, anchorBtn, put);
@@ -1134,6 +1134,58 @@ function openSellerMatch(b, gl, acc, anchorBtn, put) {
     r.months.forEach((v, i) => { cal[((r.monthCal && r.monthCal[i]) || i + 1) - 1] += v || 0; });
     const months = Array.from({ length: 12 }, (_, i) => Math.round(cal[(start - 1 + i) % 12] * (1 + g / 100) * 100) / 100);
     await put(months, { method: 'sellerLine', name: r.name.slice(0, 40), pct: g });
+  }));
+}
+
+/* T3 comp-line picker: choose WHICH Minot line feeds the T3 weighted average
+   (defaults visually to the row's own GL, same-category lines suggested). */
+function openCompT3Match(b, gl, acc, anchorBtn, put, inp) {
+  document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
+  const coaByCode = new Map(S.state.coa.map((a) => [a.code, a]));
+  const rows = Object.keys(S.bv.compShapes || {})
+    .filter((k) => S.bv.compWeights && S.bv.compWeights[k])
+    .map((k) => {
+      const a = coaByCode.get(k) || {};
+      return { gl: k, name: a.name || k, pcode: a.pcode, annual: S.bv.compWeights[k] };
+    })
+    .sort((x, y) => {
+      const xs = x.gl === gl ? -1 : x.pcode === acc.pcode ? 0 : 1;
+      const ys = y.gl === gl ? -1 : y.pcode === acc.pcode ? 0 : 1;
+      return xs - ys || Math.abs(y.annual) - Math.abs(x.annual);
+    });
+  const menu = document.createElement('div');
+  menu.className = 'rowmenu';
+  menu.style.maxHeight = '420px';
+  menu.style.overflow = 'auto';
+  menu.innerHTML = `
+    <div class="rm-head">T3 avg source for ${gl} ${esc(acc.name || '')}</div>
+    <div style="padding:4px 6px"><input id="t3-filter" placeholder="filter…" style="width:100%; border:1px solid var(--line); border-radius:6px; padding:4px 7px"></div>
+    ${rows.map((r, i) => `<button data-t3="${i}" ${r.pcode === acc.pcode || r.gl === gl ? '' : 'style="opacity:.75"'}>
+      ${r.gl} ${esc(r.name.slice(0, 28))} <span class="muted" style="float:right">${money(r.annual)}${r.gl === gl ? ' · this GL' : r.pcode === acc.pcode ? ' · suggested' : ''}</span></button>`).join('')}`;
+  const rct = anchorBtn.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, rct.left + window.scrollX - 60)}px`;
+  menu.style.top = `${rct.bottom + window.scrollY + 2}px`;
+  document.body.appendChild(menu);
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+  menu.querySelector('#t3-filter').addEventListener('input', (e) => {
+    const q = e.target.value.toLowerCase();
+    menu.querySelectorAll('button[data-t3]').forEach((btn) => {
+      btn.style.display = btn.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+  menu.querySelectorAll('button[data-t3]').forEach((btn) => btn.addEventListener('click', async () => {
+    const r = rows[Number(btn.dataset.t3)];
+    menu.remove();
+    const g = parseFloat(String(prompt(`Increase factor % on "${r.name}" (the (1+$D) in your formula):`, '3') || '').replace(/,/g, ''));
+    if (!Number.isFinite(g)) return;
+    const shape = S.bv.compShapes[r.gl];
+    const wsum = shape.reduce((a, x) => a + x, 0) || 1;
+    const monthly = shape.map((w) => (r.annual * w) / wsum);           // comp $ by calendar month
+    const t3 = (monthly[9] + 2 * monthly[10] + monthly[11]) / 4;       // last 3, mid ×2
+    const scaled = (t3 / S.bv.compUnits) * (inp.units || 0) * (1 + g / 100);
+    const rounded = Math.round(scaled / 250) * 250;
+    await put(Array(12).fill(rounded), { method: 't3avg', pct: g, src: r.gl, srcName: r.name.slice(0, 30) });
   }));
 }
 

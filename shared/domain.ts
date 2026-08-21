@@ -784,11 +784,31 @@ export function tieIncomeToUw(lines: BudgetLine[], coa: Map<string, CoaAccount>,
   const newSum = r2(cur + gap);
   if (absorbGl === '5003') {
     // LTL stays rent-roll anchored: month 0 is the ACTUAL gap and never moves;
-    // the burn trajectory absorbs (weights grow with the month index)
+    // the burn trajectory absorbs (weights grow with the month index). LTL is
+    // clamped at zero — it never flips into fabricated gain-to-lease; any
+    // residual spills into vacancy ∝ GPR so both lines stay sensible.
     const weights = line.months.map((_, i) => i) as Months;
     const adj = spreadMonthly(gap, weights);
-    newMonths = line.months.map((v, i) => r2(v + adj[i]));
-    return lines.map((l) => (l.gl_code === absorbGl ? { ...l, months: newMonths! } : l));
+    let residual = 0;
+    newMonths = line.months.map((v, i) => {
+      const nv = r2(v + adj[i]);
+      if (nv > 0) { residual = r2(residual + nv); return 0; }
+      return nv;
+    });
+    let out = lines.map((l) => (l.gl_code === absorbGl ? { ...l, months: newMonths! } : l));
+    if (residual > 0.01) {
+      // LTL hit zero before the gap closed — the leftover income need reduces
+      // vacancy loss instead (also clamped at zero; anything beyond shows as
+      // variance for the user to place deliberately)
+      const vac = out.find((l) => l.gl_code === '5031');
+      if (vac && !vac.override) {
+        const gpr = out.find((l) => l.gl_code === '4994')?.months || zero12();
+        const spill = spreadMonthly(residual, gpr.map((v) => Math.max(0, v)));
+        const vm = vac.months.map((v, i) => Math.min(0, r2(v + spill[i])));
+        out = out.map((l) => (l.gl_code === '5031' ? { ...l, months: vm } : l));
+      }
+    }
+    return out;
   }
   if (cur !== 0 && cur * newSum > 0) {
     // proportional rescale keeps the line's monthly pattern
