@@ -600,9 +600,19 @@ function inputsHtml(inp) {
       <div class="fld"><label>GPR growth %/mo (1 or 12 vals)</label><input id="in-gprgrow" value="${show12(g.growthPct || [])}" style="width:130px"></div>
       <div class="fld"><label>Start month</label><select id="in-start">${MONTHS.map((m, i) => `<option value="${i + 1}" ${inp.startMonth === i + 1 ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
     </div>
+    <h3>Loss to lease ${S.bv && S.bv.leaseCount ? `<span class="badge">${S.bv.leaseCount} leases on file</span>` : '<span class="badge">no lease detail — upload a unit-level rent roll</span>'}</h3>
+    <div class="row">
+      <div class="fld"><label>Method</label><select id="in-ltlmode">
+        <option value="leases" ${l.mode !== 'ramp' ? 'selected' : ''}>Lease burnoff (per turnover)</option>
+        <option value="ramp" ${l.mode === 'ramp' ? 'selected' : ''}>Linear ramp</option>
+      </select></div>
+      <div class="fld"><label>Renewal rate %</label><input id="in-ltlrenew" value="${((l.renewalPct ?? 0.7) * 100).toFixed(0)}" style="width:70px" title="Share of expiring leases that renew. Largest-LTL leases renew first; GTL / low-LTL leases turn over."></div>
+      <div class="fld"><label>Burnoff on renewal %</label><input id="in-ltlbr" value="${((l.burnoffRenew ?? 0.5) * 100).toFixed(0)}" style="width:70px" title="Share of a renewing lease's LTL captured at renewal"></div>
+      <div class="fld"><label>Burnoff on move-in %</label><input id="in-ltlbn" value="${((l.burnoffNew ?? 1) * 100).toFixed(0)}" style="width:70px" title="Share of a turning lease's LTL captured on the new lease"></div>
+    </div>
     <div class="row" style="margin-top:6px">
-      <div class="fld"><label>LTL start $/mo (neg)</label><input id="in-ltlstart" value="${l.startMonthly ?? 0}" style="width:100px"></div>
-      <div class="fld"><label>LTL target % of GPR</label><input id="in-ltlpct" value="${((l.targetPct || 0) * 100).toFixed(2)}" style="width:80px"></div>
+      <div class="fld"><label>Ramp: start $/mo (neg)</label><input id="in-ltlstart" value="${l.startMonthly ?? 0}" style="width:100px"></div>
+      <div class="fld"><label>Ramp: target % of GPR</label><input id="in-ltlpct" value="${((l.targetPct || 0) * 100).toFixed(2)}" style="width:80px"></div>
       <div class="fld"><label>Ramp months</label><input id="in-ltlramp" value="${l.rampMonths ?? 12}" style="width:70px"></div>
     </div>
     <div class="row" style="margin-top:6px">
@@ -642,7 +652,13 @@ async function applyInputs(b, el) {
     rate: num('#in-rate') / 100,
     startMonth: Number(el.querySelector('#in-start').value),
     gpr: { baseMonthly: num('#in-gprbase'), growthPct: parse12(el.querySelector('#in-gprgrow').value, Array(12).fill(0)) },
-    ltl: { startMonthly: num('#in-ltlstart'), targetPct: num('#in-ltlpct') / 100, rampMonths: num('#in-ltlramp') || 12 },
+    ltl: {
+      mode: el.querySelector('#in-ltlmode').value,
+      renewalPct: num('#in-ltlrenew') / 100,
+      burnoffRenew: num('#in-ltlbr') / 100,
+      burnoffNew: num('#in-ltlbn') / 100,
+      startMonthly: num('#in-ltlstart'), targetPct: num('#in-ltlpct') / 100, rampMonths: num('#in-ltlramp') || 12,
+    },
     vacancyPct: parse12(el.querySelector('#in-vac').value, Array(12).fill(0.05)),
     concessionPct: num('#in-conc') / 100,
     rentalLossPct: num('#in-rloss') / 100,

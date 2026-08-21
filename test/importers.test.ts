@@ -76,10 +76,32 @@ describe('parseRentRoll — Yardi summary', () => {
 });
 
 describe('parseRentRoll — OneSite unit level', () => {
-  it('parses the FHNDRR sheet inside the FHND workbook', () => {
-    // the FHND workbook's first sheet isn't a rent roll, so this asserts graceful failure...
-    // unit-level parsing is covered via the dedicated export when available.
+  it('rejects a non-rent-roll workbook', () => {
     expect(() => parseRentRoll(fx('fhnd-budget-workbook.xlsx'))).toThrow();
+  });
+
+  it('captures per-lease detail (market, rent, lease end) from a unit-level roll', () => {
+    const XLSX = require('xlsx');
+    const aoa = [
+      ['OneSite Report'], ['RENT ROLL DETAIL'], ['As of Date: 09/01/2026'], [],
+      ['Resh ID', 'Unit', 'Floorplan', 'SQFT', 'Unit/Lease Status', 'Lease Start', 'Lease End', 'Market + Addl.', 'Lease Rent'],
+      ['1', 'A-101', '1x1', 700, 'Occupied', '2025-11-15 00:00', '2026-11-14 00:00', 1000, 900],
+      ['2', 'A-102', '1x1', 700, 'Occupied', '2026-02-10 00:00', '2027-02-09 00:00', 1000, 1050],
+      ['3', 'A-103', '1x1', 700, 'Vacant', '', '', 1000, 0],
+      ['2b', 'A-102', '1x1', 700, 'Pending renewal', '2027-02-10 00:00', '2028-02-09 00:00', 0, 1100],
+    ];
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Report1');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const [p] = parseRentRoll(buf);
+    expect(p.units).toBe(3);
+    expect(p.marketMonthly).toBe(3000);
+    expect(p.inPlaceMonthly).toBe(1950);
+    expect(p.leases!.length).toBe(2);           // occupied units only; the pending-renewal dup is ignored
+    const a101 = p.leases!.find((l) => l.r === 900)!;
+    expect(a101.m).toBe(1000);
+    expect(a101.e).toContain('2026-11');
   });
 });
 

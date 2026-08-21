@@ -9,7 +9,7 @@ import {
   CoaAccount, BudgetLine, BudgetInputs, UwSnapshotData, CompWeights, Months,
   generateLines, regenerate, rebalanceCategory, defaultInputs, computeTieout,
   kpis, categoryTotals, t12CategoryShapes, tieNoiToUw, tieIncomeToUw, DEFAULT_NOI_FLEX,
-  calendarSlice, monthLabels, zero12, r2, sum,
+  calendarSlice, monthLabels, zero12, r2, sum, type Lease,
 } from '../shared/domain.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -120,7 +120,7 @@ router.post('/uploads/apply', h(async (req, res) => {
     for (const m of mappings || []) {
       const p = (payload.properties || []).find((x: any) => (x.code && x.code === m.sourceCode) || x.name === m.sourceName);
       if (!p || !m.propertyCode) continue;
-      const data = { units: p.units, marketMonthly: p.marketMonthly, inPlaceMonthly: p.inPlaceMonthly, occupiedUnits: p.occupiedUnits, source: p.source };
+      const data = { units: p.units, marketMonthly: p.marketMonthly, inPlaceMonthly: p.inPlaceMonthly, occupiedUnits: p.occupiedUnits, source: p.source, leases: p.leases || null };
       const row = (await query(
         'insert into rent_snapshots(property_code, upload_id, as_of, data) values($1,$2,$3,$4) returning id',
         [m.propertyCode, uploadId, p.asOf ? new Date(p.asOf) : null, JSON.stringify(data)]
@@ -177,7 +177,7 @@ router.post('/uploads/apply', h(async (req, res) => {
 interface LoadedBudget {
   budget: any; lines: BudgetLine[]; coa: CoaAccount[]; coaMap: Map<string, CoaAccount>;
   uw: UwSnapshotData | null; comps: CompWeights | null; catShapes: Record<string, Months> | null;
-  payrollWages: Record<string, number> | null;
+  payrollWages: Record<string, number> | null; leases: Lease[] | null;
 }
 
 async function loadBudget(id: number): Promise<LoadedBudget | null> {
@@ -231,7 +231,13 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
     const wages = pm?.data?.properties?.[budget.property_code];
     if (wages && Object.keys(wages).length) payrollWages = wages;
   }
-  return { budget, lines, coa, coaMap: new Map(coa.map((a) => [a.code, a])), uw, comps, catShapes, payrollWages };
+  // per-lease detail from the linked rent snapshot (unit-level rolls only)
+  let leases: Lease[] | null = null;
+  if (budget.rent_snapshot_id) {
+    const rs = (await query('select data from rent_snapshots where id=$1', [budget.rent_snapshot_id])).rows[0];
+    if (Array.isArray(rs?.data?.leases) && rs.data.leases.length) leases = rs.data.leases;
+  }
+  return { budget, lines, coa, coaMap: new Map(coa.map((a) => [a.code, a])), uw, comps, catShapes, payrollWages, leases };
 }
 
 async function saveLines(budgetId: number, lines: BudgetLine[]): Promise<void> {
@@ -261,6 +267,7 @@ function budgetView(lb: LoadedBudget) {
     compUnits: lb.comps?.units || null,
     compShapes: lb.comps?.glShapes || null,
     payrollWages: lb.payrollWages,
+    leaseCount: lb.leases?.length || 0,
   };
 }
 
@@ -268,8 +275,8 @@ function budgetView(lb: LoadedBudget) {
     (LTL) → NOI tie (flex). The whole 12-month window ties to UW Y1 in full. */
 function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLine[]): { lines: BudgetLine[] } {
   let lines = existing
-    ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages)
-    : generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages);
+    ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages, lb.leases)
+    : generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages, lb.leases);
   if (lb.uw) {
     if (inputs.tieIncome !== false) lines = tieIncomeToUw(lines, lb.coaMap, lb.uw.egi);
     if (inputs.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, lb.uw.noi, inputs.noiFlexPcodes || DEFAULT_NOI_FLEX);
@@ -325,13 +332,31 @@ router.put('/budgets/:id', h(async (req, res) => {
   const id = Number(req.params.id);
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
-  const { inputs, label, status: st } = req.body || {};
+  const { inputs, label, status: st, rentSnapshotId, uwSnapshotId, compSetId, t12SnapshotId, payrollModelId } = req.body || {};
   if (label != null || st != null) {
     await query('update budgets set label=coalesce($2,label), status=coalesce($3,status), updated_at=now() where id=$1', [id, label ?? null, st ?? null]);
   }
+  // relink data snapshots (then regenerate below — pass inputs:{} to just relink+regen)
+  if (rentSnapshotId !== undefined || uwSnapshotId !== undefined || compSetId !== undefined || t12SnapshotId !== undefined || payrollModelId !== undefined) {
+    await query(
+      `update budgets set
+         rent_snapshot_id = case when $2::boolean then $3::int else rent_snapshot_id end,
+         uw_snapshot_id   = case when $4::boolean then $5::int else uw_snapshot_id end,
+         comp_set_id      = case when $6::boolean then $7::int else comp_set_id end,
+         t12_snapshot_id  = case when $8::boolean then $9::int else t12_snapshot_id end,
+         payroll_model_id = case when $10::boolean then $11::int else payroll_model_id end,
+         updated_at = now()
+       where id=$1`,
+      [id, rentSnapshotId !== undefined, rentSnapshotId ?? null, uwSnapshotId !== undefined, uwSnapshotId ?? null,
+       compSetId !== undefined, compSetId ?? null, t12SnapshotId !== undefined, t12SnapshotId ?? null,
+       payrollModelId !== undefined, payrollModelId ?? null]
+    );
+    logChange(req.session.username || '', 'relink budget snapshots', { id });
+  }
   if (inputs) {
-    const merged: BudgetInputs = { ...lb.budget.inputs, ...inputs };
-    const built = buildLines(lb, merged, lb.lines);
+    const lb2 = (await loadBudget(id))!;   // reload — snapshots may have been relinked above
+    const merged: BudgetInputs = { ...lb2.budget.inputs, ...inputs };
+    const built = buildLines(lb2, merged, lb2.lines);
     await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(merged)]);
     await saveLines(id, built.lines);
     logChange(req.session.username || '', 'update budget inputs', { id });

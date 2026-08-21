@@ -52,7 +52,15 @@ export interface BudgetInputs {
   rate: number;               // interest rate, e.g. 0.06
   startMonth: number;         // 1..12 — first month the budget is "live" (1 = full year)
   gpr: { baseMonthly: number; growthPct: Months };  // monthly % change, compounding off base
-  ltl: { startMonthly: number; targetPct: number; rampMonths: number }; // negative $, pct of GPR (positive number)
+  ltl: {
+    /** 'leases' = per-lease burnoff at each lease's turnover month (needs a
+        unit-level rent roll); 'ramp' = simple linear ramp fallback. */
+    mode?: 'leases' | 'ramp';
+    startMonthly: number; targetPct: number; rampMonths: number;   // ramp params
+    renewalPct?: number;      // share of expiring leases that renew (default .70)
+    burnoffRenew?: number;    // LTL share burned at a renewal (default .50 — "half")
+    burnoffNew?: number;      // LTL share burned at a new move-in (default 1.00)
+  };
   vacancyPct: Months;         // positive fractions, e.g. 0.05
   concessionPct: number;      // of GPR (positive fraction) — UW-derived
   rentalLossPct: number;      // TOTAL cat-3 % of GPR incl. vacancy — UW-derived
@@ -92,6 +100,60 @@ export const rotate12 = (arr: Months, startMonth: number): Months =>
 export function monthLabels(year: number, startMonth: number): string[] {
   const names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   return Array.from({ length: 12 }, (_, i) => `${names[calMonthOf(startMonth, i) - 1]}-${String(calYearOf(year, startMonth, i)).slice(2)}`);
+}
+
+/* ---------------- lease-level loss-to-lease burnoff ---------------- */
+
+/** One lease off the unit-level rent roll: market rent, actual rent, lease end. */
+export interface Lease { m: number; r: number; e?: string | null }
+
+/** Monthly LOSS/GAIN TO LEASE (signed, loss negative) from per-lease burnoff:
+    a lease's LTL changes only in its turnover month — renewals burn
+    `burnoffRenew` of their gap (default half), new move-ins burn `burnoffNew`
+    (default all). Which expiring leases renew is chosen by `renewalPct`,
+    weighted so the LARGEST-LTL leases renew first (deep discounts renew;
+    GTL / low-LTL leases are likelier to leave). Leases already expired or
+    month-to-month at the start turn over in month 0; leases ending after the
+    window never burn inside it. */
+export function ltlMonths(
+  leases: Lease[], year: number, startMonth: number,
+  opts: { renewalPct?: number; burnoffRenew?: number; burnoffNew?: number } = {}
+): Months {
+  const renewalPct = opts.renewalPct ?? 0.7;
+  const keepRenew = 1 - (opts.burnoffRenew ?? 0.5);
+  const keepNew = 1 - (opts.burnoffNew ?? 1);
+  const startAbs = year * 12 + (startMonth - 1);
+  const items = leases.map((l) => {
+    let expM = 0; // no/invalid end date = MTM → turns over in month 0
+    if (l.e) {
+      // parse the year-month directly — Date('YYYY-MM-DD') is UTC while the
+      // getters are local, which shifts month-firsts back a month
+      const iso = String(l.e).match(/^(\d{4})-(\d{1,2})/);
+      let y = NaN, mo = NaN;
+      if (iso) { y = +iso[1]; mo = +iso[2] - 1; }
+      else {
+        const d = new Date(l.e);
+        if (!isNaN(d.getTime())) { y = d.getFullYear(); mo = d.getMonth(); }
+      }
+      if (!isNaN(y)) {
+        const idx = y * 12 + mo - startAbs;
+        expM = idx < 0 ? 0 : idx > 11 ? 99 : idx;
+      }
+    }
+    return { ltl: r2((l.m || 0) - (l.r || 0)), expM };  // positive = loss to lease
+  });
+  const out = zero12();
+  for (let m = 0; m < 12; m++) {
+    const expiring = items.filter((it) => it.expM === m);
+    if (expiring.length) {
+      // largest LTL renews first
+      expiring.sort((a, b) => b.ltl - a.ltl);
+      const nRenew = Math.round(renewalPct * expiring.length);
+      expiring.forEach((it, i) => { it.ltl = r2(it.ltl * (i < nRenew ? keepRenew : keepNew)); });
+    }
+    out[m] = r2(-items.reduce((a, it) => a + it.ltl, 0)) || 0;   // normalize -0
+  }
+  return out;
 }
 
 /** Slice the ownership-year plan into one CALENDAR year's Jan..Dec amounts.
@@ -340,6 +402,7 @@ export function defaultInputs(year: number, uw: UwSnapshotData, rent: { marketMo
   const pctOf = (p: string) => (gpr1 ? Math.abs(uw.y1[p] || 0) / gpr1 : 0);
   const baseMonthly = rent ? rent.marketMonthly : r2(gpr1 / 12);
   const startLtl = rent ? -Math.max(0, r2(rent.marketMonthly - rent.inPlaceMonthly)) : -r2((Math.abs(uw.y1['loss'] || 0)) / 12);
+  const ltlDefaults = { mode: 'leases' as const, renewalPct: 0.7, burnoffRenew: 0.5, burnoffNew: 1 };
   const vac = Number(uw.assumptions['vacancyPct']) || 0.05;
   const uwAbs: Partial<Record<string, number>> = {};
   for (const p of ['4', '5', '6', '8', '9', '10', '11', '12', '13', '14']) uwAbs[p] = r2(uw.y1[p] || 0);
@@ -347,7 +410,7 @@ export function defaultInputs(year: number, uw: UwSnapshotData, rent: { marketMo
   return {
     year, units: uw.units, capital: 0, loan: 0, rate: 0.06, startMonth: 1, tieNoi: true, tieIncome: true,
     gpr: { baseMonthly, growthPct: zero12() },
-    ltl: { startMonthly: startLtl, targetPct: pctOf('loss'), rampMonths: 12 },
+    ltl: { ...ltlDefaults, startMonthly: startLtl, targetPct: pctOf('loss'), rampMonths: 12 },
     vacancyPct: Array(12).fill(vac) as Months,
     concessionPct: pctOf('2'),
     rentalLossPct: pctOf('3'),
@@ -369,7 +432,7 @@ function categoryItems(pcode: string, coa: CoaAccount[], comps: CompWeights | nu
   return items;
 }
 
-export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null): BudgetLine[] {
+export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null, leases?: Lease[] | null): BudgetLine[] {
   /* THE 12 MONTHS ARE THE OWNERSHIP YEAR (UW Year 1): index 0 = the start
      month of inputs.year, wrapping into the next calendar year. Seasonal
      calendar shapes are rotated into ownership order. The whole window ties
@@ -394,14 +457,19 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
 
   const gprAnnual = sum(gpr);
 
-  // Loss to lease: linear ramp from startMonthly (actual gap at takeover) to targetPct×GPR
-  const ltl = zero12();
-  for (let i = 0; i < 12; i++) {
-    const t = inputs.ltl.rampMonths > 1 ? Math.min(1, i / (inputs.ltl.rampMonths - 1)) : 1;
-    const target = -inputs.ltl.targetPct * gpr[i];
-    ltl[i] = r2(inputs.ltl.startMonthly + (target - inputs.ltl.startMonthly) * t);
+  // Loss to lease: per-lease burnoff at each turnover (preferred, needs a
+  // unit-level rent roll) or the linear-ramp fallback.
+  if (inputs.ltl.mode !== 'ramp' && leases && leases.length) {
+    mk('5003', ltlMonths(leases, inputs.year, startMonth, inputs.ltl), { method: 'ltl' });
+  } else {
+    const ltl = zero12();
+    for (let i = 0; i < 12; i++) {
+      const t = inputs.ltl.rampMonths > 1 ? Math.min(1, i / (inputs.ltl.rampMonths - 1)) : 1;
+      const target = -inputs.ltl.targetPct * gpr[i];
+      ltl[i] = r2(inputs.ltl.startMonthly + (target - inputs.ltl.startMonthly) * t);
+    }
+    mk('5003', ltl, { method: 'ltl' });
   }
-  mk('5003', ltl, { method: 'ltl' });
 
   // Concessions: UW % of budget GPR, split across cat-2 GLs by comp weights
   const concTotal = -r2(inputs.concessionPct * gprAnnual);
@@ -518,8 +586,8 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
 }
 
 /** Re-generate all non-overridden lines; keep overrides untouched. */
-export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null): BudgetLine[] {
-  const fresh = new Map(generateLines(coaList, inputs, uw, comps, catShapes, payrollWages).map((l) => [l.gl_code, l]));
+export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null, leases?: Lease[] | null): BudgetLine[] {
+  const fresh = new Map(generateLines(coaList, inputs, uw, comps, catShapes, payrollWages, leases).map((l) => [l.gl_code, l]));
   const out: BudgetLine[] = [];
   const seen = new Set<string>();
   for (const old of existing) {
@@ -533,8 +601,9 @@ export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs
 }
 
 /** Tie Total Income to UW Y1 EGI by adjusting the loss-to-lease line — GPR
-    stays anchored to the rent roll, LTL absorbs the gap, spread across the
-    months in proportion to GPR. Skipped if 5003 is overridden. */
+    stays anchored to the rent roll, LTL absorbs the gap. When LTL has a
+    modeled shape (lease burnoff / ramp) it is SCALED so the shape survives;
+    otherwise the gap is spread ∝ GPR. Skipped if 5003 is overridden. */
 export function tieIncomeToUw(lines: BudgetLine[], coa: Map<string, CoaAccount>, targetEgi: number): BudgetLine[] {
   const ltl = lines.find((l) => l.gl_code === '5003');
   if (!ltl || ltl.override) return lines;
@@ -542,12 +611,27 @@ export function tieIncomeToUw(lines: BudgetLine[], coa: Map<string, CoaAccount>,
   const income = sum(rollup(monthsMap).get('5500') || zero12());
   const gap = r2(targetEgi - income);
   if (Math.abs(gap) < 0.01) return lines;
-  const gpr = lines.find((l) => l.gl_code === '4994')?.months || zero12();
-  const weights = gpr.map((v) => Math.max(0, v));
-  if (!weights.some((w) => w > 0)) return lines;
-  const adj = spreadMonthly(gap, weights);
-  const newMonths = ltl.months.map((v, i) => r2(v + adj[i]));
-  return lines.map((l) => (l.gl_code === '5003' ? { ...l, months: newMonths } : l));
+  let newMonths: Months | null = null;
+  const ltlSum = sum(ltl.months);
+  const newSum = r2(ltlSum + gap);
+  if (ltlSum !== 0 && ltlSum * newSum > 0) {
+    // proportional rescale keeps the burnoff pattern
+    const f = newSum / ltlSum;
+    newMonths = ltl.months.map((v) => r2(v * f));
+    const drift = r2(newSum - sum(newMonths));
+    if (drift !== 0) {
+      let idx = 11;
+      for (let i = 11; i >= 0; i--) if (newMonths[i] !== 0) { idx = i; break; }
+      newMonths[idx] = r2(newMonths[idx] + drift);
+    }
+  } else {
+    const gpr = lines.find((l) => l.gl_code === '4994')?.months || zero12();
+    const weights = gpr.map((v) => Math.max(0, v));
+    if (!weights.some((w) => w > 0)) return lines;
+    const adj = spreadMonthly(gap, weights);
+    newMonths = ltl.months.map((v, i) => r2(v + adj[i]));
+  }
+  return lines.map((l) => (l.gl_code === '5003' ? { ...l, months: newMonths! } : l));
 }
 
 export const DEFAULT_NOI_FLEX = ['9', '11', '13', '14'];

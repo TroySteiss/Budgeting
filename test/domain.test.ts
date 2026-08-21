@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import {
   spreadMonthly, allocateWeighted, rollup, generateLines, rebalanceCategory,
   categoryTotals, computeTieout, defaultInputs, tieNoiToUw, tieIncomeToUw,
-  calendarSlice, monthLabels, rotate12, sum, zero12,
-  CoaAccount, UwSnapshotData, Months,
+  calendarSlice, monthLabels, rotate12, ltlMonths, sum, zero12,
+  CoaAccount, UwSnapshotData, Months, Lease,
 } from '../shared/domain.js';
 
 const coaList: CoaAccount[] = JSON.parse(readFileSync(join(process.cwd(), 'seed', 'coa.json'), 'utf8'));
@@ -181,6 +181,45 @@ describe('tieNoiToUw', () => {
     lines = tieNoiToUw(lines, coaMap, fakeUw.noi);
     const again = tieNoiToUw(lines, coaMap, fakeUw.noi);
     expect(JSON.stringify(again.map((l) => l.months))).toBe(JSON.stringify(lines.map((l) => l.months)));
+  });
+});
+
+describe('ltlMonths — per-lease burnoff at turnover', () => {
+  // ownership year Sep 2026 – Aug 2027
+  const leases: Lease[] = [
+    { m: 1000, r: 900, e: '2026-11-15' },   // LTL 100, expires Nov (month 2)
+    { m: 1000, r: 950, e: '2026-11-20' },   // LTL 50,  expires Nov (month 2)
+    { m: 1000, r: 1050, e: '2027-02-10' },  // GTL -50, expires Feb (month 5)
+    { m: 1000, r: 800, e: '2027-12-01' },   // LTL 200, expires after the window — never burns
+  ];
+
+  it('burns half on renewals, all on move-ins, at each lease\'s turnover month', () => {
+    const out = ltlMonths(leases, 2026, 9, { renewalPct: 0.5, burnoffRenew: 0.5, burnoffNew: 1 });
+    // months 0-1: full gap = -(100+50-50+200) = -300
+    expect(out[0]).toBe(-300);
+    expect(out[1]).toBe(-300);
+    // month 2: two leases expire; renewalPct .5 → 1 renews. LARGEST LTL (100) renews
+    // and keeps half (50); the 50-LTL lease turns over and burns fully (0).
+    // total = 50 + 0 - 50 + 200 = 200 → -200
+    expect(out[2]).toBe(-200);
+    expect(out[4]).toBe(-200);
+    // month 5: the GTL lease expires alone; round(.5*1)=1 → renews, keeps half (-25)
+    // total = 50 + 0 - 25 + 200 = 225 → -225 through the rest of the year
+    expect(out[5]).toBe(-225);
+    expect(out[11]).toBe(-225);
+  });
+
+  it('missing/expired lease ends turn over in month 0', () => {
+    const out = ltlMonths([{ m: 1000, r: 900, e: null }, { m: 1000, r: 900, e: '2026-01-01' }], 2026, 9,
+      { renewalPct: 0, burnoffRenew: 0.5, burnoffNew: 1 });
+    expect(out[0]).toBe(0);   // both turn over immediately, burn 100%
+  });
+
+  it('renewal rate 100% keeps half of everything at expiry', () => {
+    const out = ltlMonths([{ m: 1000, r: 800, e: '2026-10-01' }], 2026, 9, { renewalPct: 1, burnoffRenew: 0.5 });
+    expect(out[0]).toBe(-200);
+    expect(out[1]).toBe(-100);
+    expect(out[11]).toBe(-100);
   });
 });
 

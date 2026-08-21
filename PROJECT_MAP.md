@@ -109,6 +109,15 @@ degenerates to a plain calendar year.
 flat $/mo, start-$ + %/mo growth fill, Minot $/unit × units with its seasonal shape, reset to
 engine. All write overrides via PUT /budgets/:id/lines/:gl.
 
+**Loss to lease (Troy, 2026-08-21)**: per-lease burnoff (`ltlMonths` in domain.ts) — each lease's
+LTL changes only in its turnover month; renewals keep `1-burnoffRenew` (default: burn HALF), new
+move-ins burn `burnoffNew` (default all). Which expiring leases renew is chosen by `renewalPct`
+(default 70%), sorted so the LARGEST-LTL leases renew first (deep discounts renew; GTL/low-LTL
+leave). Needs per-lease data: the unit-level rent-roll parser now stores `leases` [{m, r, e}] on
+rent snapshots (summary rolls have none → linear-ramp fallback, `inputs.ltl.mode`). The income tie
+now SCALES the LTL row (shape preserved) instead of spreading additively. PUT /budgets/:id also
+accepts snapshot ids (rentSnapshotId etc.) to relink data without recreating the budget.
+
 Manual cell edit ⇒ `override=true`, driver `manual` (purple in UI, 🔓 clears).
 `regenerate()` recomputes only non-overridden lines. `rebalanceCategory()` (the tie-out panel's
 "tie" button) scales a category's non-overridden lines so the total hits the UW-derived target,
