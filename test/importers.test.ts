@@ -81,6 +81,47 @@ describe('parseRentRoll — Yardi summary', () => {
   });
 });
 
+describe('parseRentRoll — Yardi multi-property unit level (8/21/26 roll)', () => {
+  const props = parseRentRoll(fx('rentroll-unit-level.xlsx'));
+
+  it('parses all 15 properties with codes from the Total rows', () => {
+    expect(props.length).toBe(15);
+    expect(props.every((p) => /^[a-z]{4}$/.test(p.code || ''))).toBe(true);
+    expect(props.every((p) => p.source === 'unit_level')).toBe(true);
+    expect(props.every((p) => p.asOf === '08/21/2026')).toBe(true);
+  });
+  it('the six subject properties tie to the report totals', () => {
+    const by = Object.fromEntries(props.map((p) => [p.code, p]));
+    expect(by.cwnd.units).toBe(268);
+    expect(by.cwnd.name).toBe('Cottonwood Apartments');
+    expect(by.cwnd.marketMonthly).toBeCloseTo(433530, 0);
+    expect(by.cwnd.inPlaceMonthly).toBeCloseTo(384314, 0);
+    expect(by.drnd.units).toBe(163);
+    expect(by.drnd.marketMonthly).toBeCloseTo(276505, 0);
+    expect(by.lhnd.units).toBe(119);
+    expect(by.mwnd.units).toBe(84);
+    expect(by.nrnd.units).toBe(68);
+    expect(by.nrnd.occupiedUnits).toBe(64);
+    expect(by.rrnd.units).toBe(146);
+    expect(by.rrnd.inPlaceMonthly).toBeCloseTo(240042, 0);
+  });
+  it('captures per-lease detail with lease-end dates (powers the LTL burnoff)', () => {
+    const nr = props.find((p) => p.code === 'nrnd')!;
+    expect(nr.leases!.length).toBe(64);
+    expect(nr.leases!.every((l) => l.m > 0 && l.r > 0)).toBe(true);
+    expect(nr.leases!.every((l) => /^\d{4}-\d{2}-\d{2}$/.test(l.e || ''))).toBe(true);
+    // in-flight $0-actual residents stay OUT of the lease list (they'd fake full-market LTL)
+    const cw = props.find((p) => p.code === 'cwnd')!;
+    expect(cw.occupiedUnits).toBe(256 + 2);      // 256 paying + 2 in-flight move-ins
+    expect(cw.leases!.length).toBe(256);
+  });
+  it('grand total across all properties ties to the report summary', () => {
+    expect(props.reduce((a, p) => a + p.units, 0)).toBe(3305);
+    expect(props.reduce((a, p) => a + p.marketMonthly, 0)).toBeCloseTo(4678490, 0);
+    expect(props.reduce((a, p) => a + p.inPlaceMonthly, 0)).toBeCloseTo(4231636, 0);
+  });
+});
+
 describe('parseRentRoll — OneSite unit level', () => {
   it('rejects a non-rent-roll workbook', () => {
     expect(() => parseRentRoll(fx('fhnd-budget-workbook.xlsx'))).toThrow();

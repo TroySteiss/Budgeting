@@ -46,6 +46,7 @@ function drvMeta(l) {
     case 'sellerLine': return { cls: 'drv-t12', tag: 'SLR', label: `Seller: ${l.driver.name || ''} × ${(l.driver.pct || 0).toFixed(1)}%` };
     case 'recovery': return { cls: 'drv-t12', tag: 'REC', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% recovery of prior-month billing` };
     case 'charges': return { cls: 'drv-rr', tag: 'CHG', label: 'Rent-roll charges × 12' };
+    case 'setTotal': return { cls: 'drv-man', tag: 'TOTAL', label: `Total set to ${Math.round(l.driver.total || 0).toLocaleString()} — prior distribution kept` };
     default: return { cls: 'drv-none', tag: '—', label: 'No formula (zero / manual)' };
   }
 }
@@ -355,21 +356,28 @@ function renderUploadPreview(el, parsed) {
     });
   } else if (parsed.kind === 'rent_roll') {
     el.innerHTML = `<h3>Properties in this rent roll</h3>
-      <div class="mapping"><table class="list"><tr><th>Source</th><th>Units</th><th>Market/mo</th><th>In-place/mo</th><th>As of</th><th>Property</th></tr>
+      <div class="mapping"><table class="list"><tr><th>Source</th><th>Units</th><th>Leases</th><th>Market/mo</th><th>In-place/mo</th><th>As of</th><th>Property</th></tr>
       ${parsed.properties.map((p, i) => `<tr>
-        <td>${esc(p.code || p.name)}</td><td>${p.units}</td><td>${money(p.marketMonthly)}</td><td>${money(p.inPlaceMonthly)}</td>
+        <td>${esc(p.code || p.name)}</td><td>${p.units}</td>
+        <td>${(p.leases || []).length ? `${p.leases.length} ✓` : '<span class="muted">summary</span>'}</td>
+        <td>${money(p.marketMonthly)}</td><td>${money(p.inPlaceMonthly)}</td>
         <td>${esc(p.asOf || '')}</td>
         <td><select data-map="${i}">${propOptions(p.code && S.state.properties.some((x) => x.code === p.code) ? p.code : guessProp(p.name))}</select></td>
       </tr>`).join('')}</table></div>
-      <div class="row" style="margin-top:10px"><button class="btn" id="up-apply">Save rent snapshots</button></div>`;
+      <div class="row" style="margin-top:10px">
+        <label style="align-self:center" title="Point every existing budget of a mapped property at its new snapshot and regenerate — manual overrides and MROUNDs are kept; unit-level rolls switch LTL to the per-lease burnoff. GPR base and other inputs stay as-is.">
+          <input type="checkbox" id="up-relink" checked> Relink existing budgets & regenerate</label>
+        <button class="btn" id="up-apply">Save rent snapshots</button>
+      </div>`;
     el.querySelector('#up-apply').addEventListener('click', async () => {
       const mappings = [...el.querySelectorAll('[data-map]')].map((sel) => {
         const src = parsed.properties[Number(sel.dataset.map)];
         return { sourceCode: src.code, sourceName: src.name, propertyCode: sel.value || null };
       }).filter((m) => m.propertyCode);
       if (!mappings.length) { S.upload.err = 'Map at least one row'; render(); return; }
-      await POST('/uploads/apply', { kind: 'rent_roll', filename: parsed.filename, payload: parsed, mappings });
-      S.upload.msg = `Saved ${mappings.length} rent snapshot(s)`; S.upload.parsed = null;
+      const relink = el.querySelector('#up-relink').checked;
+      const resp = await POST('/uploads/apply', { kind: 'rent_roll', filename: parsed.filename, payload: parsed, mappings, relink });
+      S.upload.msg = `Saved ${mappings.length} rent snapshot(s)${relink ? ` · relinked ${resp.relinked || 0} budget(s)` : ''}`; S.upload.parsed = null;
       await refreshState(); render();
     });
   } else if (parsed.kind === 'seller_t12') {
@@ -596,6 +604,34 @@ function renderEditor(el) {
       S.bv = await PUT(`/budgets/${b.id}/lines/${box.dataset.gl}`, { note: box.value });
     });
   });
+  /* Year-1 total editing: type a new annual total and the months rescale
+     proportionally — the line's distribution flows backwards from the total. */
+  el.querySelectorAll('td.ann input').forEach((box) => {
+    box.addEventListener('focus', () => box.select());
+    box.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); box.blur(); } });
+    box.addEventListener('change', async () => {
+      const gl = box.dataset.ann;
+      const target = parseFloat(String(box.value).replace(/[$,]/g, ''));
+      if (!Number.isFinite(target)) { render(); return; }
+      const line = S.bv.lines.find((l) => l.gl_code === gl);
+      const old = line ? line.months.reduce((a, v) => a + v, 0) : 0;
+      let months;
+      if (Math.abs(old) > 0.005) {
+        months = line.months.map((v) => Math.round((v * target / old) * 100) / 100);
+      } else {
+        months = Array(12).fill(Math.round((target / 12) * 100) / 100); // no shape to keep — spread flat
+      }
+      // penny-fix the largest month so the total is exact
+      const drift = Math.round((target - months.reduce((a, v) => a + v, 0)) * 100) / 100;
+      if (drift) {
+        const bi = months.reduce((mi, v, i) => Math.abs(v) > Math.abs(months[mi]) ? i : mi, 0);
+        months[bi] = Math.round((months[bi] + drift) * 100) / 100;
+      }
+      pushUndo();
+      S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { months, driver: { method: 'setTotal', total: target } });
+      render();
+    });
+  });
   el.querySelectorAll('[data-unlock]').forEach((btn) => btn.addEventListener('click', async () => {
     pushUndo();
     S.bv = await PUT(`/budgets/${b.id}/lines/${btn.dataset.unlock}`, { override: false });
@@ -723,7 +759,7 @@ function gridHtml(bv, totals) {
       <td class="name" title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}">${esc(a.name)}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
       ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">` : ''}</td>` : ''}
       ${monthIdx.map((i) => `<td class="m ${dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money2(m[i]) : ''}"></td>`).join('')}
-      ${cols.annual ? `<td class="${ann < 0 ? 'neg' : ''}"><b>${money(ann)}</b></td>` : ''}
+      ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}"><input data-ann="${a.code}" value="${ann ? money2(ann) : ''}" title="Year 1 total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
       ${cols.punit ? `<td>${ann ? money(ann / units) : ''}</td>` : ''}
       ${cols.note ? `<td class="note"><input data-gl="${a.code}" value="${esc(l ? l.note : '')}" placeholder="note"></td>` : ''}
     </tr>`);
@@ -1218,10 +1254,12 @@ function openWavgMatch(b, gl, acc, anchorBtn, put, inp) {
     const cal = shape.map((w) => (S.bv.compWeights[k] * w) / wsum);
     rows.push({ srcType: 'comp', name: `${k} ${a.name || ''}`, pcode: a.pcode, cal, scale: (inp.units || 0) / S.bv.compUnits, total: S.bv.compWeights[k], own: k === gl });
   }
+  // the property's own SELLER actuals outrank the per-unit-scaled Minot comps —
+  // picking a comp line thinking it was actuals silently shrank the total by
+  // the unit ratio (e.g. $79K × 268/712u ≈ $30K)
   rows.sort((x, y) => {
-    const xs = x.own ? -1 : x.pcode === acc.pcode ? 0 : 1;
-    const ys = y.own ? -1 : y.pcode === acc.pcode ? 0 : 1;
-    return xs - ys || Math.abs(y.total) - Math.abs(x.total);
+    const rank = (r) => r.srcType === 'seller' && r.pcode === acc.pcode ? -2 : r.own ? -1 : r.pcode === acc.pcode ? 0 : 1;
+    return rank(x) - rank(y) || Math.abs(y.total * y.scale) - Math.abs(x.total * x.scale);
   });
   const menu = document.createElement('div');
   menu.className = 'rowmenu';
@@ -1232,7 +1270,7 @@ function openWavgMatch(b, gl, acc, anchorBtn, put, inp) {
     <div style="padding:4px 6px"><input id="wa-filter" placeholder="filter…" style="width:100%; border:1px solid var(--line); border-radius:6px; padding:4px 7px"></div>
     ${rows.map((r, i) => `<button data-wa="${i}" ${r.own || r.pcode === acc.pcode ? '' : 'style="opacity:.75"'}>
       <span class="badge" style="margin:0 4px 0 0">${r.srcType === 'seller' ? 'Seller' : 'Minot'}</span>${esc(r.name.slice(0, 30))}
-      <span class="muted" style="float:right">${money(r.total)}${r.own ? ' · this GL' : r.pcode === acc.pcode ? ' · suggested' : ''}</span></button>`).join('')}`;
+      <span class="muted" style="float:right">${r.scale !== 1 ? `${money(r.total)} → ${money(r.total * r.scale)} at ${inp.units || 0}u` : money(r.total)}${r.own ? ' · this GL' : r.pcode === acc.pcode ? ' · suggested' : ''}</span></button>`).join('')}`;
   const rct = anchorBtn.getBoundingClientRect();
   menu.style.left = `${Math.max(8, rct.left + window.scrollX - 60)}px`;
   menu.style.top = `${rct.bottom + window.scrollY + 2}px`;
@@ -1250,7 +1288,8 @@ function openWavgMatch(b, gl, acc, anchorBtn, put, inp) {
     menu.remove();
     const g = parseFloat(String(prompt(`Increase factor % on "${r.name}" (the (1+$D)):`, '3') || '').replace(/,/g, ''));
     if (!Number.isFinite(g)) return;
-    const mult = parseFloat(String(prompt('MROUND multiple ($, 0 = no rounding):', '250') || '').replace(/,/g, ''));
+    const estTotal = r.cal.reduce((a, x) => a + x, 0) * r.scale * (1 + g / 100);
+    const mult = parseFloat(String(prompt(`MROUND multiple ($, 0 = no rounding) — annual total lands at ≈ ${money(estTotal)}${r.scale !== 1 ? ` (Minot ${money(r.total)} scaled to ${inp.units || 0} units)` : ''}:`, '250') || '').replace(/,/g, ''));
     if (!Number.isFinite(mult) || mult < 0) return;
     // centered 1-2-1 smoothing on the calendar series (wraps at year edges)
     const sm = r.cal.map((_, c) => (2 * r.cal[c] + r.cal[(c + 11) % 12] + r.cal[(c + 1) % 12]) / 4);

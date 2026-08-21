@@ -129,6 +129,27 @@ rent snapshots (summary rolls have none → linear-ramp fallback, `inputs.ltl.mo
 now SCALES the LTL row (shape preserved) instead of spreading additively. PUT /budgets/:id also
 accepts snapshot ids (rentSnapshotId etc.) to relink data without recreating the budget.
 
+**Rent-roll formats** (`parseRentRoll`, 3 branches): Yardi multi-property SUMMARY ("Rent Roll" /
+"For Selected Properties" with a `Property` header row); **Yardi multi-property UNIT-LEVEL**
+(same title block but a `Unit`/`Unit Type`/`Market Rent`/`Actual Rent`/`Lease Expiration` header —
+`parseYardiUnitLevel`: property sections are delimited by "Current/Notice/Vacant Residents" /
+"Future Residents/Applicants" markers and closed by a `Total | Property Name(code)` row, which
+supplies name + Yardi code; occupied = `t…` resident ids; VACANT/MODEL/ADMIN count as units but
+carry no lease; $0-actual resident rows count occupied but stay OUT of `leases` — they'd fake a
+full-market LTL; only Current-section rows feed totals; NO charge codes in this format); OneSite
+single-property "RENT ROLL DETAIL" (has Lease Rent + charge columns). Fixture
+`rentroll-unit-level.xlsx` = the real 8/21/26 all-ND roll (15 properties, 3,305 units, ties to its
+own summary block). `POST /uploads/apply {kind:'rent_roll', relink:true}` (UI checkbox, default
+on) also points every existing budget of a mapped property at its new snapshot and regenerates —
+inputs untouched (GPR base stays), overrides/MROUNDs kept, per-lease LTL activates itself.
+
+**Editable Year-1 totals (2026-08-21)**: the Year 1 column on detail rows is an input — typing a
+new annual total rescales the months proportionally (distribution flows backwards from the total;
+flat spread if the line was zero), penny-fixed on the largest month, saved as driver
+`{method:'setTotal'}` (TOTAL chip). WAVG picker fix: seller-actuals rows sort first, comp rows
+display the per-unit-scaled total they'll actually produce, and the MROUND prompt previews the
+resulting annual total.
+
 **Utilities (Troy 2026-08-21)** — `buildUtilityModel` in domain.ts: cat-12 expense levels come
 from the SELLER statements (exception to shapes-only — utilities are property-physical and the UW
 itself used T12×growth), each seller line keyword-mapped to its closest Monarch GL

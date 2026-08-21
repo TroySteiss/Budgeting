@@ -107,6 +107,9 @@ table.grid tr.grand td { background: var(--grand-bg); font-weight: 700; }
 table.grid td.m input { width: 74px; border: 1px solid transparent; background: transparent; text-align: right; border-radius: 4px; padding: 2px 3px; color: inherit; }
 table.grid td.m input:hover { border-color: var(--line); }
 table.grid td.m input:focus { border-color: var(--accent); background: var(--input); outline: none; }
+table.grid td.ann input { width: 86px; border: 1px solid transparent; background: transparent; text-align: right; border-radius: 4px; padding: 2px 3px; color: inherit; font-weight: 600; }
+table.grid td.ann input:hover { border-color: var(--line); }
+table.grid td.ann input:focus { border-color: var(--accent); background: var(--input); outline: none; }
 table.grid td.note input { width: 130px; border: 1px solid transparent; background: transparent; border-radius: 4px; padding: 2px 4px; text-align: left; color: var(--dim); }
 table.grid td.note input:focus { border-color: var(--accent); background: var(--input); outline: none; color: var(--ink); }
 table.grid td.neg, .neg { color: var(--bad); }

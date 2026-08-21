@@ -185,18 +185,25 @@ export function parseRentRoll(buf: Buffer): RentParsedProperty[] {
   const all = grids(buf);
   const g = all[0].g;
 
-  // ---- Yardi multi-property summary ("Rent Roll" / "For Selected Properties") ----
-  const isSummary = low(g[0]?.[0]) === 'rent roll' || all[0].name === 'Report1' && g.slice(0, 6).some((r) => low(r?.[0]).includes('for selected properties'));
-  if (isSummary) {
+  // ---- Yardi "Rent Roll" / "For Selected Properties" (summary OR unit-level) ----
+  const isYardi = low(g[0]?.[0]) === 'rent roll' || all[0].name === 'Report1' && g.slice(0, 6).some((r) => low(r?.[0]).includes('for selected properties'));
+  if (isYardi) {
     let asOf: string | null = null;
     for (const row of g.slice(0, 6)) {
       const m = s(row?.[0]).match(/as of\s*=\s*([\d/]+)/i);
       if (m) asOf = m[1];
     }
-    // header row: first cell 'Property'
+    // header row: first cell 'Property' (summary) or 'Unit' (unit-level detail)
     let h = -1;
     for (let r = 0; r < Math.min(g.length, 12); r++) if (low(g[r]?.[0]) === 'property') { h = r; break; }
-    if (h < 0) throw new Error('Summary rent roll: no "Property" header row found');
+    if (h < 0) {
+      for (let r = 0; r < Math.min(g.length, 12); r++) {
+        if (low(g[r]?.[0]) === 'unit' && (g[r] || []).map(low).some((c) => c.includes('market'))) {
+          return parseYardiUnitLevel(g, r, asOf);
+        }
+      }
+      throw new Error('Yardi rent roll: neither a "Property" (summary) nor "Unit" (detail) header row found');
+    }
     // column positions by scanning header rows h..h+2
     const heads: string[] = [];
     const width = Math.max(...g.slice(h, h + 3).map((r) => (r || []).length));
@@ -300,6 +307,77 @@ export function parseRentRoll(buf: Buffer): RentParsedProperty[] {
     leases,
     charges,
   }];
+}
+
+/** Yardi multi-property UNIT-LEVEL rent roll ("Rent Roll" / "For Selected
+    Properties" with Unit/Unit Type/Market Rent/Actual Rent/Lease Expiration
+    columns). Properties are delimited by "Current/Notice/Vacant Residents" /
+    "Future Residents/Applicants" section markers and closed by a
+    "Total | Property Name(code)" row. Occupied = resident id (t…); VACANT /
+    MODEL / ADMIN rows count as units but carry no lease. Only
+    Current/Notice/Vacant rows feed the totals (futures aren't in place yet). */
+function parseYardiUnitLevel(g: Grid, h: number, asOf: string | null): RentParsedProperty[] {
+  // two-line headers (h + h+1): "Market"/"Rent", "Lease"/"Expiration", …
+  const width = Math.max(...g.slice(h, h + 2).map((r) => (r || []).length));
+  const heads: string[] = [];
+  for (let c = 0; c < width; c++) heads[c] = [g[h]?.[c], g[h + 1]?.[c]].map(low).filter(Boolean).join(' ');
+  const cRes = heads.findIndex((c) => c === 'resident');
+  const cName = heads.findIndex((c) => c === 'name');
+  const cMkt = heads.findIndex((c) => c.includes('market'));
+  const cAct = heads.findIndex((c) => c.includes('actual'));
+  const cEnd = heads.findIndex((c) => c.includes('lease') && c.includes('expiration'));
+  if (cMkt < 0 || cAct < 0 || cRes < 0) throw new Error('Yardi unit-level rent roll: Resident/Market/Actual columns not found');
+
+  const toIso = (v: any): string | null => {
+    if (v == null || v === '') return null;
+    if (typeof v === 'number') return new Date(Math.round((v - 25569) * 86400 * 1000)).toISOString().slice(0, 10); // excel serial
+    const d = new Date(s(v).replace(/\s+\d{2}:\d{2}.*$/, ''));
+    return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  };
+
+  const out: RentParsedProperty[] = [];
+  let section: 'cur' | 'fut' | null = null;
+  let units = 0, market = 0, inPlace = 0, occ = 0;
+  let leases: { m: number; r: number; e: string | null }[] = [];
+  const reset = () => { units = 0; market = 0; inPlace = 0; occ = 0; leases = []; section = null; };
+
+  for (let r = h + 2; r < g.length; r++) {
+    const a0 = s(g[r]?.[0]);
+    const res = s(g[r]?.[cRes]);
+    if (/^current\/notice/i.test(a0)) { section = 'cur'; continue; }
+    if (/^future residents/i.test(a0)) { section = 'fut'; continue; }
+    if (/^summary/i.test(a0)) break;
+    if (res === 'Total') {
+      // property total row: name cell reads "Property Name(code)"
+      const nm = s(g[r]?.[cName]);
+      const m = nm.match(/^(.*?)\(([a-z0-9]+)\)\s*$/i);
+      if (m && units > 0) {
+        out.push({
+          code: m[2].toLowerCase(), name: m[1].trim(), units,
+          marketMonthly: Math.round(market * 100) / 100,
+          inPlaceMonthly: Math.round(inPlace * 100) / 100,
+          occupiedUnits: occ, asOf, source: 'unit_level', leases,
+        });
+      }
+      reset();
+      continue;
+    }
+    if (section !== 'cur' || !a0 || g[r]?.[cMkt] == null) continue;
+    // one unit row in the Current/Notice/Vacant section
+    units++;
+    const mkt = num(g[r]?.[cMkt]);
+    const act = num(g[r]?.[cAct]);
+    market += mkt;
+    if (/^t\d/i.test(res)) {
+      occ++;
+      inPlace += act;
+      // $0-actual resident rows are in-flight move-ins/outs — not a real lease
+      // gap, so they'd fake a full-market LTL; keep them out of the burnoff
+      if (act > 0) leases.push({ m: Math.round(mkt * 100) / 100, r: Math.round(act * 100) / 100, e: cEnd >= 0 ? toIso(g[r]?.[cEnd]) : null });
+    }
+  }
+  if (!out.length) throw new Error('Yardi unit-level rent roll: no property sections parsed');
+  return out;
 }
 
 /* ========================= ND PAYROLL MODEL ========================= */

@@ -83,7 +83,12 @@ pickable comp line × growth → MROUND $250** (flat), **weighted-avg DISTRIBUTI
 (WAVG)** — Troy's Excel formula: each month = (2×month + prev + next)/4 of a
 pickable source (seller T12 line or Minot comp line, per-unit scaled) × growth,
 MROUND to a prompted multiple — **seller actuals matched to a pickable seller
-line × growth**, reset to engine. Inline param inputs beside chips (vacancy %,
+line × growth**, reset to engine. WAVG picker (fixed 2026-08-21 PM after the
+"Lease Terms 79K→30K" surprise): seller actuals now rank first, Minot rows show
+the per-unit-SCALED total ("$79,000 → $30,000 at 268u"), and the MROUND prompt
+previews the resulting annual total. **Year 1 column is editable**: type a new
+annual total and the months rescale proportionally (distribution flows
+backwards; TOTAL chip, penny-fixed, standing MROUND still applies). Inline param inputs beside chips (vacancy %,
 GPR growth, renewal %, mgmt %, utility growth/recovery, rate). Row-buffered
 editing (focus selects, Tab flows, saves on row exit). Bulk **MROUND is a
 STANDING modifier, not a lock**: sets a per-line rounding multiple that
@@ -109,13 +114,17 @@ the tie-NOI checklist, or accepting the variance.
 
 ## Known gaps / next steps
 
-- **Unit-level rent rolls per property not yet uploaded — TOP PRIORITY, Troy has
-  flagged LTL repeatedly.** LTL is NOT lease-end-date-based today: the summary
-  roll has no leases, so all six use the uniform-expiry approximation. The
-  per-lease engine is built and tested; needs Unit / Market Rent / Lease Rent /
-  Lease End columns (OneSite "RENT ROLL DETAIL" like the FHNDRR tab, or Yardi
-  unit-level). Upload via Uploads → Rent roll, then relink budgets (PUT
-  /budgets/:id {rentSnapshotId}) — also unlocks charge-driven other income.
+- **Unit-level rent roll support LANDED (2026-08-21 PM):** the parser now reads
+  the Yardi multi-property unit-level "Rent Roll" export (sections per property,
+  closed by "Total | Name(code)" rows; occupied = t-prefixed resident ids,
+  VACANT/MODEL/ADMIN excluded from leases; in-flight $0-actual residents count
+  occupied but carry no lease). The upload panel shows a Leases column and a
+  **"Relink existing budgets & regenerate" checkbox** (default on) — one upload
+  flips every mapped budget to the per-lease LTL burnoff. The 8/21/26 roll
+  (RentRoll08_21_2026.xlsx, all 15 ND properties, 3,305 units) is the test
+  fixture; the six subjects tie exactly. **Remaining: Troy uploads it in prod.**
+  Note: this Yardi format has no charge-code columns, so charge-driven other
+  income still needs an export with charges (OneSite detail).
 - After budgets are final: export 2026 Revision CSVs to replace the seller
   budgets in Yardi + 2027 CSVs for Jan–Aug.
 - Phase 3 annual-budget mode needs a monthly-actuals export (Property Comparison

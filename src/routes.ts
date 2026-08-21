@@ -127,8 +127,25 @@ router.post('/uploads/apply', h(async (req, res) => {
       )).rows[0];
       created.push({ id: row.id, propertyCode: m.propertyCode });
     }
+    // opt-in: point existing budgets at the new snapshots and regenerate.
+    // Inputs are untouched (GPR base stays); overrides/MROUNDs are kept by
+    // buildLines — unit-level leases flip LTL to the per-lease burnoff.
+    let relinked = 0;
+    if (req.body?.relink) {
+      for (const c of created) {
+        const budgets = await query('select id from budgets where property_code=$1', [c.propertyCode]);
+        for (const b of budgets.rows) {
+          await query('update budgets set rent_snapshot_id=$2, updated_at=now() where id=$1', [b.id, c.id]);
+          const lb = (await loadBudget(b.id))!;
+          const built = buildLines(lb, lb.budget.inputs, lb.lines);
+          await saveLines(b.id, built.lines);
+          relinked++;
+        }
+      }
+      if (relinked) logChange(user, 'relink budgets to new rent roll', { filename, relinked });
+    }
     logChange(user, 'upload rent_roll', { filename, created });
-    return res.json({ ok: true, uploadId, created });
+    return res.json({ ok: true, uploadId, created, relinked });
   }
   if (kind === 'comparison') {
     const c = payload.comparison;
