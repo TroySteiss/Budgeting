@@ -26,8 +26,12 @@ function applyTheme() {
 /* driver metadata: colour class + short tag + label for the formula a row uses */
 function drvMeta(l) {
   if (!l) return { cls: 'drv-none', tag: '—', label: 'No formula (zero)' };
-  if (l.override) return { cls: 'drv-man', tag: 'MAN', label: 'Manual override' };
-  switch ((l.driver || {}).method) {
+  const method = (l.driver || {}).method;
+  // an override with a named formula keeps its identity (T3, MINOT, …);
+  // only free-typed cells show as MAN
+  if (l.override && (!method || method === 'manual')) return { cls: 'drv-man', tag: 'MAN', label: 'Manual override' };
+  switch (method) {
+    case 't3avg': return { cls: 'drv-comp', tag: 'T3', label: `T3 comp avg × ${(((l.driver || {}).pct || 0)).toFixed(1)}% → MROUND $250` };
     case 'gpr': return { cls: 'drv-rr', tag: 'RR', label: 'Rent roll — GPR growth' };
     case 'ltl': return { cls: 'drv-rr', tag: 'LTL', label: 'Rent roll — lease burnoff' };
     case 'vacancy': return { cls: 'drv-rr', tag: '%GPR', label: '% of GPR' };
@@ -509,6 +513,12 @@ function renderEditor(el) {
   document.getElementById('showdist').addEventListener('change', (e) => { S.showDist = e.target.checked; localStorage.setItem('bt-dist', S.showDist ? '1' : '0'); render(); });
   document.getElementById('undo-btn').addEventListener('click', () => doUndo(b.id));
   document.getElementById('cols-btn').addEventListener('click', (e) => { e.stopPropagation(); openColsMenu(e.currentTarget, labels); });
+  el.querySelectorAll('.trend-chip').forEach((chip) => chip.addEventListener('click', () => {
+    const sel = trendSeriesSel();
+    if (sel.has(chip.dataset.trend)) sel.delete(chip.dataset.trend); else sel.add(chip.dataset.trend);
+    localStorage.setItem('bt-trend', JSON.stringify([...sel]));
+    render();
+  }));
   document.getElementById('assump-open').addEventListener('click', () => {
     const dlg = document.getElementById('assump-dlg');
     dlg.innerHTML = `
@@ -705,29 +715,51 @@ function gridHtml(bv, totals) {
   return `<table class="grid">${rows.join('')}</table>`;
 }
 
-/* Inline SVG chart of monthly Income / Expense / NOI (theme-aware). */
+/* Inline SVG chart of monthly Income / Expense / NOI. Legend chips TOGGLE the
+   series, and the y-axis is fitted tight to the visible values (not anchored
+   at zero) so monthly variation is actually readable. */
+function trendSeriesSel() {
+  if (!S.trendSeries) S.trendSeries = new Set(JSON.parse(localStorage.getItem('bt-trend') || '["NOI"]'));
+  return S.trendSeries;
+}
 function trendSvg(bv) {
   const mo = (bv.kpis && bv.kpis.monthly) || {};
-  const series = [
+  const ALL = [
     { name: 'Income', vals: mo.income || [], color: 'var(--good)' },
     { name: 'Expense', vals: mo.expense || [], color: 'var(--bad)' },
     { name: 'NOI', vals: mo.noi || [], color: 'var(--accent)' },
   ].filter((s) => s.vals.length === 12);
-  if (!series.length) return '<p class="muted">No data.</p>';
+  if (!ALL.length) return '<p class="muted">No data.</p>';
+  const sel = trendSeriesSel();
+  const series = ALL.filter((s) => sel.has(s.name));
   const labels = bv.monthLabels || MONTHS;
-  const W = 396, H = 150, padL = 8, padR = 8, padT = 10, padB = 20;
-  const all = series.flatMap((s) => s.vals);
-  const max = Math.max(...all, 1), min = Math.min(...all, 0);
-  const x = (i) => padL + (i * (W - padL - padR)) / 11;
-  const y = (v) => padT + (H - padT - padB) * (1 - (v - min) / (max - min || 1));
-  const lines = series.map((s) =>
-    `<polyline fill="none" stroke="${s.color}" stroke-width="2" points="${s.vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}"/>` +
-    s.vals.map((v, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.4" fill="${s.color}"><title>${s.name} ${labels[i]}: ${money(v)}</title></circle>`).join('')
-  ).join('');
-  const zero = min < 0 ? `<line x1="${padL}" y1="${y(0)}" x2="${W - padR}" y2="${y(0)}" stroke="var(--line)" stroke-dasharray="3 3"/>` : '';
-  const ticks = [0, 3, 6, 9, 11].map((i) => `<text x="${x(i)}" y="${H - 5}" font-size="9" fill="var(--dim)" text-anchor="middle">${labels[i]}</text>`).join('');
-  const legend = series.map((s) => `<span style="margin-right:12px; font-size:11px; color:var(--dim)"><span style="display:inline-block;width:10px;height:3px;background:${s.color};vertical-align:3px;margin-right:4px"></span>${s.name}</span>`).join('');
-  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%; display:block">${zero}${lines}${ticks}</svg><div style="margin-top:4px">${legend}</div>`;
+  const W = 396, H = 150, padL = 44, padR = 8, padT = 10, padB = 20;
+  let body = '';
+  if (series.length) {
+    const all = series.flatMap((s) => s.vals);
+    let min = Math.min(...all), max = Math.max(...all);
+    const span = max - min || Math.abs(max) || 1;
+    min -= span * 0.08; max += span * 0.08;             // tight scale + padding
+    const x = (i) => padL + (i * (W - padL - padR)) / 11;
+    const y = (v) => padT + (H - padT - padB) * (1 - (v - min) / (max - min));
+    const lines = series.map((s) =>
+      `<polyline fill="none" stroke="${s.color}" stroke-width="2" points="${s.vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}"/>` +
+      s.vals.map((v, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.4" fill="${s.color}"><title>${s.name} ${labels[i]}: ${money(v)}</title></circle>`).join('')
+    ).join('');
+    const fmtAxis = (v) => Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : Math.abs(v) >= 1000 ? Math.round(v / 1000) + 'k' : Math.round(v);
+    const gridY = [min + span * 0.08, (min + max) / 2, max - span * 0.08];
+    const axis = gridY.map((v) =>
+      `<line x1="${padL}" y1="${y(v)}" x2="${W - padR}" y2="${y(v)}" stroke="var(--line)" stroke-dasharray="2 4"/>` +
+      `<text x="${padL - 4}" y="${y(v) + 3}" font-size="9" fill="var(--dim)" text-anchor="end">${fmtAxis(v)}</text>`).join('');
+    const ticks = [0, 3, 6, 9, 11].map((i) => `<text x="${x(i)}" y="${H - 5}" font-size="9" fill="var(--dim)" text-anchor="middle">${labels[i]}</text>`).join('');
+    body = `${axis}${lines}${ticks}`;
+  } else {
+    body = `<text x="${W / 2}" y="${H / 2}" font-size="11" fill="var(--dim)" text-anchor="middle">pick a series below</text>`;
+  }
+  const legend = ALL.map((s) => `
+    <button class="trend-chip ${sel.has(s.name) ? 'on' : ''}" data-trend="${s.name}" style="--c:${s.color}">
+      <span style="display:inline-block;width:10px;height:3px;background:${s.color};vertical-align:3px;margin-right:4px"></span>${s.name}</button>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%; display:block">${body}</svg><div style="margin-top:5px">${legend}</div>`;
 }
 
 function openColsMenu(anchorBtn, labels) {
@@ -785,11 +817,24 @@ function tieHtml(bv) {
       <td>${noiCtl}${egiCtl}${basisCtl}${!big && rebalanceable.has(r.pcode) && Math.abs(r.variance) >= 1 ? `<button class="rb" data-p="${r.pcode}">tie</button>` : ''}</td></tr>`;
   };
   const INCOME = new Set(['1', 'loss', '2', '3', '4', '5']);
-  const incomeRows = t.rows.filter((r) => INCOME.has(r.pcode));
+  const byP = Object.fromEntries(t.rows.map((r) => [r.pcode, r]));
+  // UW-native subtotals: aggregate the category rows so they compare 1:1 with
+  // the UW's own subtotal lines (e.g. Total Rental Income)
+  const agg = (ps, label) => {
+    const budget = ps.reduce((a, p) => a + ((byP[p] || {}).budget || 0), 0);
+    const uw = ps.reduce((a, p) => a + ((byP[p] || {}).uw || 0), 0);
+    return { pcode: label, label, budget, uw, variance: budget - uw, pct: uw ? (budget - uw) / Math.abs(uw) : null };
+  };
+  const rentalRows = ['1', 'loss', '2', '3'].map((p) => byP[p]).filter(Boolean);
+  const otherRows = ['4', '5'].map((p) => byP[p]).filter(Boolean);
   const expenseRows = t.rows.filter((r) => !INCOME.has(r.pcode));
+  const subRow = (r) => row(r, false).replace('<tr class="">', '<tr class="sub">');
   return `<table>
     <tr><th>Category</th><th>Budget</th><th>UW Y1</th><th>Δ</th><th></th></tr>
-    ${incomeRows.map((r) => row(r, false)).join('')}
+    ${rentalRows.map((r) => row(r, false)).join('')}
+    ${subRow(agg(['1', 'loss', '2', '3'], 'Total Rental Income'))}
+    ${otherRows.map((r) => row(r, false)).join('')}
+    ${subRow(agg(['4', '5'], 'Total Other + Utility Inc'))}
     ${row(t.egi, true)}
     ${expenseRows.map((r) => row(r, false)).join('')}
     ${row(t.toe, true)}${row(t.noi, true)}
@@ -923,9 +968,9 @@ function openRowTools(b, gl, anchorBtn) {
   const close = () => menu.remove();
   setTimeout(() => document.addEventListener('click', close, { once: true }), 0);
 
-  const put = async (months) => {
+  const put = async (months, driver) => {
     pushUndo();
-    S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { months });
+    S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, driver ? { months, driver } : { months });
     render();
   };
 
@@ -960,7 +1005,8 @@ function openRowTools(b, gl, anchorBtn) {
       // rotate the Jan-Dec shape into ownership-month order
       const shape = cal.map((_, i) => cal[(start - 1 + i) % 12]);
       const wsum = shape.reduce((a, x) => a + x, 0) || 1;
-      return put(shape.map((w) => Math.round(((annual * w) / wsum) * 100) / 100));
+      return put(shape.map((w) => Math.round(((annual * w) / wsum) * 100) / 100),
+        { method: 'perUnitComp', pcode: acc.pcode || '', perUnit: Math.round((S.bv.compWeights[gl] / S.bv.compUnits) * 100) / 100 });
     }
     if (act === 't3avg') {
       // Troy's formula, rewritten: AVERAGE of the comp's most recent 3 months
@@ -974,7 +1020,7 @@ function openRowTools(b, gl, anchorBtn) {
       const t3 = (monthly[9] + 2 * monthly[10] + monthly[11]) / 4;     // last 3, mid ×2
       const scaled = (t3 / S.bv.compUnits) * (inp.units || 0) * (1 + g / 100);
       const rounded = Math.round(scaled / 250) * 250;
-      return put(Array(12).fill(rounded));
+      return put(Array(12).fill(rounded), { method: 't3avg', pct: g });
     }
     if (act === 'reset') {
       pushUndo();

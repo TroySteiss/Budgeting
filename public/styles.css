@@ -136,6 +136,10 @@ td.m.drv-t12 { background: var(--drv-t12); }  td.m.drv-t12 input { color: var(--
 .dot.drv-fee { background: var(--drv-fee); } .dot.drv-int { background: var(--drv-int); }
 .dot.drv-man { background: var(--drv-man); } .dot.drv-t12 { background: var(--drv-t12); }
 
+/* ---------- trend chart ---------- */
+.trend-chip { background: none; border: 1px solid var(--line); border-radius: 12px; padding: 2px 9px; font-size: 11px; color: var(--dim); margin-right: 6px; opacity: .55; }
+.trend-chip.on { opacity: 1; color: var(--ink); border-color: var(--c, var(--accent)); }
+
 /* ---------- tie-out ---------- */
 .tie table { border-collapse: collapse; width: 100%; font-size: 12.3px; }
 .tie th { text-align: right; font-size: 10.5px; color: var(--dim); text-transform: uppercase; padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -144,6 +148,7 @@ td.m.drv-t12 { background: var(--drv-t12); }  td.m.drv-t12 input { color: var(--
 .tie td:first-child { text-align: left; overflow: hidden; text-overflow: ellipsis; max-width: 130px; }
 .tie td:last-child { text-align: right; min-width: 74px; }
 .tie tr.big td { font-weight: 700; background: var(--total-bg); }
+.tie tr.sub td { font-weight: 650; background: var(--soft2); border-top: 1px solid var(--line); font-style: italic; }
 .tie .rb { background: none; border: 1px solid var(--line); border-radius: 5px; font-size: 10.5px; padding: 1px 6px; color: var(--accent); margin-left: 3px; }
 .tie td.var.good { color: var(--good); }
 .tie td.var.bad { color: var(--bad); }
