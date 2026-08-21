@@ -396,6 +396,7 @@ function renderEditor(el) {
         ${start > 1 ? `<button class="btn sub" id="ex-csv2">⬇ ${b.year + 1} Yardi CSV (Jan–${labels[11].split('-')[0]})</button>` : ''}
         <button class="btn sub" id="ex-xlsx">⬇ Review workbook</button>
         <button class="btn sub" id="recalc">↻ Recalc</button>
+        <button class="btn" id="assump-open">⚙ Assumptions</button>
         <label style="align-self:center"><input type="checkbox" id="showzero" ${S.showZero ? 'checked' : ''}> show zero rows</label>
       </div>
     </div>
@@ -416,14 +417,9 @@ function renderEditor(el) {
           <h2>Tie-out vs UW</h2>
           ${tieHtml(bv)}
         </div>
-        <div class="card">
-          <h2>Assumptions</h2>
-          ${inputsHtml(inp)}
-          <div class="row" style="margin-top:10px"><button class="btn" id="inp-apply">Apply & regenerate</button></div>
-          <p class="muted" style="font-size:11.5px">Regeneration recomputes every non-overridden line. Manual cell edits (purple) are kept.</p>
-        </div>
       </div>
-    </div>`;
+    </div>
+    <dialog class="assump" id="assump-dlg"></dialog>`;
 
   document.getElementById('ex-csv').addEventListener('click', () => {
     const c = document.getElementById('ex-cutoff').value;
@@ -437,7 +433,22 @@ function renderEditor(el) {
   document.getElementById('ex-xlsx').addEventListener('click', () => window.open(`/api/budgets/${b.id}/export.xlsx`, '_blank'));
   document.getElementById('recalc').addEventListener('click', async () => { S.bv = await POST(`/budgets/${b.id}/recalc`); render(); });
   document.getElementById('showzero').addEventListener('change', (e) => { S.showZero = e.target.checked; render(); });
-  document.getElementById('inp-apply').addEventListener('click', () => applyInputs(b, el));
+  document.getElementById('assump-open').addEventListener('click', () => {
+    const dlg = document.getElementById('assump-dlg');
+    dlg.innerHTML = `
+      <h2>Assumptions — ${esc(prop.name)} (${esc(b.property_code)}) ${b.year}</h2>
+      ${inputsHtml(S.bv.budget.inputs || {})}
+      <div class="foot">
+        <span class="muted" style="align-self:center; margin-right:auto; font-size:11.5px">Apply recomputes every non-overridden line; manual cell edits (purple) are kept.</span>
+        <button class="btn sub" id="assump-x">Cancel</button>
+        <button class="btn" id="inp-apply">Apply & regenerate</button>
+      </div>`;
+    dlg.querySelector('#assump-x').addEventListener('click', () => dlg.close());
+    dlg.querySelector('#inp-apply').addEventListener('click', async () => {
+      await applyInputs(b, dlg);
+    });
+    dlg.showModal();
+  });
 
   // month-cell + note editing
   el.querySelectorAll('td.m input').forEach((box) => {
@@ -569,6 +580,12 @@ function tieHtml(bv) {
   const basisable = new Set(['4', '5', '6', '8', '9', '10', '11', '12', '13', '14']);
   const catBasis = (bv.budget.inputs || {}).catBasis || {};
   const canPerUnit = !!bv.compUnits;
+  const SHORT = {
+    '1': 'Gross Potential Rent', loss: 'Loss to Lease', '2': 'Concessions', '3': 'Rental Loss',
+    '4': 'Utility Income', '5': 'Other Income', '6': 'Insurance', '7': 'Mgmt Fee', '8': 'RE & PP Taxes',
+    '9': 'Admin & Acct', '10': 'Payroll', '11': 'Marketing', '12': 'Utilities', '13': 'R&M', '14': 'Rehab / Reserves',
+    'Effective Gross Income': 'Total Income (EGI)', 'Total Operating Expenses': 'Total OpEx', 'Net Operating Income': 'NOI',
+  };
   const row = (r, big) => {
     const cls = Math.abs(r.variance) < 1 ? 'good' : (Math.abs(r.variance) / (Math.abs(r.uw) || 1) > 0.02 ? 'bad' : '');
     const basis = catBasis[r.pcode] === 'perUnit' ? 'perUnit' : 'uw';
@@ -578,7 +595,7 @@ function tieHtml(bv) {
     const noiCtl = isNoi && Math.abs(r.variance) >= 1 ? `<button class="rb" data-noi="1" title="Scale the flex categories (admin, marketing, R&M, rehab) so NOI equals UW exactly">tie NOI</button>` : '';
     const isEgi = r.label === 'Effective Gross Income';
     const egiCtl = isEgi && Math.abs(r.variance) >= 1 ? `<button class="rb" data-egi="1" title="Adjust loss-to-lease so Total Income equals UW exactly (GPR stays on the rent roll)">tie income</button>` : '';
-    return `<tr class="${big ? 'big' : ''}"><td>${esc(r.label)}</td>
+    return `<tr class="${big ? 'big' : ''}"><td title="${esc(r.label)}">${esc(SHORT[big ? r.label : r.pcode] || r.label)}</td>
       <td>${money(r.budget)}</td><td>${money(r.uw)}</td>
       <td class="var ${cls}">${money(r.variance)}</td>
       <td>${noiCtl}${egiCtl}${basisCtl}${!big && rebalanceable.has(r.pcode) && Math.abs(r.variance) >= 1 ? `<button class="rb" data-p="${r.pcode}">tie</button>` : ''}</td></tr>`;
@@ -595,10 +612,11 @@ function inputsHtml(inp) {
   const g = inp.gpr || {};
   const l = inp.ltl || {};
   return `
+    <h3>Income · Year 1 starts at the start month and runs 12 months</h3>
     <div class="row">
+      <div class="fld"><label>Start month (GPR anchors here)</label><select id="in-start">${MONTHS.map((m, i) => `<option value="${i + 1}" ${inp.startMonth === i + 1 ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
       <div class="fld"><label>GPR base $/mo</label><input id="in-gprbase" value="${g.baseMonthly ?? 0}" style="width:110px"></div>
       <div class="fld"><label>GPR growth %/mo (1 or 12 vals)</label><input id="in-gprgrow" value="${show12(g.growthPct || [])}" style="width:130px"></div>
-      <div class="fld"><label>Start month</label><select id="in-start">${MONTHS.map((m, i) => `<option value="${i + 1}" ${inp.startMonth === i + 1 ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
     </div>
     <h3>Loss to lease ${S.bv && S.bv.leaseCount ? `<span class="badge">${S.bv.leaseCount} leases on file</span>` : '<span class="badge">no lease detail — upload a unit-level rent roll</span>'}</h3>
     <div class="row">
@@ -620,18 +638,18 @@ function inputsHtml(inp) {
       <div class="fld"><label>Concessions %</label><input id="in-conc" value="${((inp.concessionPct || 0) * 100).toFixed(2)}" style="width:80px"></div>
       <div class="fld"><label>Rental loss % (total)</label><input id="in-rloss" value="${((inp.rentalLossPct || 0) * 100).toFixed(2)}" style="width:80px"></div>
     </div>
-    <div class="row" style="margin-top:6px">
+    <h3>Fees & financing</h3>
+    <div class="row">
       <div class="fld"><label>Mgmt fee % of income</label><input id="in-mgmt" value="${((inp.mgmtPct || 0) * 100).toFixed(2)}" style="width:80px"></div>
       <div class="fld"><label>Units</label><input id="in-units" value="${inp.units ?? 0}" style="width:70px"></div>
-    </div>
-    <div class="row" style="margin-top:6px">
       <div class="fld"><label>Loan $</label><input id="in-loan" value="${inp.loan ?? 0}" style="width:110px"></div>
       <div class="fld"><label>Rate %</label><input id="in-rate" value="${((inp.rate || 0) * 100).toFixed(2)}" style="width:70px"></div>
       <div class="fld"><label>Capital $ (CoC)</label><input id="in-cap" value="${inp.capital ?? 0}" style="width:110px"></div>
     </div>
-    <div class="row" style="margin-top:6px">
-      <label title="Adjust loss-to-lease so Total Income equals the (prorated) UW EGI"><input type="checkbox" id="in-tieinc" ${inp.tieIncome !== false ? 'checked' : ''}> Tie income (via LTL)</label>
-      <label title="Scale the flex categories so NOI equals the (prorated) UW NOI"><input type="checkbox" id="in-tienoi" ${inp.tieNoi !== false ? 'checked' : ''}> Tie NOI (via flex cats)</label>
+    <h3>Ties to underwriting</h3>
+    <div class="row">
+      <label title="Adjust loss-to-lease so Total Income equals UW Year 1 EGI"><input type="checkbox" id="in-tieinc" ${inp.tieIncome !== false ? 'checked' : ''}> Tie income (via LTL)</label>
+      <label title="Scale the flex categories (admin, marketing, R&M, rehab) so NOI equals UW Year 1 NOI"><input type="checkbox" id="in-tienoi" ${inp.tieNoi !== false ? 'checked' : ''}> Tie NOI (via flex cats)</label>
     </div>
     <h3>UW category targets ($/yr)</h3>
     <div class="row">

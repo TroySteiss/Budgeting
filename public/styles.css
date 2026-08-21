@@ -55,8 +55,9 @@ table.list tr.click:hover { background: #f2f6fd; }
 .kpi .sub { font-size: 11.5px; color: var(--dim); }
 
 /* ---------- editor layout ---------- */
-.editor { display: grid; grid-template-columns: 1fr 330px; gap: 16px; align-items: start; }
-.editor .side { position: sticky; top: 60px; max-height: calc(100vh - 80px); overflow: auto; }
+.editor { display: grid; grid-template-columns: minmax(0, 1fr) 430px; gap: 16px; align-items: start; }
+.editor .side { position: sticky; top: 60px; max-height: calc(100vh - 76px); overflow: auto; }
+@media (max-width: 1250px) { .editor { grid-template-columns: 1fr; } .editor .side { position: static; max-height: none; } }
 
 /* ---------- grid ---------- */
 .gridwrap { overflow: auto; max-height: calc(100vh - 210px); border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
@@ -81,14 +82,21 @@ table.grid tr.zero.show { display: table-row; }
 
 /* ---------- tie-out ---------- */
 .tie table { border-collapse: collapse; width: 100%; font-size: 12.3px; }
-.tie th { text-align: right; font-size: 10.5px; color: var(--dim); text-transform: uppercase; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+.tie th { text-align: right; font-size: 10.5px; color: var(--dim); text-transform: uppercase; padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .tie th:first-child { text-align: left; }
-.tie td { padding: 4px 6px; border-bottom: 1px solid #f1f3f6; text-align: right; }
-.tie td:first-child { text-align: left; }
+.tie td { padding: 4px 6px; border-bottom: 1px solid #f1f3f6; text-align: right; white-space: nowrap; }
+.tie td:first-child { text-align: left; overflow: hidden; text-overflow: ellipsis; max-width: 130px; }
+.tie td:last-child { text-align: right; min-width: 74px; }
 .tie tr.big td { font-weight: 700; background: #f0f4fa; }
-.tie .rb { background: none; border: 1px solid var(--line); border-radius: 5px; font-size: 10.5px; padding: 1px 6px; color: var(--accent); }
+.tie .rb { background: none; border: 1px solid var(--line); border-radius: 5px; font-size: 10.5px; padding: 1px 6px; color: var(--accent); margin-left: 3px; }
 .tie td.var.good { color: var(--good); }
 .tie td.var.bad { color: var(--bad); }
+
+/* ---------- assumptions dialog ---------- */
+dialog.assump { max-width: 900px; width: min(92vw, 900px); }
+dialog.assump h2 { margin: 0 0 12px; font-size: 15px; }
+dialog.assump h3 { margin: 14px 0 6px; font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .4px; }
+dialog.assump .foot { display: flex; gap: 10px; margin-top: 16px; justify-content: flex-end; }
 
 /* ---------- uploads ---------- */
 .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 26px; text-align: center; color: var(--dim); background: #fafbfc; }
