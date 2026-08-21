@@ -34,6 +34,9 @@ function drvMeta(l) {
     case 'burdenRatio': return { cls: 'drv-pay', tag: 'RATIO', label: `Minot ratio ${((l.driver.ratio || 0) * 100).toFixed(1)}% of wages` };
     case 'mgmtPct': return { cls: 'drv-fee', tag: '%INC', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of income` };
     case 'interest': return { cls: 'drv-int', tag: 'INT', label: 'Interest (loan × rate × days)' };
+    case 'sellerUtil': return { cls: 'drv-t12', tag: 'SLR', label: 'Seller statement level (× growth)' };
+    case 'recovery': return { cls: 'drv-t12', tag: 'REC', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% recovery of prior-month billing` };
+    case 'charges': return { cls: 'drv-rr', tag: 'CHG', label: 'Rent-roll charges × 12' };
     default: return { cls: 'drv-none', tag: '—', label: 'No formula (zero / manual)' };
   }
 }
@@ -466,6 +469,7 @@ function renderEditor(el) {
           <span><span class="dot drv-pay"></span>Payroll model</span>
           <span><span class="dot drv-fee"></span>% of income</span>
           <span><span class="dot drv-int"></span>Interest</span>
+          <span><span class="dot drv-t12"></span>Seller stmt / recovery</span>
           <span><span class="dot drv-man"></span>Manual override</span>
           <span class="muted">· click a row's chip to change its formula</span>
         </div>
@@ -745,6 +749,15 @@ function inputsHtml(inp) {
       <div class="fld"><label>Concessions %</label><input id="in-conc" value="${((inp.concessionPct || 0) * 100).toFixed(2)}" style="width:80px"></div>
       <div class="fld"><label>Rental loss % (total)</label><input id="in-rloss" value="${((inp.rentalLossPct || 0) * 100).toFixed(2)}" style="width:80px"></div>
     </div>
+    <h3>Utilities ${S.bv && S.bv.hasSellerUtil ? '<span class="badge">seller statement on file</span>' : '<span class="badge">no seller T12 utility lines — falls back to UW</span>'}</h3>
+    <div class="row">
+      <div class="fld"><label>Source</label><select id="in-utsrc">
+        <option value="seller" ${(inp.utilities || {}).source !== 'uw' ? 'selected' : ''}>Seller statements (× growth)</option>
+        <option value="uw" ${(inp.utilities || {}).source === 'uw' ? 'selected' : ''}>UW allocation</option>
+      </select></div>
+      <div class="fld"><label>Growth %</label><input id="in-utgrow" value="${(((inp.utilities || {}).growthPct ?? 0.03) * 100).toFixed(1)}" style="width:70px"></div>
+      <div class="fld"><label>Recovery % of prior-month billing</label><input id="in-utrec" value="${(inp.utilities || {}).recoveryPct != null ? ((inp.utilities.recoveryPct) * 100).toFixed(1) : ''}" placeholder="auto (seller ratio)" style="width:150px" title="Utility income = this % of last month's utility expense. Blank = derived from the seller's actual income/expense ratio."></div>
+    </div>
     <h3>Fees & financing</h3>
     <div class="row">
       <div class="fld"><label>Mgmt fee % of income</label><input id="in-mgmt" value="${((inp.mgmtPct || 0) * 100).toFixed(2)}" style="width:80px"></div>
@@ -790,6 +803,11 @@ async function applyInputs(b, el) {
     mgmtPct: num('#in-mgmt') / 100,
     tieIncome: el.querySelector('#in-tieinc').checked,
     tieNoi: el.querySelector('#in-tienoi').checked,
+    utilities: {
+      source: el.querySelector('#in-utsrc').value,
+      growthPct: num('#in-utgrow') / 100,
+      recoveryPct: String(el.querySelector('#in-utrec').value).trim() === '' ? null : num('#in-utrec') / 100,
+    },
     uwAbs,
   };
   pushUndo();

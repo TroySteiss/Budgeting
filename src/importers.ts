@@ -162,6 +162,9 @@ export interface RentParsedProperty {
   /** per-lease detail (unit-level rolls only): market, rent, lease end —
       powers the lease-level loss-to-lease burnoff */
   leases?: { m: number; r: number; e: string | null }[];
+  /** ancillary charge-code monthly totals (PETRENT, GARAGE, PARKING, …) —
+      powers charge-driven other income */
+  charges?: Record<string, number>;
 }
 
 export function parseRentRoll(buf: Buffer): RentParsedProperty[] {
@@ -224,6 +227,15 @@ export function parseRentRoll(buf: Buffer): RentParsedProperty[] {
   const cMkt = heads.findIndex((c) => c.includes('market'));
   const cLease = heads.findIndex((c) => c === 'lease rent' || c.includes('lease rent'));
   const cEnd = heads.findIndex((c) => c.includes('lease end'));
+  // ancillary charge-code columns: ALL-CAPS single-word headers after Lease
+  // Rent (PETRENT, GARAGE, PARKING…) — base RENT and totals excluded
+  const chargeCols: { c: number; code: string }[] = [];
+  for (let c = Math.max(cLease, 0) + 1; c < (g[h] || []).length; c++) {
+    const raw = s(g[h]?.[c]);
+    if (/^[A-Z][A-Z0-9]{2,15}$/.test(raw) && raw !== 'RENT' && raw !== 'SQFT' && !/TOTAL/.test(raw)) {
+      chargeCols.push({ c, code: raw });
+    }
+  }
   let asOf: string | null = null;
   for (const row of g.slice(0, h)) {
     const m = s(row?.[0]).match(/as of date:\s*([\d/.-]+)/i);
@@ -236,7 +248,7 @@ export function parseRentRoll(buf: Buffer): RentParsedProperty[] {
     return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
   };
   // one row per unit: prefer the current-lease row (market > 0); pending renewals carry market 0
-  const perUnit = new Map<string, { market: number; lease: number; status: string; end: string | null }>();
+  const perUnit = new Map<string, { market: number; lease: number; status: string; end: string | null; charges: number[] }>();
   for (let r = h + 1; r < g.length; r++) {
     const unit = s(g[r]?.[cUnit]);
     if (!unit) continue;
@@ -244,20 +256,24 @@ export function parseRentRoll(buf: Buffer): RentParsedProperty[] {
     const lease = num(g[r]?.[cLease]);
     const status = low(g[r]?.[cStatus]);
     const end = cEnd >= 0 ? toIso(g[r]?.[cEnd]) : null;
+    const chargeVals = chargeCols.map(({ c }) => num(g[r]?.[c]));
     const prev = perUnit.get(unit);
-    if (!prev || (prev.market <= 0 && market > 0)) perUnit.set(unit, { market, lease, status, end });
+    if (!prev || (prev.market <= 0 && market > 0)) perUnit.set(unit, { market, lease, status, end, charges: chargeVals });
   }
   if (!perUnit.size) throw new Error('OneSite rent roll: no unit rows parsed');
   let market = 0, inPlace = 0, occ = 0;
   const leases: { m: number; r: number; e: string | null }[] = [];
+  const charges: Record<string, number> = {};
   for (const u of perUnit.values()) {
     market += u.market;
     if (u.status.includes('occupied') || u.status.includes('notice')) {
       inPlace += u.lease;
       occ++;
       leases.push({ m: Math.round(u.market * 100) / 100, r: Math.round(u.lease * 100) / 100, e: u.end });
+      chargeCols.forEach(({ code }, i) => { charges[code] = Math.round(((charges[code] || 0) + (u.charges[i] || 0)) * 100) / 100; });
     }
   }
+  for (const k of Object.keys(charges)) if (!charges[k]) delete charges[k];
   return [{
     code: null,
     name: all[0].name,
@@ -268,6 +284,7 @@ export function parseRentRoll(buf: Buffer): RentParsedProperty[] {
     asOf,
     source: 'unit_level',
     leases,
+    charges,
   }];
 }
 

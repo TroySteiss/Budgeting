@@ -13,6 +13,7 @@
   --drv-fee: #dcf1ee;  --drv-fee-ink: #0b6e62;  /* % of income */
   --drv-int: #e9e9ec;  --drv-int-ink: #4d5560;  /* interest calc */
   --drv-man: #f6e3f2;  --drv-man-ink: #a1147f;  /* manual override */
+  --drv-t12: #fbe8d9;  --drv-t12-ink: #b05a10;  /* seller statement / recovery */
 }
 [data-theme="dark"] {
   --bg: #12161d; --panel: #1a2029; --line: #2b3441; --ink: #dde4ec; --dim: #8b97a6;
@@ -28,6 +29,7 @@
   --drv-fee: #102b28;  --drv-fee-ink: #63c6b8;
   --drv-int: #232630;  --drv-int-ink: #9aa4b1;
   --drv-man: #331327;  --drv-man-ink: #f181cf;
+  --drv-t12: #33210f;  --drv-t12-ink: #e79b52;
 }
 
 * { box-sizing: border-box; }
@@ -117,6 +119,7 @@ td.m.drv-pay { background: var(--drv-pay); }  td.m.drv-pay input { color: var(--
 td.m.drv-fee { background: var(--drv-fee); }  td.m.drv-fee input { color: var(--drv-fee-ink); }
 td.m.drv-int { background: var(--drv-int); }  td.m.drv-int input { color: var(--drv-int-ink); }
 td.m.drv-man { background: var(--drv-man); }  td.m.drv-man input { color: var(--drv-man-ink); font-weight: 600; }
+td.m.drv-t12 { background: var(--drv-t12); }  td.m.drv-t12 input { color: var(--drv-t12-ink); }
 .drv { border: 1px solid var(--line); border-radius: 5px; font-size: 9.5px; font-weight: 700; letter-spacing: .3px; padding: 1px 5px; min-width: 38px; text-align: center; }
 .drv.drv-rr { background: var(--drv-rr); color: var(--drv-rr-ink); }
 .drv.drv-uw { background: var(--drv-uw); color: var(--drv-uw-ink); }
@@ -125,11 +128,12 @@ td.m.drv-man { background: var(--drv-man); }  td.m.drv-man input { color: var(--
 .drv.drv-fee { background: var(--drv-fee); color: var(--drv-fee-ink); }
 .drv.drv-int { background: var(--drv-int); color: var(--drv-int-ink); }
 .drv.drv-man { background: var(--drv-man); color: var(--drv-man-ink); }
+.drv.drv-t12 { background: var(--drv-t12); color: var(--drv-t12-ink); }
 .drv.drv-none { background: transparent; color: var(--dim); border-style: dashed; }
 .dot.drv-rr { background: var(--drv-rr); } .dot.drv-uw { background: var(--drv-uw); }
 .dot.drv-comp { background: var(--drv-comp); } .dot.drv-pay { background: var(--drv-pay); }
 .dot.drv-fee { background: var(--drv-fee); } .dot.drv-int { background: var(--drv-int); }
-.dot.drv-man { background: var(--drv-man); }
+.dot.drv-man { background: var(--drv-man); } .dot.drv-t12 { background: var(--drv-t12); }
 
 /* ---------- tie-out ---------- */
 .tie table { border-collapse: collapse; width: 100%; font-size: 12.3px; }

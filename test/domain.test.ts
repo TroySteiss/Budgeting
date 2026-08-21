@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import {
   spreadMonthly, allocateWeighted, rollup, generateLines, rebalanceCategory,
   categoryTotals, computeTieout, defaultInputs, tieNoiToUw, tieIncomeToUw,
-  calendarSlice, monthLabels, rotate12, ltlMonths, sum, zero12,
-  CoaAccount, UwSnapshotData, Months, Lease,
+  calendarSlice, monthLabels, rotate12, ltlMonths, buildUtilityModel, chargeGlMonthly,
+  sum, zero12, CoaAccount, UwSnapshotData, Months, Lease, SellerUtilRow,
 } from '../shared/domain.js';
 
 const coaList: CoaAccount[] = JSON.parse(readFileSync(join(process.cwd(), 'seed', 'coa.json'), 'utf8'));
@@ -181,6 +181,90 @@ describe('tieNoiToUw', () => {
     lines = tieNoiToUw(lines, coaMap, fakeUw.noi);
     const again = tieNoiToUw(lines, coaMap, fakeUw.noi);
     expect(JSON.stringify(again.map((l) => l.months))).toBe(JSON.stringify(lines.map((l) => l.months)));
+  });
+});
+
+describe('buildUtilityModel — seller statement levels + recovery-lag income', () => {
+  // seller statement Jul25–Jun26; ownership year Sep 2026 start
+  const monthCal = [7, 8, 9, 10, 11, 12, 1, 2, 3, 4, 5, 6];
+  const rows: SellerUtilRow[] = [
+    { name: 'Gas', pcode: '12', monthCal, months: [10, 10, 20, 50, 100, 150, 160, 150, 100, 50, 20, 10] },
+    { name: 'Water/Sewer', pcode: '12', monthCal, months: Array(12).fill(100) },
+    { name: 'RUBS-Water/Sewer', pcode: '4', monthCal, months: Array(12).fill(60) },
+    { name: 'RUBS-Trash', pcode: '4', monthCal, months: Array(12).fill(20) },
+  ];
+
+  it('maps seller lines to the closest Monarch GL at the same calendar month × growth', () => {
+    const m = buildUtilityModel(rows, 2026, 9, { growthPct: 0 });
+    // ownership month 0 = September: seller Sep gas = 20
+    expect(m.expense['6608'][0]).toBe(20);
+    // December (ownership month 3): seller Dec gas = 150
+    expect(m.expense['6608'][3]).toBe(150);
+    expect(m.expense['6622'][0]).toBe(100);           // Water/Sewer → water GL
+    expect(sum(m.expense['6608'])).toBe(830);         // full seller gas year
+  });
+
+  it('derives recovery % from the seller income/expense ratio and lags one month', () => {
+    const m = buildUtilityModel(rows, 2026, 9, { growthPct: 0 });
+    // seller: income 960/yr vs expense 830+1200=2030 → 47.29%
+    expect(m.recoveryPct).toBeCloseTo(960 / 2030, 3);
+    // month 1 (Oct) income = recovery × month 0 (Sep) expense (20+100=120)
+    const incomeTot1 = Object.values(m.income).reduce((a, mo) => a + mo[1], 0);
+    expect(incomeTot1).toBeCloseTo(m.recoveryPct * 120, 1);
+    // month 0 recovers the pre-start month (August): gas 10 + water 100 = 110
+    const incomeTot0 = Object.values(m.income).reduce((a, mo) => a + mo[0], 0);
+    expect(incomeTot0).toBeCloseTo(m.recoveryPct * 110, 1);
+    // income split by seller mix: water 60/80, trash 20/80
+    expect(m.income['5174'][1] / m.income['5169'][1]).toBeCloseTo(3, 1);
+  });
+
+  it('explicit recovery % wins', () => {
+    const m = buildUtilityModel(rows, 2026, 9, { growthPct: 0, recoveryPct: 0.8 });
+    expect(m.recoveryPct).toBe(0.8);
+  });
+});
+
+describe('chargeGlMonthly — rent-roll charge codes → other-income GLs', () => {
+  it('maps pet/garage/parking/storage charges', () => {
+    const out = chargeGlMonthly({ PETRENT: 1200, GARAGE: 800, PARKING: 300, STORAGE: 150, EMPDISC: -200 });
+    expect(out['5165']).toBe(1200);
+    expect(out['5160']).toBe(1100);   // garage + parking
+    expect(out['5136']).toBe(150);
+    expect(out['5121']).toBeUndefined();
+  });
+  it('charge-driven GLs land at charge × 12 and the cat-5 remainder shrinks', () => {
+    const inputs = defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 });
+    const lines = generateLines(coaList, inputs, fakeUw, null, null, null, null, null, { PETRENT: 1000 });
+    expect(sum(lines.find((l) => l.gl_code === '5165')!.months)).toBe(12000);
+    const cats = categoryTotals(lines, coaMap);
+    expect(cats['5']).toBeCloseTo(fakeUw.y1['5'], 2);  // still ties: 12,000 charges + 36,000 remainder
+  });
+});
+
+describe('utilities integration in generateLines', () => {
+  const monthCal = [7, 8, 9, 10, 11, 12, 1, 2, 3, 4, 5, 6];
+  const sellerUtil: SellerUtilRow[] = [
+    { name: 'Electric', pcode: '12', monthCal, months: Array(12).fill(1000) },
+    { name: 'RUBS-Water/Sewer', pcode: '4', monthCal, months: Array(12).fill(400) },
+  ];
+  it('cats 4 & 12 come from the seller model, not UW allocation', () => {
+    const inputs = defaultInputs(2026, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 });
+    inputs.startMonth = 9;
+    inputs.utilities = { source: 'seller', growthPct: 0, recoveryPct: null };
+    const lines = generateLines(coaList, inputs, fakeUw, null, null, null, null, sellerUtil);
+    expect(sum(lines.find((l) => l.gl_code === '6604')!.months)).toBe(12000);   // electric level from seller
+    const cats = categoryTotals(lines, coaMap);
+    expect(cats['12']).toBe(12000);                     // NOT the UW 110,000
+    expect(cats['4']).toBeCloseTo(0.4 * 12000, 0);      // recovery 40% of billing
+    const l = lines.find((x) => x.gl_code === '6604')!;
+    expect((l.driver as any).method).toBe('sellerUtil');
+  });
+  it("source 'uw' falls back to the UW allocation", () => {
+    const inputs = defaultInputs(2026, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 });
+    inputs.utilities = { source: 'uw' };
+    const lines = generateLines(coaList, inputs, fakeUw, null, null, null, null, sellerUtil);
+    const cats = categoryTotals(lines, coaMap);
+    expect(cats['12']).toBeCloseTo(fakeUw.y1['12'], 2);
   });
 });
 

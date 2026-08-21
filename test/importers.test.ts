@@ -84,11 +84,11 @@ describe('parseRentRoll — OneSite unit level', () => {
     const XLSX = require('xlsx');
     const aoa = [
       ['OneSite Report'], ['RENT ROLL DETAIL'], ['As of Date: 09/01/2026'], [],
-      ['Resh ID', 'Unit', 'Floorplan', 'SQFT', 'Unit/Lease Status', 'Lease Start', 'Lease End', 'Market + Addl.', 'Lease Rent'],
-      ['1', 'A-101', '1x1', 700, 'Occupied', '2025-11-15 00:00', '2026-11-14 00:00', 1000, 900],
-      ['2', 'A-102', '1x1', 700, 'Occupied', '2026-02-10 00:00', '2027-02-09 00:00', 1000, 1050],
-      ['3', 'A-103', '1x1', 700, 'Vacant', '', '', 1000, 0],
-      ['2b', 'A-102', '1x1', 700, 'Pending renewal', '2027-02-10 00:00', '2028-02-09 00:00', 0, 1100],
+      ['Resh ID', 'Unit', 'Floorplan', 'SQFT', 'Unit/Lease Status', 'Lease Start', 'Lease End', 'Market + Addl.', 'Lease Rent', 'RENT', 'PETRENT', 'GARAGE', 'Total Billing'],
+      ['1', 'A-101', '1x1', 700, 'Occupied', '2025-11-15 00:00', '2026-11-14 00:00', 1000, 900, 900, 35, 50, 985],
+      ['2', 'A-102', '1x1', 700, 'Occupied', '2026-02-10 00:00', '2027-02-09 00:00', 1000, 1050, 1050, 0, 50, 1100],
+      ['3', 'A-103', '1x1', 700, 'Vacant', '', '', 1000, 0, 0, 0, 0, 0],
+      ['2b', 'A-102', '1x1', 700, 'Pending renewal', '2027-02-10 00:00', '2028-02-09 00:00', 0, 1100, 1100, 0, 50, 1150],
     ];
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     const wb = XLSX.utils.book_new();
@@ -102,6 +102,8 @@ describe('parseRentRoll — OneSite unit level', () => {
     const a101 = p.leases!.find((l) => l.r === 900)!;
     expect(a101.m).toBe(1000);
     expect(a101.e).toContain('2026-11');
+    // ancillary charge codes captured (occupied units only; base RENT and Total excluded)
+    expect(p.charges).toEqual({ PETRENT: 35, GARAGE: 100 });
   });
 });
 

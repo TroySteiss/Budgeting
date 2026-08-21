@@ -9,7 +9,7 @@ import {
   CoaAccount, BudgetLine, BudgetInputs, UwSnapshotData, CompWeights, Months,
   generateLines, regenerate, rebalanceCategory, defaultInputs, computeTieout,
   kpis, categoryTotals, t12CategoryShapes, tieNoiToUw, tieIncomeToUw, DEFAULT_NOI_FLEX,
-  calendarSlice, monthLabels, zero12, r2, sum, type Lease,
+  calendarSlice, monthLabels, zero12, r2, sum, type Lease, type SellerUtilRow,
 } from '../shared/domain.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -120,7 +120,7 @@ router.post('/uploads/apply', h(async (req, res) => {
     for (const m of mappings || []) {
       const p = (payload.properties || []).find((x: any) => (x.code && x.code === m.sourceCode) || x.name === m.sourceName);
       if (!p || !m.propertyCode) continue;
-      const data = { units: p.units, marketMonthly: p.marketMonthly, inPlaceMonthly: p.inPlaceMonthly, occupiedUnits: p.occupiedUnits, source: p.source, leases: p.leases || null };
+      const data = { units: p.units, marketMonthly: p.marketMonthly, inPlaceMonthly: p.inPlaceMonthly, occupiedUnits: p.occupiedUnits, source: p.source, leases: p.leases || null, charges: p.charges || null };
       const row = (await query(
         'insert into rent_snapshots(property_code, upload_id, as_of, data) values($1,$2,$3,$4) returning id',
         [m.propertyCode, uploadId, p.asOf ? new Date(p.asOf) : null, JSON.stringify(data)]
@@ -178,6 +178,7 @@ interface LoadedBudget {
   budget: any; lines: BudgetLine[]; coa: CoaAccount[]; coaMap: Map<string, CoaAccount>;
   uw: UwSnapshotData | null; comps: CompWeights | null; catShapes: Record<string, Months> | null;
   payrollWages: Record<string, number> | null; leases: Lease[] | null;
+  sellerUtil: SellerUtilRow[] | null; charges: Record<string, number> | null;
 }
 
 async function loadBudget(id: number): Promise<LoadedBudget | null> {
@@ -214,14 +215,21 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
       comps = { byGl, glShapes: c.data.monthly ? glShapes : undefined, units: Number(c.data.units) || undefined };
     }
   }
-  // seller-T12 monthly shapes (seller GL → pcode map comes from the UW book's coded T12 panel)
+  // seller-T12 monthly shapes + utility lines (seller GL → pcode map comes
+  // from the UW book's coded T12 panel)
   let catShapes: Record<string, Months> | null = null;
+  let sellerUtil: SellerUtilRow[] | null = null;
   if (budget.t12_snapshot_id && uw?.t12?.length) {
     const t = (await query('select data from t12_snapshots where id=$1', [budget.t12_snapshot_id])).rows[0];
     if (t?.data?.rows?.length) {
       const glToPcode: Record<string, string> = {};
-      for (const r of uw.t12) glToPcode[r.gl] = r.pcode;
+      const glToName: Record<string, string> = {};
+      for (const r of uw.t12) { glToPcode[r.gl] = r.pcode; glToName[r.gl] = r.name; }
       catShapes = t12CategoryShapes(t.data.rows, t.data.monthCal || [], glToPcode);
+      sellerUtil = (t.data.rows as any[])
+        .filter((r) => glToPcode[r.gl] === '4' || glToPcode[r.gl] === '12')
+        .map((r) => ({ name: r.name || glToName[r.gl] || '', months: r.months, monthCal: t.data.monthCal || [], pcode: glToPcode[r.gl] }));
+      if (!sellerUtil.length) sellerUtil = null;
     }
   }
   // payroll model: property-level wage aggregates for this budget's property
@@ -231,13 +239,15 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
     const wages = pm?.data?.properties?.[budget.property_code];
     if (wages && Object.keys(wages).length) payrollWages = wages;
   }
-  // per-lease detail from the linked rent snapshot (unit-level rolls only)
+  // per-lease detail + ancillary charges from the linked rent snapshot
   let leases: Lease[] | null = null;
+  let charges: Record<string, number> | null = null;
   if (budget.rent_snapshot_id) {
     const rs = (await query('select data from rent_snapshots where id=$1', [budget.rent_snapshot_id])).rows[0];
     if (Array.isArray(rs?.data?.leases) && rs.data.leases.length) leases = rs.data.leases;
+    if (rs?.data?.charges && Object.keys(rs.data.charges).length) charges = rs.data.charges;
   }
-  return { budget, lines, coa, coaMap: new Map(coa.map((a) => [a.code, a])), uw, comps, catShapes, payrollWages, leases };
+  return { budget, lines, coa, coaMap: new Map(coa.map((a) => [a.code, a])), uw, comps, catShapes, payrollWages, leases, sellerUtil, charges };
 }
 
 async function saveLines(budgetId: number, lines: BudgetLine[]): Promise<void> {
@@ -268,6 +278,8 @@ function budgetView(lb: LoadedBudget) {
     compShapes: lb.comps?.glShapes || null,
     payrollWages: lb.payrollWages,
     leaseCount: lb.leases?.length || 0,
+    hasSellerUtil: !!(lb.sellerUtil && lb.sellerUtil.length),
+    charges: lb.charges,
   };
 }
 
@@ -275,8 +287,8 @@ function budgetView(lb: LoadedBudget) {
     (LTL) → NOI tie (flex). The whole 12-month window ties to UW Y1 in full. */
 function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLine[]): { lines: BudgetLine[] } {
   let lines = existing
-    ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages, lb.leases)
-    : generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages, lb.leases);
+    ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages, lb.leases, lb.sellerUtil, lb.charges)
+    : generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages, lb.leases, lb.sellerUtil, lb.charges);
   if (lb.uw) {
     if (inputs.tieIncome !== false) lines = tieIncomeToUw(lines, lb.coaMap, lb.uw.egi);
     if (inputs.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, lb.uw.noi, inputs.noiFlexPcodes || DEFAULT_NOI_FLEX);

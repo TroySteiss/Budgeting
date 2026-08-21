@@ -41,6 +41,9 @@ export type Driver =
   | { method: 'burdenRatio'; ratio: number }                   // Minot benefit/bonus ratio × subject wage total
   | { method: 'mgmtPct'; pct: number }
   | { method: 'interest'; loan: number; rate: number }
+  | { method: 'sellerUtil' }                                   // seller-statement utility level
+  | { method: 'recovery'; pct: number }                        // % of prior-month utility billing
+  | { method: 'charges'; codes: string }                       // rent-roll charge codes × 12
   | { method: 'zero' };
 
 /** Everything the generator needs. Stored on budgets.inputs (jsonb). */
@@ -78,6 +81,10 @@ export interface BudgetInputs {
   tieIncome?: boolean;
   /** categories that flex to absorb the NOI gap (default 9, 11, 13, 14) */
   noiFlexPcodes?: string[];
+  /** utilities model: 'seller' = levels from the seller statements with
+      recovery-lag income (default when a seller T12 is linked); 'uw' = UW
+      allocation like other categories. */
+  utilities?: { source?: 'seller' | 'uw'; growthPct?: number; recoveryPct?: number | null };
   /** legacy field from the (removed) stub-proration design — ignored. */
   uwProration?: Record<string, number>;
 }
@@ -100,6 +107,109 @@ export const rotate12 = (arr: Months, startMonth: number): Months =>
 export function monthLabels(year: number, startMonth: number): string[] {
   const names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   return Array.from({ length: 12 }, (_, i) => `${names[calMonthOf(startMonth, i) - 1]}-${String(calYearOf(year, startMonth, i)).slice(2)}`);
+}
+
+/* ---------------- utilities from seller statements ---------------- */
+
+/** Seller utility line (from the T12 statement, pcode 4 or 12): name + one
+    value per statement column + the calendar month of each column. */
+export interface SellerUtilRow { name: string; months: number[]; monthCal: number[]; pcode: string }
+
+/** Seller line name → closest Monarch GL. First keyword match wins. */
+export const UTIL_EXPENSE_MAP: [RegExp, string][] = [
+  [/electric/i, '6604'], [/gas/i, '6608'], [/water/i, '6622'], [/sewer|storm/i, '6614'],
+  [/trash|garbage|waste/i, '6620'], [/phone|telephone|cell/i, '6618'],
+  [/internet|cable|wifi/i, '6619'],
+];
+export const UTIL_INCOME_MAP: [RegExp, string][] = [
+  [/water/i, '5174'], [/sewer|storm/i, '5167'], [/trash|valet|garbage|waste/i, '5169'],
+  [/gas/i, '5171'], [/electric|vacant/i, '5170'],
+];
+const UTIL_EXPENSE_FALLBACK = '6665'; // OTHER UTILITY
+const UTIL_INCOME_FALLBACK = '5170';  // UTILITIES REIM
+
+/** Utility model per Troy (2026-08-21): expense levels come from the seller's
+    actual statements — each seller line lands on its closest Monarch GL at the
+    same calendar month × (1+growth). Utility INCOME = recoveryPct × the PRIOR
+    month's total utility billing (RUBS bills in arrears), distributed across
+    income GLs by the seller's own income mix. recoveryPct null → derived from
+    the seller's actual income/expense ratio. */
+export function buildUtilityModel(
+  rows: SellerUtilRow[], year: number, startMonth: number,
+  opts: { growthPct?: number; recoveryPct?: number | null } = {}
+): { expense: Record<string, Months>; income: Record<string, Months>; recoveryPct: number; expenseTotal: Months } {
+  const growth = 1 + (opts.growthPct ?? 0.03);
+  // seller values by calendar month (Jan..Dec), summed onto their Monarch GL
+  const calByGl: Record<string, Months> = {};
+  const incomeMixByGl: Record<string, number> = {};
+  let sellerExpTotal = 0, sellerIncTotal = 0;
+  for (const row of rows) {
+    const isExp = row.pcode === '12';
+    if (!isExp && row.pcode !== '4') continue;
+    const map = isExp ? UTIL_EXPENSE_MAP : UTIL_INCOME_MAP;
+    let gl = isExp ? UTIL_EXPENSE_FALLBACK : UTIL_INCOME_FALLBACK;
+    for (const [re, code] of map) if (re.test(row.name)) { gl = code; break; }
+    const cal = zero12();
+    row.months.forEach((v, i) => { cal[(row.monthCal[i] || i + 1) - 1] += v || 0; });
+    if (isExp) {
+      if (!calByGl[gl]) calByGl[gl] = zero12();
+      cal.forEach((v, i) => { calByGl[gl][i] = r2(calByGl[gl][i] + v); });
+      sellerExpTotal += cal.reduce((a, b) => a + b, 0);
+    } else {
+      const tot = cal.reduce((a, b) => a + b, 0);
+      incomeMixByGl[gl] = (incomeMixByGl[gl] || 0) + Math.abs(tot);
+      sellerIncTotal += tot;
+    }
+  }
+  const recoveryPct = opts.recoveryPct ?? (sellerExpTotal > 0 ? Math.round((sellerIncTotal / sellerExpTotal) * 10000) / 10000 : 0);
+
+  // expense: ownership month i = seller's same calendar month × growth
+  const expense: Record<string, Months> = {};
+  const expenseTotal = zero12();
+  const calTotal = zero12();
+  for (const [gl, cal] of Object.entries(calByGl)) {
+    expense[gl] = zero12();
+    for (let i = 0; i < 12; i++) {
+      const c = calMonthOf(startMonth, i) - 1;
+      expense[gl][i] = r2(Math.max(0, cal[c]) * growth);
+      expenseTotal[i] = r2(expenseTotal[i] + expense[gl][i]);
+    }
+    cal.forEach((v, i) => { calTotal[i] += Math.max(0, v); });
+  }
+  // income: recovery % of the PRIOR month's billing (month 0 recovers the
+  // calendar month before the start, from seller actuals × growth)
+  const incomeTot = zero12();
+  const priorCal = ((startMonth - 2) + 12) % 12;
+  incomeTot[0] = r2(recoveryPct * r2(calTotal[priorCal] * growth));
+  for (let i = 1; i < 12; i++) incomeTot[i] = r2(recoveryPct * expenseTotal[i - 1]);
+  const mixSum = Object.values(incomeMixByGl).reduce((a, b) => a + b, 0);
+  const income: Record<string, Months> = {};
+  const mixEntries = mixSum > 0 ? Object.entries(incomeMixByGl) : [[UTIL_INCOME_FALLBACK, 1]] as [string, number][];
+  const mixTotal = mixSum > 0 ? mixSum : 1;
+  for (const [gl, w] of mixEntries) {
+    income[gl] = incomeTot.map((v) => r2((v * w) / mixTotal));
+  }
+  return { expense, income, recoveryPct, expenseTotal };
+}
+
+/* ---------------- other income from rent-roll charge codes ---------------- */
+
+/** Rent-roll charge code → Monarch other-income GL (first match wins). */
+export const CHARGE_GL_MAP: [RegExp, string][] = [
+  [/pet/i, '5165'], [/garage|park/i, '5160'], [/storage/i, '5136'],
+  [/corpfurn|furn/i, '5121'], [/mtm|month/i, '5150'], [/stlp|short/i, '5151'],
+];
+
+/** charges: {PETRENT: monthly $, ...} → {gl: monthly $} for mapped codes. */
+export function chargeGlMonthly(charges: Record<string, number>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [code, v] of Object.entries(charges || {})) {
+    if (!v) continue;
+    for (const [re, gl] of CHARGE_GL_MAP) {
+      if (re.test(code)) { out[gl] = r2((out[gl] || 0) + v); break; }
+    }
+  }
+  return out;
 }
 
 /* ---------------- lease-level loss-to-lease burnoff ---------------- */
@@ -415,6 +525,7 @@ export function defaultInputs(year: number, uw: UwSnapshotData, rent: { marketMo
     concessionPct: pctOf('2'),
     rentalLossPct: pctOf('3'),
     mgmtPct: (uw.y1['7'] || 0) / egi,
+    utilities: { source: 'seller', growthPct: 0.03, recoveryPct: null },
     uwAbs,
   };
 }
@@ -432,7 +543,7 @@ function categoryItems(pcode: string, coa: CoaAccount[], comps: CompWeights | nu
   return items;
 }
 
-export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null, leases?: Lease[] | null): BudgetLine[] {
+export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null, leases?: Lease[] | null, sellerUtil?: SellerUtilRow[] | null, charges?: Record<string, number> | null): BudgetLine[] {
   /* THE 12 MONTHS ARE THE OWNERSHIP YEAR (UW Year 1): index 0 = the start
      month of inputs.year, wrapping into the next calendar year. Seasonal
      calendar shapes are rotated into ownership order. The whole window ties
@@ -540,9 +651,43 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
     }
   }
 
+  /* Utilities (Troy 2026-08-21): expense levels from the seller statements,
+     each seller line on its closest Monarch GL; utility income = recovery % of
+     the PRIOR month's billing. Cats 4 & 12 skip the UW allocation when active
+     (UW stays visible as tie-out variance; the NOI tie absorbs). */
+  let utilDone = false;
+  if (inputs.utilities?.source !== 'uw' && sellerUtil && sellerUtil.length) {
+    const model = buildUtilityModel(sellerUtil, inputs.year, startMonth, {
+      growthPct: inputs.utilities?.growthPct ?? 0.03,
+      recoveryPct: inputs.utilities?.recoveryPct ?? null,
+    });
+    if (Object.keys(model.expense).length) {
+      utilDone = true;
+      for (const [gl, months] of Object.entries(model.expense)) {
+        if (coaByCode.has(gl)) mk(gl, months, { method: 'sellerUtil' } as any);
+      }
+      for (const [gl, months] of Object.entries(model.income)) {
+        if (coaByCode.has(gl)) mk(gl, months, { method: 'recovery', pct: model.recoveryPct } as any);
+      }
+    }
+  }
+
+  /* Other income from actual rent-roll charges (pet rent, garage, parking,
+     storage…): those GLs take charge × 12; the rest of cat 5 still follows
+     its basis on the remaining target. */
+  const chargeGls = charges ? chargeGlMonthly(charges) : {};
+  let chargesTotal = 0;
+  for (const [gl, monthly] of Object.entries(chargeGls)) {
+    if (!coaByCode.has(gl)) continue;
+    chargesTotal = r2(chargesTotal + monthly * 12);
+    mk(gl, Array(12).fill(r2(monthly)) as Months, { method: 'charges', codes: gl } as any);
+  }
+  const chargeGlSet = new Set(Object.keys(chargeGls));
+
   for (const p of ['4', '5', '6', '8', '9', '10', '11', '12', '13', '14']) {
     if (p === '10' && cat10Done) continue;
-    const skipGls = p === '10' ? modelWageGls : new Set<string>();
+    if ((p === '4' || p === '12') && utilDone) continue;
+    const skipGls = p === '10' ? modelWageGls : p === '5' ? chargeGlSet : new Set<string>();
     const basis = inputs.catBasis?.[p] === 'perUnit' && comps?.units && inputs.units ? 'perUnit' : 'uw';
     if (basis === 'perUnit') {
       const members = coaList.filter((a) => a.kind === 'detail' && a.pcode === p && a.csv_order != null && !skipGls.has(a.code));
@@ -558,6 +703,7 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
     }
     let target = r2(inputs.uwAbs[p] || 0);
     if (p === '10' && payrollWages) target = Math.max(0, r2(target - wagesTotal)); // remainder after model wages
+    if (p === '5' && chargesTotal) target = Math.max(0, r2(target - chargesTotal)); // remainder after charge-driven GLs
     if (!target) continue;
     const items = categoryItems(p, coaList, comps, skipGls);
     const alloc = allocateWeighted(target, items);
@@ -586,8 +732,8 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
 }
 
 /** Re-generate all non-overridden lines; keep overrides untouched. */
-export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null, leases?: Lease[] | null): BudgetLine[] {
-  const fresh = new Map(generateLines(coaList, inputs, uw, comps, catShapes, payrollWages, leases).map((l) => [l.gl_code, l]));
+export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null, leases?: Lease[] | null, sellerUtil?: SellerUtilRow[] | null, charges?: Record<string, number> | null): BudgetLine[] {
+  const fresh = new Map(generateLines(coaList, inputs, uw, comps, catShapes, payrollWages, leases, sellerUtil, charges).map((l) => [l.gl_code, l]));
   const out: BudgetLine[] = [];
   const seen = new Set<string>();
   for (const old of existing) {

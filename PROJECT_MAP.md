@@ -129,6 +129,21 @@ rent snapshots (summary rolls have none → linear-ramp fallback, `inputs.ltl.mo
 now SCALES the LTL row (shape preserved) instead of spreading additively. PUT /budgets/:id also
 accepts snapshot ids (rentSnapshotId etc.) to relink data without recreating the budget.
 
+**Utilities (Troy 2026-08-21)** — `buildUtilityModel` in domain.ts: cat-12 expense levels come
+from the SELLER statements (exception to shapes-only — utilities are property-physical and the UW
+itself used T12×growth), each seller line keyword-mapped to its closest Monarch GL
+(UTIL_EXPENSE_MAP / UTIL_INCOME_MAP) at the same calendar month × growth. Cat-4 utility income =
+**recoveryPct × the PRIOR month's total utility billing** (RUBS in arrears; month 0 recovers the
+pre-start month from seller actuals), split across income GLs by the seller's own mix; recoveryPct
+null ⇒ derived from the seller income/expense ratio. `inputs.utilities {source, growthPct,
+recoveryPct}` — source 'uw' reverts both cats to UW allocation. UW shows as tie-out variance.
+
+**Charge-driven other income (Troy 2026-08-21)** — the unit-level rent-roll parser also captures
+ancillary charge-code monthly totals (PETRENT, GARAGE, PARKING, STORAGE…, occupied units only) on
+the snapshot; `chargeGlMonthly` maps them to Monarch GLs (pet→5165, garage/parking→5160,
+storage→5136…) and those lines take charge × 12 (driver `charges`), with the cat-5 UW remainder
+allocated over the other GLs. Needs unit-level rolls (summary rolls carry no charges).
+
 Manual cell edit ⇒ `override=true`, driver `manual` (purple in UI, 🔓 clears).
 `regenerate()` recomputes only non-overridden lines. `rebalanceCategory()` (the tie-out panel's
 "tie" button) scales a category's non-overridden lines so the total hits the UW-derived target,
