@@ -10,7 +10,50 @@ const S = {
   showZero: false,
   upload: { kind: 'uw_book', parsed: null, busy: false, msg: '', err: '' },
   err: '',
+  theme: localStorage.getItem('bt-theme') || 'light',
+  hiddenCols: new Set(JSON.parse(localStorage.getItem('bt-hidecols') || '[]')),
+  undo: { budgetId: null, stack: [] },   // snapshots of {lines, inputs} before each change
 };
+
+function applyTheme() {
+  document.documentElement.dataset.theme = S.theme;
+  localStorage.setItem('bt-theme', S.theme);
+}
+
+/* driver metadata: colour class + short tag + label for the formula a row uses */
+function drvMeta(l) {
+  if (!l) return { cls: 'drv-none', tag: '—', label: 'No formula (zero)' };
+  if (l.override) return { cls: 'drv-man', tag: 'MAN', label: 'Manual override' };
+  switch ((l.driver || {}).method) {
+    case 'gpr': return { cls: 'drv-rr', tag: 'RR', label: 'Rent roll — GPR growth' };
+    case 'ltl': return { cls: 'drv-rr', tag: 'LTL', label: 'Rent roll — lease burnoff' };
+    case 'vacancy': return { cls: 'drv-rr', tag: '%GPR', label: '% of GPR' };
+    case 'catShare': return { cls: 'drv-uw', tag: 'UW', label: `UW category ${l.driver.pcode} share` };
+    case 'perUnitComp': return { cls: 'drv-comp', tag: 'MINOT', label: `Minot $${l.driver.perUnit}/unit × units` };
+    case 'payrollModel': return { cls: 'drv-pay', tag: 'PAY', label: 'Payroll model wages' };
+    case 'burdenRatio': return { cls: 'drv-pay', tag: 'RATIO', label: `Minot ratio ${((l.driver.ratio || 0) * 100).toFixed(1)}% of wages` };
+    case 'mgmtPct': return { cls: 'drv-fee', tag: '%INC', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of income` };
+    case 'interest': return { cls: 'drv-int', tag: 'INT', label: 'Interest (loan × rate × days)' };
+    default: return { cls: 'drv-none', tag: '—', label: 'No formula (zero / manual)' };
+  }
+}
+
+function pushUndo() {
+  if (!S.bv) return;
+  if (S.undo.budgetId !== S.bv.budget.id) S.undo = { budgetId: S.bv.budget.id, stack: [] };
+  S.undo.stack.push({
+    lines: JSON.parse(JSON.stringify(S.bv.lines)),
+    inputs: JSON.parse(JSON.stringify(S.bv.budget.inputs || {})),
+  });
+  if (S.undo.stack.length > 25) S.undo.stack.shift();
+}
+
+async function doUndo(budgetId) {
+  const snap = S.undo.stack.pop();
+  if (!snap) return;
+  S.bv = await POST(`/budgets/${budgetId}/restore`, snap);
+  render();
+}
 
 /* ---------------- api ---------------- */
 async function api(path, opts = {}) {
@@ -51,6 +94,7 @@ const show12 = (arr) => {
 
 /* ---------------- boot ---------------- */
 async function boot() {
+  applyTheme();
   S.auth = await GET('/auth/status').catch(() => ({ authed: false }));
   if (S.auth.authed) S.state = await GET('/state');
   render();
@@ -71,12 +115,14 @@ function render() {
         <button data-v="settings" class="${S.view === 'settings' ? 'on' : ''}">Settings</button>
       </nav>
       <span class="spacer"></span>
+      <button class="theme" id="theme-toggle" title="Toggle dark mode">${S.theme === 'dark' ? '☀' : '🌙'}</button>
       <span class="who">${esc(S.auth.username)}${S.auth.isAdmin ? ' · admin' : ''}<button id="logout">Sign out</button></span>
     </div>
     <div class="wrap" id="main"></div>`;
   document.querySelectorAll('.topbar nav button').forEach((b) =>
     b.addEventListener('click', () => { S.view = b.dataset.v; render(); }));
   document.getElementById('logout').addEventListener('click', async () => { await POST('/logout'); location.reload(); });
+  document.getElementById('theme-toggle').addEventListener('click', () => { S.theme = S.theme === 'dark' ? 'light' : 'dark'; applyTheme(); render(); });
   const main = document.getElementById('main');
   if (S.view === 'dash') renderDash(main);
   else if (S.view === 'uploads') renderUploads(main);
@@ -396,6 +442,8 @@ function renderEditor(el) {
         ${start > 1 ? `<button class="btn sub" id="ex-csv2">⬇ ${b.year + 1} Yardi CSV (Jan–${labels[11].split('-')[0]})</button>` : ''}
         <button class="btn sub" id="ex-xlsx">⬇ Review workbook</button>
         <button class="btn sub" id="recalc">↻ Recalc</button>
+        <button class="btn sub" id="undo-btn" ${S.undo.budgetId === b.id && S.undo.stack.length ? '' : 'disabled'}>↶ Undo${S.undo.budgetId === b.id && S.undo.stack.length ? ` (${S.undo.stack.length})` : ''}</button>
+        <button class="btn sub" id="cols-btn">▦ Columns</button>
         <button class="btn" id="assump-open">⚙ Assumptions</button>
         <label style="align-self:center"><input type="checkbox" id="showzero" ${S.showZero ? 'checked' : ''}> show zero rows</label>
       </div>
@@ -410,6 +458,17 @@ function renderEditor(el) {
     </div>
     <div class="editor">
       <div>
+        <div class="legend">
+          <b style="color:var(--dim)">Formula fills:</b>
+          <span><span class="dot drv-rr"></span>Rent roll / income</span>
+          <span><span class="dot drv-uw"></span>UW tie</span>
+          <span><span class="dot drv-comp"></span>Minot comps</span>
+          <span><span class="dot drv-pay"></span>Payroll model</span>
+          <span><span class="dot drv-fee"></span>% of income</span>
+          <span><span class="dot drv-int"></span>Interest</span>
+          <span><span class="dot drv-man"></span>Manual override</span>
+          <span class="muted">· click a row's chip to change its formula</span>
+        </div>
         <div class="gridwrap">${gridHtml(bv, totals)}</div>
       </div>
       <div class="side">
@@ -431,8 +490,10 @@ function renderEditor(el) {
     window.open(`/api/budgets/${b.id}/export.csv?calYear=${b.year + 1}&cutoff=${c}`, '_blank');
   });
   document.getElementById('ex-xlsx').addEventListener('click', () => window.open(`/api/budgets/${b.id}/export.xlsx`, '_blank'));
-  document.getElementById('recalc').addEventListener('click', async () => { S.bv = await POST(`/budgets/${b.id}/recalc`); render(); });
+  document.getElementById('recalc').addEventListener('click', async () => { pushUndo(); S.bv = await POST(`/budgets/${b.id}/recalc`); render(); });
   document.getElementById('showzero').addEventListener('change', (e) => { S.showZero = e.target.checked; render(); });
+  document.getElementById('undo-btn').addEventListener('click', () => doUndo(b.id));
+  document.getElementById('cols-btn').addEventListener('click', (e) => { e.stopPropagation(); openColsMenu(e.currentTarget, labels); });
   document.getElementById('assump-open').addEventListener('click', () => {
     const dlg = document.getElementById('assump-dlg');
     dlg.innerHTML = `
@@ -450,12 +511,16 @@ function renderEditor(el) {
     dlg.showModal();
   });
 
-  // month-cell + note editing
+  // month-cell + note editing (hidden-column safe: months come from the line
+  // data with only the edited index replaced)
   el.querySelectorAll('td.m input').forEach((box) => {
     box.addEventListener('change', async () => {
       const gl = box.dataset.gl;
-      const row = [...el.querySelectorAll(`td.m input[data-gl="${gl}"]`)];
-      const months = row.map((x) => parseFloat(String(x.value).replace(/,/g, '')) || 0);
+      const i = Number(box.dataset.i);
+      const line = S.bv.lines.find((l) => l.gl_code === gl);
+      const months = (line ? line.months : Array(12).fill(0)).slice();
+      months[i] = parseFloat(String(box.value).replace(/,/g, '')) || 0;
+      pushUndo();
       S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { months });
       render();
     });
@@ -466,6 +531,7 @@ function renderEditor(el) {
     });
   });
   el.querySelectorAll('[data-unlock]').forEach((btn) => btn.addEventListener('click', async () => {
+    pushUndo();
     S.bv = await PUT(`/budgets/${b.id}/lines/${btn.dataset.unlock}`, { override: false });
     S.bv = await POST(`/budgets/${b.id}/recalc`);
     render();
@@ -475,6 +541,7 @@ function renderEditor(el) {
     openRowTools(b, btn.dataset.tools, btn);
   }));
   el.querySelectorAll('.tie .rb:not(.basis)').forEach((btn) => btn.addEventListener('click', async () => {
+    pushUndo();
     S.bv = btn.dataset.noi
       ? await POST(`/budgets/${b.id}/tie-noi`)
       : btn.dataset.egi
@@ -483,6 +550,7 @@ function renderEditor(el) {
     render();
   }));
   el.querySelectorAll('.tie .rb.basis').forEach((btn) => btn.addEventListener('click', async () => {
+    pushUndo();
     const p = btn.dataset.b;
     const cur = { ...((S.bv.budget.inputs || {}).catBasis || {}) };
     cur[p] = cur[p] === 'perUnit' ? 'uw' : 'perUnit';
@@ -534,26 +602,31 @@ function gridHtml(bv, totals) {
   const coa = S.state.coa;
   const linesByGl = new Map(bv.lines.map((l) => [l.gl_code, l]));
   const labels = bv.monthLabels || MONTHS;
+  const hide = S.hiddenCols;
+  const showM = (i) => !hide.has('m' + i);
+  const monthIdx = Array.from({ length: 12 }, (_, i) => i).filter(showM);
+  const cols = { fx: !hide.has('fx'), annual: !hide.has('annual'), punit: !hide.has('punit'), note: !hide.has('note') };
+  const span = 2 + (cols.fx ? 1 : 0) + monthIdx.length + (cols.annual ? 1 : 0) + (cols.punit ? 1 : 0) + (cols.note ? 1 : 0);
   const rows = [];
-  rows.push(`<tr><th>GL</th><th style="min-width:210px">Account</th>${labels.map((m) => `<th>${m}</th>`).join('')}<th>Year 1</th><th>$/Unit</th><th>Note</th></tr>`);
+  rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th>${labels[i]}</th>`).join('')}${cols.annual ? '<th>Year 1</th>' : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
   const units = Number(bv.budget.inputs?.units) || 1;
   const GRAND = new Set(['5500', '7279', '7280', '8200', '9000']);
   for (const a of coa) {
     if (!a.active) continue;
     if (a.kind === 'header') {
-      rows.push(`<tr class="header"><td class="code">${a.code}</td><td class="name" colspan="16">${esc(a.name)}</td></tr>`);
+      rows.push(`<tr class="header"><td class="code">${a.code}</td><td class="name" colspan="${span - 1}">${esc(a.name)}</td></tr>`);
       continue;
     }
     if (a.kind === 'total') {
       const m = totals.get(a.code) || Array(12).fill(0);
       const ann = sumM(m);
-      if (!S.showZero && !ann && !m.some((v) => v)) {
-        rows.push(`<tr class="total zero ${S.showZero ? 'show' : ''}"></tr>`);
-        continue;
-      }
+      if (!S.showZero && !ann && !m.some((v) => v)) continue;
       rows.push(`<tr class="total ${GRAND.has(a.code) ? 'grand' : ''}"><td class="code">${a.code}</td><td class="name">${esc(a.name)}</td>
-        ${m.map((v) => `<td class="${v < 0 ? 'neg' : ''}">${money(v)}</td>`).join('')}
-        <td class="${ann < 0 ? 'neg' : ''}"><b>${money(ann)}</b></td><td>${money(ann / units)}</td><td></td></tr>`);
+        ${cols.fx ? '<td></td>' : ''}
+        ${monthIdx.map((i) => `<td class="${m[i] < 0 ? 'neg' : ''}">${money(m[i])}</td>`).join('')}
+        ${cols.annual ? `<td class="${ann < 0 ? 'neg' : ''}"><b>${money(ann)}</b></td>` : ''}
+        ${cols.punit ? `<td>${money(ann / units)}</td>` : ''}
+        ${cols.note ? '<td></td>' : ''}</tr>`);
       continue;
     }
     const l = linesByGl.get(a.code);
@@ -561,16 +634,45 @@ function gridHtml(bv, totals) {
     const ann = sumM(m);
     const isZero = !ann && !m.some((v) => v) && !(l && l.note);
     if (isZero && !S.showZero) continue;
+    const dm = drvMeta(l && (ann || l.override) ? l : null);
     rows.push(`<tr>
       <td class="code">${a.code}</td>
-      <td class="name" title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}"><button class="rowtool" data-tools="${a.code}" title="Quick row tools">⋯</button> ${esc(a.name)}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
-      ${m.map((v, i) => `<td class="m"><input data-gl="${a.code}" data-i="${i}" value="${v ? money2(v) : ''}" class="${l && l.override ? 'ovr' : ''}"></td>`).join('')}
-      <td class="${ann < 0 ? 'neg' : ''}"><b>${money(ann)}</b></td>
-      <td>${ann ? money(ann / units) : ''}</td>
-      <td class="note"><input data-gl="${a.code}" value="${esc(l ? l.note : '')}" placeholder="note"></td>
+      <td class="name" title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}">${esc(a.name)}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
+      ${cols.fx ? `<td><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button></td>` : ''}
+      ${monthIdx.map((i) => `<td class="m ${dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money2(m[i]) : ''}"></td>`).join('')}
+      ${cols.annual ? `<td class="${ann < 0 ? 'neg' : ''}"><b>${money(ann)}</b></td>` : ''}
+      ${cols.punit ? `<td>${ann ? money(ann / units) : ''}</td>` : ''}
+      ${cols.note ? `<td class="note"><input data-gl="${a.code}" value="${esc(l ? l.note : '')}" placeholder="note"></td>` : ''}
     </tr>`);
   }
   return `<table class="grid">${rows.join('')}</table>`;
+}
+
+function openColsMenu(anchorBtn, labels) {
+  document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'rowmenu';
+  const item = (key, label) => `<label><input type="checkbox" data-col="${key}" ${S.hiddenCols.has(key) ? '' : 'checked'}> ${esc(label)}</label>`;
+  menu.innerHTML = `
+    <div class="rm-head">Show / hide columns</div>
+    ${item('fx', 'Fx (formula chip)')}
+    ${labels.map((lb, i) => item('m' + i, lb)).join('')}
+    ${item('annual', 'Year 1 total')}
+    ${item('punit', '$/Unit')}
+    ${item('note', 'Note')}
+    <button data-all="1" style="color:var(--accent)">Show all</button>`;
+  const r = anchorBtn.getBoundingClientRect();
+  menu.style.left = `${r.left + window.scrollX}px`;
+  menu.style.top = `${r.bottom + window.scrollY + 2}px`;
+  document.body.appendChild(menu);
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+  const save = () => { localStorage.setItem('bt-hidecols', JSON.stringify([...S.hiddenCols])); render(); };
+  menu.querySelectorAll('[data-col]').forEach((cb) => cb.addEventListener('change', () => {
+    if (cb.checked) S.hiddenCols.delete(cb.dataset.col); else S.hiddenCols.add(cb.dataset.col);
+    save();
+  }));
+  menu.querySelector('[data-all]').addEventListener('click', () => { S.hiddenCols.clear(); save(); });
 }
 
 function tieHtml(bv) {
@@ -600,10 +702,15 @@ function tieHtml(bv) {
       <td class="var ${cls}">${money(r.variance)}</td>
       <td>${noiCtl}${egiCtl}${basisCtl}${!big && rebalanceable.has(r.pcode) && Math.abs(r.variance) >= 1 ? `<button class="rb" data-p="${r.pcode}">tie</button>` : ''}</td></tr>`;
   };
+  const INCOME = new Set(['1', 'loss', '2', '3', '4', '5']);
+  const incomeRows = t.rows.filter((r) => INCOME.has(r.pcode));
+  const expenseRows = t.rows.filter((r) => !INCOME.has(r.pcode));
   return `<table>
     <tr><th>Category</th><th>Budget</th><th>UW Y1</th><th>Δ</th><th></th></tr>
-    ${t.rows.map((r) => row(r, false)).join('')}
-    ${row(t.egi, true)}${row(t.toe, true)}${row(t.noi, true)}
+    ${incomeRows.map((r) => row(r, false)).join('')}
+    ${row(t.egi, true)}
+    ${expenseRows.map((r) => row(r, false)).join('')}
+    ${row(t.toe, true)}${row(t.noi, true)}
   </table>
   <p class="muted" style="font-size:11px"><b>NOI ties 100% to UW</b> — at generation and via “tie NOI”, the flex categories (admin, marketing, R&M, rehab) absorb the gap; other categories stay in line with their basis. Category “tie” scales that category's non-overridden lines to its own target. Basis buttons switch a category between <b>UW</b> and <b>Minot $/unit × units</b>. Payroll benefits/bonuses follow Minot ratios on the property's wage totals. GPR always anchors to the rent roll.</p>`;
 }
@@ -685,6 +792,7 @@ async function applyInputs(b, el) {
     tieNoi: el.querySelector('#in-tienoi').checked,
     uwAbs,
   };
+  pushUndo();
   S.bv = await PUT(`/budgets/${b.id}`, { inputs });
   render();
 }
@@ -696,16 +804,21 @@ function openRowTools(b, gl, anchorBtn) {
   const start = inp.startMonth || 1;
   const acc = S.state.coa.find((a) => a.code === gl) || {};
   const hasComp = S.bv.compWeights && S.bv.compUnits && S.bv.compWeights[gl];
+  const line = S.bv.lines.find((l) => l.gl_code === gl);
+  const dm = drvMeta(line && (sumM(line.months) || line.override) ? line : null);
   const menu = document.createElement('div');
   menu.className = 'rowmenu';
+  const dot = (cls) => `<span class="dot ${cls}" style="margin-right:6px"></span>`;
   menu.innerHTML = `
-    <div class="rm-head">${gl} ${esc(acc.name || '')}</div>
-    <button data-act="zero">Zero out row</button>
-    <button data-act="flatAnnual">Flat — annual $ over the year…</button>
-    <button data-act="flatMonthly">Flat — $ per month…</button>
-    <button data-act="grow">Start $ /mo + growth %/mo…</button>
-    ${hasComp ? `<button data-act="minot">Minot $/unit × units (${money((S.bv.compWeights[gl] / S.bv.compUnits) * inp.units)}/yr, seasonal)</button>` : ''}
-    <button data-act="reset">Reset to engine (clear override)</button>`;
+    <div class="rm-head">${gl} ${esc(acc.name || '')}<br>
+      <span class="drv ${dm.cls}" style="margin-top:3px; display:inline-block">${dm.tag}</span>
+      <span style="margin-left:5px">${esc(dm.label)}</span></div>
+    <button data-act="zero">${dot('drv-int')}Zero out row</button>
+    <button data-act="flatAnnual">${dot('drv-man')}Flat — annual $ over the year…</button>
+    <button data-act="flatMonthly">${dot('drv-man')}Flat — $ per month…</button>
+    <button data-act="grow">${dot('drv-man')}Start $ /mo + growth %/mo…</button>
+    ${hasComp ? `<button data-act="minot">${dot('drv-comp')}Minot $/unit × units (${money((S.bv.compWeights[gl] / S.bv.compUnits) * inp.units)}/yr, seasonal)</button>` : ''}
+    <button data-act="reset">${dot('drv-uw')}Reset to engine formula (clear override)</button>`;
   const r = anchorBtn.getBoundingClientRect();
   menu.style.left = `${r.left + window.scrollX}px`;
   menu.style.top = `${r.bottom + window.scrollY + 2}px`;
@@ -714,6 +827,7 @@ function openRowTools(b, gl, anchorBtn) {
   setTimeout(() => document.addEventListener('click', close, { once: true }), 0);
 
   const put = async (months) => {
+    pushUndo();
     S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { months });
     render();
   };
@@ -752,6 +866,7 @@ function openRowTools(b, gl, anchorBtn) {
       return put(shape.map((w) => Math.round(((annual * w) / wsum) * 100) / 100));
     }
     if (act === 'reset') {
+      pushUndo();
       S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { override: false });
       S.bv = await POST(`/budgets/${b.id}/recalc`);
       render();

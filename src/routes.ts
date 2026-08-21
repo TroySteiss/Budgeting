@@ -390,6 +390,35 @@ router.put('/budgets/:id/lines/:gl', h(async (req, res) => {
   res.json(budgetView((await loadBudget(id))!));
 }));
 
+/* Undo support: restore a client-held snapshot of lines (+ inputs) verbatim —
+   no regeneration, no ties; the snapshot is exactly what the user saw. */
+router.post('/budgets/:id/restore', h(async (req, res) => {
+  const id = Number(req.params.id);
+  const lb = await loadBudget(id);
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  const { lines, inputs } = req.body || {};
+  if (!Array.isArray(lines) || !lines.length) return res.status(400).json({ error: 'lines snapshot required' });
+  const valid = new Set(lb.coa.map((a) => a.code));
+  const restored: BudgetLine[] = [];
+  for (const l of lines) {
+    if (!l || !valid.has(String(l.gl_code)) || !Array.isArray(l.months) || l.months.length !== 12) continue;
+    restored.push({
+      gl_code: String(l.gl_code),
+      months: l.months.map((v: any) => r2(Number(v) || 0)),
+      driver: l.driver && typeof l.driver === 'object' ? l.driver : { method: 'manual' },
+      override: !!l.override,
+      note: typeof l.note === 'string' ? l.note : '',
+    });
+  }
+  if (!restored.length) return res.status(400).json({ error: 'no valid lines in snapshot' });
+  if (inputs && typeof inputs === 'object') {
+    await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(inputs)]);
+  }
+  await saveLines(id, restored);
+  logChange(req.session.username || '', 'undo (restore snapshot)', { id, lines: restored.length });
+  res.json(budgetView((await loadBudget(id))!));
+}));
+
 router.post('/budgets/:id/recalc', h(async (req, res) => {
   const id = Number(req.params.id);
   const lb = await loadBudget(id);

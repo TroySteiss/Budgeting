@@ -105,9 +105,20 @@ replaces the seller budget), `?calYear=2027` → Jan–Jul (an Upload; Aug–Dec
 normal fall budget cycle). Grid columns are labeled Aug-26…Jul-27 (`monthLabels`). startMonth=1
 degenerates to a plain calendar year.
 
-**Row quick tools** (⋯ button on every detail row): zero out, flat annual over live months,
-flat $/mo, start-$ + %/mo growth fill, Minot $/unit × units with its seasonal shape, reset to
-engine. All write overrides via PUT /budgets/:id/lines/:gl.
+**Row quick tools** (the "Fx" chip on every detail row): zero out, flat annual, flat $/mo,
+start-$ + %/mo growth fill, Minot $/unit × units with its seasonal shape, reset to engine.
+All write overrides via PUT /budgets/:id/lines/:gl.
+
+**Editor UX (2026-08-21)**: every detail row shows a colour-coded **Fx chip** naming its formula
+(drvMeta in app.js), and the month cells carry the same fill — green rent-roll/income, amber UW
+tie, blue Minot comps, violet payroll, teal %-of-income, gray interest, pink manual override —
+with a legend above the grid. Tie-out panel lists Total Income (EGI) as an income subtotal
+(after Other Income), TOE/NOI at the bottom. **Dark mode** via CSS variables on
+`[data-theme=dark]` (topbar 🌙 toggle, localStorage `bt-theme`). **Column picker** (▦ Columns)
+hides/shows Fx, each month, Year 1, $/Unit, Note (localStorage `bt-hidecols`; cell edits are
+hidden-column-safe — months come from line data, only the edited index changes). **Undo** (↶):
+client keeps up to 25 pre-mutation snapshots per budget; POST /budgets/:id/restore writes a
+snapshot back verbatim (no regeneration, no ties).
 
 **Loss to lease (Troy, 2026-08-21)**: per-lease burnoff (`ltlMonths` in domain.ts) — each lease's
 LTL changes only in its turnover month; renewals keep `1-burnoffRenew` (default: burn HALF), new
