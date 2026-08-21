@@ -32,6 +32,7 @@ function drvMeta(l) {
   if (l.override && (!method || method === 'manual')) return { cls: 'drv-man', tag: 'MAN', label: 'Manual override' };
   switch (method) {
     case 't3avg': return { cls: 'drv-comp', tag: 'T3', label: `T3 avg of ${l.driver.srcName || 'this GL'} × ${(((l.driver || {}).pct || 0)).toFixed(1)}% → MROUND $250` };
+    case 'wavg': return { cls: l.driver.srcType === 'seller' ? 'drv-t12' : 'drv-comp', tag: 'WAVG', label: `1-2-1 weighted distribution of ${l.driver.srcName || ''} × ${((l.driver.pct || 0)).toFixed(1)}%${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
     case 'gpr': return { cls: 'drv-rr', tag: 'RR', label: 'Rent roll — GPR growth' };
     case 'ltl': return { cls: 'drv-rr', tag: 'LTL', label: 'Rent roll — lease burnoff' };
     case 'vacancy': return { cls: 'drv-rr', tag: '%GPR', label: '% of GPR' };
@@ -1025,6 +1026,7 @@ function openRowTools(b, gl, anchorBtn) {
     ${hasComp ? `<button data-act="minot">${dot('drv-comp')}Minot $/unit × units (${money((S.bv.compWeights[gl] / S.bv.compUnits) * inp.units)}/yr, seasonal)</button>` : ''}
     ${hasComp && S.bv.compShapes && S.bv.compShapes[gl] ? `<button data-act="t3avg" title="Weighted average of the comp's last 3 months (1-2-1), per-unit scaled, × (1+growth), rounded to $250 — your MROUND formula">${dot('drv-comp')}T3 actuals avg × growth → MROUND $250…</button>` : ''}
     ${(S.bv.sellerT12 || []).length ? `<button data-act="seller" title="Match this GL to a seller T12 line and take its monthly actuals × growth">${dot('drv-t12')}Seller actuals — match a seller line…</button>` : ''}
+    ${((S.bv.sellerT12 || []).length || hasComp) ? `<button data-act="wavg" title="Troy's distribution formula: each month = (2×that month + prior + next)/4 of the source actuals, × (1+growth), MROUND to a multiple">${dot('drv-comp')}Weighted avg distribution (1-2-1) × growth → MROUND…</button>` : ''}
     <button data-act="reset">${dot('drv-uw')}Reset to engine formula (clear override)</button>`;
   const r = anchorBtn.getBoundingClientRect();
   menu.style.left = `${r.left + window.scrollX}px`;
@@ -1081,6 +1083,10 @@ function openRowTools(b, gl, anchorBtn) {
     }
     if (act === 'seller') {
       openSellerMatch(b, gl, acc, anchorBtn, put);
+      return;
+    }
+    if (act === 'wavg') {
+      openWavgMatch(b, gl, acc, anchorBtn, put, inp);
       return;
     }
     if (act === 'reset') {
@@ -1186,6 +1192,73 @@ function openCompT3Match(b, gl, acc, anchorBtn, put, inp) {
     const scaled = (t3 / S.bv.compUnits) * (inp.units || 0) * (1 + g / 100);
     const rounded = Math.round(scaled / 250) * 250;
     await put(Array(12).fill(rounded), { method: 't3avg', pct: g, src: r.gl, srcName: r.name.slice(0, 30) });
+  }));
+}
+
+/* Troy's weighted-average DISTRIBUTION formula, rewritten from Excel:
+     budget[month] = MROUND( (2×act[month] + act[prev] + act[next]) / 4 × (1+g), mult )
+   Source actuals are pickable — the property's own seller T12 lines or a Minot
+   comp line (per-unit scaled to subject units). Year wraps for prev/next. */
+function openWavgMatch(b, gl, acc, anchorBtn, put, inp) {
+  document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
+  const start = (S.bv.budget.inputs || {}).startMonth || 1;
+  const coaByCode = new Map(S.state.coa.map((a) => [a.code, a]));
+  const rows = [];
+  for (const r of (S.bv.sellerT12 || [])) {
+    if (!r.months || !r.months.some((v) => v)) continue;
+    const cal = Array(12).fill(0);
+    r.months.forEach((v, i) => { cal[((r.monthCal && r.monthCal[i]) || i + 1) - 1] += v || 0; });
+    rows.push({ srcType: 'seller', name: r.name, pcode: r.pcode, cal, scale: 1, total: r.total || cal.reduce((a, x) => a + x, 0) });
+  }
+  for (const k of Object.keys(S.bv.compShapes || {})) {
+    if (!S.bv.compWeights || !S.bv.compWeights[k] || !S.bv.compUnits) continue;
+    const a = coaByCode.get(k) || {};
+    const shape = S.bv.compShapes[k];
+    const wsum = shape.reduce((x, y) => x + y, 0) || 1;
+    const cal = shape.map((w) => (S.bv.compWeights[k] * w) / wsum);
+    rows.push({ srcType: 'comp', name: `${k} ${a.name || ''}`, pcode: a.pcode, cal, scale: (inp.units || 0) / S.bv.compUnits, total: S.bv.compWeights[k], own: k === gl });
+  }
+  rows.sort((x, y) => {
+    const xs = x.own ? -1 : x.pcode === acc.pcode ? 0 : 1;
+    const ys = y.own ? -1 : y.pcode === acc.pcode ? 0 : 1;
+    return xs - ys || Math.abs(y.total) - Math.abs(x.total);
+  });
+  const menu = document.createElement('div');
+  menu.className = 'rowmenu';
+  menu.style.maxHeight = '420px';
+  menu.style.overflow = 'auto';
+  menu.innerHTML = `
+    <div class="rm-head">Weighted avg (1-2-1) source for ${gl} ${esc(acc.name || '')}</div>
+    <div style="padding:4px 6px"><input id="wa-filter" placeholder="filter…" style="width:100%; border:1px solid var(--line); border-radius:6px; padding:4px 7px"></div>
+    ${rows.map((r, i) => `<button data-wa="${i}" ${r.own || r.pcode === acc.pcode ? '' : 'style="opacity:.75"'}>
+      <span class="badge" style="margin:0 4px 0 0">${r.srcType === 'seller' ? 'Seller' : 'Minot'}</span>${esc(r.name.slice(0, 30))}
+      <span class="muted" style="float:right">${money(r.total)}${r.own ? ' · this GL' : r.pcode === acc.pcode ? ' · suggested' : ''}</span></button>`).join('')}`;
+  const rct = anchorBtn.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, rct.left + window.scrollX - 60)}px`;
+  menu.style.top = `${rct.bottom + window.scrollY + 2}px`;
+  document.body.appendChild(menu);
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+  menu.querySelector('#wa-filter').addEventListener('input', (e) => {
+    const q = e.target.value.toLowerCase();
+    menu.querySelectorAll('button[data-wa]').forEach((btn) => {
+      btn.style.display = btn.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+  menu.querySelectorAll('button[data-wa]').forEach((btn) => btn.addEventListener('click', async () => {
+    const r = rows[Number(btn.dataset.wa)];
+    menu.remove();
+    const g = parseFloat(String(prompt(`Increase factor % on "${r.name}" (the (1+$D)):`, '3') || '').replace(/,/g, ''));
+    if (!Number.isFinite(g)) return;
+    const mult = parseFloat(String(prompt('MROUND multiple ($, 0 = no rounding):', '250') || '').replace(/,/g, ''));
+    if (!Number.isFinite(mult) || mult < 0) return;
+    // centered 1-2-1 smoothing on the calendar series (wraps at year edges)
+    const sm = r.cal.map((_, c) => (2 * r.cal[c] + r.cal[(c + 11) % 12] + r.cal[(c + 1) % 12]) / 4);
+    const months = Array.from({ length: 12 }, (_, i) => {
+      const v = sm[(start - 1 + i) % 12] * r.scale * (1 + g / 100);
+      return mult ? Math.round(v / mult) * mult : Math.round(v * 100) / 100;
+    });
+    await put(months, { method: 'wavg', pct: g, mult: mult || 0, srcType: r.srcType, srcName: r.name.slice(0, 30) });
   }));
 }
 

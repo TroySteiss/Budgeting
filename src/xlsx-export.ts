@@ -45,6 +45,7 @@ function driverKind(l: BudgetLine | undefined): string {
     case 'gpr': case 'ltl': case 'vacancy': case 'charges': return 'rr';
     case 'catShare': return 'uw';
     case 'perUnitComp': case 't3avg': return 'comp';
+    case 'wavg': return (l!.driver as any)?.srcType === 'seller' ? 't12' : 'comp';
     case 'payrollModel': case 'burdenRatio': return 'pay';
     case 'mgmtPct': return 'fee';
     case 'interest': return 'int';
@@ -67,6 +68,12 @@ function driverLabel(d: any): string {
     case 'burdenRatio': return `Minot ratio ${(d.ratio * 100).toFixed(1)}% of wages`;
     case 'mgmtPct': return `${(d.pct * 100).toFixed(2)}% of income`;
     case 'interest': return 'loan interest';
+    case 'sellerUtil': return 'seller statement level';
+    case 'recovery': return `${(d.pct * 100).toFixed(1)}% recovery of prior-month billing`;
+    case 'sellerLine': return `seller: ${d.name || ''} × ${(d.pct || 0).toFixed(1)}%`;
+    case 'charges': return 'rent-roll charges × 12';
+    case 't3avg': return `T3 avg of ${d.srcName || 'comp'} × ${(d.pct || 0).toFixed(1)}% (MROUND 250)`;
+    case 'wavg': return `1-2-1 wtd avg of ${d.srcName || 'source'} × ${(d.pct || 0).toFixed(1)}%`;
     default: return '';
   }
 }
