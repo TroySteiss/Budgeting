@@ -467,6 +467,7 @@ function renderEditor(el) {
         <button class="btn sub" id="undo-btn" ${S.undo.budgetId === b.id && S.undo.stack.length ? '' : 'disabled'}>↶ Undo${S.undo.budgetId === b.id && S.undo.stack.length ? ` (${S.undo.stack.length})` : ''}</button>
         <button class="btn sub" id="cols-btn">▦ Columns</button>
         <button class="btn sub" id="round-btn" title="Round selected lines' months to a multiple">⌁ MROUND…</button>
+        <button class="btn sub" id="copyfx-btn" title="Replay another budget's named formulas here, re-evaluated on this property's own data">⧉ Copy formulas…</button>
         <button class="btn" id="assump-open">⚙ Assumptions</button>
         <label style="align-self:center"><input type="checkbox" id="showzero" ${S.showZero ? 'checked' : ''}> show zero rows</label>
         <label style="align-self:center" title="Show each total row's monthly % of Year 1"><input type="checkbox" id="showdist" ${S.showDist ? 'checked' : ''}> % dist</label>
@@ -508,7 +509,8 @@ function renderEditor(el) {
       </div>
     </div>
     <dialog class="assump" id="assump-dlg"></dialog>
-    <dialog class="assump" id="round-dlg"></dialog>`;
+    <dialog class="assump" id="round-dlg"></dialog>
+    <dialog class="assump" id="copy-dlg"></dialog>`;
 
   document.getElementById('ex-csv').addEventListener('click', () => {
     const c = document.getElementById('ex-cutoff').value;
@@ -525,6 +527,7 @@ function renderEditor(el) {
   document.getElementById('showdist').addEventListener('change', (e) => { S.showDist = e.target.checked; localStorage.setItem('bt-dist', S.showDist ? '1' : '0'); render(); });
   document.getElementById('undo-btn').addEventListener('click', () => doUndo(b.id));
   document.getElementById('round-btn').addEventListener('click', () => openRoundDialog(b));
+  document.getElementById('copyfx-btn').addEventListener('click', () => openCopyFormulas(b));
   document.getElementById('cols-btn').addEventListener('click', (e) => { e.stopPropagation(); openColsMenu(e.currentTarget, labels); });
   el.querySelectorAll('.trend-chip').forEach((chip) => chip.addEventListener('click', () => {
     const sel = trendSeriesSel();
@@ -1039,6 +1042,84 @@ async function applyInputs(b, el) {
   render();
 }
 
+/* ---------------- formula recompute (shared: row tools + formula copier) ----------------
+   Each helper re-evaluates one named formula against a budget view's OWN data
+   sources (its seller T12, its comps at its unit count), so a formula recipe
+   can be replayed on any property with that property's references. */
+function fcSellerRows(bv) { return (bv.sellerT12 || []).filter((r) => r.months && r.months.some((v) => v)); }
+function fcFindSeller(bv, name) {
+  if (!name) return null;
+  const want = String(name).trim().toLowerCase();
+  const rows = fcSellerRows(bv);
+  return rows.find((r) => r.name.trim().toLowerCase() === want)
+      || rows.find((r) => r.name.trim().toLowerCase().startsWith(want))   // stored names are truncated
+      || null;
+}
+function fcSellerCal(r) {
+  const cal = Array(12).fill(0);
+  r.months.forEach((v, i) => { cal[((r.monthCal && r.monthCal[i]) || i + 1) - 1] += v || 0; });
+  return cal;
+}
+function fcSellerLine(bv, inp, row, pct) {
+  const start = inp.startMonth || 1;
+  const cal = fcSellerCal(row);
+  return {
+    months: Array.from({ length: 12 }, (_, i) => Math.round(cal[(start - 1 + i) % 12] * (1 + pct / 100) * 100) / 100),
+    driver: { method: 'sellerLine', name: row.name.slice(0, 40), pct },
+  };
+}
+function fcMinot(bv, inp, gl, pcode) {
+  if (!bv.compWeights || !bv.compUnits || !bv.compWeights[gl]) return null;
+  const start = inp.startMonth || 1;
+  const annual = (bv.compWeights[gl] / bv.compUnits) * (inp.units || 0);
+  const cal = (bv.compShapes && bv.compShapes[gl]) || Array(12).fill(1);
+  const shape = cal.map((_, i) => cal[(start - 1 + i) % 12]);   // Jan-Dec → ownership order
+  const wsum = shape.reduce((a, x) => a + x, 0) || 1;
+  return {
+    months: shape.map((w) => Math.round(((annual * w) / wsum) * 100) / 100),
+    driver: { method: 'perUnitComp', pcode: pcode || '', perUnit: Math.round((bv.compWeights[gl] / bv.compUnits) * 100) / 100 },
+  };
+}
+function fcT3avg(bv, inp, srcGl, pct) {
+  if (!bv.compShapes || !bv.compShapes[srcGl] || !bv.compWeights || !bv.compWeights[srcGl] || !bv.compUnits) return null;
+  const shape = bv.compShapes[srcGl];
+  const wsum = shape.reduce((a, x) => a + x, 0) || 1;
+  const monthly = shape.map((w) => (bv.compWeights[srcGl] * w) / wsum); // comp $ by calendar month
+  const t3 = (monthly[9] + 2 * monthly[10] + monthly[11]) / 4;          // last 3, mid ×2
+  const scaled = (t3 / bv.compUnits) * (inp.units || 0) * (1 + pct / 100);
+  const rounded = Math.round(scaled / 250) * 250;
+  const a = S.state.coa.find((x) => x.code === srcGl) || {};
+  return { months: Array(12).fill(rounded), driver: { method: 't3avg', pct, src: srcGl, srcName: (a.name || srcGl).slice(0, 30) } };
+}
+/* WAVG source rows for a budget view: its own seller T12 lines (scale 1) +
+   Minot comp lines (per-unit scaled to its units). */
+function fcWavgRows(bv, inp, gl) {
+  const coaByCode = new Map(S.state.coa.map((a) => [a.code, a]));
+  const rows = [];
+  for (const r of fcSellerRows(bv)) {
+    rows.push({ srcType: 'seller', name: r.name, pcode: r.pcode, cal: fcSellerCal(r), scale: 1, total: r.total || fcSellerCal(r).reduce((a, x) => a + x, 0) });
+  }
+  for (const k of Object.keys(bv.compShapes || {})) {
+    if (!bv.compWeights || !bv.compWeights[k] || !bv.compUnits) continue;
+    const a = coaByCode.get(k) || {};
+    const shape = bv.compShapes[k];
+    const wsum = shape.reduce((x, y) => x + y, 0) || 1;
+    const cal = shape.map((w) => (bv.compWeights[k] * w) / wsum);
+    rows.push({ srcType: 'comp', glCode: k, name: `${k} ${a.name || ''}`, pcode: a.pcode, cal, scale: (inp.units || 0) / bv.compUnits, total: bv.compWeights[k], own: k === gl });
+  }
+  return rows;
+}
+function fcWavg(bv, inp, row, pct, mult) {
+  const start = inp.startMonth || 1;
+  // centered 1-2-1 smoothing on the calendar series (wraps at year edges)
+  const sm = row.cal.map((_, c) => (2 * row.cal[c] + row.cal[(c + 11) % 12] + row.cal[(c + 1) % 12]) / 4);
+  const months = Array.from({ length: 12 }, (_, i) => {
+    const v = sm[(start - 1 + i) % 12] * row.scale * (1 + pct / 100);
+    return mult ? Math.round(v / mult) * mult : Math.round(v * 100) / 100;
+  });
+  return { months, driver: { method: 'wavg', pct, mult: mult || 0, srcType: row.srcType, srcName: row.name.slice(0, 30) } };
+}
+
 /* ---------------- row quick tools ---------------- */
 function openRowTools(b, gl, anchorBtn) {
   document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
@@ -1103,13 +1184,9 @@ function openRowTools(b, gl, anchorBtn) {
       }));
     }
     if (act === 'minot') {
-      const annual = (S.bv.compWeights[gl] / S.bv.compUnits) * (inp.units || 0);
-      const cal = (S.bv.compShapes && S.bv.compShapes[gl]) || Array(12).fill(1);
-      // rotate the Jan-Dec shape into ownership-month order
-      const shape = cal.map((_, i) => cal[(start - 1 + i) % 12]);
-      const wsum = shape.reduce((a, x) => a + x, 0) || 1;
-      return put(shape.map((w) => Math.round(((annual * w) / wsum) * 100) / 100),
-        { method: 'perUnitComp', pcode: acc.pcode || '', perUnit: Math.round((S.bv.compWeights[gl] / S.bv.compUnits) * 100) / 100 });
+      const res = fcMinot(S.bv, inp, gl, acc.pcode);
+      if (res) return put(res.months, res.driver);
+      return;
     }
     if (act === 't3avg') {
       // Troy's formula: T3 weighted average of a PICKABLE comp line,
@@ -1171,11 +1248,8 @@ function openSellerMatch(b, gl, acc, anchorBtn, put) {
     menu.remove();
     const g = parseFloat(String(prompt(`Growth % on "${r.name}" (0 = seller actuals as-is):`, '3') || '').replace(/,/g, ''));
     if (!Number.isFinite(g)) return;
-    // seller months → calendar buckets → ownership-month order × growth
-    const cal = Array(12).fill(0);
-    r.months.forEach((v, i) => { cal[((r.monthCal && r.monthCal[i]) || i + 1) - 1] += v || 0; });
-    const months = Array.from({ length: 12 }, (_, i) => Math.round(cal[(start - 1 + i) % 12] * (1 + g / 100) * 100) / 100);
-    await put(months, { method: 'sellerLine', name: r.name.slice(0, 40), pct: g });
+    const res = fcSellerLine(S.bv, S.bv.budget.inputs || {}, r, g);
+    await put(res.months, res.driver);
   }));
 }
 
@@ -1221,13 +1295,8 @@ function openCompT3Match(b, gl, acc, anchorBtn, put, inp) {
     menu.remove();
     const g = parseFloat(String(prompt(`Increase factor % on "${r.name}" (the (1+$D) in your formula):`, '3') || '').replace(/,/g, ''));
     if (!Number.isFinite(g)) return;
-    const shape = S.bv.compShapes[r.gl];
-    const wsum = shape.reduce((a, x) => a + x, 0) || 1;
-    const monthly = shape.map((w) => (r.annual * w) / wsum);           // comp $ by calendar month
-    const t3 = (monthly[9] + 2 * monthly[10] + monthly[11]) / 4;       // last 3, mid ×2
-    const scaled = (t3 / S.bv.compUnits) * (inp.units || 0) * (1 + g / 100);
-    const rounded = Math.round(scaled / 250) * 250;
-    await put(Array(12).fill(rounded), { method: 't3avg', pct: g, src: r.gl, srcName: r.name.slice(0, 30) });
+    const res = fcT3avg(S.bv, inp, r.gl, g);
+    if (res) await put(res.months, res.driver);
   }));
 }
 
@@ -1237,23 +1306,7 @@ function openCompT3Match(b, gl, acc, anchorBtn, put, inp) {
    comp line (per-unit scaled to subject units). Year wraps for prev/next. */
 function openWavgMatch(b, gl, acc, anchorBtn, put, inp) {
   document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
-  const start = (S.bv.budget.inputs || {}).startMonth || 1;
-  const coaByCode = new Map(S.state.coa.map((a) => [a.code, a]));
-  const rows = [];
-  for (const r of (S.bv.sellerT12 || [])) {
-    if (!r.months || !r.months.some((v) => v)) continue;
-    const cal = Array(12).fill(0);
-    r.months.forEach((v, i) => { cal[((r.monthCal && r.monthCal[i]) || i + 1) - 1] += v || 0; });
-    rows.push({ srcType: 'seller', name: r.name, pcode: r.pcode, cal, scale: 1, total: r.total || cal.reduce((a, x) => a + x, 0) });
-  }
-  for (const k of Object.keys(S.bv.compShapes || {})) {
-    if (!S.bv.compWeights || !S.bv.compWeights[k] || !S.bv.compUnits) continue;
-    const a = coaByCode.get(k) || {};
-    const shape = S.bv.compShapes[k];
-    const wsum = shape.reduce((x, y) => x + y, 0) || 1;
-    const cal = shape.map((w) => (S.bv.compWeights[k] * w) / wsum);
-    rows.push({ srcType: 'comp', name: `${k} ${a.name || ''}`, pcode: a.pcode, cal, scale: (inp.units || 0) / S.bv.compUnits, total: S.bv.compWeights[k], own: k === gl });
-  }
+  const rows = fcWavgRows(S.bv, inp, gl);
   // the property's own SELLER actuals outrank the per-unit-scaled Minot comps —
   // picking a comp line thinking it was actuals silently shrank the total by
   // the unit ratio (e.g. $79K × 268/712u ≈ $30K)
@@ -1291,13 +1344,8 @@ function openWavgMatch(b, gl, acc, anchorBtn, put, inp) {
     const estTotal = r.cal.reduce((a, x) => a + x, 0) * r.scale * (1 + g / 100);
     const mult = parseFloat(String(prompt(`MROUND multiple ($, 0 = no rounding) — annual total lands at ≈ ${money(estTotal)}${r.scale !== 1 ? ` (Minot ${money(r.total)} scaled to ${inp.units || 0} units)` : ''}:`, '250') || '').replace(/,/g, ''));
     if (!Number.isFinite(mult) || mult < 0) return;
-    // centered 1-2-1 smoothing on the calendar series (wraps at year edges)
-    const sm = r.cal.map((_, c) => (2 * r.cal[c] + r.cal[(c + 11) % 12] + r.cal[(c + 1) % 12]) / 4);
-    const months = Array.from({ length: 12 }, (_, i) => {
-      const v = sm[(start - 1 + i) % 12] * r.scale * (1 + g / 100);
-      return mult ? Math.round(v / mult) * mult : Math.round(v * 100) / 100;
-    });
-    await put(months, { method: 'wavg', pct: g, mult: mult || 0, srcType: r.srcType, srcName: r.name.slice(0, 30) });
+    const res = fcWavg(S.bv, inp, r, g, mult);
+    await put(res.months, res.driver);
   }));
 }
 
@@ -1426,6 +1474,145 @@ function openRoundDialog(b) {
     } catch (e) { dlg.querySelector('#rd-err').textContent = e.message; }
   });
   dlg.showModal();
+}
+
+/* ---------------- formula copier ----------------
+   Replay another budget's named formulas (WAVG, T3, Seller line, Minot $/unit)
+   onto THIS budget — every formula re-evaluates against this property's OWN
+   data (its seller statement, comps scaled to its units), so nothing from the
+   source property carries over. Fixed values (manual edits, typed totals,
+   flats, zeros) are listed but never copied. */
+function openCopyFormulas(b) {
+  const dlg = document.getElementById('copy-dlg');
+  const coaByCode = new Map(S.state.coa.map((a) => [a.code, a]));
+  const sources = S.state.budgets.filter((x) => x.id !== b.id);
+  if (!sources.length) { alert('No other budgets to copy from.'); return; }
+  const RECOMPUTABLE = new Set(['wavg', 't3avg', 'sellerLine', 'perUnitComp']);
+  let plan = null;
+
+  const buildPlan = async (srcId) => {
+    const srcBv = await GET(`/budgets/${srcId}`);
+    const tinp = S.bv.budget.inputs || {};
+    const items = [];   // resolvable formulas
+    const skipped = []; // fixed values + unresolvable
+    for (const l of srcBv.lines) {
+      const d = l.driver || {};
+      const acc = coaByCode.get(l.gl_code) || {};
+      const label = `${l.gl_code} ${acc.name || ''}`;
+      if (!l.override) continue;                       // engine lines — the target's engine already is the "this property" version
+      if (!RECOMPUTABLE.has(d.method)) {
+        if (l.months.some((v) => v) || d.method === 'setTotal') skipped.push({ label, why: 'fixed value (manual / typed total / flat) — set it here directly' });
+        continue;
+      }
+      let res = null, why = '';
+      if (d.method === 'perUnitComp') {
+        res = fcMinot(S.bv, tinp, l.gl_code, d.pcode || acc.pcode);
+        if (!res) why = 'no Minot comp data for this GL on this budget';
+      } else if (d.method === 't3avg') {
+        res = fcT3avg(S.bv, tinp, d.src || l.gl_code, d.pct || 0);
+        if (!res) why = 'no Minot comp shape for the source GL on this budget';
+      } else if (d.method === 'sellerLine') {
+        const row = fcFindSeller(S.bv, d.name);
+        if (row) res = fcSellerLine(S.bv, tinp, row, d.pct || 0);
+        else why = `no seller line named "${d.name || '?'}" on this budget's T12`;
+      } else if (d.method === 'wavg') {
+        const rows = fcWavgRows(S.bv, tinp, l.gl_code);
+        let row = null;
+        if (d.srcType === 'seller') {
+          const want = String(d.srcName || '').trim().toLowerCase();
+          row = rows.find((r) => r.srcType === 'seller' && r.name.trim().toLowerCase() === want)
+             || rows.find((r) => r.srcType === 'seller' && r.name.trim().toLowerCase().startsWith(want));
+          if (!row) why = `no seller line named "${d.srcName || '?'}" on this budget's T12`;
+        } else {
+          const glCode = String(d.srcName || '').match(/^(\S+)/)?.[1];
+          row = rows.find((r) => r.srcType === 'comp' && r.glCode === glCode);
+          if (!row) why = `no Minot comp line ${glCode || '?'} on this budget`;
+        }
+        if (row) res = fcWavg(S.bv, tinp, row, d.pct || 0, d.mult || 0);
+      }
+      if (res) {
+        const tl = S.bv.lines.find((x) => x.gl_code === l.gl_code);
+        items.push({
+          gl: l.gl_code, label, months: res.months, driver: res.driver,
+          fx: drvMeta({ ...l, driver: res.driver, override: true }),
+          newAnnual: res.months.reduce((a, v) => a + v, 0),
+          replaces: tl && tl.override ? 'replaces an override here' : '',
+        });
+      } else skipped.push({ label, why });
+    }
+    // standing MROUND multiples on the source (engine lines included)
+    const rounds = srcBv.lines.filter((l) => l.round > 0).map((l) => ({ gl: l.gl_code, multiple: l.round }));
+    return { srcBv, items, skipped, rounds };
+  };
+
+  const paint = () => {
+    const p = plan;
+    dlg.innerHTML = `
+      <h2>Copy formulas from another budget</h2>
+      <p class="muted" style="margin:0 0 8px; font-size:12px">Replays the source's named formulas (WAVG, T3, Seller line, Minot $/unit) using <b>this property's own data</b> — its seller statement, comps at its unit count. Nothing references the source property. Fixed values (manual edits, typed totals, flats) don't copy.</p>
+      <div class="row">
+        <div class="fld"><label>Source budget</label>
+          <select id="cf-src">${sources.map((x) => `<option value="${x.id}" ${p && p.srcBv.budget.id === x.id ? 'selected' : ''}>${esc(x.property_code)} ${x.year} — ${esc(x.label || '')}</option>`).join('')}</select></div>
+      </div>
+      ${!p ? '<p class="muted">Loading…</p>' : `
+      <div style="max-height:40vh; overflow:auto; margin-top:8px; border:1px solid var(--line); border-radius:8px; padding:6px 10px">
+        ${p.items.length ? p.items.map((it, i) => `<label style="display:block; font-size:12.3px; padding:2px 0">
+          <input type="checkbox" data-cf="${i}" checked>
+          ${esc(it.label.slice(0, 40))} <span class="drv ${it.fx.cls}" style="margin:0 4px">${it.fx.tag}</span>
+          <span class="muted">${esc(it.fx.label.slice(0, 60))} → Year 1 ${money(it.newAnnual)}${it.replaces ? ' · ' + it.replaces : ''}</span></label>`).join('')
+          : '<p class="muted">No transferable formulas on the source budget.</p>'}
+        ${p.skipped.length ? `<div style="margin-top:8px; border-top:1px solid var(--line); padding-top:6px">
+          <b style="font-size:11.5px; color:var(--dim)">NOT copied:</b>
+          ${p.skipped.map((s) => `<div class="muted" style="font-size:11.5px">✗ ${esc(s.label.slice(0, 40))} — ${esc(s.why)}</div>`).join('')}</div>` : ''}
+      </div>
+      <div class="row" style="margin-top:8px">
+        ${p.rounds.length ? `<label style="align-self:center"><input type="checkbox" id="cf-rounds" checked> Copy standing MROUND multiples (${p.rounds.length} lines)</label>` : ''}
+      </div>`}
+      <div class="err" id="cf-err"></div>
+      <div class="foot">
+        <span class="muted" style="align-self:center; margin-right:auto; font-size:11.5px">One Undo step reverses the whole copy.</span>
+        <button class="btn sub" id="cf-x">Cancel</button>
+        <button class="btn" id="cf-go" ${p && p.items.length ? '' : 'disabled'}>Apply</button>
+      </div>`;
+    dlg.querySelector('#cf-x').addEventListener('click', () => dlg.close());
+    dlg.querySelector('#cf-src').addEventListener('change', async (e) => {
+      plan = null; paint();
+      plan = await buildPlan(Number(e.target.value)); paint();
+    });
+    const go = dlg.querySelector('#cf-go');
+    if (go) go.addEventListener('click', async () => {
+      const picked = [...dlg.querySelectorAll('[data-cf]')].filter((c) => c.checked).map((c) => plan.items[Number(c.dataset.cf)]);
+      const doRounds = dlg.querySelector('#cf-rounds')?.checked && plan.rounds.length;
+      if (!picked.length && !doRounds) { dlg.querySelector('#cf-err').textContent = 'Pick at least one formula'; return; }
+      go.disabled = true;
+      try {
+        pushUndo();
+        let n = 0;
+        for (const it of picked) {
+          go.textContent = `Applying ${++n}/${picked.length}…`;
+          S.bv = await PUT(`/budgets/${b.id}/lines/${it.gl}`, { months: it.months, driver: it.driver });
+        }
+        if (doRounds) {
+          // group by multiple — one round call per distinct multiple
+          const byMult = {};
+          for (const r of plan.rounds) (byMult[r.multiple] = byMult[r.multiple] || []).push(r.gl);
+          for (const [multiple, gls] of Object.entries(byMult)) {
+            S.bv = await POST(`/budgets/${b.id}/round`, { multiple: Number(multiple), gls });
+          }
+        }
+        dlg.close();
+        render();
+      } catch (e2) {
+        dlg.querySelector('#cf-err').textContent = e2.message;
+        go.disabled = false; go.textContent = 'Apply';
+      }
+    });
+  };
+
+  paint();
+  dlg.showModal();
+  buildPlan(sources[0].id).then((p) => { plan = p; paint(); })
+    .catch((e) => { dlg.querySelector('#cf-err').textContent = e.message; });
 }
 
 /* ---------------- settings ---------------- */

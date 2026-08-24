@@ -150,6 +150,18 @@ flat spread if the line was zero), penny-fixed on the largest month, saved as dr
 display the per-unit-scaled total they'll actually produce, and the MROUND prompt previews the
 resulting annual total.
 
+**Formula copier (2026-08-21, "⧉ Copy formulas…" in the editor)**: replays another budget's named
+formulas onto the open budget. The formula *recipes* transfer; every one re-evaluates against the
+TARGET property's own data — WAVG/Seller-line sources re-match the target's seller T12 by line
+name (truncation-aware), T3/Minot recompute from the shared comp set at the target's unit count —
+so no source-property references survive. Only recomputable drivers copy (`wavg`, `t3avg`,
+`sellerLine`, `perUnitComp`) plus standing MROUND multiples (optional, grouped POST /round);
+fixed values (`manual`, `setTotal`, flats/zeros) and engine lines are listed as "NOT copied".
+Preview dialog shows each formula's recomputed Year-1 total before applying; one Undo snapshot
+reverses the whole copy. Implementation: shared pure helpers `fc*` in app.js (fcMinot, fcT3avg,
+fcSellerLine, fcFindSeller, fcWavgRows, fcWavg) now power BOTH the row quick tools and the copier
+— edit them in one place.
+
 **Utilities (Troy 2026-08-21)** — `buildUtilityModel` in domain.ts: cat-12 expense levels come
 from the SELLER statements (exception to shapes-only — utilities are property-physical and the UW
 itself used T12×growth), each seller line keyword-mapped to its closest Monarch GL

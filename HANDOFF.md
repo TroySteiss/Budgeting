@@ -88,7 +88,13 @@ line × growth**, reset to engine. WAVG picker (fixed 2026-08-21 PM after the
 the per-unit-SCALED total ("$79,000 → $30,000 at 268u"), and the MROUND prompt
 previews the resulting annual total. **Year 1 column is editable**: type a new
 annual total and the months rescale proportionally (distribution flows
-backwards; TOTAL chip, penny-fixed, standing MROUND still applies). Inline param inputs beside chips (vacancy %,
+backwards; TOTAL chip, penny-fixed, standing MROUND still applies).
+**⧉ Copy formulas…** (editor header): replay another budget's named formulas
+(WAVG, T3, Seller line, Minot $/unit) onto this budget — each re-evaluates on
+THIS property's own seller T12 / comps at its units, so nothing references the
+source property; fixed values (manual, typed totals, flats) never copy; standing
+MROUNDs copy optionally; preview shows recomputed Year-1 totals; one Undo
+reverses the whole copy. Inline param inputs beside chips (vacancy %,
 GPR growth, renewal %, mgmt %, utility growth/recovery, rate). Row-buffered
 editing (focus selects, Tab flows, saves on row exit). Bulk **MROUND is a
 STANDING modifier, not a lock**: sets a per-line rounding multiple that
