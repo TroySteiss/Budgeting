@@ -1529,9 +1529,14 @@ function openOverridesAudit(b) {
   dlg.innerHTML = `
     <h2>Overridden lines — ${rows.length} on this budget</h2>
     <p class="muted" style="margin:0 0 8px; font-size:12px">MAN lines whose months all sit in exact $ multiples are usually leftovers of the old bulk-MROUND, which <b>locked</b> lines instead of setting a standing multiple. Releasing puts a line back on its live engine formula with the detected multiple as a standing MROUND — same rounded look, real formula. ${locks ? `<b>${locks} likely round-lock${locks > 1 ? 's' : ''} detected (pre-checked).</b>` : 'No round-locks detected.'}</p>
+    <div class="row" style="margin:0 0 6px">
+      <button class="btn sub" id="ov-all">All</button>
+      <button class="btn sub" id="ov-locks">Round-locks only</button>
+      <button class="btn sub" id="ov-none">None</button>
+    </div>
     <div style="max-height:46vh; overflow:auto; border:1px solid var(--line); border-radius:8px; padding:6px 10px">
       ${rows.map((r, i) => `<label style="display:block; font-size:12.3px; padding:2px 0">
-        <input type="checkbox" data-ov="${i}" ${r.lockMult ? 'checked' : ''}>
+        <input type="checkbox" data-ov="${i}" data-lock="${r.lockMult ? 1 : 0}" ${r.lockMult ? 'checked' : ''}>
         ${r.gl} ${esc(r.name.slice(0, 32))} <span class="drv ${r.dm.cls}" style="margin:0 4px">${r.dm.tag}</span>
         <span class="muted">${money(r.annual)} · ${esc(r.dm.label.slice(0, 55))}${r.lockMult ? ` · <b>likely $${r.lockMult} round-lock</b>` : ''}${r.round ? ` · ≈$${r.round}` : ''}</span></label>`).join('')}
     </div>
@@ -1541,6 +1546,10 @@ function openOverridesAudit(b) {
       <button class="btn sub" id="ov-x">Close</button>
       <button class="btn" id="ov-go" ${rows.length ? '' : 'disabled'}>Release selected → live formulas</button>
     </div>`;
+  const ovBoxes = () => [...dlg.querySelectorAll('[data-ov]')];
+  dlg.querySelector('#ov-all').addEventListener('click', () => ovBoxes().forEach((c) => { c.checked = true; }));
+  dlg.querySelector('#ov-locks').addEventListener('click', () => ovBoxes().forEach((c) => { c.checked = c.dataset.lock === '1'; }));
+  dlg.querySelector('#ov-none').addEventListener('click', () => ovBoxes().forEach((c) => { c.checked = false; }));
   dlg.querySelector('#ov-x').addEventListener('click', () => dlg.close());
   dlg.querySelector('#ov-go').addEventListener('click', async () => {
     const go = dlg.querySelector('#ov-go');
