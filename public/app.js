@@ -1523,7 +1523,8 @@ function openOverridesAudit(b) {
     const dm = drvMeta(l);
     const isMan = !l.driver || !l.driver.method || l.driver.method === 'manual';
     const lockMult = isMan ? detectLockMultiple(l.months) : 0;
-    return { gl: l.gl_code, name: a.name || '', dm, lockMult, annual: sumM(l.months), round: l.round || 0 };
+    const zeroed = !l.months.some((v) => v);
+    return { gl: l.gl_code, name: a.name || '', dm, lockMult, zeroed, annual: sumM(l.months), round: l.round || 0 };
   }).sort((x, y) => Number(x.gl) - Number(y.gl));
   const locks = rows.filter((r) => r.lockMult).length;
   dlg.innerHTML = `
@@ -1536,9 +1537,9 @@ function openOverridesAudit(b) {
     </div>
     <div style="max-height:46vh; overflow:auto; border:1px solid var(--line); border-radius:8px; padding:6px 10px">
       ${rows.map((r, i) => `<label style="display:block; font-size:12.3px; padding:2px 0">
-        <input type="checkbox" data-ov="${i}" data-lock="${r.lockMult ? 1 : 0}" ${r.lockMult ? 'checked' : ''}>
+        <input type="checkbox" data-ov="${i}" data-lock="${r.lockMult ? 1 : 0}" data-zero="${r.zeroed ? 1 : 0}" ${r.lockMult ? 'checked' : ''}>
         ${r.gl} ${esc(r.name.slice(0, 32))} <span class="drv ${r.dm.cls}" style="margin:0 4px">${r.dm.tag}</span>
-        <span class="muted">${money(r.annual)} · ${esc(r.dm.label.slice(0, 55))}${r.lockMult ? ` · <b>likely $${r.lockMult} round-lock</b>` : ''}${r.round ? ` · ≈$${r.round}` : ''}</span></label>`).join('')}
+        <span class="muted">${money(r.annual)} · ${r.zeroed ? '<b>zeroed out — release would let the engine refill it</b> · ' : ''}${esc(r.dm.label.slice(0, 55))}${r.lockMult ? ` · <b>likely $${r.lockMult} round-lock</b>` : ''}${r.round ? ` · ≈$${r.round}` : ''}</span></label>`).join('')}
     </div>
     <div class="err" id="ov-err"></div>
     <div class="foot">
@@ -1547,7 +1548,9 @@ function openOverridesAudit(b) {
       <button class="btn" id="ov-go" ${rows.length ? '' : 'disabled'}>Release selected → live formulas</button>
     </div>`;
   const ovBoxes = () => [...dlg.querySelectorAll('[data-ov]')];
-  dlg.querySelector('#ov-all').addEventListener('click', () => ovBoxes().forEach((c) => { c.checked = true; }));
+  // "All" deliberately skips zeroed-out lines — releasing one lets the engine
+  // refill a GL that was silenced on purpose; tick those individually
+  dlg.querySelector('#ov-all').addEventListener('click', () => ovBoxes().forEach((c) => { c.checked = c.dataset.zero !== '1'; }));
   dlg.querySelector('#ov-locks').addEventListener('click', () => ovBoxes().forEach((c) => { c.checked = c.dataset.lock === '1'; }));
   dlg.querySelector('#ov-none').addEventListener('click', () => ovBoxes().forEach((c) => { c.checked = false; }));
   dlg.querySelector('#ov-x').addEventListener('click', () => dlg.close());
