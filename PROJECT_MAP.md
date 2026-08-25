@@ -216,6 +216,16 @@ Jamestown NOI 2,945,260.70; rent roll → 6 properties, 848 units, cwnd 433,530/
 Minot 4 comparison → clnd/spnd/tcnd/tpnd/tpndc; CSV byte round-trip; domain: penny-exact
 allocation, rollup chain, category tie-outs, rebalance-preserves-overrides, startMonth zeroing.
 
+**Commercial-rent contamination (2026-08-21 PM)**: the Minot comp set carries **$1.07M
+COMMERCIAL RENT (5118)** + COMM CAM/TAX recoveries (5183/5185) — roughly half the cat-5 weight —
+which comp-weight allocation kept assigning to subject properties with no commercial space
+(re-filled on every regenerate once the zero-overrides were released). Fix: `categoryItems`
+excludes GLs with `active=false`; Settings → COA now has an admin **Active** checkbox (weight
+re-spreads over active GLs, category still ties to UW; CSV still exports inactive GLs as zero
+rows). Deactivate 5118 + the COMM recovery GLs for the ND subjects. The overrides-audit "All"
+button skips zeroed lines (releasing one would let the engine refill it); zeroed rows are
+labeled in the dialog.
+
 ## Gotchas / policy
 
 - **Never ingest individual employee compensation** (the FHND workbook's Payroll sheet is
