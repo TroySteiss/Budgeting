@@ -42,7 +42,9 @@ export function applyRounding(lines: BudgetLine[]): BudgetLine[] {
   });
 }
 
-export type Driver =
+/* `revised` marks a formula line whose cells were hand-edited afterwards —
+   the formula identity is kept (chip shows a *), never demoted to manual. */
+export type Driver = { revised?: boolean } & (
   | { method: 'manual' }
   | { method: 'gpr' }
   | { method: 'ltl' }
@@ -56,7 +58,7 @@ export type Driver =
   | { method: 'sellerUtil' }                                   // seller-statement utility level
   | { method: 'recovery'; pct: number }                        // % of prior-month utility billing
   | { method: 'charges'; codes: string }                       // rent-roll charge codes × 12
-  | { method: 'zero' };
+  | { method: 'zero' });
 
 /** Everything the generator needs. Stored on budgets.inputs (jsonb). */
 export interface BudgetInputs {

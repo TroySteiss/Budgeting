@@ -112,11 +112,15 @@ All six: LTL = clean declining burnoff from the rent-roll gap (RRND's
 "growing LTL" bug is fixed — it was the removed auto income-tie).
 **Income variances visible, awaiting Troy's placement** via the "tie income"
 chooser: cwnd −153k, drnd −30k, nrnd −18k, lhnd +2k, mwnd +26k.
-**RRND is special**: Troy has 138 manual overrides on it (preserved through
-all regenerations). Its EGI var +184k / NOI var +175k show because every
-flex-category line is overridden, so the auto NOI-tie correctly refuses to
-touch them — resolve by unlocking lines, choosing other flex categories in
-the tie-NOI checklist, or accepting the variance.
+**RRND is special**: it shows ~138 "manual" overrides — Troy confirmed
+(2026-08-21 PM) these are NOT manual work: they're leftovers of the old bulk-
+MROUND that LOCKED lines (override+manual) instead of setting a standing
+multiple. The editor's 🔓 overrides-audit chip detects them (MAN lines whose
+months sit in exact $ multiples) and releases them back to live engine
+formulas with a standing MROUND. Its EGI/NOI variance shows because locked
+flex lines block the NOI tie — releasing fixes that too. Going forward,
+hand-edits on formula lines keep the formula identity (`revised` flag, `*`
+on the chip) instead of demoting to MAN.
 
 ## Known gaps / next steps
 

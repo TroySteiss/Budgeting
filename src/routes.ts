@@ -418,7 +418,11 @@ router.put('/budgets/:id/lines/:gl', h(async (req, res) => {
       existing.months = existing.months.map((v) => r2(Math.round(v / existing.round!) * existing.round!));
     }
     existing.override = true;
-    existing.driver = { method: 'manual' };
+    // hand-editing cells on a formula line REVISES the formula, it doesn't
+    // erase it — keep the driver identity and flag the revision. Only lines
+    // with no formula history become plain manual.
+    const prev = existing.driver || ({} as any);
+    existing.driver = prev.method && prev.method !== 'manual' ? { ...prev, revised: true } : { method: 'manual' };
   }
   if (typeof override === 'boolean') existing.override = override;
   if (typeof note === 'string') existing.note = note;

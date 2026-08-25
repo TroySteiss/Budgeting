@@ -177,7 +177,14 @@ the snapshot; `chargeGlMonthly` maps them to Monarch GLs (pet→5165, garage/par
 storage→5136…) and those lines take charge × 12 (driver `charges`), with the cat-5 UW remainder
 allocated over the other GLs. Needs unit-level rolls (summary rolls carry no charges).
 
-Manual cell edit ⇒ `override=true`, driver `manual` (purple in UI, 🔓 clears).
+Manual cell edit ⇒ `override=true`; if the line had a formula driver the identity is KEPT with
+`revised:true` (chip shows `WAVG*` etc., "cells hand-revised") — only lines with no formula
+history become driver `manual` (purple, 🔓 clears). Y1-total edits on a formula line dictate as
+`setTotal` with `of:<method>` ("TOTAL on a WAVG shape"). **Overrides audit** (🔓 chip in the
+editor legend, "overrides: X formula · Y fixed"): lists every overridden line; MAN lines whose
+months all sit in exact $ multiples are flagged as leftovers of the old bulk-MROUND that LOCKED
+lines instead of setting standing multiples (RRND's "138 manual overrides" were these) —
+"Release" = standing MROUND at the detected multiple + unlock + one recalc, single Undo.
 `regenerate()` recomputes only non-overridden lines. `rebalanceCategory()` (the tie-out panel's
 "tie" button) scales a category's non-overridden lines so the total hits the UW-derived target,
 keeping overrides — with a penny-fix on the largest line.

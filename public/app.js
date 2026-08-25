@@ -25,6 +25,15 @@ function applyTheme() {
 
 /* driver metadata: colour class + short tag + label for the formula a row uses */
 function drvMeta(l) {
+  const m = drvMetaBase(l);
+  // hand-revised cells on a formula line keep the formula's identity — the
+  // revision is dictated as a * on the tag, never demoted to MAN
+  if (l && l.driver && l.driver.revised && m.tag !== 'MAN' && m.tag !== '—') {
+    return { ...m, tag: m.tag + '*', label: m.label + ' — cells hand-revised' };
+  }
+  return m;
+}
+function drvMetaBase(l) {
   if (!l) return { cls: 'drv-none', tag: '—', label: 'No formula (zero)' };
   const method = (l.driver || {}).method;
   // an override with a named formula keeps its identity (T3, MINOT, …);
@@ -46,7 +55,7 @@ function drvMeta(l) {
     case 'sellerLine': return { cls: 'drv-t12', tag: 'SLR', label: `Seller: ${l.driver.name || ''} × ${(l.driver.pct || 0).toFixed(1)}%` };
     case 'recovery': return { cls: 'drv-t12', tag: 'REC', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% recovery of prior-month billing` };
     case 'charges': return { cls: 'drv-rr', tag: 'CHG', label: 'Rent-roll charges × 12' };
-    case 'setTotal': return { cls: 'drv-man', tag: 'TOTAL', label: `Total set to ${Math.round(l.driver.total || 0).toLocaleString()} — prior distribution kept` };
+    case 'setTotal': return { cls: 'drv-man', tag: 'TOTAL', label: `Total set to ${Math.round(l.driver.total || 0).toLocaleString()} — ${l.driver.of ? `${String(l.driver.of).toUpperCase()} distribution kept` : 'prior distribution kept'}` };
     default: return { cls: 'drv-none', tag: '—', label: 'No formula (zero / manual)' };
   }
 }
@@ -494,6 +503,12 @@ function renderEditor(el) {
           <span><span class="dot drv-t12"></span>Seller stmt / recovery</span>
           <span><span class="dot drv-man"></span>Manual override</span>
           <span class="muted">· click a row's chip to change its formula</span>
+          ${(() => {
+            const ov = bv.lines.filter((l) => l.override);
+            if (!ov.length) return '';
+            const fixed = ov.filter((l) => !l.driver || !l.driver.method || l.driver.method === 'manual' || l.driver.method === 'setTotal').length;
+            return `<button class="rb" id="ovr-btn" title="Audit this budget's overridden lines — release old MROUND-locks back to live formulas">🔓 overrides: ${ov.length - fixed} formula · ${fixed} fixed</button>`;
+          })()}
         </div>
         <div class="gridwrap">${gridHtml(bv, totals)}</div>
       </div>
@@ -510,7 +525,8 @@ function renderEditor(el) {
     </div>
     <dialog class="assump" id="assump-dlg"></dialog>
     <dialog class="assump" id="round-dlg"></dialog>
-    <dialog class="assump" id="copy-dlg"></dialog>`;
+    <dialog class="assump" id="copy-dlg"></dialog>
+    <dialog class="assump" id="ovr-dlg"></dialog>`;
 
   document.getElementById('ex-csv').addEventListener('click', () => {
     const c = document.getElementById('ex-cutoff').value;
@@ -528,6 +544,8 @@ function renderEditor(el) {
   document.getElementById('undo-btn').addEventListener('click', () => doUndo(b.id));
   document.getElementById('round-btn').addEventListener('click', () => openRoundDialog(b));
   document.getElementById('copyfx-btn').addEventListener('click', () => openCopyFormulas(b));
+  const ovrBtn = document.getElementById('ovr-btn');
+  if (ovrBtn) ovrBtn.addEventListener('click', () => openOverridesAudit(b));
   document.getElementById('cols-btn').addEventListener('click', (e) => { e.stopPropagation(); openColsMenu(e.currentTarget, labels); });
   el.querySelectorAll('.trend-chip').forEach((chip) => chip.addEventListener('click', () => {
     const sel = trendSeriesSel();
@@ -630,8 +648,15 @@ function renderEditor(el) {
         const bi = months.reduce((mi, v, i) => Math.abs(v) > Math.abs(months[mi]) ? i : mi, 0);
         months[bi] = Math.round((months[bi] + drift) * 100) / 100;
       }
+      // keep the underlying formula's identity: "TOTAL on a WAVG shape", not a bare manual
+      const prev = line && line.driver && line.driver.method && line.driver.method !== 'manual' ? line.driver : null;
+      const driver = { method: 'setTotal', total: target };
+      if (prev) {
+        driver.of = prev.method === 'setTotal' ? (prev.of || null) : prev.method;
+        if (prev.srcName || prev.name) driver.srcName = prev.srcName || prev.name;
+      }
       pushUndo();
-      S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { months, driver: { method: 'setTotal', total: target } });
+      S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { months, driver });
       render();
     });
   });
@@ -1472,6 +1497,76 @@ function openRoundDialog(b) {
       S.bv = await POST(`/budgets/${b.id}/round`, { multiple, gls });
       render();
     } catch (e) { dlg.querySelector('#rd-err').textContent = e.message; }
+  });
+  dlg.showModal();
+}
+
+/* ---------------- overrides audit / lock release ----------------
+   The old bulk-MROUND LOCKED lines (override=true, driver manual) instead of
+   setting a standing multiple — those leftovers masquerade as manual work.
+   This dialog lists every override, flags MAN lines whose months sit in exact
+   $ multiples as likely round-locks, and releases them back to their live
+   engine formula with the detected multiple as a standing MROUND. */
+function detectLockMultiple(months) {
+  const nz = months.filter((v) => v);
+  if (!nz.length) return 0;
+  for (const m of [1000, 500, 300, 250, 100]) {
+    if (nz.every((v) => Math.abs(Math.round(v) - v) < 0.005 && Math.round(Math.abs(v)) % m === 0)) return m;
+  }
+  return 0;
+}
+function openOverridesAudit(b) {
+  const dlg = document.getElementById('ovr-dlg');
+  const coaByCode = new Map(S.state.coa.map((a) => [a.code, a]));
+  const rows = S.bv.lines.filter((l) => l.override).map((l) => {
+    const a = coaByCode.get(l.gl_code) || {};
+    const dm = drvMeta(l);
+    const isMan = !l.driver || !l.driver.method || l.driver.method === 'manual';
+    const lockMult = isMan ? detectLockMultiple(l.months) : 0;
+    return { gl: l.gl_code, name: a.name || '', dm, lockMult, annual: sumM(l.months), round: l.round || 0 };
+  }).sort((x, y) => Number(x.gl) - Number(y.gl));
+  const locks = rows.filter((r) => r.lockMult).length;
+  dlg.innerHTML = `
+    <h2>Overridden lines — ${rows.length} on this budget</h2>
+    <p class="muted" style="margin:0 0 8px; font-size:12px">MAN lines whose months all sit in exact $ multiples are usually leftovers of the old bulk-MROUND, which <b>locked</b> lines instead of setting a standing multiple. Releasing puts a line back on its live engine formula with the detected multiple as a standing MROUND — same rounded look, real formula. ${locks ? `<b>${locks} likely round-lock${locks > 1 ? 's' : ''} detected (pre-checked).</b>` : 'No round-locks detected.'}</p>
+    <div style="max-height:46vh; overflow:auto; border:1px solid var(--line); border-radius:8px; padding:6px 10px">
+      ${rows.map((r, i) => `<label style="display:block; font-size:12.3px; padding:2px 0">
+        <input type="checkbox" data-ov="${i}" ${r.lockMult ? 'checked' : ''}>
+        ${r.gl} ${esc(r.name.slice(0, 32))} <span class="drv ${r.dm.cls}" style="margin:0 4px">${r.dm.tag}</span>
+        <span class="muted">${money(r.annual)} · ${esc(r.dm.label.slice(0, 55))}${r.lockMult ? ` · <b>likely $${r.lockMult} round-lock</b>` : ''}${r.round ? ` · ≈$${r.round}` : ''}</span></label>`).join('')}
+    </div>
+    <div class="err" id="ov-err"></div>
+    <div class="foot">
+      <span class="muted" style="align-self:center; margin-right:auto; font-size:11.5px">Release = unlock + standing MROUND (where detected) + one recalc. Ties re-apply. One Undo reverses everything.</span>
+      <button class="btn sub" id="ov-x">Close</button>
+      <button class="btn" id="ov-go" ${rows.length ? '' : 'disabled'}>Release selected → live formulas</button>
+    </div>`;
+  dlg.querySelector('#ov-x').addEventListener('click', () => dlg.close());
+  dlg.querySelector('#ov-go').addEventListener('click', async () => {
+    const go = dlg.querySelector('#ov-go');
+    const picked = [...dlg.querySelectorAll('[data-ov]')].filter((c) => c.checked).map((c) => rows[Number(c.dataset.ov)]);
+    if (!picked.length) { dlg.querySelector('#ov-err').textContent = 'Pick at least one line'; return; }
+    go.disabled = true;
+    try {
+      pushUndo();
+      // standing MROUNDs first (grouped), so the recalc re-applies them
+      const byMult = {};
+      for (const r of picked) if (r.lockMult && !r.round) (byMult[r.lockMult] = byMult[r.lockMult] || []).push(r.gl);
+      for (const [multiple, gls] of Object.entries(byMult)) {
+        S.bv = await POST(`/budgets/${b.id}/round`, { multiple: Number(multiple), gls });
+      }
+      let n = 0;
+      for (const r of picked) {
+        go.textContent = `Releasing ${++n}/${picked.length}…`;
+        S.bv = await PUT(`/budgets/${b.id}/lines/${r.gl}`, { override: false });
+      }
+      S.bv = await POST(`/budgets/${b.id}/recalc`);
+      dlg.close();
+      render();
+    } catch (e) {
+      dlg.querySelector('#ov-err').textContent = e.message;
+      go.disabled = false; go.textContent = 'Release selected → live formulas';
+    }
   });
   dlg.showModal();
 }
