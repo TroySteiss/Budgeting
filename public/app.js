@@ -1739,13 +1739,14 @@ function renderSettings(el) {
       <h2>Chart of accounts <span class="badge">${st.coa.length} accounts</span></h2>
       <div class="row"><div class="fld"><label>Filter</label><input id="coa-f" placeholder="code or name"></div></div>
       <div style="max-height:420px; overflow:auto; margin-top:8px">
-        <table class="list" id="coa-t"><tr><th>Code</th><th>Name</th><th>Kind</th><th>Section</th><th>P-code</th><th>Curve</th><th>CSV#</th></tr>
-        ${st.coa.map((a) => `<tr data-row="${a.code} ${esc(a.name).toLowerCase()}"><td>${a.code}</td><td>${esc(a.name)}</td><td class="muted">${a.kind}</td><td class="muted">${a.section}</td>
+        <table class="list" id="coa-t"><tr><th>Code</th><th>Name</th><th>Kind</th><th>Section</th><th>P-code</th><th>Curve</th><th>CSV#</th><th>Active</th></tr>
+        ${st.coa.map((a) => `<tr data-row="${a.code} ${esc(a.name).toLowerCase()}" ${a.active === false ? 'style="opacity:.45"' : ''}><td>${a.code}</td><td>${esc(a.name)}</td><td class="muted">${a.kind}</td><td class="muted">${a.section}</td>
           <td>${S.auth.isAdmin && a.kind === 'detail' ? `<input data-pc="${a.code}" value="${a.pcode ?? ''}" style="width:44px">` : (a.pcode ?? '')}</td>
           <td>${S.auth.isAdmin && a.kind === 'detail' ? `<input data-cv="${a.code}" value="${a.curve ?? ''}" style="width:70px">` : (a.curve ?? '')}</td>
-          <td class="muted">${a.csv_order ?? ''}</td></tr>`).join('')}</table>
+          <td class="muted">${a.csv_order ?? ''}</td>
+          <td>${S.auth.isAdmin && a.kind === 'detail' ? `<input type="checkbox" data-ac="${a.code}" ${a.active !== false ? 'checked' : ''} title="Inactive GLs are hidden from the grid AND excluded from comp-weight category spreads (their share re-spreads over the active GLs; the category still ties). CSV exports still include them as zero rows.">` : (a.active !== false ? '✓' : '')}</td></tr>`).join('')}</table>
       </div>
-      <p class="muted">Curves: flat, snow, heat, electric, summer, turnover. P-codes: 1, loss, 2–14 (blank = below the line).</p>
+      <p class="muted">Curves: flat, snow, heat, electric, summer, turnover. P-codes: 1, loss, 2–14 (blank = below the line). Unchecking Active removes a GL from category spreads on the next recalc — use it for comp-set GLs the subjects can't earn (e.g. 5118 COMMERCIAL RENT).</p>
     </div>`;
   el.querySelector('#coa-f').addEventListener('input', (e) => {
     const q = e.target.value.toLowerCase();
@@ -1763,6 +1764,10 @@ function renderSettings(el) {
   };
   el.querySelectorAll('[data-pc]').forEach((b2) => b2.addEventListener('change', () => saveGl(b2, 'pcode')));
   el.querySelectorAll('[data-cv]').forEach((b2) => b2.addEventListener('change', () => saveGl(b2, 'curve')));
+  el.querySelectorAll('[data-ac]').forEach((b2) => b2.addEventListener('change', async () => {
+    await PUT(`/gl/${b2.dataset.ac}`, { active: b2.checked });
+    await refreshState(); render();
+  }));
 }
 
 boot();

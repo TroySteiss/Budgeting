@@ -554,9 +554,12 @@ export function defaultInputs(year: number, uw: UwSnapshotData, rent: { marketMo
   };
 }
 
-/** Weights for detail GLs of one category, from a comp set (abs $), with fallback. */
+/** Weights for detail GLs of one category, from a comp set (abs $), with fallback.
+    Inactive GLs are excluded — deactivating a GL (Settings) removes its comp
+    weight from the spread, e.g. the Minot comps' $1.07M COMMERCIAL RENT (5118)
+    that subject properties without commercial space must never inherit. */
 function categoryItems(pcode: string, coa: CoaAccount[], comps: CompWeights | null, exclude?: Set<string>): { key: string; weight: number }[] {
-  const members = coa.filter((a) => a.kind === 'detail' && a.pcode === pcode && a.csv_order != null && !(exclude?.has(a.code)));
+  const members = coa.filter((a) => a.kind === 'detail' && a.pcode === pcode && a.csv_order != null && a.active !== false && !(exclude?.has(a.code)));
   // byGl is signed — weights are magnitudes
   let items = members.map((a) => ({ key: a.code, weight: comps ? Math.abs(comps.byGl[a.code] || 0) : 0 }));
   if (!items.some((it) => it.weight > 0)) {

@@ -155,6 +155,26 @@ describe('per-unit comp basis', () => {
   });
 });
 
+describe('inactive GLs are excluded from comp-weight spreads', () => {
+  it('deactivated commercial rent gets nothing; the category re-spreads and still ties', () => {
+    const inputs = defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 });
+    // Minot-style cat-5 weights: commercial rent dwarfs the legit lines
+    const comps = { byGl: { '5118': 1068118, '5165': 129270, '5160': 64690 }, units: 712 };
+    const active = generateLines(coaList, inputs, fakeUw, comps);
+    expect(sum(active.find((l) => l.gl_code === '5118')!.months)).toBeGreaterThan(0);
+    const coaOff = coaList.map((a) => (a.code === '5118' ? { ...a, active: false } : a));
+    const lines = generateLines(coaOff, inputs, fakeUw, comps);
+    expect(sum(lines.find((l) => l.gl_code === '5118')!.months)).toBe(0);
+    // full UW cat-5 target re-spreads over the active GLs — category still ties
+    const cats = categoryTotals(lines, coaMap);
+    expect(cats['5']).toBeCloseTo(fakeUw.y1['5'], 2);
+    const pet = sum(lines.find((l) => l.gl_code === '5165')!.months);
+    const park = sum(lines.find((l) => l.gl_code === '5160')!.months);
+    expect(pet + park).toBeCloseTo(fakeUw.y1['5'], 2);
+    expect(pet / park).toBeCloseTo(129270 / 64690, 1);
+  });
+});
+
 describe('payroll model wages + Minot burden ratios', () => {
   it('benefits/bonuses follow Minot ratios on the subject wage total (not the UW category)', () => {
     const inputs = defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 });
