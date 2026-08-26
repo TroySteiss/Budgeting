@@ -173,6 +173,17 @@ describe('inactive GLs are excluded from comp-weight spreads', () => {
     expect(pet + park).toBeCloseTo(fakeUw.y1['5'], 2);
     expect(pet / park).toBeCloseTo(129270 / 64690, 1);
   });
+  it('regenerate zeroes even an OVERRIDDEN inactive line — deactivation is final', () => {
+    const inputs = defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 });
+    const comps = { byGl: { '5118': 1068118, '5165': 129270 }, units: 712 };
+    let lines = generateLines(coaList, inputs, fakeUw, comps);
+    // stale override carrying commercial dollars (the invisible-inflation bug)
+    lines = lines.map((l) => (l.gl_code === '5118' ? { ...l, months: Array(12).fill(1000) as Months, override: true } : l));
+    const coaOff = coaList.map((a) => (a.code === '5118' ? { ...a, active: false } : a));
+    const out = regenerate(lines, coaOff, inputs, fakeUw, comps);
+    expect(sum(out.find((l) => l.gl_code === '5118')!.months)).toBe(0);
+    expect(out.find((l) => l.gl_code === '5118')!.override).toBe(false);
+  });
 });
 
 describe('payroll model wages + Minot burden ratios', () => {

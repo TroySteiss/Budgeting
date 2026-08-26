@@ -768,14 +768,18 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
   return [...lines.values()];
 }
 
-/** Re-generate all non-overridden lines; keep overrides untouched. */
+/** Re-generate all non-overridden lines; keep overrides untouched.
+    EXCEPTION: an inactive GL is dead — deactivating it (Settings) is the
+    explicit instruction that it must carry nothing, so even an overridden
+    inactive line regenerates to the fresh zero. */
 export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null, leases?: Lease[] | null, sellerUtil?: SellerUtilRow[] | null, charges?: Record<string, number> | null): BudgetLine[] {
   const fresh = new Map(generateLines(coaList, inputs, uw, comps, catShapes, payrollWages, leases, sellerUtil, charges).map((l) => [l.gl_code, l]));
+  const inactive = new Set(coaList.filter((a) => a.active === false).map((a) => a.code));
   const out: BudgetLine[] = [];
   const seen = new Set<string>();
   for (const old of existing) {
     seen.add(old.gl_code);
-    if (old.override) { out.push(old); continue; }
+    if (old.override && !inactive.has(old.gl_code)) { out.push(old); continue; }
     const f = fresh.get(old.gl_code);
     out.push(f ? { ...f, note: old.note, round: old.round } : old);   // standing round survives
   }

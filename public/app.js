@@ -55,6 +55,7 @@ function drvMetaBase(l) {
     case 'sellerLine': return { cls: 'drv-t12', tag: 'SLR', label: `Seller: ${l.driver.name || ''} × ${(l.driver.pct || 0).toFixed(1)}%` };
     case 'recovery': return { cls: 'drv-t12', tag: 'REC', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% recovery of prior-month billing` };
     case 'charges': return { cls: 'drv-rr', tag: 'CHG', label: 'Rent-roll charges × 12' };
+    case 'zero': return { cls: 'drv-int', tag: 'ZERO', label: 'Zeroed out — this GL carries nothing' };
     case 'setTotal': return { cls: 'drv-man', tag: 'TOTAL', label: `Total set to ${Math.round(l.driver.total || 0).toLocaleString()} — ${l.driver.of ? `${String(l.driver.of).toUpperCase()} distribution kept` : 'prior distribution kept'}` };
     default: return { cls: 'drv-none', tag: '—', label: 'No formula (zero / manual)' };
   }
@@ -753,7 +754,12 @@ function gridHtml(bv, totals) {
   const units = Number(bv.budget.inputs?.units) || 1;
   const GRAND = new Set(['5500', '7279', '7280', '8200', '9000']);
   for (const a of coa) {
-    if (!a.active) continue;
+    if (!a.active) {
+      // an inactive GL may only vanish when it carries NOTHING — a hidden row
+      // with dollars would inflate totals invisibly (recalc zeroes it)
+      const l0 = linesByGl.get(a.code);
+      if (!(l0 && l0.months.some((v) => v))) continue;
+    }
     // special projects: ALWAYS visible (even at zero — they're entered manually
     // per site) and every cell orange so the section reads as "fill me in"
     const sp = a.section === 'special_projects';
@@ -788,7 +794,7 @@ function gridHtml(bv, totals) {
     const prm = cols.fx && l && !l.override ? paramFor(a.code, l, bv.budget.inputs || {}) : null;
     rows.push(`<tr${sp ? ' class="sp"' : ''}>
       <td class="code">${a.code}</td>
-      <td class="name" title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}">${esc(a.name)}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
+      <td class="name" title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}">${esc(a.name)}${a.active === false ? ' <span class="badge" title="Deactivated GL still carrying dollars — Recalc zeroes it">inactive — recalc to zero</span>' : ''}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
       ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">` : ''}</td>` : ''}
       ${monthIdx.map((i) => `<td class="m ${sp ? '' : dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money2(m[i]) : ''}"></td>`).join('')}
       ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}"><input data-ann="${a.code}" value="${ann ? money2(ann) : ''}" title="Year 1 total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
@@ -1190,7 +1196,7 @@ function openRowTools(b, gl, anchorBtn) {
   menu.querySelectorAll('button[data-act]').forEach((mb) => mb.addEventListener('click', async (e) => {
     e.stopPropagation(); close();
     const act = mb.dataset.act;
-    if (act === 'zero') return put(Array(12).fill(0));
+    if (act === 'zero') return put(Array(12).fill(0), { method: 'zero' });
     if (act === 'flatAnnual') {
       const v = parseFloat(String(prompt('Annual amount ($) — spread evenly over the 12 months:') || '').replace(/,/g, ''));
       if (!Number.isFinite(v)) return;
@@ -1612,7 +1618,21 @@ function openCopyFormulas(b) {
       const label = `${l.gl_code} ${acc.name || ''}`;
       if (!l.override) continue;                       // engine lines — the target's engine already is the "this property" version
       if (!RECOMPUTABLE.has(d.method)) {
-        if (l.months.some((v) => v) || d.method === 'setTotal') skipped.push({ label, why: 'fixed value (manual / typed total / flat) — set it here directly' });
+        // a ZERO-OUT is structural, not a dollar value — it's the part of the
+        // recipe that KILLS a GL's engine share (commercial rent etc.). Not
+        // copying these left the target's engine shares alive and inflated
+        // the category. Copy them.
+        if (!l.months.some((v) => v)) {
+          const tl = S.bv.lines.find((x) => x.gl_code === l.gl_code);
+          items.push({
+            gl: l.gl_code, label, months: Array(12).fill(0), driver: { method: 'zero' },
+            fx: { cls: 'drv-int', tag: 'ZERO', label: 'Zero out (kills the engine share)' },
+            newAnnual: 0,
+            replaces: tl && tl.override ? 'replaces an override here' : '',
+          });
+        } else {
+          skipped.push({ label, why: 'fixed value (manual / typed total / flat) — set it here directly' });
+        }
         continue;
       }
       let res = null, why = '';
@@ -1660,7 +1680,7 @@ function openCopyFormulas(b) {
     const p = plan;
     dlg.innerHTML = `
       <h2>Copy formulas from another budget</h2>
-      <p class="muted" style="margin:0 0 8px; font-size:12px">Replays the source's named formulas (WAVG, T3, Seller line, Minot $/unit) using <b>this property's own data</b> — its seller statement, comps at its unit count. Nothing references the source property. Fixed values (manual edits, typed totals, flats) don't copy.</p>
+      <p class="muted" style="margin:0 0 8px; font-size:12px">Replays the source's named formulas (WAVG, T3, Seller line, Minot $/unit) using <b>this property's own data</b> — its seller statement, comps at its unit count. Nothing references the source property. <b>Zero-outs copy too</b> — they're the part of the recipe that kills a GL's engine share (commercial rent etc.). Dollar values (manual edits, typed totals, flats) don't copy. Finishes with a recalc so ties, standing MROUNDs and inactive-GL exclusions land consistently.</p>
       <div class="row">
         <div class="fld"><label>Source budget</label>
           <select id="cf-src">${sources.map((x) => `<option value="${x.id}" ${p && p.srcBv.budget.id === x.id ? 'selected' : ''}>${esc(x.property_code)} ${x.year} — ${esc(x.label || '')}</option>`).join('')}</select></div>
@@ -1711,6 +1731,10 @@ function openCopyFormulas(b) {
             S.bv = await POST(`/budgets/${b.id}/round`, { multiple: Number(multiple), gls });
           }
         }
+        // land the budget consistent: regenerate engine lines (inactive GLs
+        // zero out), re-apply ties and standing rounds
+        go.textContent = 'Recalculating…';
+        S.bv = await POST(`/budgets/${b.id}/recalc`);
         dlg.close();
         render();
       } catch (e2) {
