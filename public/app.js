@@ -795,9 +795,11 @@ function gridHtml(bv, totals) {
     if (isZero && !S.showZero && !sp) continue;
     const dm = drvMeta(l && (ann || l.override) ? l : null);
     const prm = cols.fx && l && !l.override ? paramFor(a.code, l, bv.budget.inputs || {}) : null;
+    // seller-derived lines get a non-accrual flag when the billing looks bad
+    const smell = sellerDerived(l) ? billingSmell(m) : null;
     rows.push(`<tr${sp ? ' class="sp"' : ''}>
       <td class="code">${a.code}</td>
-      <td class="name" title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}">${esc(a.name)}${a.active === false ? ' <span class="badge" title="Deactivated GL still carrying dollars — Recalc zeroes it">inactive — recalc to zero</span>' : ''}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
+      <td class="name" title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}">${esc(a.name)}${smell ? ` <span class="warnflag" title="Seller billing looks NON-ACCRUAL: ${esc(smell.join('; '))}. Likely bad bills — review, or smooth via WAVG / flat / Minot seasonal.">⚠</span>` : ''}${a.active === false ? ' <span class="badge" title="Deactivated GL still carrying dollars — Recalc zeroes it">inactive — recalc to zero</span>' : ''}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
       ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">` : ''}</td>` : ''}
       ${monthIdx.map((i) => `<td class="m ${sp ? '' : dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money2(m[i]) : ''}"></td>`).join('')}
       ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}"><input data-ann="${a.code}" value="${ann ? money2(ann) : ''}" title="Year 1 total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
@@ -1096,6 +1098,28 @@ async function applyInputs(b, el) {
   render();
 }
 
+/* Non-accrual billing smell test: sellers that book bills as paid (no
+   accruals) leave credits, missing months, and catch-up spikes in the
+   monthly series — bad inputs for a budget line. Returns the issues found,
+   or null when the series looks like clean monthly accruals. */
+function billingSmell(months) {
+  const nz = months.filter((v) => v);
+  if (nz.length < 3) return null;
+  const issues = [];
+  if (nz.some((v) => v > 0) && nz.some((v) => v < 0)) issues.push('credit / negative month');
+  const idx = months.map((v, i) => (v ? i : -1)).filter((i) => i >= 0);
+  const gaps = months.slice(idx[0], idx[idx.length - 1] + 1).filter((v) => !v).length;
+  if (gaps) issues.push(`${gaps} missing month${gaps > 1 ? 's' : ''} mid-stream`);
+  const abs = nz.map(Math.abs).sort((a, b) => a - b);
+  const med = abs[Math.floor(abs.length / 2)];
+  if (med > 0 && abs[abs.length - 1] > 3 * med) issues.push(`${(abs[abs.length - 1] / med).toFixed(1)}× spike vs the median month`);
+  return issues.length ? issues : null;
+}
+function sellerDerived(l) {
+  const d = l && l.driver;
+  return !!d && (['sellerUtil', 'sellerLine', 'recovery'].includes(d.method) || (d.method === 'wavg' && d.srcType === 'seller'));
+}
+
 /* ---------------- formula recompute (shared: row tools + formula copier) ----------------
    Each helper re-evaluates one named formula against a budget view's OWN data
    sources (its seller T12, its comps at its unit count), so a formula recipe
@@ -1283,8 +1307,11 @@ function openSellerMatch(b, gl, acc, anchorBtn, put) {
   menu.innerHTML = `
     <div class="rm-head">Match ${gl} ${esc(acc.name || '')} to a seller line</div>
     <div style="padding:4px 6px"><input id="sm-filter" placeholder="filter…" style="width:100%; border:1px solid var(--line); border-radius:6px; padding:4px 7px"></div>
-    ${rows.map((r, i) => `<button data-sm="${i}" ${r.pcode === acc.pcode ? '' : 'style="opacity:.75"'}>
-      ${esc(r.name.slice(0, 34))} <span class="muted" style="float:right">${money(r.total)}${r.pcode === acc.pcode ? ' · suggested' : ''}</span></button>`).join('')}`;
+    ${rows.map((r, i) => {
+      const sm = billingSmell(fcSellerCal(r));
+      return `<button data-sm="${i}" ${r.pcode === acc.pcode ? '' : 'style="opacity:.75"'}>
+      ${esc(r.name.slice(0, 34))}${sm ? ` <span class="warnflag" title="Non-accrual pattern: ${esc(sm.join('; '))} — likely bad bills">⚠</span>` : ''} <span class="muted" style="float:right">${money(r.total)}${r.pcode === acc.pcode ? ' · suggested' : ''}</span></button>`;
+    }).join('')}`;
   const rct = anchorBtn.getBoundingClientRect();
   menu.style.left = `${Math.max(8, rct.left + window.scrollX - 60)}px`;
   menu.style.top = `${rct.bottom + window.scrollY + 2}px`;
@@ -1375,9 +1402,12 @@ function openWavgMatch(b, gl, acc, anchorBtn, put, inp) {
   menu.innerHTML = `
     <div class="rm-head">Weighted avg (1-2-1) source for ${gl} ${esc(acc.name || '')}</div>
     <div style="padding:4px 6px"><input id="wa-filter" placeholder="filter…" style="width:100%; border:1px solid var(--line); border-radius:6px; padding:4px 7px"></div>
-    ${rows.map((r, i) => `<button data-wa="${i}" ${r.own || r.pcode === acc.pcode ? '' : 'style="opacity:.75"'}>
-      <span class="badge" style="margin:0 4px 0 0">${r.srcType === 'seller' ? 'Seller' : 'Minot'}</span>${esc(r.name.slice(0, 30))}
-      <span class="muted" style="float:right">${r.scale !== 1 ? `${money(r.total)} → ${money(r.total * r.scale)} at ${inp.units || 0}u` : money(r.total)}${r.own ? ' · this GL' : r.pcode === acc.pcode ? ' · suggested' : ''}</span></button>`).join('')}`;
+    ${rows.map((r, i) => {
+      const sm = r.srcType === 'seller' ? billingSmell(r.cal) : null;
+      return `<button data-wa="${i}" ${r.own || r.pcode === acc.pcode ? '' : 'style="opacity:.75"'}>
+      <span class="badge" style="margin:0 4px 0 0">${r.srcType === 'seller' ? 'Seller' : 'Minot'}</span>${esc(r.name.slice(0, 30))}${sm ? ` <span class="warnflag" title="Non-accrual pattern: ${esc(sm.join('; '))} — likely bad bills">⚠</span>` : ''}
+      <span class="muted" style="float:right">${r.scale !== 1 ? `${money(r.total)} → ${money(r.total * r.scale)} at ${inp.units || 0}u` : money(r.total)}${r.own ? ' · this GL' : r.pcode === acc.pcode ? ' · suggested' : ''}</span></button>`;
+    }).join('')}`;
   const rct = anchorBtn.getBoundingClientRect();
   menu.style.left = `${Math.max(8, rct.left + window.scrollX - 60)}px`;
   menu.style.top = `${rct.bottom + window.scrollY + 2}px`;

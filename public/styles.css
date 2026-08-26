@@ -148,6 +148,7 @@ input.fxp:focus { border-color: var(--accent); color: var(--ink); outline: none;
 .dot.drv-fee { background: var(--drv-fee); } .dot.drv-int { background: var(--drv-int); }
 .dot.drv-man { background: var(--drv-man); } .dot.drv-t12 { background: var(--drv-t12); }
 .dot.drv-sp { background: var(--drv-sp); }
+.warnflag { color: var(--warn); cursor: help; font-size: 12px; }
 
 /* ---------- trend chart ---------- */
 .trend-chip { background: none; border: 1px solid var(--line); border-radius: 12px; padding: 2px 9px; font-size: 11px; color: var(--dim); margin-right: 6px; opacity: .55; }
