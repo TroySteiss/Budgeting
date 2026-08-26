@@ -154,9 +154,13 @@ resulting annual total.
 formulas onto the open budget. The formula *recipes* transfer; every one re-evaluates against the
 TARGET property's own data — WAVG/Seller-line sources re-match the target's seller T12 by line
 name (truncation-aware), T3/Minot recompute from the shared comp set at the target's unit count —
-so no source-property references survive. Only recomputable drivers copy (`wavg`, `t3avg`,
-`sellerLine`, `perUnitComp`) plus standing MROUND multiples (optional, grouped POST /round);
-fixed values (`manual`, `setTotal`, flats/zeros) and engine lines are listed as "NOT copied".
+so no source-property references survive. Recomputable drivers copy (`wavg`, `t3avg`,
+`sellerLine`, `perUnitComp`) plus standing MROUND multiples (optional, grouped POST /round) AND
+**zero-outs** (driver `zero`) — a zero-out is the structural part of the recipe that kills a GL's
+engine share; skipping them left the target's engine allocations (commercial ≈ half of cat 5)
+alive under the copied values and inflated the category ~2-3× (2026-08-21 PM bug). Dollar values
+(`manual`, `setTotal`, flats) are listed as "NOT copied". The copy finishes with a recalc so
+ties/rounding/inactive exclusions land consistently.
 Preview dialog shows each formula's recomputed Year-1 total before applying; one Undo snapshot
 reverses the whole copy. Implementation: shared pure helpers `fc*` in app.js (fcMinot, fcT3avg,
 fcSellerLine, fcFindSeller, fcWavgRows, fcWavg) now power BOTH the row quick tools and the copier
@@ -222,9 +226,11 @@ which comp-weight allocation kept assigning to subject properties with no commer
 (re-filled on every regenerate once the zero-overrides were released). Fix: `categoryItems`
 excludes GLs with `active=false`; Settings → COA now has an admin **Active** checkbox (weight
 re-spreads over active GLs, category still ties to UW; CSV still exports inactive GLs as zero
-rows). Deactivate 5118 + the COMM recovery GLs for the ND subjects. The overrides-audit "All"
-button skips zeroed lines (releasing one would let the engine refill it); zeroed rows are
-labeled in the dialog.
+rows). Deactivate 5118 + the COMM recovery GLs for the ND subjects. **Deactivation is FINAL**:
+`regenerate()` zeroes an inactive GL even when overridden, and the grid never hides an inactive
+row that still carries dollars ("inactive — recalc to zero" badge) — stale values can't inflate
+totals invisibly. The overrides-audit "All" button skips zeroed lines (releasing one would let
+the engine refill it); zeroed rows are labeled in the dialog.
 
 ## Gotchas / policy
 
