@@ -14,6 +14,7 @@
   --drv-int: #e9e9ec;  --drv-int-ink: #4d5560;  /* interest calc */
   --drv-man: #f6e3f2;  --drv-man-ink: #a1147f;  /* manual override */
   --drv-t12: #fbe8d9;  --drv-t12-ink: #b05a10;  /* seller statement / recovery */
+  --drv-sp: #ffe7c2;   --drv-sp-ink: #9a5b00;   /* special projects — manual per site */
 }
 [data-theme="dark"] {
   --bg: #12161d; --panel: #1a2029; --line: #2b3441; --ink: #dde4ec; --dim: #8b97a6;
@@ -30,6 +31,7 @@
   --drv-int: #232630;  --drv-int-ink: #9aa4b1;
   --drv-man: #331327;  --drv-man-ink: #f181cf;
   --drv-t12: #33210f;  --drv-t12-ink: #e79b52;
+  --drv-sp: #3a2a10;   --drv-sp-ink: #f0a848;
 }
 
 * { box-sizing: border-box; }
@@ -124,6 +126,10 @@ td.m.drv-fee { background: var(--drv-fee); }  td.m.drv-fee input { color: var(--
 td.m.drv-int { background: var(--drv-int); }  td.m.drv-int input { color: var(--drv-int-ink); }
 td.m.drv-man { background: var(--drv-man); }  td.m.drv-man input { color: var(--drv-man-ink); font-weight: 600; }
 td.m.drv-t12 { background: var(--drv-t12); }  td.m.drv-t12 input { color: var(--drv-t12-ink); }
+/* special projects — every cell orange: budgeted manually per site */
+tr.sp td { background: var(--drv-sp); }
+tr.sp td input { color: var(--drv-sp-ink); }
+tr.sp td.code, tr.sp td.name { color: var(--drv-sp-ink); }
 .drv { border: 1px solid var(--line); border-radius: 5px; font-size: 9.5px; font-weight: 700; letter-spacing: .3px; padding: 1px 5px; min-width: 38px; text-align: center; }
 input.fxp { width: 42px; margin-left: 3px; border: 1px solid var(--line); border-radius: 4px; padding: 1px 3px; font-size: 10.5px; text-align: right; color: var(--dim); background: var(--input); }
 .rnd { font-size: 9px; color: var(--warn); margin-left: 3px; font-weight: 700; }
@@ -141,6 +147,7 @@ input.fxp:focus { border-color: var(--accent); color: var(--ink); outline: none;
 .dot.drv-comp { background: var(--drv-comp); } .dot.drv-pay { background: var(--drv-pay); }
 .dot.drv-fee { background: var(--drv-fee); } .dot.drv-int { background: var(--drv-int); }
 .dot.drv-man { background: var(--drv-man); } .dot.drv-t12 { background: var(--drv-t12); }
+.dot.drv-sp { background: var(--drv-sp); }
 
 /* ---------- trend chart ---------- */
 .trend-chip { background: none; border: 1px solid var(--line); border-radius: 12px; padding: 2px 9px; font-size: 11px; color: var(--dim); margin-right: 6px; opacity: .55; }

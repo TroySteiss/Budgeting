@@ -502,6 +502,7 @@ function renderEditor(el) {
           <span><span class="dot drv-int"></span>Interest</span>
           <span><span class="dot drv-t12"></span>Seller stmt / recovery</span>
           <span><span class="dot drv-man"></span>Manual override</span>
+          <span><span class="dot drv-sp"></span>Special projects (enter per site)</span>
           <span class="muted">· click a row's chip to change its formula</span>
           ${(() => {
             const ov = bv.lines.filter((l) => l.override);
@@ -753,15 +754,18 @@ function gridHtml(bv, totals) {
   const GRAND = new Set(['5500', '7279', '7280', '8200', '9000']);
   for (const a of coa) {
     if (!a.active) continue;
+    // special projects: ALWAYS visible (even at zero — they're entered manually
+    // per site) and every cell orange so the section reads as "fill me in"
+    const sp = a.section === 'special_projects';
     if (a.kind === 'header') {
-      rows.push(`<tr class="header"><td class="code">${a.code}</td><td class="name" colspan="${span - 1}">${esc(a.name)}</td></tr>`);
+      rows.push(`<tr class="header${sp ? ' sp' : ''}"><td class="code">${a.code}</td><td class="name" colspan="${span - 1}">${esc(a.name)}</td></tr>`);
       continue;
     }
     if (a.kind === 'total') {
       const m = totals.get(a.code) || Array(12).fill(0);
       const ann = sumM(m);
-      if (!S.showZero && !ann && !m.some((v) => v)) continue;
-      rows.push(`<tr class="total ${GRAND.has(a.code) ? 'grand' : ''}"><td class="code">${a.code}</td><td class="name">${esc(a.name)}</td>
+      if (!S.showZero && !ann && !m.some((v) => v) && !sp) continue;
+      rows.push(`<tr class="total ${GRAND.has(a.code) ? 'grand' : ''}${sp ? ' sp' : ''}"><td class="code">${a.code}</td><td class="name">${esc(a.name)}</td>
         ${cols.fx ? '<td></td>' : ''}
         ${monthIdx.map((i) => `<td class="${m[i] < 0 ? 'neg' : ''}">${money(m[i])}</td>`).join('')}
         ${cols.annual ? `<td class="${ann < 0 ? 'neg' : ''}"><b>${money(ann)}</b></td>` : ''}
@@ -779,14 +783,14 @@ function gridHtml(bv, totals) {
     const m = l ? l.months : Array(12).fill(0);
     const ann = sumM(m);
     const isZero = !ann && !m.some((v) => v) && !(l && l.note);
-    if (isZero && !S.showZero) continue;
+    if (isZero && !S.showZero && !sp) continue;
     const dm = drvMeta(l && (ann || l.override) ? l : null);
     const prm = cols.fx && l && !l.override ? paramFor(a.code, l, bv.budget.inputs || {}) : null;
-    rows.push(`<tr>
+    rows.push(`<tr${sp ? ' class="sp"' : ''}>
       <td class="code">${a.code}</td>
       <td class="name" title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}">${esc(a.name)}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
       ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">` : ''}</td>` : ''}
-      ${monthIdx.map((i) => `<td class="m ${dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money2(m[i]) : ''}"></td>`).join('')}
+      ${monthIdx.map((i) => `<td class="m ${sp ? '' : dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money2(m[i]) : ''}"></td>`).join('')}
       ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}"><input data-ann="${a.code}" value="${ann ? money2(ann) : ''}" title="Year 1 total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
       ${cols.punit ? `<td>${ann ? money(ann / units) : ''}</td>` : ''}
       ${cols.note ? `<td class="note"><input data-gl="${a.code}" value="${esc(l ? l.note : '')}" placeholder="note"></td>` : ''}
