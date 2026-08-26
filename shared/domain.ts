@@ -62,6 +62,10 @@ export type Driver = { revised?: boolean } & (
 
 /** Everything the generator needs. Stored on budgets.inputs (jsonb). */
 export interface BudgetInputs {
+  /** per-budget wage adjustments by GL ($/yr) — override the linked payroll
+      model's aggregates; a GL not present here keeps the model value. Burden
+      (benefits/bonuses) re-derives from the ADJUSTED wage total. */
+  wages?: Record<string, number> | null;
   year: number;
   units: number;
   capital: number;            // equity, for CoC

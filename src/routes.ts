@@ -184,8 +184,27 @@ router.post('/uploads/apply', h(async (req, res) => {
       'insert into payroll_models(upload_id, label, data) values($1,$2,$3) returning id',
       [uploadId, name || p.label || filename || 'ND Payroll', JSON.stringify({ properties: p.properties, unmappedPositions: p.unmappedPositions, employeeRows: p.employeeRows })]
     )).rows[0];
+    // opt-in: point every budget of a property the model covers at the NEW
+    // model and regenerate — without this, budgets keep the stale model and a
+    // re-upload changes nothing (per-budget wage adjustments in inputs.wages
+    // survive: they overlay whichever model is linked)
+    let relinked = 0;
+    if (req.body?.relink) {
+      const codes = Object.keys(p.properties || {});
+      if (codes.length) {
+        const budgets = await query('select id from budgets where property_code = any($1)', [codes]);
+        for (const b of budgets.rows) {
+          await query('update budgets set payroll_model_id=$2, updated_at=now() where id=$1', [b.id, row.id]);
+          const lb = (await loadBudget(b.id))!;
+          const built = buildLines(lb, lb.budget.inputs, lb.lines);
+          await saveLines(b.id, built.lines);
+          relinked++;
+        }
+      }
+      if (relinked) logChange(user, 'relink budgets to new payroll model', { filename, relinked });
+    }
     logChange(user, 'upload payroll model', { filename, payrollModelId: row.id });
-    return res.json({ ok: true, uploadId, payrollModelId: row.id });
+    return res.json({ ok: true, uploadId, payrollModelId: row.id, relinked });
   }
   res.status(400).json({ error: `Unknown upload kind "${kind}"` });
 }));
@@ -308,12 +327,25 @@ function budgetView(lb: LoadedBudget) {
   };
 }
 
+/** Model wages + per-budget adjustments (inputs.wages) → effective wage map.
+    An adjusted GL replaces the model's number; anything else keeps the model.
+    Adjustments alone work too — wages are settable with no model linked. */
+function effectiveWages(model: Record<string, number> | null, adj?: Record<string, number> | null): Record<string, number> | null {
+  const merged: Record<string, number> = { ...(model || {}) };
+  for (const [gl, v] of Object.entries(adj || {})) {
+    if (v == null) continue;
+    merged[gl] = r2(Number(v) || 0);
+  }
+  return Object.keys(merged).length ? merged : null;
+}
+
 /** Full generation pipeline: ownership-year plan (UW Year 1) → income tie
     (LTL) → NOI tie (flex). The whole 12-month window ties to UW Y1 in full. */
 function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLine[]): { lines: BudgetLine[] } {
+  const wages = effectiveWages(lb.payrollWages, inputs.wages);
   let lines = existing
-    ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages, lb.leases, lb.sellerUtil, lb.charges)
-    : generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, lb.payrollWages, lb.leases, lb.sellerUtil, lb.charges);
+    ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges)
+    : generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges);
   if (lb.uw) {
     if (inputs.tieIncome !== false) lines = tieIncomeToUw(lines, lb.coaMap, lb.uw.egi, inputs.tieIncomeGl || '5003');
     if (inputs.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, lb.uw.noi, inputs.noiFlexPcodes || DEFAULT_NOI_FLEX);

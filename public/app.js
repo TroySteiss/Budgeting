@@ -418,11 +418,14 @@ function renderUploadPreview(el, parsed) {
       ${rows.map(([code, w]) => `<tr><td><b>${code}</b></td>${gls.map((g) => `<td>${money(w[g] || 0)}</td>`).join('')}<td><b>${money(gls.reduce((a, g) => a + (w[g] || 0), 0))}</b></td></tr>`).join('')}</table>
       <div class="row" style="margin-top:10px">
         <div class="fld"><label>Model name</label><input id="pm-name" value="${esc(parsed.filename.replace(/\.xlsx?$/i, ''))}" style="min-width:280px"></div>
+        <label style="align-self:center" title="Point every budget of a property this model covers at the NEW model and regenerate — without this, budgets keep the old upload. Per-budget wage adjustments (⚙ Assumptions) survive and overlay the new model.">
+          <input type="checkbox" id="pm-relink" checked> Relink existing budgets & regenerate</label>
         <button class="btn" id="up-apply">Save payroll model</button>
       </div>`;
     el.querySelector('#up-apply').addEventListener('click', async () => {
-      await POST('/uploads/apply', { kind: 'payroll', filename: parsed.filename, payload: parsed, name: el.querySelector('#pm-name').value });
-      S.upload.msg = 'Payroll model saved'; S.upload.parsed = null;
+      const relink = el.querySelector('#pm-relink').checked;
+      const resp = await POST('/uploads/apply', { kind: 'payroll', filename: parsed.filename, payload: parsed, name: el.querySelector('#pm-name').value, relink });
+      S.upload.msg = `Payroll model saved${relink ? ` · relinked ${resp.relinked || 0} budget(s)` : ''}`; S.upload.parsed = null;
       await refreshState(); render();
     });
   } else if (parsed.kind === 'comparison') {
@@ -1028,6 +1031,15 @@ function inputsHtml(inp) {
       <div class="fld"><label>Rate %</label><input id="in-rate" value="${((inp.rate || 0) * 100).toFixed(2)}" style="width:70px"></div>
       <div class="fld"><label>Capital $ (CoC)</label><input id="in-cap" value="${inp.capital ?? 0}" style="width:110px"></div>
     </div>
+    <h3>Payroll wages ($/yr) ${S.bv && S.bv.payrollWages ? '<span class="badge">payroll model linked — blank fields use it</span>' : '<span class="badge">no payroll model — enter wages directly</span>'}</h3>
+    <div class="row">
+      ${[['6402', 'Admin/office'], ['6404', 'Maintenance'], ['6405', 'Landscaping'], ['6407', 'Rover']].map(([g, lbl]) => `
+        <div class="fld"><label>${g} ${lbl}</label>
+          <input class="in-wage" data-gl="${g}" value="${(inp.wages || {})[g] ?? ''}"
+            placeholder="${S.bv && S.bv.payrollWages && S.bv.payrollWages[g] != null ? 'model: ' + Math.round(S.bv.payrollWages[g]).toLocaleString() : '—'}"
+            style="width:110px" title="Annual wages for ${g}. Blank = the linked payroll model's number. Benefits/bonuses re-derive from the ADJUSTED wage total via the Minot ratios."></div>`).join('')}
+      <span class="muted" style="align-self:center; font-size:11.5px">Blank = model value · adjustments survive model re-uploads</span>
+    </div>
     <h3>Ties to underwriting</h3>
     <div class="row">
       <label title="Adjust loss-to-lease so Total Income equals UW Year 1 EGI"><input type="checkbox" id="in-tieinc" ${inp.tieIncome !== false ? 'checked' : ''}> Tie income (via LTL)</label>
@@ -1072,6 +1084,13 @@ async function applyInputs(b, el) {
     },
     uwAbs,
   };
+  // per-budget wage adjustments: blank = use the linked payroll model
+  const wages = {};
+  el.querySelectorAll('.in-wage').forEach((x) => {
+    const s = String(x.value).replace(/[$,]/g, '').trim();
+    if (s !== '') wages[x.dataset.gl] = parseFloat(s) || 0;
+  });
+  inputs.wages = Object.keys(wages).length ? wages : null;
   pushUndo();
   S.bv = await PUT(`/budgets/${b.id}`, { inputs });
   render();
