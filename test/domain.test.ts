@@ -206,6 +206,18 @@ describe('payroll model wages + Minot burden ratios', () => {
     const cats = categoryTotals(lines, coaMap);
     expect(cats['10']).toBeCloseTo(fakeUw.y1['10'], 2);
   });
+  it('burden ratios follow MANUAL wage-line overrides on regenerate', () => {
+    const inputs = defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 });
+    const wages = { '6402': 80000, '6404': 70000 };            // model: 150,000 total
+    const comps = { byGl: { '6402': 500000, '6404': 212000, '6418': 71200, '6422': 35600 }, units: 712 };
+    let lines = generateLines(coaList, inputs, fakeUw, comps, null, wages);
+    // Troy hand-sets admin wages to 120,000 → wage total 190,000
+    lines = lines.map((l) => (l.gl_code === '6402' ? { ...l, months: Array(12).fill(10000) as Months, override: true } : l));
+    const out = regenerate(lines, coaList, inputs, fakeUw, comps, null, wages);
+    expect(sum(out.find((l) => l.gl_code === '6402')!.months)).toBe(120000);            // override kept
+    expect(sum(out.find((l) => l.gl_code === '6418')!.months)).toBeCloseTo(19000, 0);   // 10% of 190k, not 150k
+    expect(sum(out.find((l) => l.gl_code === '6422')!.months)).toBeCloseTo(9500, 0);    // 5% of 190k
+  });
 });
 
 describe('tieNoiToUw', () => {

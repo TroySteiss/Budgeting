@@ -343,9 +343,13 @@ export function t12CategoryShapes(rows: T12Row[], monthCal: number[], glToPcode:
 }
 
 /* ---------------- seasonal spread curves (12 relative weights) ------------ */
+/** The four wage GLs the payroll model / manual wage entries drive. */
+export const WAGE_GLS = ['6402', '6404', '6405', '6407'];
+
 export const CURVES: Record<string, Months> = {
   flat:     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
   snow:     [2, 2, 1.5, 0.5, 0, 0, 0, 0, 0, 0.5, 1.5, 2],
+  winter:   [2, 1.8, 1.3, 0.7, 0.4, 0.25, 0.2, 0.2, 0.35, 0.8, 1.5, 1.9], // winter-heavy with a year-round base (softer than snow, broader than heat)
   heat:     [1.8, 1.7, 1.4, 1, 0.6, 0.4, 0.3, 0.3, 0.5, 0.9, 1.4, 1.7],
   electric: [1.2, 1.1, 1, 0.9, 0.9, 1.1, 1.2, 1.2, 1, 0.9, 1, 1.1],
   summer:   [0.2, 0.2, 0.5, 1, 1.5, 1.8, 1.8, 1.7, 1.4, 1, 0.5, 0.4],
@@ -676,7 +680,6 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
      Minot's ratio to wages — (comp GL $ / comp wage $) × subject wage total.
      Cat 10 is therefore NOT UW-tied when a payroll model + comps are linked;
      the NOI tie (below) absorbs the difference. */
-  const WAGE_GLS = ['6402', '6404', '6405', '6407'];
   let cat10Done = false;
   if (payrollWages && comps) {
     const compWages = WAGE_GLS.reduce((a, g) => a + Math.abs(comps.byGl[g] || 0), 0);
@@ -777,7 +780,15 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
     explicit instruction that it must carry nothing, so even an overridden
     inactive line regenerates to the fresh zero. */
 export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null, leases?: Lease[] | null, sellerUtil?: SellerUtilRow[] | null, charges?: Record<string, number> | null): BudgetLine[] {
-  const fresh = new Map(generateLines(coaList, inputs, uw, comps, catShapes, payrollWages, leases, sellerUtil, charges).map((l) => [l.gl_code, l]));
+  // MANUAL wage-line overrides feed the burden base: benefits/bonuses (Minot
+  // ratio × wage total) must follow the wages actually budgeted, not the
+  // model's stale number (Troy 2026-08-21).
+  let effWages = payrollWages;
+  for (const gl of WAGE_GLS) {
+    const old = existing.find((l) => l.gl_code === gl);
+    if (old && old.override) effWages = { ...(effWages || {}), [gl]: r2(sum(old.months)) };
+  }
+  const fresh = new Map(generateLines(coaList, inputs, uw, comps, catShapes, effWages, leases, sellerUtil, charges).map((l) => [l.gl_code, l]));
   const inactive = new Set(coaList.filter((a) => a.active === false).map((a) => a.code));
   const out: BudgetLine[] = [];
   const seen = new Set<string>();

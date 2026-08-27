@@ -57,6 +57,7 @@ function drvMetaBase(l) {
     case 'charges': return { cls: 'drv-rr', tag: 'CHG', label: 'Rent-roll charges × 12' };
     case 'zero': return { cls: 'drv-int', tag: 'ZERO', label: 'Zeroed out — this GL carries nothing' };
     case 't12curve': return { cls: 'drv-t12', tag: 'T12C', label: `Seller ${l.driver.name || ''} T12 TOTAL × ${(l.driver.pct || 0).toFixed(1)}% on ${l.driver.shape === 'minot' ? 'the Minot' : l.driver.shape || 'flat'} curve${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
+    case 'linkLine': return { cls: 'drv-fee', tag: 'LINK', label: `= ${l.driver.src || ''} ${l.driver.srcName || ''} × ${l.driver.weight ?? 1} — follows it live on every regeneration` };
     case 'setTotal': return { cls: 'drv-man', tag: 'TOTAL', label: `Total set to ${Math.round(l.driver.total || 0).toLocaleString()} — ${l.driver.of ? `${String(l.driver.of).toUpperCase()} distribution kept` : 'prior distribution kept'}` };
     default: return { cls: 'drv-none', tag: '—', label: 'No formula (zero / manual)' };
   }
@@ -194,23 +195,25 @@ function renderDash(el) {
     </div>
     <div class="card">
       <h2>Data on file</h2>
+      <p class="muted" style="font-size:11.5px">🗑 deletes a snapshot — budgets pointing at it are unlinked and regenerate. Payroll models are editable (✎) — the numbers are fixable in place, no re-upload needed.</p>
       <h3>UW snapshots</h3>
-      ${st.uwSnapshots.length ? `<table class="list"><tr><th>Property</th><th>Label</th><th>Units</th><th>UW NOI</th><th>Added</th></tr>
-        ${st.uwSnapshots.map((u) => `<tr><td>${esc(u.property_code)}</td><td>${esc(u.label)}</td><td>${u.units ?? ''}</td><td>${money(u.noi)}</td><td class="muted">${new Date(u.created_at).toLocaleDateString()}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
+      ${st.uwSnapshots.length ? `<table class="list"><tr><th>Property</th><th>Label</th><th>Units</th><th>UW NOI</th><th>Added</th><th></th></tr>
+        ${st.uwSnapshots.map((u) => `<tr><td>${esc(u.property_code)}</td><td>${esc(u.label)}</td><td>${u.units ?? ''}</td><td>${money(u.noi)}</td><td class="muted">${new Date(u.created_at).toLocaleDateString()}</td><td>${S.auth.isAdmin ? `<button class="rb" data-deld="uw:${u.id}" title="Delete — pointing budgets unlink & regenerate">🗑</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
       <h3>Rent snapshots</h3>
-      ${st.rentSnapshots.length ? `<table class="list"><tr><th>Property</th><th>As of</th><th>Units</th><th>Market / mo</th><th>In-place / mo</th></tr>
-        ${st.rentSnapshots.map((r) => `<tr><td>${esc(r.property_code)}</td><td>${r.as_of ? new Date(r.as_of).toLocaleDateString() : ''}</td><td>${r.units ?? ''}</td><td>${money(r.market_monthly)}</td><td>${money(r.inplace_monthly)}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
+      ${st.rentSnapshots.length ? `<table class="list"><tr><th>Property</th><th>As of</th><th>Units</th><th>Market / mo</th><th>In-place / mo</th><th></th></tr>
+        ${st.rentSnapshots.map((r) => `<tr><td>${esc(r.property_code)}</td><td>${r.as_of ? new Date(r.as_of).toLocaleDateString() : ''}</td><td>${r.units ?? ''}</td><td>${money(r.market_monthly)}</td><td>${money(r.inplace_monthly)}</td><td>${S.auth.isAdmin ? `<button class="rb" data-deld="rent:${r.id}" title="Delete — pointing budgets unlink & regenerate">🗑</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
       <h3>Seller T12s</h3>
-      ${(st.t12Snapshots || []).length ? `<table class="list"><tr><th>Property</th><th>Statement</th><th>Period</th><th>Book</th></tr>
-        ${st.t12Snapshots.map((t) => `<tr><td>${esc(t.property_code)}</td><td>${esc(t.label)}</td><td>${esc(t.period)}</td><td>${esc(t.book)}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
+      ${(st.t12Snapshots || []).length ? `<table class="list"><tr><th>Property</th><th>Statement</th><th>Period</th><th>Book</th><th></th></tr>
+        ${st.t12Snapshots.map((t) => `<tr><td>${esc(t.property_code)}</td><td>${esc(t.label)}</td><td>${esc(t.period)}</td><td>${esc(t.book)}</td><td>${S.auth.isAdmin ? `<button class="rb" data-deld="t12:${t.id}" title="Delete — pointing budgets unlink & regenerate">🗑</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
       <h3>Payroll models</h3>
-      ${(st.payrollModels || []).length ? `<table class="list"><tr><th>Model</th><th>Added</th></tr>
-        ${st.payrollModels.map((p) => `<tr><td>${esc(p.label)}</td><td class="muted">${new Date(p.created_at).toLocaleDateString()}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
+      ${(st.payrollModels || []).length ? `<table class="list"><tr><th>Model</th><th>Added</th><th></th></tr>
+        ${st.payrollModels.map((p) => `<tr><td>${esc(p.label)}</td><td class="muted">${new Date(p.created_at).toLocaleDateString()}</td><td>${S.auth.isAdmin ? `<button class="rb" data-pmedit="${p.id}" title="Edit the wage numbers in place — linked budgets regenerate">✎ edit</button> <button class="rb" data-deld="payroll:${p.id}" title="Delete — pointing budgets unlink & regenerate">🗑</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
       <h3>Comp sets</h3>
-      ${st.compSets.length ? `<table class="list"><tr><th>Name</th><th>Period</th><th>Book</th><th>Added</th></tr>
-        ${st.compSets.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.period)}</td><td>${esc(c.book)}</td><td class="muted">${new Date(c.created_at).toLocaleDateString()}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
+      ${st.compSets.length ? `<table class="list"><tr><th>Name</th><th>Period</th><th>Book</th><th>Added</th><th></th></tr>
+        ${st.compSets.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.period)}</td><td>${esc(c.book)}</td><td class="muted">${new Date(c.created_at).toLocaleDateString()}</td><td>${S.auth.isAdmin ? `<button class="rb" data-deld="comp:${c.id}" title="Delete — pointing budgets unlink & regenerate">🗑</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
     </div>
-    <dialog id="newdlg"></dialog>`;
+    <dialog id="newdlg"></dialog>
+    <dialog class="assump" id="pm-dlg"></dialog>`;
 
   el.querySelectorAll('tr.click').forEach((tr) => tr.addEventListener('click', async (e) => {
     if (e.target.dataset.del) return;
@@ -221,6 +224,18 @@ function renderDash(el) {
     if (!confirm('Delete this budget?')) return;
     await DEL(`/budgets/${b.dataset.del}`);
     await refreshState(); render();
+  }));
+  el.querySelectorAll('[data-deld]').forEach((b) => b.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const [kind, id] = b.dataset.deld.split(':');
+    if (!confirm(`Delete this ${kind === 'payroll' ? 'payroll model' : kind + ' snapshot'}? Budgets pointing at it are unlinked and regenerated.`)) return;
+    const resp = await DEL(`/uploads/data/${kind}/${id}`);
+    S.upload = S.upload || {}; S.upload.msg = `Deleted · ${resp.unlinked || 0} budget(s) unlinked`;
+    await refreshState(); render();
+  }));
+  el.querySelectorAll('[data-pmedit]').forEach((b) => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openPayrollEditor(Number(b.dataset.pmedit));
   }));
   document.getElementById('newb').addEventListener('click', () => newBudgetDialog(props));
 }
@@ -1137,6 +1152,15 @@ function billingSmell(months) {
   const abs = nz.map(Math.abs).sort((a, b) => a - b);
   const med = abs[Math.floor(abs.length / 2)];
   if (med > 0 && abs[abs.length - 1] > 3 * med) issues.push(`${(abs[abs.length - 1] / med).toFixed(1)}× spike vs the median month`);
+  // sawtooth: a big month right NEXT TO a tiny one is catch-up billing, not
+  // seasonality — real seasonal series ramp gradually (gas's worst adjacent
+  // step is ~1.7×). Two or more >2.5× whipsaws between adjacent months flag.
+  let saw = 0;
+  for (let i = 1; i < months.length; i++) {
+    const a = Math.abs(months[i - 1]), b2 = Math.abs(months[i]);
+    if (a && b2 && Math.max(a, b2) >= 300 && Math.max(a, b2) / Math.min(a, b2) > 2.5) saw++;
+  }
+  if (saw >= 2) issues.push(`sawtooth billing — ${saw} whipsaw month-to-month jumps`);
   return issues.length ? issues : null;
 }
 function sellerDerived(l) {
@@ -1216,11 +1240,12 @@ function fcWavgRows(bv, inp, gl) {
    garbage (no accruals → credits/gaps/spikes), so take total × (1+g) and
    spread it on a CLEAN seasonal shape — the Minot per-GL shape, a named
    curve (snow/heat/…), or flat — rotated into ownership order. */
-function fcT12Curve(bv, inp, row, pct, shapeKey, gl, mult) {
+function fcT12Curve(bv, inp, row, pct, shapeKey, gl, mult, customWeights) {
   const start = inp.startMonth || 1;
   const annual = fcSellerCal(row).reduce((a, x) => a + x, 0) * (1 + pct / 100);
   let cal = null; // Jan-Dec weights
   if (shapeKey === 'minot') cal = bv.compShapes && bv.compShapes[gl];
+  else if (shapeKey === 'custom') cal = customWeights;
   else if (shapeKey && shapeKey !== 'flat') cal = (S.state.curves || {})[shapeKey];
   if (!cal || !cal.some((v) => v > 0)) cal = Array(12).fill(1);
   const shape = cal.map((_, i) => Math.abs(cal[(start - 1 + i) % 12]));   // ownership order
@@ -1235,7 +1260,7 @@ function fcT12Curve(bv, inp, row, pct, shapeKey, gl, mult) {
       months[bi] = Math.round((months[bi] + drift) * 100) / 100;
     }
   }
-  return { months, driver: { method: 't12curve', name: row.name.slice(0, 40), pct, shape: shapeKey, mult: mult || 0 } };
+  return { months, driver: { method: 't12curve', name: row.name.slice(0, 40), pct, shape: shapeKey, mult: mult || 0, weights: shapeKey === 'custom' ? customWeights : undefined } };
 }
 
 function fcWavg(bv, inp, row, pct, mult) {
@@ -1273,6 +1298,7 @@ function openRowTools(b, gl, anchorBtn) {
     ${hasComp && S.bv.compShapes && S.bv.compShapes[gl] ? `<button data-act="t3avg" title="Weighted average of the comp's last 3 months (1-2-1), per-unit scaled, × (1+growth), rounded to $250 — your MROUND formula">${dot('drv-comp')}T3 actuals avg × growth → MROUND $250…</button>` : ''}
     ${(S.bv.sellerT12 || []).length ? `<button data-act="seller" title="Match this GL to a seller T12 line and take its monthly actuals × growth">${dot('drv-t12')}Seller actuals — match a seller line…</button>` : ''}
     ${(S.bv.sellerT12 || []).length ? `<button data-act="t12curve" title="For non-accrual seller billing (credits/gaps/spikes): the ANNUAL total is still right even when the months are garbage. Takes the seller line's T12 total × growth and spreads it on a clean seasonal curve.">${dot('drv-t12')}Seller T12 TOTAL → seasonal curve… (bad bills)</button>` : ''}
+    <button data-act="link" title="Set this GL equal to another budget line × a weight (e.g. sewer = water × 0.8). LIVE: re-follows the source on every regeneration.">${dot('drv-fee')}= another line × weight… (moves in conjunction)</button>
     ${((S.bv.sellerT12 || []).length || hasComp) ? `<button data-act="wavg" title="Troy's distribution formula: each month = (2×that month + prior + next)/4 of the source actuals, × (1+growth), MROUND to a multiple">${dot('drv-comp')}Weighted avg distribution (1-2-1) × growth → MROUND…</button>` : ''}
     <button data-act="reset">${dot('drv-uw')}Reset to engine formula (clear override)</button>`;
   const r = anchorBtn.getBoundingClientRect();
@@ -1330,6 +1356,10 @@ function openRowTools(b, gl, anchorBtn) {
     }
     if (act === 't12curve') {
       openT12CurveMatch(b, gl, acc, anchorBtn, put, inp);
+      return;
+    }
+    if (act === 'link') {
+      openLinkLineMatch(b, gl, acc, anchorBtn, put);
       return;
     }
     if (act === 'wavg') {
@@ -1419,15 +1449,23 @@ function openT12CurveMatch(b, gl, acc, anchorBtn, put, inp) {
     }
     menu.innerHTML = `
       <div class="rm-head">Spread ${esc(row.name.slice(0, 30))} T12 total (${money(total)}) on:</div>
-      ${shapes.map(([k, lbl]) => `<button data-sh="${k}">${lbl}</button>`).join('')}`;
+      ${shapes.map(([k, lbl]) => `<button data-sh="${k}">${lbl}</button>`).join('')}
+      <button data-sh="custom">custom weights — type your own 12-month shape…</button>`;
     menu.querySelectorAll('button[data-sh]').forEach((btn) => btn.addEventListener('click', async () => {
       const shapeKey = btn.dataset.sh;
       menu.remove();
+      let weights = null;
+      if (shapeKey === 'custom') {
+        const raw = prompt('12 monthly weights, Jan → Dec, comma-separated (relative — e.g. 2,2,1.5,1,.5,.25,.25,.25,.5,1,1.5,2):', '');
+        if (raw == null) return;
+        weights = String(raw).split(/[,\s]+/).filter(Boolean).map((v) => parseFloat(v));
+        if (weights.length !== 12 || weights.some((v) => !Number.isFinite(v) || v < 0)) { alert('Need exactly 12 non-negative numbers.'); return; }
+      }
       const g = parseFloat(String(prompt(`Growth % on the ${money(total)} T12 total:`, '3') || '').replace(/,/g, ''));
       if (!Number.isFinite(g)) return;
       const mult = parseFloat(String(prompt(`MROUND multiple ($, 0 = none) — annual lands at ≈ ${money(total * (1 + g / 100))}:`, '0') || '').replace(/,/g, ''));
       if (!Number.isFinite(mult) || mult < 0) return;
-      const res = fcT12Curve(S.bv, inp, row, g, shapeKey, gl, mult);
+      const res = fcT12Curve(S.bv, inp, row, g, shapeKey, gl, mult, weights);
       await put(res.months, res.driver);
     }));
   };
@@ -1447,6 +1485,56 @@ function openT12CurveMatch(b, gl, acc, anchorBtn, put, inp) {
     });
   });
   menu.querySelectorAll('button[data-tc]').forEach((btn) => btn.addEventListener('click', () => pickShape(rows[Number(btn.dataset.tc)])));
+}
+
+/* Link-line picker: set this GL = another budget line × weight, LIVE — the
+   server re-follows the source on every regeneration (W/S move in conjunction). */
+function openLinkLineMatch(b, gl, acc, anchorBtn, put) {
+  document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
+  const coaByCode = new Map(S.state.coa.map((a) => [a.code, a]));
+  const thisLine = S.bv.lines.find((l) => l.gl_code === gl);
+  const rows = S.bv.lines
+    .filter((l) => l.gl_code !== gl && l.months.some((v) => v))
+    .map((l) => {
+      const a = coaByCode.get(l.gl_code) || {};
+      return { gl: l.gl_code, name: a.name || '', pcode: a.pcode, annual: sumM(l.months) };
+    })
+    .sort((x, y) => {
+      const xs = x.pcode === acc.pcode ? 0 : 1, ys = y.pcode === acc.pcode ? 0 : 1;
+      return xs - ys || Math.abs(y.annual) - Math.abs(x.annual);
+    });
+  const menu = document.createElement('div');
+  menu.className = 'rowmenu';
+  menu.style.maxHeight = '420px';
+  menu.style.overflow = 'auto';
+  menu.innerHTML = `
+    <div class="rm-head">${gl} ${esc(acc.name || '')} = which line × weight?</div>
+    <div style="padding:4px 6px"><input id="lk-filter" placeholder="filter…" style="width:100%; border:1px solid var(--line); border-radius:6px; padding:4px 7px"></div>
+    ${rows.map((r, i) => `<button data-lk="${i}" ${r.pcode === acc.pcode ? '' : 'style="opacity:.75"'}>
+      ${r.gl} ${esc(r.name.slice(0, 30))} <span class="muted" style="float:right">${money(r.annual)}${r.pcode === acc.pcode ? ' · same category' : ''}</span></button>`).join('')}`;
+  const rct = anchorBtn.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, rct.left + window.scrollX - 60)}px`;
+  menu.style.top = `${rct.bottom + window.scrollY + 2}px`;
+  document.body.appendChild(menu);
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+  menu.querySelector('#lk-filter').addEventListener('input', (e) => {
+    const q = e.target.value.toLowerCase();
+    menu.querySelectorAll('button[data-lk]').forEach((btn) => {
+      btn.style.display = btn.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+  menu.querySelectorAll('button[data-lk]').forEach((btn) => btn.addEventListener('click', async () => {
+    const r = rows[Number(btn.dataset.lk)];
+    menu.remove();
+    const cur = thisLine ? sumM(thisLine.months) : 0;
+    const suggest = cur && r.annual ? (Math.round((cur / r.annual) * 1000) / 1000).toString() : '1';
+    const w = parseFloat(String(prompt(`Weight on ${r.gl} ${r.name} (this line = source × weight; live):`, suggest) || '').replace(/,/g, ''));
+    if (!Number.isFinite(w)) return;
+    const src = S.bv.lines.find((l) => l.gl_code === r.gl);
+    const months = src.months.map((v) => Math.round(v * w * 100) / 100);
+    await put(months, { method: 'linkLine', src: r.gl, srcName: r.name.slice(0, 30), weight: w });
+  }));
 }
 
 /* T3 comp-line picker: choose WHICH Minot line feeds the T3 weighted average
@@ -1768,7 +1856,7 @@ function openCopyFormulas(b) {
   const coaByCode = new Map(S.state.coa.map((a) => [a.code, a]));
   const sources = S.state.budgets.filter((x) => x.id !== b.id);
   if (!sources.length) { alert('No other budgets to copy from.'); return; }
-  const RECOMPUTABLE = new Set(['wavg', 't3avg', 'sellerLine', 'perUnitComp', 't12curve']);
+  const RECOMPUTABLE = new Set(['wavg', 't3avg', 'sellerLine', 'perUnitComp', 't12curve', 'linkLine']);
   let plan = null;
 
   const buildPlan = async (srcId) => {
@@ -1812,8 +1900,13 @@ function openCopyFormulas(b) {
         else why = `no seller line named "${d.name || '?'}" on this budget's T12`;
       } else if (d.method === 't12curve') {
         const row = fcFindSeller(S.bv, d.name);
-        if (row) res = fcT12Curve(S.bv, tinp, row, d.pct || 0, d.shape, l.gl_code, d.mult || 0);
+        if (row) res = fcT12Curve(S.bv, tinp, row, d.pct || 0, d.shape, l.gl_code, d.mult || 0, d.weights || null);
         else why = `no seller line named "${d.name || '?'}" on this budget's T12`;
+      } else if (d.method === 'linkLine') {
+        // live on the server — seed months from the TARGET's own source line
+        const src = S.bv.lines.find((x) => x.gl_code === d.src);
+        if (src) res = { months: src.months.map((v) => Math.round(v * (d.weight || 1) * 100) / 100), driver: { method: 'linkLine', src: d.src, srcName: d.srcName || '', weight: d.weight ?? 1 } };
+        else why = `no line ${d.src || '?'} on this budget`;
       } else if (d.method === 'wavg') {
         const rows = fcWavgRows(S.bv, tinp, l.gl_code);
         let row = null;
@@ -1918,6 +2011,54 @@ function openCopyFormulas(b) {
     .catch((e) => { dlg.querySelector('#cf-err').textContent = e.message; });
 }
 
+/* ---------------- payroll model editor ----------------
+   Edit the model's per-property wage aggregates IN PLACE — when a re-upload
+   or repoint isn't the fix, change the numbers here; every budget linked to
+   this model regenerates (wage-line overrides in budgets are still kept). */
+async function openPayrollEditor(id) {
+  const dlg = document.getElementById('pm-dlg');
+  const m = await GET(`/payroll-models/${id}`);
+  const gls = [['6402', 'Admin'], ['6404', 'Maintenance'], ['6405', 'Landscaping'], ['6407', 'Rover']];
+  const codes = Object.keys(m.properties || {}).sort();
+  dlg.innerHTML = `
+    <h2>Edit payroll model</h2>
+    <div class="row"><div class="fld"><label>Model name</label><input id="pme-label" value="${esc(m.label || '')}" style="min-width:280px"></div></div>
+    <div style="max-height:50vh; overflow:auto; margin-top:8px">
+      <table class="list"><tr><th>Property</th>${gls.map(([g, l]) => `<th>${g} ${l}</th>`).join('')}<th>Total</th></tr>
+      ${codes.map((c) => `<tr><td><b>${esc(c)}</b></td>
+        ${gls.map(([g]) => `<td><input data-pme="${c}:${g}" value="${(m.properties[c] || {})[g] ?? 0}" style="width:92px; text-align:right"></td>`).join('')}
+        <td class="pme-tot" data-tot="${c}"><b>${money(gls.reduce((a, [g]) => a + ((m.properties[c] || {})[g] || 0), 0))}</b></td></tr>`).join('')}</table>
+    </div>
+    <div class="err" id="pme-err"></div>
+    <div class="foot">
+      <span class="muted" style="align-self:center; margin-right:auto; font-size:11.5px">Saving regenerates every budget linked to this model. Benefits/bonuses follow the new wage totals via the Minot ratios.</span>
+      <button class="btn sub" id="pme-x">Cancel</button>
+      <button class="btn" id="pme-go">Save & regenerate</button>
+    </div>`;
+  const recalcTot = () => {
+    for (const c of codes) {
+      const tot = gls.reduce((a, [g]) => a + (parseFloat(String(dlg.querySelector(`[data-pme="${c}:${g}"]`).value).replace(/,/g, '')) || 0), 0);
+      dlg.querySelector(`[data-tot="${c}"]`).innerHTML = `<b>${money(tot)}</b>`;
+    }
+  };
+  dlg.querySelectorAll('[data-pme]').forEach((x) => x.addEventListener('input', recalcTot));
+  dlg.querySelector('#pme-x').addEventListener('click', () => dlg.close());
+  dlg.querySelector('#pme-go').addEventListener('click', async () => {
+    const properties = {};
+    dlg.querySelectorAll('[data-pme]').forEach((x) => {
+      const [c, g] = x.dataset.pme.split(':');
+      (properties[c] = properties[c] || {})[g] = parseFloat(String(x.value).replace(/,/g, '')) || 0;
+    });
+    try {
+      const resp = await PUT(`/payroll-models/${id}`, { label: dlg.querySelector('#pme-label').value, properties });
+      dlg.close();
+      S.upload = S.upload || {}; S.upload.msg = `Payroll model saved · ${resp.regenerated || 0} budget(s) regenerated`;
+      await refreshState(); render();
+    } catch (e2) { dlg.querySelector('#pme-err').textContent = e2.message; }
+  });
+  dlg.showModal();
+}
+
 /* ---------------- settings ---------------- */
 function renderSettings(el) {
   const st = S.state;
@@ -1942,7 +2083,7 @@ function renderSettings(el) {
           <td class="muted">${a.csv_order ?? ''}</td>
           <td>${S.auth.isAdmin && a.kind === 'detail' ? `<input type="checkbox" data-ac="${a.code}" ${a.active !== false ? 'checked' : ''} title="Inactive GLs are hidden from the grid AND excluded from comp-weight category spreads (their share re-spreads over the active GLs; the category still ties). CSV exports still include them as zero rows.">` : (a.active !== false ? '✓' : '')}</td></tr>`).join('')}</table>
       </div>
-      <p class="muted">Curves: flat, snow, heat, electric, summer, turnover. P-codes: 1, loss, 2–14 (blank = below the line). Unchecking Active removes a GL from category spreads on the next recalc — use it for comp-set GLs the subjects can't earn (e.g. 5118 COMMERCIAL RENT).</p>
+      <p class="muted">Curves: flat, snow, winter, heat, electric, summer, turnover. P-codes: 1, loss, 2–14 (blank = below the line). Unchecking Active removes a GL from category spreads on the next recalc — use it for comp-set GLs the subjects can't earn (e.g. 5118 COMMERCIAL RENT).</p>
     </div>`;
   el.querySelector('#coa-f').addEventListener('input', (e) => {
     const q = e.target.value.toLowerCase();

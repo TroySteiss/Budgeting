@@ -347,6 +347,38 @@ function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLin
   let lines = existing
     ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges)
     : generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges);
+  // LIVE linked lines: a GL set equal to another line × weight (e.g. sewer =
+  // water × 0.8) re-follows its source on every regeneration. Resolved before
+  // ties (linked lines are overrides, so ties never rescale them) against the
+  // source's pre-tie months; one level, no chain ordering guaranteed.
+  lines = lines.map((l) => {
+    const d = l.driver as any;
+    if (l.override && d?.method === 'linkLine' && d.src) {
+      const src = lines.find((x) => x.gl_code === d.src);
+      if (src) return { ...l, months: src.months.map((v) => r2(v * (Number(d.weight) || 1))) };
+    }
+    return l;
+  });
+  // Utility recovery follows the BUDGETED cat-12 lines as they stand
+  // (overrides like T12C/WAVG included), not the seller model's internal
+  // schedule — fixing an expense line re-flows into the reimbursements.
+  // Month 0 keeps the generated value (recovers the pre-start seller month).
+  const recLines = lines.filter((l) => !l.override && (l.driver as any)?.method === 'recovery');
+  if (recLines.length) {
+    const pct = Number((recLines[0].driver as any).pct) || 0;
+    const cat12 = Array(12).fill(0) as Months;
+    for (const l of lines) {
+      const a = lb.coaMap.get(l.gl_code);
+      if (a && a.kind === 'detail' && a.pcode === '12' && a.active !== false) l.months.forEach((v, i) => { cat12[i] = r2(cat12[i] + v); });
+    }
+    const recAnnual = recLines.reduce((a, l) => a + sum(l.months), 0);
+    for (const l of recLines) {
+      const share = recAnnual ? sum(l.months) / recAnnual : 1 / recLines.length;
+      const m = l.months.slice() as Months;
+      for (let i = 1; i < 12; i++) m[i] = r2(pct * cat12[i - 1] * share);
+      l.months = m;
+    }
+  }
   if (lb.uw) {
     if (inputs.tieIncome !== false) lines = tieIncomeToUw(lines, lb.coaMap, lb.uw.egi, inputs.tieIncomeGl || '5003');
     if (inputs.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, lb.uw.noi, inputs.noiFlexPcodes || DEFAULT_NOI_FLEX);
@@ -612,6 +644,66 @@ router.delete('/budgets/:id', requireAdmin, h(async (req, res) => {
   await query('delete from budgets where id=$1', [Number(req.params.id)]);
   logChange(req.session.username || '', 'delete budget', { id: req.params.id });
   res.json({ ok: true });
+}));
+
+/* Delete an uploaded snapshot / model. Budget links are FK 'on delete set
+   null', so pointing budgets are unlinked automatically; each one is then
+   regenerated so its lines stop reflecting the deleted data. */
+const SNAPSHOT_KINDS: Record<string, { table: string; col: string }> = {
+  uw: { table: 'uw_snapshots', col: 'uw_snapshot_id' },
+  rent: { table: 'rent_snapshots', col: 'rent_snapshot_id' },
+  t12: { table: 't12_snapshots', col: 't12_snapshot_id' },
+  comp: { table: 'comp_sets', col: 'comp_set_id' },
+  payroll: { table: 'payroll_models', col: 'payroll_model_id' },
+};
+/* Payroll model wage aggregates are EDITABLE — when a re-upload/repoint isn't
+   the fix, edit the numbers in place; every budget linked to the model
+   regenerates (line overrides are still respected by regenerate). */
+router.get('/payroll-models/:id', h(async (req, res) => {
+  const r = (await query('select id, label, data from payroll_models where id=$1', [Number(req.params.id)])).rows[0];
+  if (!r) return res.status(404).json({ error: 'Not found' });
+  res.json({ id: r.id, label: r.label, properties: r.data?.properties || {} });
+}));
+router.put('/payroll-models/:id', requireAdmin, h(async (req, res) => {
+  const id = Number(req.params.id);
+  const r = (await query('select data from payroll_models where id=$1', [id])).rows[0];
+  if (!r) return res.status(404).json({ error: 'Not found' });
+  const { label, properties } = req.body || {};
+  const data = { ...r.data };
+  if (properties && typeof properties === 'object') {
+    const clean: Record<string, Record<string, number>> = {};
+    for (const [code, wages] of Object.entries(properties as Record<string, any>)) {
+      clean[code] = {};
+      for (const [gl, v] of Object.entries(wages || {})) clean[code][gl] = r2(Number(v) || 0);
+    }
+    data.properties = clean;
+    data.editedAt = new Date().toISOString();
+  }
+  await query('update payroll_models set label=coalesce($2,label), data=$3 where id=$1', [id, label ?? null, JSON.stringify(data)]);
+  const affected = (await query('select id from budgets where payroll_model_id=$1', [id])).rows.map((x: any) => x.id);
+  for (const bid of affected) {
+    const lb = (await loadBudget(bid))!;
+    const built = buildLines(lb, lb.budget.inputs, lb.lines);
+    await saveLines(bid, built.lines);
+  }
+  logChange(req.session.username || '', 'edit payroll model', { id, regenerated: affected.length });
+  res.json({ ok: true, regenerated: affected.length });
+}));
+
+router.delete('/uploads/data/:kind/:id', requireAdmin, h(async (req, res) => {
+  const k = SNAPSHOT_KINDS[String(req.params.kind)];
+  if (!k) return res.status(400).json({ error: `Unknown snapshot kind "${req.params.kind}"` });
+  const id = Number(req.params.id);
+  const affected = (await query(`select id from budgets where ${k.col}=$1`, [id])).rows.map((r: any) => r.id);
+  const del = await query(`delete from ${k.table} where id=$1`, [id]);
+  if (!del.rowCount) return res.status(404).json({ error: 'Not found' });
+  for (const bid of affected) {
+    const lb = (await loadBudget(bid))!;
+    const built = buildLines(lb, lb.budget.inputs, lb.lines);
+    await saveLines(bid, built.lines);
+  }
+  logChange(req.session.username || '', `delete ${req.params.kind} snapshot`, { id, unlinkedBudgets: affected });
+  res.json({ ok: true, unlinked: affected.length });
 }));
 
 /* ---------------- exports ---------------- */
