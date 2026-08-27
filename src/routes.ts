@@ -709,13 +709,18 @@ router.put('/payroll-models/:id', requireAdmin, h(async (req, res) => {
     data.editedAt = new Date().toISOString();
   }
   await query('update payroll_models set label=coalesce($2,label), data=$3 where id=$1', [id, label ?? null, JSON.stringify(data)]);
+  // linkAll: point EVERY budget at this model — the recovery path when
+  // budgets got detached and nothing points anywhere
+  if (req.body?.linkAll) {
+    await query('update budgets set payroll_model_id=$1, updated_at=now()', [id]);
+  }
   const affected = (await query('select id from budgets where payroll_model_id=$1', [id])).rows.map((x: any) => x.id);
   for (const bid of affected) {
     const lb = (await loadBudget(bid))!;
     const built = buildLines(lb, lb.budget.inputs, lb.lines);
     await saveLines(bid, built.lines);
   }
-  logChange(req.session.username || '', 'edit payroll model', { id, regenerated: affected.length });
+  logChange(req.session.username || '', 'edit payroll model', { id, regenerated: affected.length, linkAll: !!req.body?.linkAll });
   res.json({ ok: true, regenerated: affected.length });
 }));
 

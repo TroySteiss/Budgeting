@@ -383,12 +383,14 @@ function parseYardiUnitLevel(g: Grid, h: number, asOf: string | null): RentParse
 /* ========================= ND PAYROLL MODEL ========================= */
 
 /* Position → Monarch wage GL. Anything unrecognized lands in 6404 and is
-   reported in unmappedPositions so the mapping can be extended. */
+   reported in unmappedPositions so the mapping can be extended.
+   NOTHING maps to 6405 landscaping (Troy 2026-08-21): housekeepers and
+   grounds crews are MAINTENANCE wages — landscaping is contracted work,
+   not payroll. */
 const POSITION_GL: [RegExp, string][] = [
   [/regional|lms|arm|bookkeep|office|leasing|apm|\bpm\b|manager|market/i, '6402'],
-  [/ground|landscap/i, '6405'],
   [/rover/i, '6407'],
-  [/supervisor|tech|housekeep|maint|janitor|porter/i, '6404'],
+  [/supervisor|tech|housekeep|maint|janitor|porter|ground|landscap/i, '6404'],
 ];
 
 export interface PayrollModelParsed {

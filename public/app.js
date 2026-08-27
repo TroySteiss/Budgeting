@@ -1126,7 +1126,7 @@ function dataLinksHtml(bv) {
     { key: 'rentSnapshotId', cur: b.rent_snapshot_id, label: 'Rent roll', list: own(st.rentSnapshots), name: (x) => `${x.as_of ? new Date(x.as_of).toLocaleDateString() : '#' + x.id} · ${x.units || '?'}u` },
     { key: 't12SnapshotId', cur: b.t12_snapshot_id, label: 'Seller T12', list: own(st.t12Snapshots || []), name: (x) => `${x.label} · ${x.period || ''}` },
     { key: 'compSetId', cur: b.comp_set_id, label: 'Comp set', list: st.compSets, name: (x) => x.name },
-    { key: 'payrollModelId', cur: b.payroll_model_id, label: 'Payroll model', list: st.payrollModels || [], name: (x) => x.label },
+    { key: 'payrollModelId', cur: b.payroll_model_id, label: `Payroll model${b.payroll_model_id && !bv.payrollWages ? ' <span class="warnflag" title="The linked model has NO wages for this property — ✎ edit it on the Uploads page (add/fix this property\'s row)">⚠ no wages for this property</span>' : ''}`, list: st.payrollModels || [], name: (x) => x.label },
   ];
   return LINKS.map((L) => `
     <div class="fld" style="margin:0 0 6px">
@@ -2072,9 +2072,14 @@ async function openPayrollEditor(id) {
         ${gls.map(([g]) => `<td><input data-pme="${c}:${g}" value="${(m.properties[c] || {})[g] ?? 0}" style="width:92px; text-align:right"></td>`).join('')}
         <td class="pme-tot" data-tot="${c}"><b>${money(gls.reduce((a, [g]) => a + ((m.properties[c] || {})[g] || 0), 0))}</b></td></tr>`).join('')}</table>
     </div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn sub" id="pme-move65" title="Landscaping is contracted work, not payroll — folds every property's 6405 into 6404 and zeroes 6405 (in the fields; Save applies it)">6405 → 6404 (landscaping is not payroll)</button>
+      <button class="btn sub" id="pme-addprop" title="Add a property row this model is missing (e.g. the parser didn't find it)">＋ Add property</button>
+      <label style="align-self:center" title="Point EVERY budget at this model when saving — the recovery move when budgets got detached"><input type="checkbox" id="pme-linkall" checked> Link ALL budgets to this model</label>
+    </div>
     <div class="err" id="pme-err"></div>
     <div class="foot">
-      <span class="muted" style="align-self:center; margin-right:auto; font-size:11.5px">Saving regenerates every budget linked to this model. Benefits/bonuses follow the new wage totals via the Minot ratios.</span>
+      <span class="muted" style="align-self:center; margin-right:auto; font-size:11.5px">Saving regenerates every linked budget. Benefits/bonuses follow the new wage totals via the Minot ratios.</span>
       <button class="btn sub" id="pme-x">Cancel</button>
       <button class="btn" id="pme-go">Save & regenerate</button>
     </div>`;
@@ -2085,6 +2090,27 @@ async function openPayrollEditor(id) {
     }
   };
   dlg.querySelectorAll('[data-pme]').forEach((x) => x.addEventListener('input', recalcTot));
+  dlg.querySelector('#pme-move65').addEventListener('click', () => {
+    for (const c of codes) {
+      const from = dlg.querySelector(`[data-pme="${c}:6405"]`);
+      const to = dlg.querySelector(`[data-pme="${c}:6404"]`);
+      const v = parseFloat(String(from.value).replace(/,/g, '')) || 0;
+      if (v) {
+        to.value = String(Math.round(((parseFloat(String(to.value).replace(/,/g, '')) || 0) + v) * 100) / 100);
+        from.value = '0';
+      }
+    }
+    recalcTot();
+  });
+  dlg.querySelector('#pme-addprop').addEventListener('click', () => {
+    const code = String(prompt('Property code to add (e.g. cwnd):', '') || '').trim().toLowerCase();
+    if (!code || codes.includes(code)) return;
+    codes.push(code);
+    dlg.querySelector('table.list').insertAdjacentHTML('beforeend', `<tr><td><b>${esc(code)}</b></td>
+      ${gls.map(([g]) => `<td><input data-pme="${code}:${g}" value="0" style="width:92px; text-align:right"></td>`).join('')}
+      <td class="pme-tot" data-tot="${esc(code)}"><b>${money(0)}</b></td></tr>`);
+    dlg.querySelectorAll(`[data-pme^="${code}:"]`).forEach((x) => x.addEventListener('input', recalcTot));
+  });
   dlg.querySelector('#pme-x').addEventListener('click', () => dlg.close());
   dlg.querySelector('#pme-go').addEventListener('click', async () => {
     const properties = {};
@@ -2093,7 +2119,7 @@ async function openPayrollEditor(id) {
       (properties[c] = properties[c] || {})[g] = parseFloat(String(x.value).replace(/,/g, '')) || 0;
     });
     try {
-      const resp = await PUT(`/payroll-models/${id}`, { label: dlg.querySelector('#pme-label').value, properties });
+      const resp = await PUT(`/payroll-models/${id}`, { label: dlg.querySelector('#pme-label').value, properties, linkAll: dlg.querySelector('#pme-linkall').checked });
       dlg.close();
       S.upload = S.upload || {}; S.upload.msg = `Payroll model saved · ${resp.regenerated || 0} budget(s) regenerated`;
       await refreshState(); render();
