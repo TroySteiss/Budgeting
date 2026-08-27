@@ -54,7 +54,8 @@ const UW_ROWS: { key: string; match: (l: string) => boolean }[] = [
 
 export function parseUwBook(buf: Buffer): UwParsedSheet[] {
   const out: UwParsedSheet[] = [];
-  for (const { name, g } of grids(buf)) {
+  const allSheets = grids(buf);
+  for (const { name, g } of allSheets) {
     if (/^(gl codes|taxes|fee breakdown)$/i.test(name.trim())) continue;
     // find the pro forma anchor
     let gprRow = -1;
@@ -158,6 +159,50 @@ export function parseUwBook(buf: Buffer): UwParsedSheet[] {
       t12,
     };
     out.push({ sheetName: name, isPortfolio, propertyGuess: name.replace(/\s*-\s*(jt|bk)\s*$/i, '').trim(), data });
+  }
+
+  // Fee Breakdown sheet: per-property TRUE capital ("Capital W/O PI + Costs"
+  // column sums to Total Capital / Capital to close incl. fees+reserves) —
+  // the loan/LTV estimate misses closing costs and immediate needs.
+  const fee = allSheets.find((x) => /fee breakdown/i.test(x.name));
+  if (fee) {
+    const fg = fee.g;
+    let h = -1, cCap = -1, cPrice = -1;
+    for (let r = 0; r < Math.min(fg.length, 40); r++) {
+      const cells = (fg[r] || []).map(low);
+      if (cells[0] === 'property' && cells.some((c) => c.includes('capital'))) {
+        h = r;
+        cCap = cells.findIndex((c) => c.includes('capital'));
+        cPrice = cells.findIndex((c) => c.includes('purchase price'));
+        break;
+      }
+    }
+    if (h >= 0 && cCap >= 0) {
+      const norm = (v: string) => v.toLowerCase().replace(/[^a-z]/g, '');
+      const perProp = new Map<string, { capital: number; price: number }>();
+      let totalCap = 0;
+      for (let r = h + 1; r < fg.length; r++) {
+        const nm = s(fg[r]?.[0]);
+        if (!nm || /^\d/.test(nm)) break;   // totals row starts with a number
+        const capital = num(fg[r]?.[cCap]);
+        if (!capital) continue;
+        perProp.set(norm(nm), { capital, price: cPrice >= 0 ? num(fg[r]?.[cPrice]) : 0 });
+        totalCap = Math.round((totalCap + capital) * 100) / 100;
+      }
+      for (const sheet of out) {
+        if (sheet.isPortfolio) {
+          if (totalCap) sheet.data.assumptions['capitalToClose'] = totalCap;
+          continue;
+        }
+        const key = norm(sheet.propertyGuess);
+        const hit = perProp.get(key)
+          || [...perProp.entries()].find(([k]) => k.startsWith(key) || key.startsWith(k))?.[1];
+        if (hit) {
+          sheet.data.assumptions['capitalToClose'] = hit.capital;
+          if (hit.price) sheet.data.assumptions['purchasePrice'] = hit.price;
+        }
+      }
+    }
   }
   return out;
 }

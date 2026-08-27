@@ -25,6 +25,15 @@ describe('parseUwBook — Bismarck', () => {
     expect(c.data.egi).toBeCloseTo(5157026.18, 1);
     expect(c.data.noi).toBeCloseTo(3154039.68, 1);
   });
+  it('capital to close comes from the Fee Breakdown (not the LTV estimate)', () => {
+    const cap = (re: RegExp) => sheets.find((s) => re.test(s.sheetName))!.data.assumptions['capitalToClose'];
+    expect(cap(/cottonwood/i)).toBe(11000000);
+    expect(cap(/legacy/i)).toBe(5200000);
+    expect(cap(/north ridge/i)).toBe(3200000);   // 'Northridge' in the fee table
+    expect(cap(/river ridge/i)).toBe(6600000);
+    const p = sheets.find((s) => s.isPortfolio)!;
+    expect(p.data.assumptions['capitalToClose']).toBe(26000000);
+  });
   it('per-property NOIs tie', () => {
     const noi = (name: RegExp) => sheets.find((s) => name.test(s.sheetName))!.data.noi;
     expect(noi(/legacy/i)).toBeCloseTo(1426163.17, 1);

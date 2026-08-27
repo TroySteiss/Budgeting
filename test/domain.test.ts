@@ -188,7 +188,7 @@ describe('inactive GLs are excluded from comp-weight spreads', () => {
 
 describe('payroll model wages + Minot burden ratios', () => {
   it('benefits/bonuses follow Minot ratios on the subject wage total (not the UW category)', () => {
-    const inputs = defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 });
+    const inputs = { ...defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 }), payrollRaisePct: 0 };
     const wages = { '6402': 80000, '6404': 70000 };            // subject wages 150,000
     // Minot: wages 712,000; payroll taxes 71,200 (10%); medical 35,600 (5%)
     const comps = { byGl: { '6402': 500000, '6404': 212000, '6418': 71200, '6422': 35600 }, units: 712 };
@@ -206,8 +206,19 @@ describe('payroll model wages + Minot burden ratios', () => {
     const cats = categoryTotals(lines, coaMap);
     expect(cats['10']).toBeCloseTo(fakeUw.y1['10'], 2);
   });
+  it('wages step up by the March raise within the ownership year', () => {
+    const inputs = { ...defaultInputs(2026, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 }), startMonth: 9 }; // Sep-26 → Aug-27
+    const wages = { '6402': 120000 };
+    const lines = generateLines(coaList, inputs, fakeUw, null, null, wages);
+    const m = lines.find((l) => l.gl_code === '6402')!.months;
+    expect(m[0]).toBeCloseTo(10000, 2);            // Sep — current rate
+    expect(m[5]).toBeCloseTo(10000, 2);            // Feb — current rate
+    expect(m[6]).toBeCloseTo(10350, 2);            // Mar — +3.5%
+    expect(m[11]).toBeCloseTo(10350, 2);           // Aug — raised
+    expect(sum(m)).toBeCloseTo(60000 + 62100, 1);  // 6 months current + 6 raised
+  });
   it('burden ratios follow MANUAL wage-line overrides on regenerate', () => {
-    const inputs = defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 });
+    const inputs = { ...defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 }), payrollRaisePct: 0 };
     const wages = { '6402': 80000, '6404': 70000 };            // model: 150,000 total
     const comps = { byGl: { '6402': 500000, '6404': 212000, '6418': 71200, '6422': 35600 }, units: 712 };
     let lines = generateLines(coaList, inputs, fakeUw, comps, null, wages);

@@ -9,7 +9,7 @@ import {
   CoaAccount, BudgetLine, BudgetInputs, UwSnapshotData, CompWeights, Months,
   generateLines, regenerate, rebalanceCategory, defaultInputs, computeTieout,
   kpis, categoryTotals, t12CategoryShapes, tieNoiToUw, tieIncomeToUw, DEFAULT_NOI_FLEX,
-  calendarSlice, monthLabels, applyRounding, zero12, r2, sum, CURVES, type Lease, type SellerUtilRow,
+  calendarSlice, monthLabels, applyRounding, zero12, r2, sum, CURVES, WAGE_GLS, type Lease, type SellerUtilRow,
 } from '../shared/domain.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -358,6 +358,28 @@ function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[], inputs?: Bu
     }
     return l;
   });
+  // burden (benefits/bonuses = Minot ratio × wages) follows the ACTUAL wage
+  // lines as they stand — overrides, March raises, single-cell edits included
+  const wagesNow = r2(WAGE_GLS.reduce((a, g) => {
+    const l = lines.find((x) => x.gl_code === g);
+    return a + (l ? sum(l.months) : 0);
+  }, 0));
+  if (wagesNow) {
+    for (const l of lines) {
+      const d = l.driver as any;
+      if (l.override || d?.method !== 'burdenRatio' || !d.ratio) continue;
+      const target = r2(Number(d.ratio) * wagesNow);
+      const cur = sum(l.months);
+      if (r2(cur) === target) continue;
+      if (cur) l.months = l.months.map((v) => r2((v * target) / cur)) as Months;
+      else l.months = Array(12).fill(r2(target / 12)) as Months;
+      const drift = r2(target - sum(l.months));
+      if (drift) {
+        const bi = l.months.reduce((mi, v, i) => (Math.abs(v) > Math.abs(l.months[mi]) ? i : mi), 0);
+        l.months[bi] = r2(l.months[bi] + drift);
+      }
+    }
+  }
   const nameOf = (gl: string) => (lb.coaMap.get(gl)?.name || '').toLowerCase();
   // recovery candidates = EVERY active cat-4 REIM GL in the chart (not just
   // the ones the seller's income mix happened to populate) — SEWER REIM must
@@ -582,7 +604,7 @@ router.put('/budgets/:id/lines/:gl', h(async (req, res) => {
   // not at the next recalc
   const before = new Map(
     lb.lines
-      .filter((l) => { const m2 = (l.driver as any)?.method; return m2 === 'recovery' || m2 === 'linkLine'; })
+      .filter((l) => { const m2 = (l.driver as any)?.method; return m2 === 'recovery' || m2 === 'linkLine' || m2 === 'burdenRatio'; })
       .map((l) => [l.gl_code, JSON.stringify(l.months) + '|' + JSON.stringify(l.driver)])
   );
   if (before.size) {

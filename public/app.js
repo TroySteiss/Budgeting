@@ -573,6 +573,14 @@ function renderEditor(el) {
   document.getElementById('copyfx-btn').addEventListener('click', () => openCopyFormulas(b));
   const ovrBtn = document.getElementById('ovr-btn');
   if (ovrBtn) ovrBtn.addEventListener('click', () => openOverridesAudit(b));
+  // condensed section headers: click toggles, choice is locked in localStorage
+  el.querySelectorAll('tr.header[data-sec]').forEach((tr) => tr.addEventListener('click', () => {
+    const sec = tr.dataset.sec;
+    if (S.gridCollapsed.has(sec)) S.gridCollapsed.delete(sec); else S.gridCollapsed.add(sec);
+    localStorage.setItem('bt-collapse', JSON.stringify([...S.gridCollapsed]));
+    S.gridScroll = { top: el.querySelector('.gridwrap').scrollTop, left: el.querySelector('.gridwrap').scrollLeft };
+    render();
+  }));
   // data-sources pickers: repoint a snapshot link, then regenerate (inputs:{}
   // forces the regen; overrides and MROUNDs are kept)
   el.querySelectorAll('[data-link]').forEach((sel) => sel.addEventListener('change', async () => {
@@ -787,6 +795,9 @@ function gridHtml(bv, totals) {
   rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th>${labels[i]}</th>`).join('')}${cols.annual ? '<th>Year 1</th>' : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
   const units = Number(bv.budget.inputs?.units) || 1;
   const GRAND = new Set(['5500', '7279', '7280', '8200', '9000']);
+  // condensed (collapsed) sections — locked via localStorage across renders
+  if (!S.gridCollapsed) S.gridCollapsed = new Set(JSON.parse(localStorage.getItem('bt-collapse') || '[]'));
+  let secCollapsed = false;
   for (const a of coa) {
     if (!a.active) {
       // an inactive GL may only vanish when it carries NOTHING — a hidden row
@@ -798,7 +809,9 @@ function gridHtml(bv, totals) {
     // per site) and every cell orange so the section reads as "fill me in"
     const sp = a.section === 'special_projects';
     if (a.kind === 'header') {
-      rows.push(`<tr class="header${sp ? ' sp' : ''}"><td class="code">${a.code}</td><td class="name" colspan="${span - 1}">${esc(a.name)}</td></tr>`);
+      secCollapsed = S.gridCollapsed.has(a.code);
+      rows.push(`<tr class="header${sp ? ' sp' : ''}" data-sec="${a.code}" style="cursor:pointer" title="Click to condense / expand this section — stays condensed until you reopen it">
+        <td class="code">${a.code}</td><td class="name" colspan="${span - 1}">${secCollapsed ? '▸' : '▾'} ${esc(a.name)}${secCollapsed ? ' <span class="badge">condensed — totals still shown</span>' : ''}</td></tr>`);
       continue;
     }
     if (a.kind === 'total') {
@@ -819,6 +832,7 @@ function gridHtml(bv, totals) {
       }
       continue;
     }
+    if (secCollapsed) continue;   // condensed section: detail rows hidden, totals stay
     const l = linesByGl.get(a.code);
     const m = l ? l.months : Array(12).fill(0);
     const ann = sumM(m);
@@ -911,6 +925,9 @@ function paramFor(gl, line, inp) {
   }
   if (m === 'sellerUtil') {
     return { label: 'growth %', value: pct((inp.utilities || {}).growthPct ?? 0.03), patch: (v) => ({ utilities: { ...(inp.utilities || {}), growthPct: v / 100 } }) };
+  }
+  if (m === 'payrollModel') {
+    return { label: 'March raise %', value: pct(inp.payrollRaisePct ?? 0.035), patch: (v) => ({ payrollRaisePct: v / 100 }) };
   }
   if (m === 'recovery') {
     return { label: 'recovery %', value: pct(line.driver.pct || 0), patch: (v) => ({ utilities: { ...(inp.utilities || {}), recoveryPct: v / 100 } }) };
