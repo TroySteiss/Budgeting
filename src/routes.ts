@@ -370,7 +370,9 @@ function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[], inputs?: Bu
     ? lines.filter((l) => {
         if (l.override) return false;
         const a = lb.coaMap.get(l.gl_code);
-        return !!a && a.kind === 'detail' && a.pcode === '4' && a.active !== false && /reim/.test(nameOf(l.gl_code));
+        const n = nameOf(l.gl_code);
+        // STREET REIM is not a utility recovery — never a candidate (Troy)
+        return !!a && a.kind === 'detail' && a.pcode === '4' && a.active !== false && /reim/.test(n) && !/street/.test(n);
       })
     : [];
   if (recLines.length) {
@@ -386,8 +388,10 @@ function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[], inputs?: Bu
       [/trash/, /trash|garbage|refuse/],
       [/sewer|storm/, /sewer|storm/],
       [/water/, /water|sewer|storm/],
-      [/gas/, /\bgas\b|\bgas[- ]/],
-      [/\belec/, /elec/],   // only an ELECTRIC-named reim claims electric — never guess (street ≠ electric)
+      // GAS REIM claims gas + COMMON-AREA electric (Troy: they bill together);
+      // corp/vacant/commercial electric stays out
+      [/gas/, /\bgas\b|\bgas[- ]|elec.*common\b/],
+      [/\belec/, /elec/],   // a true ELECTRIC-named reim would claim what's left
     ];
     const claimed = new Set<string>();
     const assigned = new Set<string>();
