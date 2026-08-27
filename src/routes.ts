@@ -360,23 +360,52 @@ function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLin
     return l;
   });
   // Utility recovery follows the BUDGETED cat-12 lines as they stand
-  // (overrides like T12C/WAVG included), not the seller model's internal
-  // schedule — fixing an expense line re-flows into the reimbursements.
-  // Month 0 keeps the generated value (recovers the pre-start seller month).
+  // (overrides like T12C/WAVG included) — and each reimbursement is tied to
+  // its APPLICABLE utility: trash reim ← trash, gas reim ← gas, water reim ←
+  // water+sewer, electric reim ← electric; the generic UTILITIES REIM takes
+  // the unclaimed cat-12 remainder. Month 0 keeps the generated value (it
+  // recovers the pre-start seller month).
   const recLines = lines.filter((l) => !l.override && (l.driver as any)?.method === 'recovery');
   if (recLines.length) {
     const pct = Number((recLines[0].driver as any).pct) || 0;
-    const cat12 = Array(12).fill(0) as Months;
-    for (const l of lines) {
+    const nameOf = (gl: string) => (lb.coaMap.get(gl)?.name || '').toLowerCase();
+    const cat12Lines = lines.filter((l) => {
       const a = lb.coaMap.get(l.gl_code);
-      if (a && a.kind === 'detail' && a.pcode === '12' && a.active !== false) l.months.forEach((v, i) => { cat12[i] = r2(cat12[i] + v); });
+      return a && a.kind === 'detail' && a.pcode === '12' && a.active !== false;
+    });
+    const PAIRS: [RegExp, RegExp][] = [
+      [/trash/, /trash|garbage|refuse/],
+      [/gas/, /\bgas\b|\bgas[- ]/],
+      [/water|sewer/, /water|sewer|storm/],
+      [/elec/, /elec/],
+    ];
+    const claimed = new Set<string>();
+    const baseFor = new Map<string, Months>();
+    const generic: typeof recLines = [];
+    for (const rl of recLines) {
+      const pair = PAIRS.find(([re]) => re.test(nameOf(rl.gl_code)));
+      const srcs = pair ? cat12Lines.filter((e) => pair[1].test(nameOf(e.gl_code))) : [];
+      if (srcs.length) {
+        const base = zero12();
+        for (const s of srcs) { claimed.add(s.gl_code); s.months.forEach((v, i) => { base[i] = r2(base[i] + v); }); }
+        baseFor.set(rl.gl_code, base);
+      } else generic.push(rl);
     }
-    const recAnnual = recLines.reduce((a, l) => a + sum(l.months), 0);
-    for (const l of recLines) {
-      const share = recAnnual ? sum(l.months) / recAnnual : 1 / recLines.length;
-      const m = l.months.slice() as Months;
-      for (let i = 1; i < 12; i++) m[i] = r2(pct * cat12[i - 1] * share);
-      l.months = m;
+    if (generic.length) {
+      const rem = zero12();
+      for (const e of cat12Lines) if (!claimed.has(e.gl_code)) e.months.forEach((v, i) => { rem[i] = r2(rem[i] + v); });
+      const tot = generic.reduce((a, l) => a + sum(l.months), 0);
+      for (const rl of generic) {
+        const share = tot ? sum(rl.months) / tot : 1 / generic.length;
+        baseFor.set(rl.gl_code, rem.map((v) => r2(v * share)) as Months);
+      }
+    }
+    for (const rl of recLines) {
+      const base = baseFor.get(rl.gl_code);
+      if (!base) continue;
+      const m = rl.months.slice() as Months;
+      for (let i = 1; i < 12; i++) m[i] = r2(pct * base[i - 1]);
+      rl.months = m;
     }
   }
   if (lb.uw) {

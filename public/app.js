@@ -58,6 +58,7 @@ function drvMetaBase(l) {
     case 'zero': return { cls: 'drv-int', tag: 'ZERO', label: 'Zeroed out — this GL carries nothing' };
     case 't12curve': return { cls: 'drv-t12', tag: 'T12C', label: `Seller ${l.driver.name || ''} T12 TOTAL × ${(l.driver.pct || 0).toFixed(1)}% on ${l.driver.shape === 'minot' ? 'the Minot' : l.driver.shape || 'flat'} curve${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
     case 'linkLine': return { cls: 'drv-fee', tag: 'LINK', label: `= ${l.driver.src || ''} ${l.driver.srcName || ''} × ${l.driver.weight ?? 1} — follows it live on every regeneration` };
+    case 'smooth': return { cls: 'drv-t12', tag: 'SMOOTH', label: `Missed-bill smoothing ×${l.driver.passes || 0}${l.driver.of ? ` of ${String(l.driver.of).toUpperCase()}${l.driver.srcName ? ' ' + l.driver.srcName : ''}` : ''} — spikes spread into surrounding months, total kept` };
     case 'setTotal': return { cls: 'drv-man', tag: 'TOTAL', label: `Total set to ${Math.round(l.driver.total || 0).toLocaleString()} — ${l.driver.of ? `${String(l.driver.of).toUpperCase()} distribution kept` : 'prior distribution kept'}` };
     default: return { cls: 'drv-none', tag: '—', label: 'No formula (zero / manual)' };
   }
@@ -1163,6 +1164,43 @@ function billingSmell(months) {
   if (saw >= 2) issues.push(`sawtooth billing — ${saw} whipsaw month-to-month jumps`);
   return issues.length ? issues : null;
 }
+/* One-click missed-bill smoothing: repeated centered 1-2-1 passes pull each
+   catch-up spike into its surrounding low months (a 3-month bill melts back
+   over ~3 months) and soak up credit months. No wrap — month 0 and month 11
+   are a real year boundary — reflective edges keep the annual total exact.
+   Stops as soon as the series stops smelling like bad billing (max 12 passes). */
+function smoothMonths(months) {
+  let m = months.slice();
+  const total = Math.round(m.reduce((a, v) => a + v, 0) * 100) / 100;
+  let passes = 0;
+  while (passes < 12) {
+    const nz = m.filter((v) => v);
+    const abs = nz.map(Math.abs).sort((a, b) => a - b);
+    const med = abs.length ? abs[Math.floor(abs.length / 2)] : 0;
+    const mixed = nz.some((v) => v > 0) && nz.some((v) => v < 0);
+    let saw = false;
+    for (let i = 1; i < 12; i++) {
+      const a = Math.abs(m[i - 1]), b2 = Math.abs(m[i]);
+      if (a && b2 && Math.max(a, b2) >= 300 && Math.max(a, b2) / Math.min(a, b2) > 2) saw = true;
+    }
+    const spiky = med > 0 && abs[abs.length - 1] > 1.75 * med;
+    if (passes >= 2 && !mixed && !saw && !spiky) break;   // at least 2 passes, then stop when clean
+    m = m.map((_, i) => {
+      const prev = i > 0 ? m[i - 1] : m[0];               // reflective edges — total-preserving
+      const next = i < 11 ? m[i + 1] : m[11];
+      return (2 * m[i] + prev + next) / 4;
+    });
+    passes++;
+  }
+  m = m.map((v) => Math.round(v * 100) / 100);
+  const drift = Math.round((total - m.reduce((a, v) => a + v, 0)) * 100) / 100;
+  if (drift) {
+    const bi = m.reduce((mi, v, i) => (Math.abs(v) > Math.abs(m[mi]) ? i : mi), 0);
+    m[bi] = Math.round((m[bi] + drift) * 100) / 100;
+  }
+  return { months: m, passes };
+}
+
 function sellerDerived(l) {
   const d = l && l.driver;
   return !!d && (['sellerUtil', 'sellerLine', 'recovery', 't12curve'].includes(d.method) || (d.method === 'wavg' && d.srcType === 'seller'));
@@ -1299,6 +1337,7 @@ function openRowTools(b, gl, anchorBtn) {
     ${(S.bv.sellerT12 || []).length ? `<button data-act="seller" title="Match this GL to a seller T12 line and take its monthly actuals × growth">${dot('drv-t12')}Seller actuals — match a seller line…</button>` : ''}
     ${(S.bv.sellerT12 || []).length ? `<button data-act="t12curve" title="For non-accrual seller billing (credits/gaps/spikes): the ANNUAL total is still right even when the months are garbage. Takes the seller line's T12 total × growth and spreads it on a clean seasonal curve.">${dot('drv-t12')}Seller T12 TOTAL → seasonal curve… (bad bills)</button>` : ''}
     <button data-act="link" title="Set this GL equal to another budget line × a weight (e.g. sewer = water × 0.8). LIVE: re-follows the source on every regeneration.">${dot('drv-fee')}= another line × weight… (moves in conjunction)</button>
+    ${line && line.months.some((v) => v) ? `<button data-act="smooth" title="One click for missed bills: pulls catch-up spikes into the surrounding low months and soaks up credit months, repeating until the series looks like real monthly billing. Annual total kept exactly.">${dot('drv-t12')}Smooth missed bills — spikes into surrounding months</button>` : ''}
     ${((S.bv.sellerT12 || []).length || hasComp) ? `<button data-act="wavg" title="Troy's distribution formula: each month = (2×that month + prior + next)/4 of the source actuals, × (1+growth), MROUND to a multiple">${dot('drv-comp')}Weighted avg distribution (1-2-1) × growth → MROUND…</button>` : ''}
     <button data-act="reset">${dot('drv-uw')}Reset to engine formula (clear override)</button>`;
   const r = anchorBtn.getBoundingClientRect();
@@ -1361,6 +1400,12 @@ function openRowTools(b, gl, anchorBtn) {
     if (act === 'link') {
       openLinkLineMatch(b, gl, acc, anchorBtn, put);
       return;
+    }
+    if (act === 'smooth') {
+      const cur = line ? line.months : Array(12).fill(0);
+      const res = smoothMonths(cur);
+      const prev = line && line.driver && line.driver.method && line.driver.method !== 'manual' ? line.driver : null;
+      return put(res.months, { method: 'smooth', passes: res.passes, of: prev ? prev.method : undefined, srcName: prev ? (prev.srcName || prev.name) : undefined });
     }
     if (act === 'wavg') {
       openWavgMatch(b, gl, acc, anchorBtn, put, inp);
@@ -1450,22 +1495,20 @@ function openT12CurveMatch(b, gl, acc, anchorBtn, put, inp) {
     menu.innerHTML = `
       <div class="rm-head">Spread ${esc(row.name.slice(0, 30))} T12 total (${money(total)}) on:</div>
       ${shapes.map(([k, lbl]) => `<button data-sh="${k}">${lbl}</button>`).join('')}
-      <button data-sh="custom">custom weights — type your own 12-month shape…</button>`;
+      <button data-sh="smoothed" title="No shape to pick: the seller's own months, missed-bill smoothed (spikes into surrounding months), scaled to total × growth">smoothed seller months — spikes spread out, total kept</button>`;
     menu.querySelectorAll('button[data-sh]').forEach((btn) => btn.addEventListener('click', async () => {
       const shapeKey = btn.dataset.sh;
       menu.remove();
       let weights = null;
-      if (shapeKey === 'custom') {
-        const raw = prompt('12 monthly weights, Jan → Dec, comma-separated (relative — e.g. 2,2,1.5,1,.5,.25,.25,.25,.5,1,1.5,2):', '');
-        if (raw == null) return;
-        weights = String(raw).split(/[,\s]+/).filter(Boolean).map((v) => parseFloat(v));
-        if (weights.length !== 12 || weights.some((v) => !Number.isFinite(v) || v < 0)) { alert('Need exactly 12 non-negative numbers.'); return; }
+      if (shapeKey === 'smoothed') {
+        // seller's own calendar series, smoothed → becomes the shape
+        weights = smoothMonths(fcSellerCal(row)).months.map((v) => Math.max(0, v));
       }
       const g = parseFloat(String(prompt(`Growth % on the ${money(total)} T12 total:`, '3') || '').replace(/,/g, ''));
       if (!Number.isFinite(g)) return;
       const mult = parseFloat(String(prompt(`MROUND multiple ($, 0 = none) — annual lands at ≈ ${money(total * (1 + g / 100))}:`, '0') || '').replace(/,/g, ''));
       if (!Number.isFinite(mult) || mult < 0) return;
-      const res = fcT12Curve(S.bv, inp, row, g, shapeKey, gl, mult, weights);
+      const res = fcT12Curve(S.bv, inp, row, g, shapeKey === 'smoothed' ? 'custom' : shapeKey, gl, mult, weights);
       await put(res.months, res.driver);
     }));
   };
