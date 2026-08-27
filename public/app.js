@@ -496,6 +496,7 @@ function renderEditor(el) {
         <button class="btn sub" id="recalc">↻ Recalc</button>
         <button class="btn sub" id="undo-btn" ${S.undo.budgetId === b.id && S.undo.stack.length ? '' : 'disabled'}>↶ Undo${S.undo.budgetId === b.id && S.undo.stack.length ? ` (${S.undo.stack.length})` : ''}</button>
         <button class="btn sub" id="cols-btn">▦ Columns</button>
+        <button class="btn sub" id="side-btn" title="Hide/show the side panel (trend, tie-out, data sources) — frees ~430px for the month columns">${localStorage.getItem('bt-side') === '0' ? '⏵ Panel' : '⏴ Panel'}</button>
         <button class="btn sub" id="round-btn" title="Round selected lines' months to a multiple">⌁ MROUND…</button>
         <button class="btn sub" id="copyfx-btn" title="Replay another budget's named formulas here, re-evaluated on this property's own data">⧉ Copy formulas…</button>
         <button class="btn" id="assump-open">⚙ Assumptions</button>
@@ -511,7 +512,7 @@ function renderEditor(el) {
       ${kpiCard('Cash flow', k.cashFlow, prop.units)}
       <div class="kpi"><div class="lbl">Cash on cash</div><div class="val">${k.coc != null ? pctf(k.coc) : '—'}</div><div class="sub">${inp.capital ? 'on ' + money(inp.capital) : 'set capital'}</div></div>
     </div>
-    <div class="editor">
+    <div class="editor${localStorage.getItem('bt-side') === '0' ? ' noside' : ''}">
       <div>
         <div class="legend">
           <b style="color:var(--dim)">Formula fills:</b>
@@ -591,6 +592,10 @@ function renderEditor(el) {
     render();
   }));
   document.getElementById('cols-btn').addEventListener('click', (e) => { e.stopPropagation(); openColsMenu(e.currentTarget, labels); });
+  document.getElementById('side-btn').addEventListener('click', () => {
+    localStorage.setItem('bt-side', localStorage.getItem('bt-side') === '0' ? '1' : '0');
+    render();
+  });
   el.querySelectorAll('.trend-chip').forEach((chip) => chip.addEventListener('click', () => {
     const sel = trendSeriesSel();
     if (sel.has(chip.dataset.trend)) sel.delete(chip.dataset.trend); else sel.add(chip.dataset.trend);

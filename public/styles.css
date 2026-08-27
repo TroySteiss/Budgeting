@@ -50,7 +50,7 @@ input, select, textarea { font: inherit; color: var(--ink); background: var(--in
 .topbar .who { color: var(--head-dim); font-size: 12.5px; }
 .topbar .who button { background: none; border: 1px solid #46536a; color: var(--head-dim); border-radius: 6px; padding: 3px 10px; margin-left: 8px; }
 .topbar .theme { background: none; border: 1px solid #46536a; color: var(--head-dim); border-radius: 6px; padding: 3px 9px; }
-.wrap { padding: 18px; max-width: 1700px; margin: 0 auto; }
+.wrap { padding: 18px; margin: 0 auto; }   /* full width — wide monitors show every month column */
 
 /* ---------- cards ---------- */
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
@@ -88,6 +88,8 @@ table.list tr.click:hover { background: var(--hover); }
 
 /* ---------- editor layout ---------- */
 .editor { display: grid; grid-template-columns: minmax(0, 1fr) 430px; gap: 16px; align-items: start; }
+.editor.noside { grid-template-columns: minmax(0, 1fr); }
+.editor.noside .side { display: none; }
 .editor .side { position: sticky; top: 60px; max-height: calc(100vh - 76px); overflow: auto; }
 @media (max-width: 1250px) { .editor { grid-template-columns: 1fr; } .editor .side { position: static; max-height: none; } }
 
@@ -100,13 +102,13 @@ table.list tr.click:hover { background: var(--hover); }
 table.grid { border-collapse: collapse; font-size: 12.3px; min-width: 1000px; }
 table.grid th { position: sticky; top: 0; background: var(--soft); z-index: 5; padding: 5px 6px; border-bottom: 1px solid var(--line); font-size: 11px; color: var(--dim); text-align: right; white-space: nowrap; }
 table.grid th.l { text-align: left; }
-table.grid td { padding: 2px 6px; border-bottom: 1px solid var(--gridline); text-align: right; white-space: nowrap; }
+table.grid td { padding: 2px 4px; border-bottom: 1px solid var(--gridline); text-align: right; white-space: nowrap; }
 table.grid td.code { color: var(--dim); text-align: left; font-size: 11.3px; }
 table.grid td.name { text-align: left; max-width: 250px; overflow: hidden; text-overflow: ellipsis; }
 table.grid tr.header td { background: var(--soft2); font-weight: 650; padding-top: 6px; }
 table.grid tr.total td { background: var(--total-bg); font-weight: 650; border-top: 1px solid var(--line); }
 table.grid tr.grand td { background: var(--grand-bg); font-weight: 700; }
-table.grid td.m input { width: 74px; border: 1px solid transparent; background: transparent; text-align: right; border-radius: 4px; padding: 2px 3px; color: inherit; }
+table.grid td.m input { width: 68px; border: 1px solid transparent; background: transparent; text-align: right; border-radius: 4px; padding: 2px 3px; color: inherit; }
 table.grid td.m input:hover { border-color: var(--line); }
 table.grid td.m input:focus { border-color: var(--accent); background: var(--input); outline: none; }
 table.grid td.ann input { width: 86px; border: 1px solid transparent; background: transparent; text-align: right; border-radius: 4px; padding: 2px 3px; color: inherit; font-weight: 600; }
