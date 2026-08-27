@@ -149,6 +149,11 @@ input.fxp:focus { border-color: var(--accent); color: var(--ink); outline: none;
 .dot.drv-man { background: var(--drv-man); } .dot.drv-t12 { background: var(--drv-t12); }
 .dot.drv-sp { background: var(--drv-sp); }
 .warnflag { color: var(--warn); cursor: help; font-size: 12px; }
+/* non-accrual bad-bill lines: unmissable — whole row bold red on a red tint */
+tr.badbills td, tr.badbills td.m { background: color-mix(in srgb, var(--bad) 12%, var(--panel)); }
+tr.badbills td.code, tr.badbills td.name { color: var(--bad); font-weight: 700; }
+tr.badbills td.m input, tr.badbills td.ann input { color: var(--bad); font-weight: 700; }
+tr.badbills .warnflag { color: var(--bad); font-weight: 700; }
 
 /* ---------- trend chart ---------- */
 .trend-chip { background: none; border: 1px solid var(--line); border-radius: 12px; padding: 2px 9px; font-size: 11px; color: var(--dim); margin-right: 6px; opacity: .55; }
