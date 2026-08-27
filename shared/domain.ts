@@ -66,6 +66,10 @@ export interface BudgetInputs {
       model's aggregates; a GL not present here keeps the model value. Burden
       (benefits/bonuses) re-derives from the ADJUSTED wage total. */
   wages?: Record<string, number> | null;
+  /** per-budget recovery mapping overrides: reim GL → the utility expense GLs
+      it recovers (exclusive claims). Reims not listed use the default named
+      claims; an empty list zeroes that reim. */
+  recMap?: Record<string, string[]> | null;
   year: number;
   units: number;
   capital: number;            // equity, for CoC

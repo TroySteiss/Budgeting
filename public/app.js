@@ -1338,6 +1338,7 @@ function openRowTools(b, gl, anchorBtn) {
     ${(S.bv.sellerT12 || []).length ? `<button data-act="t12curve" title="For non-accrual seller billing (credits/gaps/spikes): the ANNUAL total is still right even when the months are garbage. Takes the seller line's T12 total × growth and spreads it on a clean seasonal curve.">${dot('drv-t12')}Seller T12 TOTAL → seasonal curve… (bad bills)</button>` : ''}
     <button data-act="link" title="Set this GL equal to another budget line × a weight (e.g. sewer = water × 0.8). LIVE: re-follows the source on every regeneration.">${dot('drv-fee')}= another line × weight… (moves in conjunction)</button>
     ${line && line.months.some((v) => v) ? `<button data-act="smooth" title="One click for missed bills: pulls catch-up spikes into the surrounding low months and soaks up credit months, repeating until the series looks like real monthly billing. Annual total kept exactly.">${dot('drv-t12')}Smooth missed bills — spikes into surrounding months</button>` : ''}
+    ${line && (line.driver || {}).method === 'recovery' ? `<button data-act="recmap" title="Pick exactly which utility expense lines this reimbursement recovers (recovery % × their prior month). Claims are exclusive — a line you take here is released by whichever reim had it.">${dot('drv-t12')}Edit what this reim recovers…</button>` : ''}
     ${((S.bv.sellerT12 || []).length || hasComp) ? `<button data-act="wavg" title="Troy's distribution formula: each month = (2×that month + prior + next)/4 of the source actuals, × (1+growth), MROUND to a multiple">${dot('drv-comp')}Weighted avg distribution (1-2-1) × growth → MROUND…</button>` : ''}
     <button data-act="reset">${dot('drv-uw')}Reset to engine formula (clear override)</button>`;
   const r = anchorBtn.getBoundingClientRect();
@@ -1399,6 +1400,10 @@ function openRowTools(b, gl, anchorBtn) {
     }
     if (act === 'link') {
       openLinkLineMatch(b, gl, acc, anchorBtn, put);
+      return;
+    }
+    if (act === 'recmap') {
+      openRecMapEditor(b, gl, acc, anchorBtn, line);
       return;
     }
     if (act === 'smooth') {
@@ -1528,6 +1533,55 @@ function openT12CurveMatch(b, gl, acc, anchorBtn, put, inp) {
     });
   });
   menu.querySelectorAll('button[data-tc]').forEach((btn) => btn.addEventListener('click', () => pickShape(rows[Number(btn.dataset.tc)])));
+}
+
+/* Recovery-mapping editor: pick exactly which utility expense lines a
+   reimbursement recovers. Saves to inputs.recMap (per budget) — claims are
+   exclusive, custom mappings win over the default named claims. */
+function openRecMapEditor(b, gl, acc, anchorBtn, line) {
+  document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
+  const coaByCode = new Map(S.state.coa.map((a) => [a.code, a]));
+  // current claim from the chip's src ("6604+6608 (custom)" → codes)
+  const cur = new Set(String((line.driver || {}).src || '').match(/\d{4}/g) || []);
+  const cands = S.bv.lines
+    .map((l) => ({ l, a: coaByCode.get(l.gl_code) }))
+    .filter(({ a }) => a && a.kind === 'detail' && a.pcode === '12' && a.active !== false)
+    .map(({ l, a }) => ({ gl: l.gl_code, name: a.name, annual: sumM(l.months) }))
+    .sort((x, y) => Number(x.gl) - Number(y.gl));
+  const menu = document.createElement('div');
+  menu.className = 'rowmenu';
+  menu.style.maxHeight = '440px';
+  menu.style.overflow = 'auto';
+  menu.innerHTML = `
+    <div class="rm-head">${gl} ${esc(acc.name || '')} recovers (% × prior month of):</div>
+    ${cands.map((c, i) => `<label style="display:block; font-size:12.3px; padding:2px 8px">
+      <input type="checkbox" data-rm="${c.gl}" ${cur.has(c.gl) ? 'checked' : ''}>
+      ${c.gl} ${esc(c.name.slice(0, 26))} <span class="muted" style="float:right">${money(c.annual)}</span></label>`).join('')}
+    <div style="padding:6px 8px; display:flex; gap:6px">
+      <button class="btn sub" data-rmact="default" title="Remove the custom mapping — back to the named default claims">Default</button>
+      <button class="btn" data-rmact="save" style="margin-left:auto">Save mapping</button>
+    </div>`;
+  const rct = anchorBtn.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, rct.left + window.scrollX - 60)}px`;
+  menu.style.top = `${rct.bottom + window.scrollY + 2}px`;
+  document.body.appendChild(menu);
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+  const apply = async (recMap) => {
+    menu.remove();
+    pushUndo();
+    S.bv = await PUT(`/budgets/${b.id}`, { inputs: { recMap } });
+    render();
+  };
+  menu.querySelector('[data-rmact="save"]').addEventListener('click', () => {
+    const picked = [...menu.querySelectorAll('[data-rm]')].filter((c) => c.checked).map((c) => c.dataset.rm);
+    apply({ ...(S.bv.budget.inputs.recMap || {}), [gl]: picked });
+  });
+  menu.querySelector('[data-rmact="default"]').addEventListener('click', () => {
+    const recMap = { ...(S.bv.budget.inputs.recMap || {}) };
+    delete recMap[gl];
+    apply(recMap);
+  });
 }
 
 /* Link-line picker: set this GL = another budget line × weight, LIVE — the

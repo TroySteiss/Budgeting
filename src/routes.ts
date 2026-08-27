@@ -349,7 +349,7 @@ function effectiveWages(model: Record<string, number> | null, adj?: Record<strin
     REIM takes ALL unclaimed cat-12 remainder (Troy: no exclusions — zero or
     deactivate a line to keep it out). Month 0 keeps the generated value (it
     recovers the pre-start seller month). */
-function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[]): BudgetLine[] {
+function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[], inputs?: BudgetInputs): BudgetLine[] {
   let lines = input.map((l) => {
     const d = l.driver as any;
     if (l.override && d?.method === 'linkLine' && d.src) {
@@ -366,11 +366,15 @@ function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[]): BudgetLine
       const a = lb.coaMap.get(l.gl_code);
       return a && a.kind === 'detail' && a.pcode === '12' && a.active !== false;
     });
+    // ordered + exclusive: sewer→SEWER REIM when that reim exists; otherwise
+    // WATER REIM's broader pattern picks up water+sewer+storm (W/S billed
+    // together) — order prevents double-recovery either way. Valet→trash
+    // falls through the same way.
     const CLAIMS: [RegExp, RegExp][] = [
       [/valet/, /valet/],
       [/trash/, /trash|garbage|refuse/],
       [/sewer|storm/, /sewer|storm/],
-      [/water/, /water/],
+      [/water/, /water|sewer|storm/],
       [/gas/, /\bgas\b|\bgas[- ]/],
       [/elec|street/, /elec/],
     ];
@@ -378,6 +382,18 @@ function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[]): BudgetLine
     const assigned = new Set<string>();
     const baseFor = new Map<string, Months>();
     const srcDesc = new Map<string, string>();
+    // per-budget CUSTOM mappings (inputs.recMap) claim first — explicit wins
+    for (const [reimGl, srcGls] of Object.entries(inputs?.recMap || {})) {
+      const rl = recLines.find((x) => x.gl_code === reimGl);
+      if (!rl) continue;
+      assigned.add(reimGl);
+      const srcs = cat12Lines.filter((e) => (srcGls || []).includes(e.gl_code));
+      if (!srcs.length) { srcDesc.set(reimGl, 'custom: nothing — zeroed'); continue; }
+      const base = zero12();
+      for (const s of srcs) { claimed.add(s.gl_code); s.months.forEach((v, i) => { base[i] = r2(base[i] + v); }); }
+      baseFor.set(reimGl, base);
+      srcDesc.set(reimGl, srcs.map((s) => s.gl_code).join('+') + ' (custom)');
+    }
     for (const [rre, ere] of CLAIMS) {
       for (const rl of recLines) {
         if (assigned.has(rl.gl_code) || !rre.test(nameOf(rl.gl_code))) continue;
@@ -393,6 +409,10 @@ function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[]): BudgetLine
     // Unmatched reims (incl. the generic UTILITIES REIM) do NOT sweep the
     // unclaimed remainder — Troy: no grabbing by default. They ZERO out;
     // assign one explicitly via '= line × weight' or a manual entry.
+    // Month 0 recovers the pre-close month, which isn't budgeted — use the
+    // claimed categories' OWN month-0 billing as its proxy (the old behavior
+    // recovered a share of the seller's TOTAL billing there, which jacked up
+    // month 1 once the rest of the row went per-category).
     for (const rl of recLines) {
       const base = baseFor.get(rl.gl_code);
       if (!base) {
@@ -400,7 +420,8 @@ function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[]): BudgetLine
         rl.driver = { ...(rl.driver as any), src: 'no matched utility — zeroed (assign via “= line × weight” if needed)' };
         continue;
       }
-      const m = rl.months.slice() as Months;
+      const m = zero12();
+      m[0] = r2(pct * base[0]);
       for (let i = 1; i < 12; i++) m[i] = r2(pct * base[i - 1]);
       rl.months = m;
       rl.driver = { ...(rl.driver as any), src: srcDesc.get(rl.gl_code) || '' };
@@ -416,7 +437,7 @@ function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLin
   let lines = existing
     ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges)
     : generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges);
-  lines = applyDependentPasses(lb, lines);
+  lines = applyDependentPasses(lb, lines, inputs);
   if (lb.uw) {
     if (inputs.tieIncome !== false) lines = tieIncomeToUw(lines, lb.coaMap, lb.uw.egi, inputs.tieIncomeGl || '5003');
     if (inputs.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, lb.uw.noi, inputs.noiFlexPcodes || DEFAULT_NOI_FLEX);
@@ -543,7 +564,7 @@ router.put('/budgets/:id/lines/:gl', h(async (req, res) => {
       .map((l) => [l.gl_code, JSON.stringify(l.months) + '|' + JSON.stringify(l.driver)])
   );
   if (before.size) {
-    const passed = applyDependentPasses(lb, lb.lines);
+    const passed = applyDependentPasses(lb, lb.lines, lb.budget.inputs);
     for (const l of passed) {
       const b4 = before.get(l.gl_code);
       if (b4 === undefined) continue;
