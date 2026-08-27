@@ -387,7 +387,7 @@ function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[], inputs?: Bu
       [/sewer|storm/, /sewer|storm/],
       [/water/, /water|sewer|storm/],
       [/gas/, /\bgas\b|\bgas[- ]/],
-      [/elec|street/, /elec/],
+      [/\belec/, /elec/],   // only an ELECTRIC-named reim claims electric — never guess (street ≠ electric)
     ];
     const claimed = new Set<string>();
     const assigned = new Set<string>();
@@ -426,16 +426,23 @@ function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[], inputs?: Bu
     // month 1 once the rest of the row went per-category).
     for (const rl of recLines) {
       const base = baseFor.get(rl.gl_code);
+      const wasRec = (rl.driver as any)?.method === 'recovery' || !!(rl.driver as any)?.src;
       if (!base) {
-        rl.months = zero12();
-        rl.driver = { ...(rl.driver as any), src: 'no matched utility — zeroed (assign via “= line × weight” if needed)' };
+        // unmatched: zero a line the pass has ever driven; leave a never-used
+        // reim GL completely untouched (no phantom REC chips on dead rows)
+        if (wasRec || rl.months.some((v) => v)) {
+          rl.months = zero12();
+          rl.driver = { method: 'recovery', pct, src: 'no matched utility — zeroed (map it via “Edit what this reim recovers”)' } as any;
+        }
         continue;
       }
       const m = zero12();
       m[0] = r2(pct * base[0]);
       for (let i = 1; i < 12; i++) m[i] = r2(pct * base[i - 1]);
       rl.months = m;
-      rl.driver = { ...(rl.driver as any), src: srcDesc.get(rl.gl_code) || '' };
+      // ALWAYS a proper recovery driver — chart-level reims the seller never
+      // used were keeping their seeded 'manual' driver and showed NO formula
+      rl.driver = { method: 'recovery', pct, src: srcDesc.get(rl.gl_code) || '' } as any;
     }
   }
   return lines;
