@@ -879,6 +879,15 @@ function trendSvg(bv) {
   if (series.length) {
     const all = series.flatMap((s) => s.vals);
     let min = Math.min(...all), max = Math.max(...all);
+    // guard the tight scale: when the series is basically flat (tied NOI),
+    // don't zoom into penny-level tie/rounding drift — that drew a huge fake
+    // spike on the last month and made real edits look like nothing changed
+    const mag = Math.max(Math.abs(min), Math.abs(max), 1);
+    if (max - min < mag * 0.01) {
+      const mid = (min + max) / 2;
+      min = mid - mag * 0.01;
+      max = mid + mag * 0.01;
+    }
     const span = max - min || Math.abs(max) || 1;
     min -= span * 0.08; max += span * 0.08;             // tight scale + padding
     const x = (i) => padL + (i * (W - padL - padR)) / 11;
