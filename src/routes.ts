@@ -373,31 +373,52 @@ function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLin
       const a = lb.coaMap.get(l.gl_code);
       return a && a.kind === 'detail' && a.pcode === '12' && a.active !== false;
     });
-    const PAIRS: [RegExp, RegExp][] = [
+    // Never resident-recoverable: office comms, corp units, vacants, late
+    // fees, commercial (CAM, not RUBS) — these stay expenses, no reim ever.
+    const NEVER = /cable|telephone|internet|corp unit|vacant|late fee|commercial/;
+    // Ordered EXCLUSIVE claims — each expense GL is claimed once, most
+    // specific reim first (valet before trash; sewer before water), so
+    // nothing is double-recovered.
+    const CLAIMS: [RegExp, RegExp][] = [
+      [/valet/, /valet/],
       [/trash/, /trash|garbage|refuse/],
+      [/sewer|storm/, /sewer|storm/],
+      [/water/, /water/],
       [/gas/, /\bgas\b|\bgas[- ]/],
-      [/water|sewer/, /water|sewer|storm/],
-      [/elec/, /elec/],
+      [/elec|street/, /elec/],
     ];
     const claimed = new Set<string>();
+    const assigned = new Set<string>();
     const baseFor = new Map<string, Months>();
-    const generic: typeof recLines = [];
-    for (const rl of recLines) {
-      const pair = PAIRS.find(([re]) => re.test(nameOf(rl.gl_code)));
-      const srcs = pair ? cat12Lines.filter((e) => pair[1].test(nameOf(e.gl_code))) : [];
-      if (srcs.length) {
+    const srcDesc = new Map<string, string>();
+    for (const [rre, ere] of CLAIMS) {
+      for (const rl of recLines) {
+        if (assigned.has(rl.gl_code) || !rre.test(nameOf(rl.gl_code))) continue;
+        const srcs = cat12Lines.filter((e) => !claimed.has(e.gl_code) && !NEVER.test(nameOf(e.gl_code)) && ere.test(nameOf(e.gl_code)));
+        if (!srcs.length) continue;
         const base = zero12();
         for (const s of srcs) { claimed.add(s.gl_code); s.months.forEach((v, i) => { base[i] = r2(base[i] + v); }); }
         baseFor.set(rl.gl_code, base);
-      } else generic.push(rl);
+        srcDesc.set(rl.gl_code, srcs.map((s) => s.gl_code).join('+'));
+        assigned.add(rl.gl_code);
+      }
     }
+    // whatever reims remain share the recoverable remainder (unclaimed,
+    // never-list excluded — office phone/internet/corp/vacants stay out)
+    const generic = recLines.filter((rl) => !assigned.has(rl.gl_code));
     if (generic.length) {
       const rem = zero12();
-      for (const e of cat12Lines) if (!claimed.has(e.gl_code)) e.months.forEach((v, i) => { rem[i] = r2(rem[i] + v); });
+      const remGls: string[] = [];
+      for (const e of cat12Lines) {
+        if (claimed.has(e.gl_code) || NEVER.test(nameOf(e.gl_code))) continue;
+        remGls.push(e.gl_code);
+        e.months.forEach((v, i) => { rem[i] = r2(rem[i] + v); });
+      }
       const tot = generic.reduce((a, l) => a + sum(l.months), 0);
       for (const rl of generic) {
         const share = tot ? sum(rl.months) / tot : 1 / generic.length;
         baseFor.set(rl.gl_code, rem.map((v) => r2(v * share)) as Months);
+        srcDesc.set(rl.gl_code, `remainder (${remGls.join('+') || 'none'})${generic.length > 1 ? ' share' : ''}`);
       }
     }
     for (const rl of recLines) {
@@ -406,6 +427,7 @@ function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLin
       const m = rl.months.slice() as Months;
       for (let i = 1; i < 12; i++) m[i] = r2(pct * base[i - 1]);
       rl.months = m;
+      rl.driver = { ...(rl.driver as any), src: srcDesc.get(rl.gl_code) || '' };
     }
   }
   if (lb.uw) {
