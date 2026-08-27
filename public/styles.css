@@ -104,7 +104,7 @@ table.grid th { position: sticky; top: 0; background: var(--soft); z-index: 5; p
 table.grid th.l { text-align: left; }
 table.grid td { padding: 2px 4px; border-bottom: 1px solid var(--gridline); text-align: right; white-space: nowrap; }
 table.grid td.code { color: var(--dim); text-align: left; font-size: 11.3px; }
-table.grid td.name { text-align: left; max-width: 250px; overflow: hidden; text-overflow: ellipsis; }
+table.grid td.name { text-align: left; max-width: 185px; overflow: hidden; text-overflow: ellipsis; }
 table.grid tr.header td { background: var(--soft2); font-weight: 650; padding-top: 6px; }
 table.grid tr.total td { background: var(--total-bg); font-weight: 650; border-top: 1px solid var(--line); }
 table.grid tr.grand td { background: var(--grand-bg); font-weight: 700; }
@@ -114,7 +114,7 @@ table.grid td.m input:focus { border-color: var(--accent); background: var(--inp
 table.grid td.ann input { width: 86px; border: 1px solid transparent; background: transparent; text-align: right; border-radius: 4px; padding: 2px 3px; color: inherit; font-weight: 600; }
 table.grid td.ann input:hover { border-color: var(--line); }
 table.grid td.ann input:focus { border-color: var(--accent); background: var(--input); outline: none; }
-table.grid td.note input { width: 130px; border: 1px solid transparent; background: transparent; border-radius: 4px; padding: 2px 4px; text-align: left; color: var(--dim); }
+table.grid td.note input { width: 100px; border: 1px solid transparent; background: transparent; border-radius: 4px; padding: 2px 4px; text-align: left; color: var(--dim); }
 table.grid td.note input:focus { border-color: var(--accent); background: var(--input); outline: none; color: var(--ink); }
 table.grid td.neg, .neg { color: var(--bad); }
 table.grid tr.dist td { background: color-mix(in srgb, var(--accent) 10%, var(--panel)); color: var(--accent); font-size: 10.5px; padding-top: 0; padding-bottom: 3px; border-top: none; }
