@@ -9,7 +9,7 @@ import {
   CoaAccount, BudgetLine, BudgetInputs, UwSnapshotData, CompWeights, Months,
   generateLines, regenerate, rebalanceCategory, defaultInputs, computeTieout,
   kpis, categoryTotals, t12CategoryShapes, tieNoiToUw, tieIncomeToUw, DEFAULT_NOI_FLEX,
-  calendarSlice, monthLabels, applyRounding, zero12, r2, sum, type Lease, type SellerUtilRow,
+  calendarSlice, monthLabels, applyRounding, zero12, r2, sum, CURVES, type Lease, type SellerUtilRow,
 } from '../shared/domain.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -58,6 +58,7 @@ router.get('/state', h(async (_req, res) => {
     coa, portfolios: portfolios.rows, properties: properties.rows,
     budgets: budgets.rows, uwSnapshots: uws.rows, compSets: comps.rows,
     t12Snapshots: t12s.rows, payrollModels: payrolls.rows, rentSnapshots: rents.rows,
+    curves: CURVES,   // named seasonal shapes (Jan-Dec weights) for client-side spread tools
   });
 }));
 

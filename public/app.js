@@ -56,6 +56,7 @@ function drvMetaBase(l) {
     case 'recovery': return { cls: 'drv-t12', tag: 'REC', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% recovery of prior-month billing` };
     case 'charges': return { cls: 'drv-rr', tag: 'CHG', label: 'Rent-roll charges × 12' };
     case 'zero': return { cls: 'drv-int', tag: 'ZERO', label: 'Zeroed out — this GL carries nothing' };
+    case 't12curve': return { cls: 'drv-t12', tag: 'T12C', label: `Seller ${l.driver.name || ''} T12 TOTAL × ${(l.driver.pct || 0).toFixed(1)}% on ${l.driver.shape === 'minot' ? 'the Minot' : l.driver.shape || 'flat'} curve${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
     case 'setTotal': return { cls: 'drv-man', tag: 'TOTAL', label: `Total set to ${Math.round(l.driver.total || 0).toLocaleString()} — ${l.driver.of ? `${String(l.driver.of).toUpperCase()} distribution kept` : 'prior distribution kept'}` };
     default: return { cls: 'drv-none', tag: '—', label: 'No formula (zero / manual)' };
   }
@@ -418,7 +419,7 @@ function renderUploadPreview(el, parsed) {
       ${rows.map(([code, w]) => `<tr><td><b>${code}</b></td>${gls.map((g) => `<td>${money(w[g] || 0)}</td>`).join('')}<td><b>${money(gls.reduce((a, g) => a + (w[g] || 0), 0))}</b></td></tr>`).join('')}</table>
       <div class="row" style="margin-top:10px">
         <div class="fld"><label>Model name</label><input id="pm-name" value="${esc(parsed.filename.replace(/\.xlsx?$/i, ''))}" style="min-width:280px"></div>
-        <label style="align-self:center" title="Point every budget of a property this model covers at the NEW model and regenerate — without this, budgets keep the old upload. Per-budget wage adjustments (⚙ Assumptions) survive and overlay the new model.">
+        <label style="align-self:center" title="Point every budget of a property this model covers at the NEW model and regenerate — without this, budgets keep the old upload. Each budget's Data sources panel shows and can change which model it points at.">
           <input type="checkbox" id="pm-relink" checked> Relink existing budgets & regenerate</label>
         <button class="btn" id="up-apply">Save payroll model</button>
       </div>`;
@@ -526,6 +527,11 @@ function renderEditor(el) {
           <h2>Tie-out vs UW</h2>
           ${tieHtml(bv)}
         </div>
+        <div class="card">
+          <h2>Data sources</h2>
+          <p class="muted" style="margin:0 0 6px; font-size:11.5px">Which uploads this budget points at. Change one → relink + regenerate (overrides kept).</p>
+          ${dataLinksHtml(bv)}
+        </div>
       </div>
     </div>
     <dialog class="assump" id="assump-dlg"></dialog>
@@ -551,6 +557,15 @@ function renderEditor(el) {
   document.getElementById('copyfx-btn').addEventListener('click', () => openCopyFormulas(b));
   const ovrBtn = document.getElementById('ovr-btn');
   if (ovrBtn) ovrBtn.addEventListener('click', () => openOverridesAudit(b));
+  // data-sources pickers: repoint a snapshot link, then regenerate (inputs:{}
+  // forces the regen; overrides and MROUNDs are kept)
+  el.querySelectorAll('[data-link]').forEach((sel) => sel.addEventListener('change', async () => {
+    pushUndo();
+    const body = { inputs: {} };
+    body[sel.dataset.link] = sel.value ? Number(sel.value) : null;
+    S.bv = await PUT(`/budgets/${b.id}`, body);
+    render();
+  }));
   document.getElementById('cols-btn').addEventListener('click', (e) => { e.stopPropagation(); openColsMenu(e.currentTarget, labels); });
   el.querySelectorAll('.trend-chip').forEach((chip) => chip.addEventListener('click', () => {
     const sel = trendSeriesSel();
@@ -1033,15 +1048,6 @@ function inputsHtml(inp) {
       <div class="fld"><label>Rate %</label><input id="in-rate" value="${((inp.rate || 0) * 100).toFixed(2)}" style="width:70px"></div>
       <div class="fld"><label>Capital $ (CoC)</label><input id="in-cap" value="${inp.capital ?? 0}" style="width:110px"></div>
     </div>
-    <h3>Payroll wages ($/yr) ${S.bv && S.bv.payrollWages ? '<span class="badge">payroll model linked — blank fields use it</span>' : '<span class="badge">no payroll model — enter wages directly</span>'}</h3>
-    <div class="row">
-      ${[['6402', 'Admin/office'], ['6404', 'Maintenance'], ['6405', 'Landscaping'], ['6407', 'Rover']].map(([g, lbl]) => `
-        <div class="fld"><label>${g} ${lbl}</label>
-          <input class="in-wage" data-gl="${g}" value="${(inp.wages || {})[g] ?? ''}"
-            placeholder="${S.bv && S.bv.payrollWages && S.bv.payrollWages[g] != null ? 'model: ' + Math.round(S.bv.payrollWages[g]).toLocaleString() : '—'}"
-            style="width:110px" title="Annual wages for ${g}. Blank = the linked payroll model's number. Benefits/bonuses re-derive from the ADJUSTED wage total via the Minot ratios."></div>`).join('')}
-      <span class="muted" style="align-self:center; font-size:11.5px">Blank = model value · adjustments survive model re-uploads</span>
-    </div>
     <h3>Ties to underwriting</h3>
     <div class="row">
       <label title="Adjust loss-to-lease so Total Income equals UW Year 1 EGI"><input type="checkbox" id="in-tieinc" ${inp.tieIncome !== false ? 'checked' : ''}> Tie income (via LTL)</label>
@@ -1086,16 +1092,33 @@ async function applyInputs(b, el) {
     },
     uwAbs,
   };
-  // per-budget wage adjustments: blank = use the linked payroll model
-  const wages = {};
-  el.querySelectorAll('.in-wage').forEach((x) => {
-    const s = String(x.value).replace(/[$,]/g, '').trim();
-    if (s !== '') wages[x.dataset.gl] = parseFloat(s) || 0;
-  });
-  inputs.wages = Object.keys(wages).length ? wages : null;
   pushUndo();
   S.bv = await PUT(`/budgets/${b.id}`, { inputs });
   render();
+}
+
+/* Data-sources panel: shows the workbook/upload each budget POINTS AT and
+   re-points it (PUT relink + regenerate). Newer uploads never take effect
+   until the budget points at them — this is where you fix that. */
+function dataLinksHtml(bv) {
+  const st = S.state, b = bv.budget;
+  const own = (list) => list.filter((x) => !x.property_code || x.property_code === b.property_code);
+  const stale = (list, cur) => cur && list.length && Number(list[0].id) !== Number(cur); // list is newest-first
+  const LINKS = [
+    { key: 'uwSnapshotId', cur: b.uw_snapshot_id, label: 'UW book', list: own(st.uwSnapshots), name: (x) => x.label },
+    { key: 'rentSnapshotId', cur: b.rent_snapshot_id, label: 'Rent roll', list: own(st.rentSnapshots), name: (x) => `${x.as_of ? new Date(x.as_of).toLocaleDateString() : '#' + x.id} · ${x.units || '?'}u` },
+    { key: 't12SnapshotId', cur: b.t12_snapshot_id, label: 'Seller T12', list: own(st.t12Snapshots || []), name: (x) => `${x.label} · ${x.period || ''}` },
+    { key: 'compSetId', cur: b.comp_set_id, label: 'Comp set', list: st.compSets, name: (x) => x.name },
+    { key: 'payrollModelId', cur: b.payroll_model_id, label: 'Payroll model', list: st.payrollModels || [], name: (x) => x.label },
+  ];
+  return LINKS.map((L) => `
+    <div class="fld" style="margin:0 0 6px">
+      <label>${L.label}${stale(L.list, L.cur) ? ' <span class="warnflag" title="A newer upload exists — this budget still points at an older one">⚠ newer upload available</span>' : ''}</label>
+      <select data-link="${L.key}" style="max-width:260px">
+        <option value="">— none —</option>
+        ${L.list.map((x) => `<option value="${x.id}" ${Number(L.cur) === Number(x.id) ? 'selected' : ''}>${esc(String(L.name(x) || '#' + x.id).slice(0, 44))}</option>`).join('')}
+      </select>
+    </div>`).join('');
 }
 
 /* Non-accrual billing smell test: sellers that book bills as paid (no
@@ -1117,7 +1140,7 @@ function billingSmell(months) {
 }
 function sellerDerived(l) {
   const d = l && l.driver;
-  return !!d && (['sellerUtil', 'sellerLine', 'recovery'].includes(d.method) || (d.method === 'wavg' && d.srcType === 'seller'));
+  return !!d && (['sellerUtil', 'sellerLine', 'recovery', 't12curve'].includes(d.method) || (d.method === 'wavg' && d.srcType === 'seller'));
 }
 
 /* ---------------- formula recompute (shared: row tools + formula copier) ----------------
@@ -1187,6 +1210,33 @@ function fcWavgRows(bv, inp, gl) {
   }
   return rows;
 }
+/* T12-TOTAL-ON-A-CURVE (Troy's methodology for non-accrual seller lines):
+   the seller's ANNUAL total is trustworthy even when the monthly timing is
+   garbage (no accruals → credits/gaps/spikes), so take total × (1+g) and
+   spread it on a CLEAN seasonal shape — the Minot per-GL shape, a named
+   curve (snow/heat/…), or flat — rotated into ownership order. */
+function fcT12Curve(bv, inp, row, pct, shapeKey, gl, mult) {
+  const start = inp.startMonth || 1;
+  const annual = fcSellerCal(row).reduce((a, x) => a + x, 0) * (1 + pct / 100);
+  let cal = null; // Jan-Dec weights
+  if (shapeKey === 'minot') cal = bv.compShapes && bv.compShapes[gl];
+  else if (shapeKey && shapeKey !== 'flat') cal = (S.state.curves || {})[shapeKey];
+  if (!cal || !cal.some((v) => v > 0)) cal = Array(12).fill(1);
+  const shape = cal.map((_, i) => Math.abs(cal[(start - 1 + i) % 12]));   // ownership order
+  const wsum = shape.reduce((a, x) => a + x, 0) || 1;
+  let months = shape.map((w) => Math.round(((annual * w) / wsum) * 100) / 100);
+  if (mult) months = months.map((v) => Math.round(v / mult) * mult);
+  else {
+    // penny-fix the largest month so the year lands exactly on total × growth
+    const drift = Math.round((Math.round(annual * 100) / 100 - months.reduce((a, v) => a + v, 0)) * 100) / 100;
+    if (drift) {
+      const bi = months.reduce((mi, v, i) => (Math.abs(v) > Math.abs(months[mi]) ? i : mi), 0);
+      months[bi] = Math.round((months[bi] + drift) * 100) / 100;
+    }
+  }
+  return { months, driver: { method: 't12curve', name: row.name.slice(0, 40), pct, shape: shapeKey, mult: mult || 0 } };
+}
+
 function fcWavg(bv, inp, row, pct, mult) {
   const start = inp.startMonth || 1;
   // centered 1-2-1 smoothing on the calendar series (wraps at year edges)
@@ -1221,6 +1271,7 @@ function openRowTools(b, gl, anchorBtn) {
     ${hasComp ? `<button data-act="minot">${dot('drv-comp')}Minot $/unit × units (${money((S.bv.compWeights[gl] / S.bv.compUnits) * inp.units)}/yr, seasonal)</button>` : ''}
     ${hasComp && S.bv.compShapes && S.bv.compShapes[gl] ? `<button data-act="t3avg" title="Weighted average of the comp's last 3 months (1-2-1), per-unit scaled, × (1+growth), rounded to $250 — your MROUND formula">${dot('drv-comp')}T3 actuals avg × growth → MROUND $250…</button>` : ''}
     ${(S.bv.sellerT12 || []).length ? `<button data-act="seller" title="Match this GL to a seller T12 line and take its monthly actuals × growth">${dot('drv-t12')}Seller actuals — match a seller line…</button>` : ''}
+    ${(S.bv.sellerT12 || []).length ? `<button data-act="t12curve" title="For non-accrual seller billing (credits/gaps/spikes): the ANNUAL total is still right even when the months are garbage. Takes the seller line's T12 total × growth and spreads it on a clean seasonal curve.">${dot('drv-t12')}Seller T12 TOTAL → seasonal curve… (bad bills)</button>` : ''}
     ${((S.bv.sellerT12 || []).length || hasComp) ? `<button data-act="wavg" title="Troy's distribution formula: each month = (2×that month + prior + next)/4 of the source actuals, × (1+growth), MROUND to a multiple">${dot('drv-comp')}Weighted avg distribution (1-2-1) × growth → MROUND…</button>` : ''}
     <button data-act="reset">${dot('drv-uw')}Reset to engine formula (clear override)</button>`;
   const r = anchorBtn.getBoundingClientRect();
@@ -1274,6 +1325,10 @@ function openRowTools(b, gl, anchorBtn) {
     }
     if (act === 'seller') {
       openSellerMatch(b, gl, acc, anchorBtn, put);
+      return;
+    }
+    if (act === 't12curve') {
+      openT12CurveMatch(b, gl, acc, anchorBtn, put, inp);
       return;
     }
     if (act === 'wavg') {
@@ -1332,6 +1387,65 @@ function openSellerMatch(b, gl, acc, anchorBtn, put) {
     const res = fcSellerLine(S.bv, S.bv.budget.inputs || {}, r, g);
     await put(res.months, res.driver);
   }));
+}
+
+/* T12-total-on-a-curve picker: pick the seller line (its TOTAL is used, so
+   even ⚠ non-accrual lines are fine here), then pick the seasonal shape. */
+function openT12CurveMatch(b, gl, acc, anchorBtn, put, inp) {
+  document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
+  const rows = fcSellerRows(S.bv).slice().sort((a, z) => {
+    const am = a.pcode === acc.pcode ? 0 : 1, zm = z.pcode === acc.pcode ? 0 : 1;
+    return am - zm || Math.abs(z.total) - Math.abs(a.total);
+  });
+  const menu = document.createElement('div');
+  menu.className = 'rowmenu';
+  menu.style.maxHeight = '420px';
+  menu.style.overflow = 'auto';
+  const rct = anchorBtn.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, rct.left + window.scrollX - 60)}px`;
+  menu.style.top = `${rct.bottom + window.scrollY + 2}px`;
+  document.body.appendChild(menu);
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+
+  const pickShape = (row) => {
+    const total = fcSellerCal(row).reduce((a, x) => a + x, 0);
+    const shapes = [];
+    if (S.bv.compShapes && S.bv.compShapes[gl]) shapes.push(['minot', `Minot shape for ${gl} (clean comp seasonality)`]);
+    const own = (S.state.coa.find((x) => x.code === gl) || {}).curve;
+    for (const k of Object.keys(S.state.curves || {})) {
+      shapes.push([k, `${k} curve${k === own ? ' — this GL’s default' : ''}`]);
+    }
+    menu.innerHTML = `
+      <div class="rm-head">Spread ${esc(row.name.slice(0, 30))} T12 total (${money(total)}) on:</div>
+      ${shapes.map(([k, lbl]) => `<button data-sh="${k}">${lbl}</button>`).join('')}`;
+    menu.querySelectorAll('button[data-sh]').forEach((btn) => btn.addEventListener('click', async () => {
+      const shapeKey = btn.dataset.sh;
+      menu.remove();
+      const g = parseFloat(String(prompt(`Growth % on the ${money(total)} T12 total:`, '3') || '').replace(/,/g, ''));
+      if (!Number.isFinite(g)) return;
+      const mult = parseFloat(String(prompt(`MROUND multiple ($, 0 = none) — annual lands at ≈ ${money(total * (1 + g / 100))}:`, '0') || '').replace(/,/g, ''));
+      if (!Number.isFinite(mult) || mult < 0) return;
+      const res = fcT12Curve(S.bv, inp, row, g, shapeKey, gl, mult);
+      await put(res.months, res.driver);
+    }));
+  };
+
+  menu.innerHTML = `
+    <div class="rm-head">T12 total source for ${gl} ${esc(acc.name || '')} — the TOTAL is used, so ⚠ bad-bill lines are fine here</div>
+    <div style="padding:4px 6px"><input id="tc-filter" placeholder="filter…" style="width:100%; border:1px solid var(--line); border-radius:6px; padding:4px 7px"></div>
+    ${rows.map((r, i) => {
+      const sm = billingSmell(fcSellerCal(r));
+      return `<button data-tc="${i}" ${r.pcode === acc.pcode ? '' : 'style="opacity:.75"'}>
+      ${esc(r.name.slice(0, 34))}${sm ? ` <span class="warnflag" title="Non-accrual months (${esc(sm.join('; '))}) — exactly what this tool is for; only the total is used">⚠</span>` : ''} <span class="muted" style="float:right">${money(r.total)}${r.pcode === acc.pcode ? ' · suggested' : ''}</span></button>`;
+    }).join('')}`;
+  menu.querySelector('#tc-filter').addEventListener('input', (e) => {
+    const q = e.target.value.toLowerCase();
+    menu.querySelectorAll('button[data-tc]').forEach((btn) => {
+      btn.style.display = btn.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+  menu.querySelectorAll('button[data-tc]').forEach((btn) => btn.addEventListener('click', () => pickShape(rows[Number(btn.dataset.tc)])));
 }
 
 /* T3 comp-line picker: choose WHICH Minot line feeds the T3 weighted average
@@ -1653,7 +1767,7 @@ function openCopyFormulas(b) {
   const coaByCode = new Map(S.state.coa.map((a) => [a.code, a]));
   const sources = S.state.budgets.filter((x) => x.id !== b.id);
   if (!sources.length) { alert('No other budgets to copy from.'); return; }
-  const RECOMPUTABLE = new Set(['wavg', 't3avg', 'sellerLine', 'perUnitComp']);
+  const RECOMPUTABLE = new Set(['wavg', 't3avg', 'sellerLine', 'perUnitComp', 't12curve']);
   let plan = null;
 
   const buildPlan = async (srcId) => {
@@ -1694,6 +1808,10 @@ function openCopyFormulas(b) {
       } else if (d.method === 'sellerLine') {
         const row = fcFindSeller(S.bv, d.name);
         if (row) res = fcSellerLine(S.bv, tinp, row, d.pct || 0);
+        else why = `no seller line named "${d.name || '?'}" on this budget's T12`;
+      } else if (d.method === 't12curve') {
+        const row = fcFindSeller(S.bv, d.name);
+        if (row) res = fcT12Curve(S.bv, tinp, row, d.pct || 0, d.shape, l.gl_code, d.mult || 0);
         else why = `no seller line named "${d.name || '?'}" on this budget's T12`;
       } else if (d.method === 'wavg') {
         const rows = fcWavgRows(S.bv, tinp, l.gl_code);
