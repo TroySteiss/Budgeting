@@ -723,16 +723,33 @@ router.delete('/uploads/data/:kind/:id', requireAdmin, h(async (req, res) => {
   const k = SNAPSHOT_KINDS[String(req.params.kind)];
   if (!k) return res.status(400).json({ error: `Unknown snapshot kind "${req.params.kind}"` });
   const id = Number(req.params.id);
-  const affected = (await query(`select id from budgets where ${k.col}=$1`, [id])).rows.map((r: any) => r.id);
+  const affected = (await query(`select id, property_code from budgets where ${k.col}=$1`, [id])).rows;
   const del = await query(`delete from ${k.table} where id=$1`, [id]);
   if (!del.rowCount) return res.status(404).json({ error: 'Not found' });
-  for (const bid of affected) {
-    const lb = (await loadBudget(bid))!;
+  // budgets that pointed at the deleted row RE-POINT to the newest remaining
+  // upload of the same kind by default (per property where applicable; for
+  // payroll, the newest model that covers the property) — so deleting a stale
+  // upload swaps budgets to the fresh one and keeps their payroll/rent/T12
+  // formulas alive instead of reverting them to UW allocation.
+  let repointed = 0;
+  for (const b of affected) {
+    let replacement: number | null = null;
+    if (k.table === 'payroll_models') {
+      const rows = await query('select id, data from payroll_models order by created_at desc');
+      replacement = rows.rows.find((r: any) => r.data?.properties?.[b.property_code])?.id ?? rows.rows[0]?.id ?? null;
+    } else if (k.table === 'comp_sets') {
+      replacement = (await query('select id from comp_sets order by created_at desc limit 1')).rows[0]?.id ?? null;
+    } else {
+      replacement = (await query(`select id from ${k.table} where property_code=$1 order by created_at desc limit 1`, [b.property_code])).rows[0]?.id ?? null;
+    }
+    await query(`update budgets set ${k.col}=$2, updated_at=now() where id=$1`, [b.id, replacement]);
+    if (replacement) repointed++;
+    const lb = (await loadBudget(b.id))!;
     const built = buildLines(lb, lb.budget.inputs, lb.lines);
-    await saveLines(bid, built.lines);
+    await saveLines(b.id, built.lines);
   }
-  logChange(req.session.username || '', `delete ${req.params.kind} snapshot`, { id, unlinkedBudgets: affected });
-  res.json({ ok: true, unlinked: affected.length });
+  logChange(req.session.username || '', `delete ${req.params.kind} snapshot`, { id, budgets: affected.length, repointed });
+  res.json({ ok: true, unlinked: affected.length, repointed });
 }));
 
 /* ---------------- exports ---------------- */

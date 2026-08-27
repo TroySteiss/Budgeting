@@ -229,9 +229,9 @@ function renderDash(el) {
   el.querySelectorAll('[data-deld]').forEach((b) => b.addEventListener('click', async (e) => {
     e.stopPropagation();
     const [kind, id] = b.dataset.deld.split(':');
-    if (!confirm(`Delete this ${kind === 'payroll' ? 'payroll model' : kind + ' snapshot'}? Budgets pointing at it are unlinked and regenerated.`)) return;
+    if (!confirm(`Delete this ${kind === 'payroll' ? 'payroll model' : kind + ' snapshot'}? Budgets pointing at it re-point to the newest remaining upload (or unlink if none is left) and regenerate.`)) return;
     const resp = await DEL(`/uploads/data/${kind}/${id}`);
-    S.upload = S.upload || {}; S.upload.msg = `Deleted · ${resp.unlinked || 0} budget(s) unlinked`;
+    S.upload = S.upload || {}; S.upload.msg = `Deleted · ${resp.repointed || 0} budget(s) re-pointed to the newest upload${(resp.unlinked || 0) > (resp.repointed || 0) ? `, ${resp.unlinked - resp.repointed} unlinked` : ''}`;
     await refreshState(); render();
   }));
   el.querySelectorAll('[data-pmedit]').forEach((b) => b.addEventListener('click', (e) => {
