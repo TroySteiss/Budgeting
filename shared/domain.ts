@@ -333,6 +333,34 @@ export interface T12Row { gl: string; name: string; months: number[]; total: num
 
 /** Per-category monthly weights (calendar order, Jan..Dec) from seller-T12
     actuals. glToPcode comes from the UW book's coded T12 panel. */
+/** Does a 12-month weight cycle look like NON-ACCRUAL billing rather than
+    seasonality? Missing months, >3× median spikes, or >2.5× adjacent
+    whipsaws (cyclical — Dec↔Jan are adjacent in a calendar shape). */
+export function shapeSmells(w: number[]): boolean {
+  const nz = w.filter((v) => v);
+  if (nz.length < 3) return false;
+  if (w.some((v) => !v)) return true;
+  const abs = nz.map(Math.abs).sort((a, b) => a - b);
+  const med = abs[Math.floor(abs.length / 2)];
+  if (med > 0 && abs[abs.length - 1] > 3 * med) return true;
+  for (let i = 0; i < 12; i++) {
+    const a = Math.abs(w[i]), b = Math.abs(w[(i + 1) % 12]);
+    if (a && b && Math.max(a, b) / Math.min(a, b) > 2.5) return true;
+  }
+  return false;
+}
+
+/** Cyclical total-preserving 1-2-1 smoothing — melts a catch-up spike back
+    into the low months around it. Repeats until the cycle stops smelling
+    like missed bills (cap 8 passes); clean seasonal shapes pass through. */
+export function smoothShape(w: Months): Months {
+  let m = w.slice() as Months;
+  for (let pass = 0; pass < 8 && shapeSmells(m); pass++) {
+    m = m.map((_, i) => (2 * m[i] + m[(i + 11) % 12] + m[(i + 1) % 12]) / 4) as Months;
+  }
+  return m;
+}
+
 export function t12CategoryShapes(rows: T12Row[], monthCal: number[], glToPcode: Record<string, string>): Record<string, Months> {
   const acc: Record<string, Months> = {};
   for (const row of rows) {
@@ -347,7 +375,13 @@ export function t12CategoryShapes(rows: T12Row[], monthCal: number[], glToPcode:
   const out: Record<string, Months> = {};
   for (const [p, m] of Object.entries(acc)) {
     const tot = m.reduce((a, b) => a + b, 0);
-    if (tot > 0) out[p] = m.map((v) => v / tot);
+    if (tot <= 0) continue;
+    // sellers that don't accrue leave missing-bill dips and catch-up spikes
+    // in the monthly actuals — as WEIGHTS those permanently distort every
+    // dollar spread on the shape (e.g. utilities Aug 3.4% / Sep 12.4% put a
+    // fake expense dip — an NOI spike — on the last ownership month)
+    const smoothed = shapeSmells(m) ? smoothShape(m as Months) : m;
+    out[p] = smoothed.map((v) => v / tot) as Months;
   }
   return out;
 }

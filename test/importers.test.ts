@@ -191,6 +191,16 @@ describe('parseSellerT12 — Deer Ridge Jun-26', () => {
     expect(winter).toBeGreaterThan(summer);
     // several other categories get shapes too
     expect(Object.keys(shapes).length).toBeGreaterThanOrEqual(5);
+    // non-accrual dips are smoothed out of the shapes: the raw seller actuals
+    // had utilities Aug at 3.4% (missed bills) with a 12.4% Sep catch-up —
+    // that fake dip landed on the LAST ownership month as an NOI spike
+    for (const [p, sh] of Object.entries(shapes)) {
+      for (let i = 0; i < 12; i++) {
+        const a = sh[i], b = sh[(i + 1) % 12];
+        if (a && b) expect(Math.max(a, b) / Math.min(a, b), `cat ${p} months ${i}/${i + 1}`).toBeLessThanOrEqual(2.5);
+      }
+    }
+    expect(Math.min(...shapes['12']!)).toBeGreaterThan(0.05);
   });
 });
 
