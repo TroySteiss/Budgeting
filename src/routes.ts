@@ -340,31 +340,24 @@ function effectiveWages(model: Record<string, number> | null, adj?: Record<strin
   return Object.keys(merged).length ? merged : null;
 }
 
-/** Full generation pipeline: ownership-year plan (UW Year 1) → income tie
-    (LTL) → NOI tie (flex). The whole 12-month window ties to UW Y1 in full. */
-function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLine[]): { lines: BudgetLine[] } {
-  const wages = effectiveWages(lb.payrollWages, inputs.wages);
-  let lines = existing
-    ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges)
-    : generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges);
-  // LIVE linked lines: a GL set equal to another line × weight (e.g. sewer =
-  // water × 0.8) re-follows its source on every regeneration. Resolved before
-  // ties (linked lines are overrides, so ties never rescale them) against the
-  // source's pre-tie months; one level, no chain ordering guaranteed.
-  lines = lines.map((l) => {
+/** Dependent-line passes — everything computed FROM other budget lines, so it
+    must re-run whenever any line changes (regenerate, recalc, AND single-line
+    edits): 1) LIVE linked lines (GL = source × weight); 2) utility recovery —
+    each reim recovers its APPLICABLE utility's prior-month budgeted expense
+    via ordered EXCLUSIVE claims (valet→trash→sewer→water→gas→electric; each
+    expense GL claimed once, no double-recovery), and the generic UTILITIES
+    REIM takes ALL unclaimed cat-12 remainder (Troy: no exclusions — zero or
+    deactivate a line to keep it out). Month 0 keeps the generated value (it
+    recovers the pre-start seller month). */
+function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[]): BudgetLine[] {
+  let lines = input.map((l) => {
     const d = l.driver as any;
     if (l.override && d?.method === 'linkLine' && d.src) {
-      const src = lines.find((x) => x.gl_code === d.src);
-      if (src) return { ...l, months: src.months.map((v) => r2(v * (Number(d.weight) || 1))) };
+      const src = input.find((x) => x.gl_code === d.src);
+      if (src) return { ...l, months: src.months.map((v) => r2(v * (Number(d.weight) || 1))) as Months };
     }
     return l;
   });
-  // Utility recovery follows the BUDGETED cat-12 lines as they stand
-  // (overrides like T12C/WAVG included) — and each reimbursement is tied to
-  // its APPLICABLE utility: trash reim ← trash, gas reim ← gas, water reim ←
-  // water+sewer, electric reim ← electric; the generic UTILITIES REIM takes
-  // the unclaimed cat-12 remainder. Month 0 keeps the generated value (it
-  // recovers the pre-start seller month).
   const recLines = lines.filter((l) => !l.override && (l.driver as any)?.method === 'recovery');
   if (recLines.length) {
     const pct = Number((recLines[0].driver as any).pct) || 0;
@@ -373,12 +366,6 @@ function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLin
       const a = lb.coaMap.get(l.gl_code);
       return a && a.kind === 'detail' && a.pcode === '12' && a.active !== false;
     });
-    // Never resident-recoverable: office comms, corp units, vacants, late
-    // fees, commercial (CAM, not RUBS) — these stay expenses, no reim ever.
-    const NEVER = /cable|telephone|internet|corp unit|vacant|late fee|commercial/;
-    // Ordered EXCLUSIVE claims — each expense GL is claimed once, most
-    // specific reim first (valet before trash; sewer before water), so
-    // nothing is double-recovered.
     const CLAIMS: [RegExp, RegExp][] = [
       [/valet/, /valet/],
       [/trash/, /trash|garbage|refuse/],
@@ -394,7 +381,7 @@ function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLin
     for (const [rre, ere] of CLAIMS) {
       for (const rl of recLines) {
         if (assigned.has(rl.gl_code) || !rre.test(nameOf(rl.gl_code))) continue;
-        const srcs = cat12Lines.filter((e) => !claimed.has(e.gl_code) && !NEVER.test(nameOf(e.gl_code)) && ere.test(nameOf(e.gl_code)));
+        const srcs = cat12Lines.filter((e) => !claimed.has(e.gl_code) && ere.test(nameOf(e.gl_code)));
         if (!srcs.length) continue;
         const base = zero12();
         for (const s of srcs) { claimed.add(s.gl_code); s.months.forEach((v, i) => { base[i] = r2(base[i] + v); }); }
@@ -403,33 +390,33 @@ function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLin
         assigned.add(rl.gl_code);
       }
     }
-    // whatever reims remain share the recoverable remainder (unclaimed,
-    // never-list excluded — office phone/internet/corp/vacants stay out)
-    const generic = recLines.filter((rl) => !assigned.has(rl.gl_code));
-    if (generic.length) {
-      const rem = zero12();
-      const remGls: string[] = [];
-      for (const e of cat12Lines) {
-        if (claimed.has(e.gl_code) || NEVER.test(nameOf(e.gl_code))) continue;
-        remGls.push(e.gl_code);
-        e.months.forEach((v, i) => { rem[i] = r2(rem[i] + v); });
-      }
-      const tot = generic.reduce((a, l) => a + sum(l.months), 0);
-      for (const rl of generic) {
-        const share = tot ? sum(rl.months) / tot : 1 / generic.length;
-        baseFor.set(rl.gl_code, rem.map((v) => r2(v * share)) as Months);
-        srcDesc.set(rl.gl_code, `remainder (${remGls.join('+') || 'none'})${generic.length > 1 ? ' share' : ''}`);
-      }
-    }
+    // Unmatched reims (incl. the generic UTILITIES REIM) do NOT sweep the
+    // unclaimed remainder — Troy: no grabbing by default. They ZERO out;
+    // assign one explicitly via '= line × weight' or a manual entry.
     for (const rl of recLines) {
       const base = baseFor.get(rl.gl_code);
-      if (!base) continue;
+      if (!base) {
+        rl.months = zero12();
+        rl.driver = { ...(rl.driver as any), src: 'no matched utility — zeroed (assign via “= line × weight” if needed)' };
+        continue;
+      }
       const m = rl.months.slice() as Months;
       for (let i = 1; i < 12; i++) m[i] = r2(pct * base[i - 1]);
       rl.months = m;
       rl.driver = { ...(rl.driver as any), src: srcDesc.get(rl.gl_code) || '' };
     }
   }
+  return lines;
+}
+
+/** Full generation pipeline: ownership-year plan (UW Year 1) → income tie
+    (LTL) → NOI tie (flex). The whole 12-month window ties to UW Y1 in full. */
+function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLine[]): { lines: BudgetLine[] } {
+  const wages = effectiveWages(lb.payrollWages, inputs.wages);
+  let lines = existing
+    ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges)
+    : generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges);
+  lines = applyDependentPasses(lb, lines);
   if (lb.uw) {
     if (inputs.tieIncome !== false) lines = tieIncomeToUw(lines, lb.coaMap, lb.uw.egi, inputs.tieIncomeGl || '5003');
     if (inputs.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, lb.uw.noi, inputs.noiFlexPcodes || DEFAULT_NOI_FLEX);
@@ -547,6 +534,27 @@ router.put('/budgets/:id/lines/:gl', h(async (req, res) => {
     'update budget_lines set months=$3, driver=$4, override=$5, note=$6, round=$7 where budget_id=$1 and gl_code=$2',
     [id, gl, JSON.stringify(existing.months), JSON.stringify(existing.driver), existing.override, existing.note, existing.round || 0]
   );
+  // dependent lines (linked lines, utility recovery) re-follow the edit
+  // IMMEDIATELY — dropping sewer from 40,000 to 100 must drop SEWER REIM now,
+  // not at the next recalc
+  const before = new Map(
+    lb.lines
+      .filter((l) => { const m2 = (l.driver as any)?.method; return m2 === 'recovery' || m2 === 'linkLine'; })
+      .map((l) => [l.gl_code, JSON.stringify(l.months) + '|' + JSON.stringify(l.driver)])
+  );
+  if (before.size) {
+    const passed = applyDependentPasses(lb, lb.lines);
+    for (const l of passed) {
+      const b4 = before.get(l.gl_code);
+      if (b4 === undefined) continue;
+      if (l.round && l.round > 0) l.months = l.months.map((v) => r2(Math.round(v / l.round!) * l.round!)) as Months;
+      if (JSON.stringify(l.months) + '|' + JSON.stringify(l.driver) === b4) continue;
+      await query(
+        'update budget_lines set months=$3, driver=$4 where budget_id=$1 and gl_code=$2',
+        [id, l.gl_code, JSON.stringify(l.months), JSON.stringify(l.driver)]
+      );
+    }
+  }
   await query('update budgets set updated_at=now() where id=$1', [id]);
   logChange(req.session.username || '', 'edit line', { id, gl, annual: sum(existing.months) });
   res.json(budgetView((await loadBudget(id))!));
