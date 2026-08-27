@@ -358,18 +358,29 @@ function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[], inputs?: Bu
     }
     return l;
   });
-  const recLines = lines.filter((l) => !l.override && (l.driver as any)?.method === 'recovery');
+  const nameOf = (gl: string) => (lb.coaMap.get(gl)?.name || '').toLowerCase();
+  // recovery candidates = EVERY active cat-4 REIM GL in the chart (not just
+  // the ones the seller's income mix happened to populate) — SEWER REIM must
+  // auto-claim sewer even when the old owner billed W/S together. pct comes
+  // from any generated recovery line, else the budget's recovery setting.
+  const sellerMode = inputs?.utilities?.source !== 'uw';
+  const genRec = lines.find((l) => !l.override && (l.driver as any)?.method === 'recovery');
+  const pctRaw = genRec ? Number((genRec.driver as any).pct) : inputs?.utilities?.recoveryPct;
+  const recLines = sellerMode && pctRaw != null && Number.isFinite(Number(pctRaw))
+    ? lines.filter((l) => {
+        if (l.override) return false;
+        const a = lb.coaMap.get(l.gl_code);
+        return !!a && a.kind === 'detail' && a.pcode === '4' && a.active !== false && /reim/.test(nameOf(l.gl_code));
+      })
+    : [];
   if (recLines.length) {
-    const pct = Number((recLines[0].driver as any).pct) || 0;
-    const nameOf = (gl: string) => (lb.coaMap.get(gl)?.name || '').toLowerCase();
+    const pct = Number(pctRaw) || 0;
     const cat12Lines = lines.filter((l) => {
       const a = lb.coaMap.get(l.gl_code);
       return a && a.kind === 'detail' && a.pcode === '12' && a.active !== false;
     });
-    // ordered + exclusive: sewer→SEWER REIM when that reim exists; otherwise
-    // WATER REIM's broader pattern picks up water+sewer+storm (W/S billed
-    // together) — order prevents double-recovery either way. Valet→trash
-    // falls through the same way.
+    // ordered + exclusive: sewer→SEWER REIM (always a candidate now);
+    // valet→trash falls through the same way. Order prevents double-recovery.
     const CLAIMS: [RegExp, RegExp][] = [
       [/valet/, /valet/],
       [/trash/, /trash|garbage|refuse/],
