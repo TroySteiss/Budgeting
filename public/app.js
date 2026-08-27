@@ -1770,12 +1770,31 @@ function openTieNoiMenu(b, anchorBtn) {
   document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
   const gap = S.bv.tieout.noi.variance;
   const sel = new Set((S.bv.budget.inputs || {}).noiFlexPcodes || ['9', '11', '13', '14']);
+  const inclF = (S.bv.budget.inputs || {}).noiFlexFormulas === true;
   const CATS = [['6', 'Insurance'], ['8', 'RE & PP Taxes'], ['9', 'Admin & Acct'], ['10', 'Payroll'], ['11', 'Marketing'], ['12', 'Utilities'], ['13', 'R&M'], ['14', 'Rehab / Reserves']];
+  // what CAN the tie actually move in each category?
+  const SCALABLE = new Set(['wavg', 't3avg', 'sellerLine', 'perUnitComp', 't12curve', 'smooth']);
+  const coaByCode = new Map(S.state.coa.map((a) => [a.code, a]));
+  const room = {};
+  for (const l of S.bv.lines) {
+    const a = coaByCode.get(l.gl_code);
+    if (!a || a.kind !== 'detail' || !a.pcode) continue;
+    const ann = sumM(l.months);
+    if (!ann) continue;
+    const r = (room[a.pcode] = room[a.pcode] || { free: 0, formula: 0 });
+    if (!l.override) r.free += ann;
+    else if (SCALABLE.has((l.driver || {}).method)) r.formula += ann;
+  }
   const menu = document.createElement('div');
   menu.className = 'rowmenu';
   menu.innerHTML = `
     <div class="rm-head">NOI is ${gap > 0 ? 'over' : 'under'} UW by ${money(Math.abs(gap))} — scale these categories:</div>
-    ${CATS.map(([p, label]) => `<label><input type="checkbox" data-tf="${p}" ${sel.has(p) ? 'checked' : ''}> ${label}</label>`).join('')}
+    ${CATS.map(([p, label]) => {
+      const r = room[p] || { free: 0, formula: 0 };
+      return `<label><input type="checkbox" data-tf="${p}" ${sel.has(p) ? 'checked' : ''}> ${label}
+        <span class="muted" style="float:right">${r.free ? money(r.free) : '<b style="color:var(--warn)">nothing free</b>'}${r.formula ? ` · fx ${money(r.formula)}` : ''}</span></label>`;
+    }).join('')}
+    <label title="Let the tie also scale WAVG/T3/Seller/T12C/Minot/Smooth-driven lines in the chosen categories. Manual cells, typed totals, zeros and linked lines are never touched. Scaled formula lines get a * (revised)."><input type="checkbox" data-tff="1" ${inclF ? 'checked' : ''}> <b>Also scale formula-driven lines</b> (copied budgets often have nothing else free)</label>
     <button data-go="1" style="color:var(--accent); font-weight:600">Tie NOI</button>`;
   const rct = anchorBtn.getBoundingClientRect();
   menu.style.left = `${Math.max(8, rct.left + window.scrollX - 180)}px`;
@@ -1785,11 +1804,16 @@ function openTieNoiMenu(b, anchorBtn) {
   setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
   menu.querySelector('[data-go]').addEventListener('click', async () => {
     const flex = [...menu.querySelectorAll('[data-tf]')].filter((c) => c.checked).map((c) => c.dataset.tf);
+    const includeFormulas = menu.querySelector('[data-tff]').checked;
     menu.remove();
     if (!flex.length) return;
     pushUndo();
-    S.bv = await POST(`/budgets/${b.id}/tie-noi`, { flexPcodes: flex });
+    S.bv = await POST(`/budgets/${b.id}/tie-noi`, { flexPcodes: flex, includeFormulas });
     render();
+    const left = S.bv.tieout.noi.variance;
+    if (Math.abs(left) >= 1) {
+      alert(`NOI is still off UW by ${money(Math.abs(left))}.\n\nThe chosen categories don't have enough scalable dollars — everything else in them is manually overridden (or the tie would push lines negative). Options: tick "Also scale formula-driven lines", pick more categories, or unlock (🔓) lines in the flex categories.`);
+    }
   });
 }
 

@@ -462,7 +462,7 @@ function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLin
   lines = applyDependentPasses(lb, lines, inputs);
   if (lb.uw) {
     if (inputs.tieIncome !== false) lines = tieIncomeToUw(lines, lb.coaMap, lb.uw.egi, inputs.tieIncomeGl || '5003');
-    if (inputs.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, lb.uw.noi, inputs.noiFlexPcodes || DEFAULT_NOI_FLEX);
+    if (inputs.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, lb.uw.noi, inputs.noiFlexPcodes || DEFAULT_NOI_FLEX, inputs.noiFlexFormulas === true);
   }
   // standing per-line MROUND re-applies as the final step (not a lock)
   lines = applyRounding(lines);
@@ -649,11 +649,13 @@ router.post('/budgets/:id/tie-noi', h(async (req, res) => {
   if (!lb.uw) return res.status(400).json({ error: 'No UW snapshot linked' });
   // optional chooser: which categories flex — persisted for future ties/regens
   let flex: string[] = lb.budget.inputs?.noiFlexPcodes || DEFAULT_NOI_FLEX;
-  if (Array.isArray(req.body?.flexPcodes) && req.body.flexPcodes.length) {
-    flex = req.body.flexPcodes.map(String);
-    await query('update budgets set inputs=$2 where id=$1', [id, JSON.stringify({ ...lb.budget.inputs, noiFlexPcodes: flex })]);
+  let inclFormulas: boolean = lb.budget.inputs?.noiFlexFormulas === true;
+  if (typeof req.body?.includeFormulas === 'boolean') inclFormulas = req.body.includeFormulas;
+  if ((Array.isArray(req.body?.flexPcodes) && req.body.flexPcodes.length) || typeof req.body?.includeFormulas === 'boolean') {
+    if (Array.isArray(req.body?.flexPcodes) && req.body.flexPcodes.length) flex = req.body.flexPcodes.map(String);
+    await query('update budgets set inputs=$2 where id=$1', [id, JSON.stringify({ ...lb.budget.inputs, noiFlexPcodes: flex, noiFlexFormulas: inclFormulas })]);
   }
-  const lines = applyRounding(tieNoiToUw(lb.lines, lb.coaMap, lb.uw.noi, flex));
+  const lines = applyRounding(tieNoiToUw(lb.lines, lb.coaMap, lb.uw.noi, flex, inclFormulas));
   await saveLines(id, lines);
   logChange(req.session.username || '', 'tie NOI to UW', { id, target: lb.uw.noi, flex });
   res.json(budgetView((await loadBudget(id))!));

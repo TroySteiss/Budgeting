@@ -70,6 +70,9 @@ export interface BudgetInputs {
       it recovers (exclusive claims). Reims not listed use the default named
       claims; an empty list zeroes that reim. */
   recMap?: Record<string, string[]> | null;
+  /** NOI tie may also scale FORMULA-driven overrides in the chosen flex
+      categories (manual/typed/zero lines are never touched). */
+  noiFlexFormulas?: boolean;
   year: number;
   units: number;
   capital: number;            // equity, for CoC
@@ -853,14 +856,23 @@ export const DEFAULT_NOI_FLEX = ['9', '11', '13', '14'];
     the flex categories. Overrides and every other category stay untouched; the
     scaled flex total gets a penny-fix so the tie is exact. If the gap exceeds
     the whole flex pool, flex is floored at zero and a residual variance remains. */
-export function tieNoiToUw(lines: BudgetLine[], coa: Map<string, CoaAccount>, uwNoi: number, flexPcodes: string[] = DEFAULT_NOI_FLEX): BudgetLine[] {
+/** Formula-driven override methods the NOI tie MAY scale when the user opts
+    in — manual cells, typed totals, zeros and linked lines are never touched. */
+export const TIE_SCALABLE_FORMULAS = new Set(['wavg', 't3avg', 'sellerLine', 'perUnitComp', 't12curve', 'smooth']);
+
+export function tieNoiToUw(lines: BudgetLine[], coa: Map<string, CoaAccount>, uwNoi: number, flexPcodes: string[] = DEFAULT_NOI_FLEX, includeFormulas = false): BudgetLine[] {
   const monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
   const noi = sum(rollup(monthsMap).get('7280') || zero12());
   const gap = r2(uwNoi - noi);            // positive → lower expenses to raise NOI
   if (Math.abs(gap) < 0.01) return lines;
   const flex = lines.filter((l) => {
     const a = coa.get(l.gl_code);
-    return a?.kind === 'detail' && a.pcode != null && flexPcodes.includes(a.pcode) && !l.override && sum(l.months) !== 0;
+    if (!(a?.kind === 'detail' && a.pcode != null && flexPcodes.includes(a.pcode)) || sum(l.months) === 0) return false;
+    if (!l.override) return true;
+    // opt-in: formula-driven overrides in the CHOSEN categories may scale
+    // (copied budgets can have every flex line on a formula — without this
+    // the tie silently has nothing to move)
+    return includeFormulas && TIE_SCALABLE_FORMULAS.has((l.driver as any)?.method);
   });
   const flexSum = flex.reduce((a, l) => r2(a + sum(l.months)), 0);
   if (flexSum <= 0) return lines;
@@ -878,7 +890,9 @@ export function tieNoiToUw(lines: BudgetLine[], coa: Map<string, CoaAccount>, uw
     m[idx] = r2(m[idx] + drift);
     scaled.set(host.gl_code, m);
   }
-  return lines.map((l) => (scaled.has(l.gl_code) ? { ...l, months: scaled.get(l.gl_code)!, driver: l.driver } : l));
+  return lines.map((l) => (scaled.has(l.gl_code)
+    ? { ...l, months: scaled.get(l.gl_code)!, driver: l.override ? ({ ...(l.driver as any), revised: true } as Driver) : l.driver }
+    : l));
 }
 
 /** Scale the non-overridden lines of one category so its annual total hits `target`. */

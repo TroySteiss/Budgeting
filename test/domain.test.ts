@@ -245,6 +245,28 @@ describe('tieNoiToUw', () => {
     const again = tieNoiToUw(lines, coaMap, fakeUw.noi);
     expect(JSON.stringify(again.map((l) => l.months))).toBe(JSON.stringify(lines.map((l) => l.months)));
   });
+  it('opt-in formula scaling ties when every flex line is a formula override', () => {
+    const inputs = defaultInputs(2027, fakeUw, { marketMonthly: 100000, inPlaceMonthly: 97000 });
+    let lines = generateLines(coaList, inputs, fakeUw, null);
+    // simulate a copied budget: every nonzero flex-category line is a WAVG override
+    lines = lines.map((l) => {
+      const p = coaMap.get(l.gl_code)?.pcode;
+      if (p && ['9', '11', '13', '14'].includes(p) && sum(l.months) !== 0) {
+        return { ...l, override: true, driver: { method: 'wavg', pct: 3 } as any };
+      }
+      return l;
+    });
+    // default: nothing scalable → silently unchanged
+    const stuck = tieNoiToUw(lines, coaMap, fakeUw.noi);
+    expect(JSON.stringify(stuck.map((l) => l.months))).toBe(JSON.stringify(lines.map((l) => l.months)));
+    // includeFormulas: ties exactly, scaled lines flagged revised
+    const tied = tieNoiToUw(lines, coaMap, fakeUw.noi, undefined, true);
+    const noi = sum(rollup(new Map(tied.map((l) => [l.gl_code, l.months]))).get('7280')!);
+    expect(noi).toBeCloseTo(fakeUw.noi, 2);
+    const touched = tied.filter((l, i) => JSON.stringify(l.months) !== JSON.stringify(lines[i].months));
+    expect(touched.length).toBeGreaterThan(0);
+    expect(touched.every((l) => (l.driver as any).revised === true)).toBe(true);
+  });
 });
 
 describe('buildUtilityModel — seller statement levels + recovery-lag income', () => {
