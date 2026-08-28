@@ -375,6 +375,11 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
         cc.numFmt = ACCT; cc.font = f8;
         cc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COMPFILL } };
       }
+      // zero detail rows are HIDDEN (not removed) — headers, totals and
+      // section breaks all stay put; unhide in Excel to see the full chart
+      const anyData = hasVals || !!ln?.note || uwCol[a.code] != null && uwCol[a.code] !== 0
+        || !!(args.compWeights && args.compUnits && args.compWeights[a.code]);
+      if (!anyData) ws.getRow(r).hidden = true;
     } else {
       // total row: month formulas
       for (let i = 0; i < 12; i++) {
@@ -383,7 +388,18 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
         let formula = '';
         if (rangeTotals[a.code]) {
           const rows = detailRowsIn(...rangeTotals[a.code]);
-          if (rows.length) formula = `SUM(${L}${Math.min(...rows)}:${L}${Math.max(...rows)})`;
+          if (rows.length) {
+            const lo = Math.min(...rows), hi = Math.max(...rows);
+            // a SUM(lo:hi) is only safe when nothing FOREIGN sits inside the
+            // span (7491's old display_order dragged 7500's span across the
+            // whole bottom of the sheet — interest, depreciation, principal)
+            const members = new Set(rows);
+            const foreign = ordered.some((x) => {
+              const xr = rowOf.get(x.code)!;
+              return xr > lo && xr < hi && !members.has(xr) && x.kind !== 'header';
+            });
+            formula = foreign ? rows.map((r3) => `${L}${r3}`).join('+') : `SUM(${L}${lo}:${L}${hi})`;
+          }
         } else if (compositeTotals[a.code]) {
           formula = compositeTotals[a.code].map((p) => `${L}${rowOf.get(p)}`).join('+');
         } else if (a.code === '7280') formula = `${L}${rowOf.get('5500')}-${L}${rowOf.get('7279')}`;
