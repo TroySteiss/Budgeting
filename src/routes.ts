@@ -2,9 +2,9 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import multer from 'multer';
 import { query, tx } from './db.js';
 import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
-import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel } from './importers.js';
+import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft } from './importers.js';
 import { buildBudgetCsv } from './csv-export.js';
-import { buildReviewWorkbook } from './xlsx-export.js';
+import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
 import {
   CoaAccount, BudgetLine, BudgetInputs, UwSnapshotData, CompWeights, Months,
   generateLines, regenerate, rebalanceCategory, defaultInputs, computeTieout,
@@ -936,6 +936,26 @@ router.delete('/uploads/data/:kind/:id', requireAdmin, h(async (req, res) => {
 }));
 
 /* ---------------- exports ---------------- */
+
+/** "Troy Steiss" → "TS" — exports carry the exporter's initials. */
+const initialsOf = (user: string): string =>
+  (user || '').trim().split(/\s+/).map((w) => w[0]).join('').toUpperCase() || 'XX';
+const mmddyyyy = (): string => {
+  const n = new Date();
+  return `${String(n.getMonth() + 1).padStart(2, '0')}${String(n.getDate()).padStart(2, '0')}${n.getFullYear()}`;
+};
+
+/** Every export captures the budget as a save point — one per budget per day
+    per user (repeat exports of the same state don't stack up). */
+async function captureExportPoint(lb: LoadedBudget, user: string): Promise<void> {
+  const name = `exported ${initialsOf(user)} ${mmddyyyy()}`;
+  const last = (await query(
+    'select name, summary from budget_snapshots where budget_id=$1 order by created_at desc limit 1', [lb.budget.id]
+  )).rows[0];
+  if (last && last.name === name && JSON.stringify(last.summary) === JSON.stringify(snapshotSummary(lb))) return;
+  await captureSnapshot(lb, name, user);
+}
+
 router.get('/budgets/:id/export.csv', h(async (req, res) => {
   const lb = await loadBudget(Number(req.params.id));
   if (!lb) return res.status(404).json({ error: 'Not found' });
@@ -949,15 +969,16 @@ router.get('/budgets/:id/export.csv', h(async (req, res) => {
   const sliced: BudgetLine[] = lb.lines.map((l) => ({
     ...l, months: calendarSlice(l.months, lb.budget.year, start, calYear),
   }));
-  const now = new Date();
-  const mmddyyyy = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}-${now.getFullYear()}`;
+  const stamp = mmddyyyy();
+  const ini = initialsOf(req.session.username || '');
   const isRevision = cutoff > 0 || (calYear === lb.budget.year && start > 1);
   const desc = String(req.query.desc || '') ||
-    `${lb.budget.property_code} ${calYear} Budget ${isRevision ? 'Revision' : 'Upload'} ${mmddyyyy}`;
+    `${lb.budget.property_code} ${calYear} Budget ${isRevision ? 'Revision' : 'Upload'} ${ini} ${stamp}`;
   const csv = buildBudgetCsv(lb.coa, sliced, {
     propertyId: lb.budget.property_code, year: calYear, description: desc, cutoffMonth: cutoff,
   });
-  const fname = `${lb.budget.property_code.toUpperCase()} ${calYear} Budget ${isRevision ? 'Revision' : 'Upload'} ${mmddyyyy}.csv`;
+  const fname = `${lb.budget.property_code.toUpperCase()} ${calYear} Budget ${isRevision ? 'Revision' : 'Upload'} ${ini} ${stamp}.csv`;
+  await captureExportPoint(lb, req.session.username || '');
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
   res.send(csv);
@@ -977,9 +998,81 @@ router.get('/budgets/:id/export.xlsx', h(async (req, res) => {
     coa: lb.coa, lines: lb.lines, inputs: lb.budget.inputs, uw: lb.uw,
     compWeights: lb.comps?.byGl || null, compUnits: lb.comps?.units || null, compName,
   });
+  await captureExportPoint(lb, req.session.username || '');
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="${lb.budget.property_code.toUpperCase()} ${lb.budget.year} Budget Review.xlsx"`);
+  // Troy's naming convention: "CWND 2026 Budget Draft TS 08212026.xlsx"
+  res.setHeader('Content-Disposition', `attachment; filename="${lb.budget.property_code.toUpperCase()} ${lb.budget.year} Budget Draft ${initialsOf(req.session.username || '')} ${mmddyyyy()}.xlsx"`);
   res.send(buf);
+}));
+
+/* All-sites workbook: every budget's Budget/Summary/Raw Data tabs by site +
+   a live Portfolio rollup tab. ?year= filters; defaults to every budget. */
+router.get('/export/portfolio.xlsx', h(async (req, res) => {
+  const year = Number(req.query.year) || null;
+  const rows = (await query(
+    year ? 'select id from budgets where year=$1 order by property_code' : 'select id from budgets order by property_code',
+    year ? [year] : []
+  )).rows;
+  if (!rows.length) return res.status(404).json({ error: 'No budgets to export' });
+  const sites: ReviewArgs[] = [];
+  for (const r of rows) {
+    const lb = (await loadBudget(r.id))!;
+    const prop = (await query('select * from properties where code=$1', [lb.budget.property_code])).rows[0];
+    let compName = '';
+    if (lb.budget.comp_set_id) compName = (await query('select name from comp_sets where id=$1', [lb.budget.comp_set_id])).rows[0]?.name || '';
+    sites.push({
+      propertyCode: lb.budget.property_code, propertyName: prop?.name || lb.budget.property_code,
+      year: lb.budget.year, units: Number(lb.budget.inputs?.units) || prop?.units || 0,
+      coa: lb.coa, lines: lb.lines, inputs: lb.budget.inputs, uw: lb.uw,
+      compWeights: lb.comps?.byGl || null, compUnits: lb.comps?.units || null, compName,
+    });
+    await captureExportPoint(lb, req.session.username || '');
+  }
+  const buf = await buildPortfolioWorkbook(sites, year ? `${year} Budgets` : 'All Budgets');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="PORTFOLIO ${year || ''} Budget Draft ${initialsOf(req.session.username || '')} ${mmddyyyy()}.xlsx"`);
+  res.send(buf);
+}));
+
+/* Import an EDITED review-workbook draft back into the budget: the prior
+   state is captured as a save point, then every detail-GL month that differs
+   from the workbook is written as an 'imported' override; Summary D27 updates
+   capital. Dependent passes + ties reconcile via buildLines. */
+router.post('/budgets/:id/import-draft', upload.single('file'), h(async (req, res) => {
+  const lb = await loadBudget(Number(req.params.id));
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+  const parsed = parseReviewDraft(req.file.buffer);
+  if (parsed.code && parsed.code !== lb.budget.property_code) {
+    return res.status(400).json({ error: `Draft is for ${parsed.code.toUpperCase()}, this budget is ${lb.budget.property_code.toUpperCase()}` });
+  }
+  const user = req.session.username || '';
+  await captureSnapshot(lb, `before import ${req.file.originalname.slice(0, 40)}`, user);
+  let changed = 0;
+  for (const l of lb.lines) {
+    const a = lb.coaMap.get(l.gl_code);
+    if (!a || a.kind !== 'detail') continue;
+    const m = parsed.glMonths[l.gl_code];
+    if (!m) continue;
+    if (l.months.every((v, i) => Math.abs(v - m[i]) < 0.01)) continue;
+    l.months = m.map((v) => r2(v)) as Months;
+    l.override = true;
+    l.driver = { method: 'imported', file: req.file.originalname.slice(0, 40) } as any;
+    changed++;
+  }
+  const inputs: BudgetInputs = { ...lb.budget.inputs };
+  let capitalChanged = false;
+  if (parsed.capital != null && Math.abs(parsed.capital - (Number(inputs.capital) || 0)) >= 1) {
+    inputs.capital = parsed.capital;
+    capitalChanged = true;
+  }
+  await query('update budgets set inputs=$2, updated_at=now() where id=$1', [lb.budget.id, JSON.stringify(inputs)]);
+  const built = buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lb.lines);
+  await saveLines(lb.budget.id, built.lines);
+  logChange(user, 'import draft workbook', { id: lb.budget.id, file: req.file.originalname, changed, capitalChanged });
+  const view: any = budgetView((await loadBudget(lb.budget.id))!);
+  view.importResult = { changed, capitalChanged, capital: parsed.capital };
+  res.json(view);
 }));
 
 /* ---------------- admin: properties & COA ---------------- */

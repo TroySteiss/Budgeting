@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12 } from '../src/importers.js';
+import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parseReviewDraft } from '../src/importers.js';
 import { t12CategoryShapes } from '../shared/domain.js';
 
 const fx = (name: string): Buffer => readFileSync(join(process.cwd(), 'test', 'fixtures', name));
@@ -160,6 +160,24 @@ describe('parseRentRoll — OneSite unit level', () => {
     expect(a101.e).toContain('2026-11');
     // ancillary charge codes captured (occupied units only; base RENT and Total excluded)
     expect(p.charges).toEqual({ PETRENT: 35, GARAGE: 100 });
+  });
+});
+
+describe('parseReviewDraft — Troy\'s edited CWND workbook', () => {
+  const d = parseReviewDraft(fx('review-draft-cwnd.xlsx'));
+  it('identifies the property and year from the Budget tab title', () => {
+    expect(d.code).toBe('cwnd');
+    expect(d.year).toBe(2026);
+  });
+  it('reads Capital Contributions from Summary D27', () => {
+    expect(d.capital).toBe(12375000);
+  });
+  it('captures detail GL months (cached formula values included)', () => {
+    expect(Object.keys(d.glMonths).length).toBeGreaterThan(100);
+    const gpr = d.glMonths['4994'];
+    expect(gpr).toBeTruthy();
+    expect(gpr!.every((v) => typeof v === 'number')).toBe(true);
+    expect(gpr!.reduce((a, b) => a + b, 0)).toBeGreaterThan(1000000);
   });
 });
 

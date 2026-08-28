@@ -58,6 +58,7 @@ function drvMetaBase(l) {
     case 'zero': return { cls: 'drv-int', tag: 'ZERO', label: 'Zeroed out — this GL carries nothing' };
     case 't12curve': return { cls: 'drv-t12', tag: 'T12C', label: `Seller ${l.driver.name || ''} T12 TOTAL × ${(l.driver.pct || 0).toFixed(1)}% on ${l.driver.shape === 'minot' ? 'the Minot' : l.driver.shape || 'flat'} curve${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
     case 'linkLine': return { cls: 'drv-fee', tag: 'LINK', label: `= ${l.driver.src || ''} ${l.driver.srcName || ''} × ${l.driver.weight ?? 1} — follows it live on every regeneration` };
+    case 'imported': return { cls: 'drv-man', tag: 'IMP', label: `Imported from draft workbook${l.driver.file ? ` (${l.driver.file})` : ''}` };
     case 'smooth': return { cls: 'drv-t12', tag: 'SMOOTH', label: `Missed-bill smoothing ×${l.driver.passes || 0}${l.driver.of ? ` of ${String(l.driver.of).toUpperCase()}${l.driver.srcName ? ' ' + l.driver.srcName : ''}` : ''} — spikes spread into surrounding months, total kept` };
     case 'setTotal': return { cls: 'drv-man', tag: 'TOTAL', label: `Total set to ${Math.round(l.driver.total || 0).toLocaleString()} — ${l.driver.of ? `${String(l.driver.of).toUpperCase()} distribution kept` : 'prior distribution kept'}` };
     default: return { cls: 'drv-none', tag: '—', label: 'No formula (zero / manual)' };
@@ -185,7 +186,10 @@ function renderDash(el) {
   const props = new Map(st.properties.map((p) => [p.code, p]));
   el.innerHTML = `
     <div class="card">
-      <h2>Budgets <button class="btn" id="newb" style="float:right">+ New budget</button></h2>
+      <h2>Budgets
+        <button class="btn" id="newb" style="float:right">+ New budget</button>
+        <button class="btn sub" id="pf-export" style="float:right; margin-right:8px" title="One workbook: every budget's Budget / Summary / Raw Data tabs by site, plus a live Portfolio rollup tab">⬇ Portfolio workbook</button>
+      </h2>
       ${st.budgets.length ? `<table class="list"><tr><th>Property</th><th>Window</th><th>Income</th><th>OpEx</th><th>NOI</th><th>Δ NOI vs UW</th><th>Δ EGI vs UW</th><th>CoC</th><th>Overrides</th><th>LTL</th><th>Save pts</th><th>Status</th><th>Updated</th><th></th></tr>
         ${st.budgets.map((b) => {
           const d = b.dash || {};
@@ -250,6 +254,7 @@ function renderDash(el) {
     openPayrollEditor(Number(b.dataset.pmedit));
   }));
   document.getElementById('newb').addEventListener('click', () => newBudgetDialog(props));
+  document.getElementById('pf-export').addEventListener('click', () => window.open('/api/export/portfolio.xlsx', '_blank'));
 }
 
 function newBudgetDialog() {
@@ -504,6 +509,9 @@ function renderEditor(el) {
         <button class="btn sub" id="ex-csv">⬇ ${b.year} Yardi CSV${start > 1 ? ` (${labels[0]}–Dec)` : ''}</button>
         ${start > 1 ? `<button class="btn sub" id="ex-csv2">⬇ ${b.year + 1} Yardi CSV (Jan–${labels[11].split('-')[0]})</button>` : ''}
         <button class="btn sub" id="ex-xlsx">⬇ Review workbook</button>
+        <button class="btn" id="ex-all" title="Download the ${b.year} Yardi CSV, the ${b.year + 1} Yardi CSV and the Budget Draft workbook in one go — the budget is captured as a save point">⬇ All exports</button>
+        <button class="btn sub" id="imp-draft" title="Upload an EDITED Budget Draft workbook — the current state is saved as its own iteration first, then every changed month imports as an override (IMP chip); Summary D27 updates capital">⬆ Import draft…</button>
+        <input type="file" id="imp-file" accept=".xlsx" style="display:none">
         <button class="btn sub" id="recalc">↻ Recalc</button>
         <button class="btn sub" id="undo-btn" ${S.undo.budgetId === b.id && S.undo.stack.length ? '' : 'disabled'}>↶ Undo${S.undo.budgetId === b.id && S.undo.stack.length ? ` (${S.undo.stack.length})` : ''}</button>
         <button class="btn sub" id="sp-btn" title="Named, permanent save points for this budget — capture the current iteration, restore any earlier one (a safety point is captured before every restore)">⎘ Save points${(bv.savePoints || []).length ? ` (${bv.savePoints.length})` : ''}</button>
@@ -579,6 +587,37 @@ function renderEditor(el) {
     window.open(`/api/budgets/${b.id}/export.csv?calYear=${b.year + 1}&cutoff=${c}`, '_blank');
   });
   document.getElementById('ex-xlsx').addEventListener('click', () => window.open(`/api/budgets/${b.id}/export.xlsx`, '_blank'));
+  document.getElementById('ex-all').addEventListener('click', async () => {
+    const c = document.getElementById('ex-cutoff').value;
+    const urls = [
+      `/api/budgets/${b.id}/export.csv?calYear=${b.year}&cutoff=${c}`,
+      ...(start > 1 ? [`/api/budgets/${b.id}/export.csv?calYear=${b.year + 1}&cutoff=${c}`] : []),
+      `/api/budgets/${b.id}/export.xlsx`,
+    ];
+    for (const u2 of urls) {
+      const a = document.createElement('a');
+      a.href = u2; a.download = '';
+      document.body.appendChild(a); a.click(); a.remove();
+      await new Promise((r) => setTimeout(r, 800));
+    }
+    S.bv = await GET(`/budgets/${b.id}`);   // pick up the export save point
+    render();
+  });
+  document.getElementById('imp-draft').addEventListener('click', () => document.getElementById('imp-file').click());
+  document.getElementById('imp-file').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    if (!confirm(`Import "${f.name}" into this budget?\n\nThe current state is saved as its own iteration first; every month that differs in the workbook becomes an imported override.`)) return;
+    const fd = new FormData();
+    fd.append('file', f);
+    try {
+      S.bv = await POST(`/budgets/${b.id}/import-draft`, fd);
+      const ir = S.bv.importResult || {};
+      alert(`Imported: ${ir.changed || 0} line(s) updated${ir.capitalChanged ? ` · capital set to ${money(ir.capital)}` : ''}.\nPrior iteration saved under ⎘ Save points.`);
+      render();
+    } catch (e2) { alert('Import failed: ' + e2.message); }
+    e.target.value = '';
+  });
   document.getElementById('recalc').addEventListener('click', async () => { pushUndo(); S.bv = await POST(`/budgets/${b.id}/recalc`); render(); });
   document.getElementById('showzero').addEventListener('change', (e) => { S.showZero = e.target.checked; render(); });
   document.getElementById('showdist').addEventListener('change', (e) => { S.showDist = e.target.checked; localStorage.setItem('bt-dist', S.showDist ? '1' : '0'); render(); });

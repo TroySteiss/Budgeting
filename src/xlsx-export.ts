@@ -49,13 +49,29 @@ function driverKind(l: BudgetLine | undefined): string {
     case 'payrollModel': case 'burdenRatio': return 'pay';
     case 'mgmtPct': return 'fee';
     case 'interest': return 'int';
-    case 'sellerUtil': case 'recovery': case 'sellerLine': return 't12';
+    case 'sellerUtil': case 'recovery': case 'sellerLine': case 't12curve': case 'smooth': return 't12';
+    case 'linkLine': return 'fee';
     default: return 'man';
   }
 }
 
 const f8 = { size: 8 };
 const f8b = { size: 8, bold: true };
+
+/* Fixed Summary-sheet layout (matches Troy's edited draft, e.g.
+   "CWND 2026 Budget Draft TS 08212026.xlsx"): 16 account rows 5..20, debt
+   block 22..25, capital+CoC row 27, monthly CoC table headed at 29 with
+   M1..M12 at 30..41 and the Y1 CoC foot at 42. */
+const S_FIRST = 5;
+const S_NOI_ROW = 20;
+const S_DEBT_START = 22;
+const S_CASH_ROW = 25;
+const S_CAP_ROW = 27;
+const S_TABLE_HEAD = 29;
+const S_M1 = 30;
+const S_FOOT = 42;
+const CURC = '"$"#,##0.00_);[Red]("$"#,##0.00)';
+const RED = 'FFFF0000';
 
 function driverLabel(d: any): string {
   switch (d?.method) {
@@ -74,6 +90,12 @@ function driverLabel(d: any): string {
     case 'charges': return 'rent-roll charges × 12';
     case 't3avg': return `T3 avg of ${d.srcName || 'comp'} × ${(d.pct || 0).toFixed(1)}% (MROUND 250)`;
     case 'wavg': return `1-2-1 wtd avg of ${d.srcName || 'source'} × ${(d.pct || 0).toFixed(1)}%`;
+    case 't12curve': return `seller ${d.name || ''} T12 total × ${(d.pct || 0).toFixed(1)}% on ${d.shape || 'flat'} curve`;
+    case 'smooth': return `missed-bill smoothing ×${d.passes || 0}`;
+    case 'linkLine': return `= ${d.src || ''} × ${d.weight ?? 1}`;
+    case 'setTotal': return `total set to ${Math.round(d.total || 0).toLocaleString()}`;
+    case 'zero': return 'zeroed out';
+    case 'imported': return `imported from draft${d.file ? ` (${d.file})` : ''}`;
     default: return '';
   }
 }
@@ -106,13 +128,113 @@ function uwColumnValues(uw: UwSnapshotData, catBudget: (pcode: string, range: [n
   return out;
 }
 
-export async function buildReviewWorkbook(args: {
+export interface ReviewArgs {
   propertyCode: string; propertyName: string; year: number; units: number;
   coa: CoaAccount[]; lines: BudgetLine[]; inputs: BudgetInputs;
   uw: UwSnapshotData | null; compWeights?: Record<string, number> | null; compUnits?: number | null;
   compName?: string;
-}): Promise<Buffer> {
+}
+
+export async function buildReviewWorkbook(args: ReviewArgs): Promise<Buffer> {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'nd-budget-tool';
+  addReviewSheets(wb, args, '');
+  const buf = await wb.xlsx.writeBuffer();
+  return Buffer.from(buf as ArrayBuffer);
+}
+
+/** All-sites workbook: every site's Budget/Summary/Raw Data tabs (prefixed
+    "CWND Budget" …) plus a live Portfolio rollup tab referencing them. */
+export async function buildPortfolioWorkbook(sites: ReviewArgs[], portfolioLabel: string): Promise<Buffer> {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'nd-budget-tool';
+  const wsP = wb.addWorksheet('Portfolio', { properties: { tabColor: { argb: 'FFFFC000' } }, views: [{ state: 'frozen', ySplit: 4, xSplit: 2 }] });
+  for (const site of sites) addReviewSheets(wb, site, `${site.propertyCode.toUpperCase()} `);
+
+  // ----- Portfolio tab: same Summary rows, one column per site + Total -----
+  wsP.getColumn(1).width = 3; wsP.getColumn(2).width = 34;
+  sites.forEach((_, i) => { wsP.getColumn(3 + i).width = 14; });
+  const totCol = 3 + sites.length;
+  wsP.getColumn(totCol).width = 15;
+  wsP.getCell(1, 2).value = `${portfolioLabel} — Year 1 Budget Portfolio Rollup`;
+  wsP.getCell(1, 2).font = { size: 12, bold: true };
+  const sq = (s: ReviewArgs) => `'${s.propertyCode.toUpperCase()} Summary'!`;
+  // header
+  sites.forEach((s, i) => {
+    const c = wsP.getCell(4, 3 + i);
+    c.value = s.propertyCode.toUpperCase();
+    c.font = f8b; c.alignment = { horizontal: 'right' };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD } };
+    c.border = { bottom: { style: 'thin' } };
+  });
+  const tc = wsP.getCell(4, totCol);
+  tc.value = 'PORTFOLIO'; tc.font = f8b; tc.alignment = { horizontal: 'right' };
+  tc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRAND } };
+  tc.border = { bottom: { style: 'thin' } };
+  wsP.getCell(4, 2).value = 'Account Summary';
+  wsP.getCell(4, 2).font = f8b;
+  wsP.getCell(4, 2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD } };
+  wsP.getCell(4, 2).border = { bottom: { style: 'thin' } };
+  // units row + summary rows 5..20 + debt 22..25 + capital 27 (same layout as site Summary)
+  const put = (r: number, label: string, srcCell: string, opts: { bold?: boolean; fmt?: string; noTotal?: boolean } = {}) => {
+    wsP.getCell(r, 2).value = label;
+    wsP.getCell(r, 2).font = { size: 8.5, bold: !!opts.bold };
+    sites.forEach((s, i) => {
+      const c = wsP.getCell(r, 3 + i);
+      c.value = { formula: `${sq(s)}${srcCell}` } as any;
+      c.numFmt = opts.fmt || ACCT; c.font = { size: 8.5, bold: !!opts.bold };
+    });
+    if (!opts.noTotal) {
+      const c = wsP.getCell(r, totCol);
+      const L0 = wsP.getColumn(3).letter, L1 = wsP.getColumn(totCol - 1).letter;
+      c.value = { formula: `SUM(${L0}${r}:${L1}${r})` } as any;
+      c.numFmt = opts.fmt || ACCT; c.font = { size: 8.5, bold: true };
+    }
+    if (opts.bold) for (let c2 = 2; c2 <= totCol; c2++) wsP.getCell(r, c2).border = { top: { style: 'thin' } };
+  };
+  wsP.getCell(3, 2).value = 'Units';
+  wsP.getCell(3, 2).font = f8b;
+  sites.forEach((s, i) => { const c = wsP.getCell(3, 3 + i); c.value = s.units; c.font = f8b; });
+  wsP.getCell(3, totCol).value = sites.reduce((a, s) => a + s.units, 0);
+  wsP.getCell(3, totCol).font = f8b;
+  const S_ROWS: [number, string, boolean][] = [
+    [5, 'TOTAL NET GROSS POTENTIAL RENT', false], [6, 'TOTAL RENTAL INCOME', false], [7, 'NET OTHER INCOME', false],
+    [8, 'TOTAL INCOME', true], [9, 'TOTAL FIXED ADMINISTRATIVE', false], [10, 'TOTAL ADMINISTRATIVE', false],
+    [11, 'TOTAL CORPORATE EVENTS', false], [12, 'TOTAL PAYROLL', false], [13, 'TOTAL MARKETING', false],
+    [14, 'TOTAL UTILITIES', false], [15, 'TOTAL IN-HOUSE MAINT', false], [16, 'TOTAL EXTERIOR/CAM', false],
+    [17, 'TOTAL CONTRACT SERVICES', false], [18, 'TOTAL REHAB/REPLACEMENT', false],
+    [19, 'TOTAL OPERATING EXPENSES', true], [20, 'NET OPERATING INCOME', true],
+  ];
+  for (const [r, label, bold] of S_ROWS) put(r, label, `E${r}`, { bold });
+  put(S_DEBT_START, 'Interest Expense', `E${S_DEBT_START}`);
+  put(S_DEBT_START + 1, 'Principal', `E${S_DEBT_START + 1}`);
+  put(S_DEBT_START + 2, 'Special Projects', `E${S_DEBT_START + 2}`);
+  put(S_CASH_ROW, 'Cash Flow (NOI − debt service)', `E${S_CASH_ROW}`, { bold: true });
+  put(S_CAP_ROW, 'Capital Contributions', `D${S_CAP_ROW}`, { fmt: CUR });
+  // Y1 CoC per site + portfolio (CF / capital)
+  const cocRow = S_CAP_ROW + 2;
+  wsP.getCell(cocRow, 2).value = 'Y1 Cash on Cash';
+  wsP.getCell(cocRow, 2).font = { size: 8.5, bold: true, color: { argb: RED } };
+  sites.forEach((s, i) => {
+    const L = wsP.getColumn(3 + i).letter;
+    const c = wsP.getCell(cocRow, 3 + i);
+    c.value = { formula: `IF(${L}${S_CAP_ROW}>0,${L}${S_CASH_ROW}/${L}${S_CAP_ROW},"")` } as any;
+    c.numFmt = PCT; c.font = { size: 8.5, bold: true, color: { argb: RED } };
+  });
+  const LT = wsP.getColumn(totCol).letter;
+  const cocT = wsP.getCell(cocRow, totCol);
+  cocT.value = { formula: `IF(${LT}${S_CAP_ROW}>0,${LT}${S_CASH_ROW}/${LT}${S_CAP_ROW},"")` } as any;
+  cocT.numFmt = PCT; cocT.font = { size: 11, bold: true, color: { argb: RED } };
+
+  const buf = await wb.xlsx.writeBuffer();
+  return Buffer.from(buf as ArrayBuffer);
+}
+
+function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string): void {
   const { coa, lines, inputs, uw, units } = args;
+  // cross-sheet reference prefixes — prefixed tab names contain spaces, so quote
+  const BQ = prefix ? `'${prefix}Budget'!` : 'Budget!';
+  const SQ = prefix ? `'${prefix}Summary'!` : 'Summary!';
   const byGl = new Map(lines.map((l) => [l.gl_code, l]));
   const ordered = [...coa].filter((a) => a.active).sort((a, b) => a.display_order - b.display_order);
   const labels = monthLabels(args.year, inputs.startMonth || 1);
@@ -127,11 +249,8 @@ export async function buildReviewWorkbook(args: {
   };
   const uwCol = uw ? uwColumnValues(uw, catBudget) : {};
 
-  const wb = new ExcelJS.Workbook();
-  wb.creator = 'nd-budget-tool';
-
   /* ================= Budget sheet ================= */
-  const ws = wb.addWorksheet('Budget', {
+  const ws = wb.addWorksheet(`${prefix}Budget`, {
     properties: { tabColor: { argb: 'FF00B0F0' }, defaultRowHeight: 12 },
     views: [{ state: 'frozen', xSplit: 4, ySplit: 6 }],
   });
@@ -172,7 +291,9 @@ export async function buildReviewWorkbook(args: {
   kpi(16, 'Cash on Cash -', 'IF($C$4>0,O3/$C$4,"")', PCT);
   ws.getCell(4, 2).value = 'Capital:';
   ws.getCell(4, 2).font = { size: 8, bold: true, color: { argb: 'FF505050' } };
-  ws.getCell(4, 3).value = inputs.capital || 0;
+  // capital lives on the Summary (D27 Capital Contributions) — single source
+  // of truth, per Troy's edited draft
+  ws.getCell(4, 3).value = { formula: `${SQ}D${S_CAP_ROW}` } as any;
   ws.getCell(4, 3).font = f8b;
   ws.getCell(4, 3).numFmt = CUR;
   // row 5: formula-colour legend (mirrors the app's fills)
@@ -304,8 +425,8 @@ export async function buildReviewWorkbook(args: {
   }
 
   /* ================= Summary sheet ================= */
-  const wsS = wb.addWorksheet('Summary', { properties: { tabColor: { argb: 'FF92D050' } }, views: [{ state: 'frozen', ySplit: 4 }] });
-  [3, 34, 2, 15, 15, 13, 11, 13].forEach((w, i) => { wsS.getColumn(i + 1).width = w; });
+  const wsS = wb.addWorksheet(`${prefix}Summary`, { properties: { tabColor: { argb: 'FF92D050' } }, views: [{ state: 'frozen', ySplit: 4 }] });
+  [3, 34, 2, 15, 15, 13, 11, 13, 11.6].forEach((w, i) => { wsS.getColumn(i + 1).width = w; });
   wsS.getCell(1, 2).value = `${args.propertyName} Year 1 Budget Analysis (${labels[0]} – ${labels[11]})`;
   wsS.getCell(1, 2).font = { size: 12, bold: true };
   wsS.getCell(2, 7).value = 'Unit Count';
@@ -349,7 +470,7 @@ export async function buildReviewWorkbook(args: {
     wsS.getCell(sr, 2).value = label;
     wsS.getCell(sr, 2).font = font;
     if (uw) { wsS.getCell(sr, 4).value = uwSummary[code]; }
-    wsS.getCell(sr, 5).value = { formula: `Budget!R${rowOf.get(code)}` } as any;
+    wsS.getCell(sr, 5).value = { formula: `${BQ}R${rowOf.get(code)}` } as any;
     wsS.getCell(sr, 6).value = { formula: `E${sr}-D${sr}` } as any;
     wsS.getCell(sr, 7).value = { formula: `E${sr}/$H$2` } as any;
     wsS.getCell(sr, 8).value = { formula: `E${sr}/$H$2/12` } as any;
@@ -360,9 +481,9 @@ export async function buildReviewWorkbook(args: {
   }
   sr++;
   const debtRows: [string, string | null][] = [
-    ['Interest Expense', `Budget!R${rowOf.get('7315')}`],
-    ['Principal', principalRows.length ? `ABS(${principalRows.map((r) => `Budget!R${r}`).join('+')})` : '0'],
-    ['Special Projects', `Budget!R${rowOf.get('7500')}`],
+    ['Interest Expense', `${BQ}R${rowOf.get('7315')}`],
+    ['Principal', principalRows.length ? `ABS(${principalRows.map((r) => `${BQ}R${r}`).join('+')})` : '0'],
+    ['Special Projects', `${BQ}R${rowOf.get('7500')}`],
     ['Cash Flow (NOI − debt service)', null],
   ];
   const noiRowS = 5 + sumRows.length - 1;
@@ -376,21 +497,59 @@ export async function buildReviewWorkbook(args: {
     cell.font = label.startsWith('Cash Flow') ? { size: 8.5, bold: true } : { size: 8.5 };
     sr++;
   }
-  sr++;
-  wsS.getCell(sr, 2).value = 'Capital Contributions';
-  wsS.getCell(sr, 2).font = { size: 8.5 };
-  wsS.getCell(sr, 4).value = inputs.capital || 0;
-  wsS.getCell(sr, 4).numFmt = CUR;
-  const capRow = sr;
-  sr++;
-  wsS.getCell(sr, 2).value = 'Cash on Cash Return';
-  wsS.getCell(sr, 2).font = { size: 8.5, bold: true };
-  wsS.getCell(sr, 5).value = { formula: `IF(D${capRow}>0,E${debtStart + 3}/D${capRow},"")` } as any;
-  wsS.getCell(sr, 5).numFmt = PCT;
-  wsS.getCell(sr, 5).font = { size: 8.5, bold: true };
+  // capital + Y1 CoC beside it (Troy's draft: bold red, "Y1 CoC" tag)
+  wsS.getCell(S_CAP_ROW, 2).value = 'Capital Contributions';
+  wsS.getCell(S_CAP_ROW, 2).font = { size: 8.5 };
+  wsS.getCell(S_CAP_ROW, 4).value = inputs.capital || 0;
+  wsS.getCell(S_CAP_ROW, 4).numFmt = CUR;
+  wsS.getCell(S_CAP_ROW, 5).value = { formula: `IF(D${S_CAP_ROW}>0,E${S_CASH_ROW}/D${S_CAP_ROW},"")` } as any;
+  wsS.getCell(S_CAP_ROW, 5).numFmt = PCT;
+  wsS.getCell(S_CAP_ROW, 5).font = { size: 11, bold: true, color: { argb: RED } };
+  wsS.getCell(S_CAP_ROW, 6).value = 'Y1 CoC';
+  wsS.getCell(S_CAP_ROW, 6).font = { size: 11, bold: true, color: { argb: RED } };
+
+  /* monthly Cash-on-Cash table (Troy's draft): M1..M12 with NOI / Interest /
+     Cash Flow / Return % / Running, calendar-year markers in col I, a medium
+     border at the calendar-year break and a double border under M12. */
+  const startM = inputs.startMonth || 1;
+  const monthsInYr1 = startM > 1 ? 13 - startM : 12;
+  const th = (col: number, t: string) => { const c2 = wsS.getCell(S_TABLE_HEAD, col); c2.value = t; c2.font = { bold: true }; };
+  wsS.getCell(S_TABLE_HEAD, 2).value = 'Cash on Cash Return';
+  wsS.getCell(S_TABLE_HEAD, 2).font = { size: 8.5, bold: true };
+  th(4, 'NOI'); th(5, 'Interest'); th(6, 'Cash Flow'); th(7, 'Return %'); th(8, 'Running');
+  const noiRow = rowOf.get('7280')!;
+  const intRow = rowOf.get('7315')!;
+  for (let i = 0; i < 12; i++) {
+    const r = S_M1 + i;
+    const mCol = colL(C.m1 + i);   // Budget-sheet month column letter
+    wsS.getCell(r, 2).value = `M${i + 1}`;
+    wsS.getCell(r, 2).font = { size: 8.5 };
+    wsS.getCell(r, 4).value = { formula: `${BQ}${mCol}${noiRow}` } as any;
+    wsS.getCell(r, 5).value = { formula: `${BQ}${mCol}${intRow}` } as any;
+    wsS.getCell(r, 6).value = { formula: `D${r}-E${r}` } as any;
+    wsS.getCell(r, 7).value = { formula: `F${r}/$D$${S_CAP_ROW}` } as any;
+    wsS.getCell(r, 8).value = { formula: i === 0 ? `G${r}` : `G${r}+H${r - 1}` } as any;
+    for (const c2 of [4, 5, 6]) wsS.getCell(r, c2).numFmt = CURC;
+    for (const c2 of [7, 8]) wsS.getCell(r, c2).numFmt = PCT;
+    // calendar-year markers
+    if (i === 0) { wsS.getCell(r, 9).value = args.year; }
+    if (startM > 1 && i === monthsInYr1) { wsS.getCell(r, 9).value = args.year + 1; }
+    // borders: medium above M1, medium below the year break, double below M12
+    const bd: any = {};
+    if (i === 0) bd.top = { style: 'medium' };
+    if (startM > 1 && i === monthsInYr1 - 1) bd.bottom = { style: 'medium' };
+    if (i === 11) bd.bottom = { style: 'double' };
+    if (bd.top || bd.bottom) for (let c2 = 2; c2 <= 8; c2++) wsS.getCell(r, c2).border = bd;
+  }
+  wsS.getCell(S_FOOT, 7).value = { formula: `SUM(G${S_M1}:G${S_M1 + 11})` } as any;
+  wsS.getCell(S_FOOT, 7).numFmt = PCT;
+  wsS.getCell(S_FOOT, 7).font = { size: 11, bold: true, color: { argb: RED } };
+  wsS.getCell(S_FOOT, 8).value = 'Y1 CoC';
+  wsS.getCell(S_FOOT, 8).font = { size: 11, bold: true, color: { argb: RED } };
+  wsS.getCell(S_FOOT, 8).border = { bottom: { style: 'medium' } };
 
   /* ================= Raw Data sheet ================= */
-  const wsR = wb.addWorksheet('Raw Data');
+  const wsR = wb.addWorksheet(`${prefix}Raw Data`);
   [26, 42, 12, 60].forEach((w, i) => { wsR.getColumn(i + 1).width = w; });
   let rrw = 1;
   const rawRow = (vals: any[], bold = false) => {
@@ -429,7 +588,4 @@ export async function buildReviewWorkbook(args: {
     const t = sum(l.months);
     if (t || l.override) rawRow([l.gl_code, t, l.override ? 'Y' : '', JSON.stringify(l.driver)]);
   }
-
-  const buf = await wb.xlsx.writeBuffer();
-  return Buffer.from(buf as ArrayBuffer);
 }

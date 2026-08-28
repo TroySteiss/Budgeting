@@ -425,6 +425,42 @@ function parseYardiUnitLevel(g: Grid, h: number, asOf: string | null): RentParse
   return out;
 }
 
+/* ========================= REVIEW-DRAFT IMPORT ========================= */
+
+/** Parse an edited review workbook ("CWND 2026 Budget Draft TS ….xlsx"):
+    the Budget tab's detail-GL month cells (E..P; SheetJS returns cached
+    values for formula cells, so hand-typed AND formula edits both come
+    through) plus the Summary's Capital Contributions (D27). */
+export function parseReviewDraft(buf: Buffer): { code: string | null; year: number | null; glMonths: Record<string, number[]>; capital: number | null } {
+  const all = grids(buf);
+  const bSheet = all.find((x) => x.name.trim().toLowerCase() === 'budget')
+    || all.find((x) => / budget$/i.test(x.name.trim()));
+  if (!bSheet) throw new Error('No "Budget" tab found — is this a review-workbook draft?');
+  const g = bSheet.g;
+  const code = (s(g[0]?.[2]).match(/\(([a-z0-9]{3,6})\)/i)?.[1] || '').toLowerCase() || null;
+  // title reads "Year 1 Budget · Sep-26 – Aug-27" — the first month label's
+  // 2-digit year is the budget year
+  const ym = s(g[0]?.[4]).match(/[A-Za-z]{3}-(\d{2})\b/);
+  const year = ym ? 2000 + Number(ym[1]) : null;
+  const glMonths: Record<string, number[]> = {};
+  for (let r = 6; r < g.length; r++) {
+    const gl = s(g[r]?.[0]);
+    if (!/^\d{4}$/.test(gl)) continue;
+    glMonths[gl] = Array.from({ length: 12 }, (_, i) => {
+      const v = g[r]?.[4 + i];
+      return typeof v === 'number' ? Math.round(v * 100) / 100 : num(v);
+    });
+  }
+  if (!Object.keys(glMonths).length) throw new Error('Budget tab has no GL rows');
+  const sSheet = all.find((x) => x.name.trim().toLowerCase() === 'summary') || all.find((x) => / summary$/i.test(x.name.trim()));
+  let capital: number | null = null;
+  if (sSheet) {
+    const v = sSheet.g[26]?.[3];   // Summary D27 = Capital Contributions
+    if (typeof v === 'number' && v > 0) capital = Math.round(v * 100) / 100;
+  }
+  return { code, year, glMonths, capital };
+}
+
 /* ========================= ND PAYROLL MODEL ========================= */
 
 /* Position → Monarch wage GL. Anything unrecognized lands in 6404 and is
