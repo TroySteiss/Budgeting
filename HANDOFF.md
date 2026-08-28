@@ -122,6 +122,27 @@ flex lines block the NOI tie — releasing fixes that too. Going forward,
 hand-edits on formula lines keep the formula identity (`revised` flag, `*`
 on the chip) instead of demoting to MAN.
 
+## 2026-08-27/28 round-up (see PROJECT_MAP + git log for detail)
+
+Formula copier (⧉, replays recipes incl. zero-outs on the target's own data,
+ends with recalc) · overrides audit + round-lock release (🔓 chip) · revised
+formulas keep identity (`*`) · GL Active flag kills comp-weight contamination
+(5118 COMMERCIAL RENT ≈ half of cat-5 weight) · non-accrual ⚠ + bold-red rows +
+one-click missed-bill smoothing + T12-total-on-curve tool (winter curve) ·
+utility recovery = per-utility EXCLUSIVE claims (sewer→sewer always; GAS REIM
+also takes 6604 electric-common; STREET REIM never; unmatched reims zero;
+editable per budget via REC chip; live on every edit) · linked lines (= GL ×
+weight, live) · payroll: relink on upload, edit-in-place (✎, add-property,
+6405→6404 — nothing maps to 6405), delete auto-repoints, March +3.5% raise,
+burden follows actual wage lines live · NOI tie can opt into scaling formula
+overrides (chooser shows per-category room; alerts on shortfall) · capital =
+Fee Breakdown capital-to-close (lhnd 5.2M nrnd 3.2M rrnd 6.6M cwnd 11M drnd
+9.2M mwnd 4.4M — EXISTING budgets need it typed into ⚙) · seller category
+shapes smoothed (Aug utilities dip = fake last-month NOI spike) · full-width
+layout + ⏴ Panel + condensable headers · SP section always visible, orange ·
+save points (⎘, persisted iterations, auto pre-restore capture) · dashboard
+shows per-budget income/opex/NOI, Δ vs UW, CoC, override mix, save points.
+
 ## Known gaps / next steps
 
 - **Unit-level rent roll support LANDED (2026-08-21 PM):** the parser now reads
