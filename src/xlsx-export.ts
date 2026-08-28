@@ -156,6 +156,9 @@ export async function buildPortfolioWorkbook(sites: ReviewArgs[], portfolioLabel
   sites.forEach((_, i) => { wsP.getColumn(3 + i).width = 14; });
   const totCol = 3 + sites.length;
   wsP.getColumn(totCol).width = 15;
+  // analytics columns after the PORTFOLIO total: UW Y1, Δ vs UW, per unit, per unit/mo
+  const uwColP = totCol + 1, dColP = totCol + 2, puColP = totCol + 3, pumColP = totCol + 4;
+  [15, 13, 11, 13].forEach((w, i) => { wsP.getColumn(totCol + 1 + i).width = w; });
   wsP.getCell(1, 2).value = `${portfolioLabel} — Year 1 Budget Portfolio Rollup`;
   wsP.getCell(1, 2).font = { size: 12, bold: true };
   const sq = (s: ReviewArgs) => `'${s.propertyCode.toUpperCase()} Summary'!`;
@@ -171,12 +174,20 @@ export async function buildPortfolioWorkbook(sites: ReviewArgs[], portfolioLabel
   tc.value = 'PORTFOLIO'; tc.font = f8b; tc.alignment = { horizontal: 'right' };
   tc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRAND } };
   tc.border = { bottom: { style: 'thin' } };
+  ([[uwColP, 'Year 1 UW Budget'], [dColP, 'Δ vs UW'], [puColP, 'Per Unit'], [pumColP, 'Per Unit / Month']] as [number, string][]).forEach(([col, t]) => {
+    const c = wsP.getCell(4, col);
+    c.value = t; c.font = f8b; c.alignment = { horizontal: 'right', wrapText: true };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: col === uwColP ? UWFILL : HEAD } };
+    c.border = { bottom: { style: 'thin' } };
+  });
   wsP.getCell(4, 2).value = 'Account Summary';
   wsP.getCell(4, 2).font = f8b;
   wsP.getCell(4, 2).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD } };
   wsP.getCell(4, 2).border = { bottom: { style: 'thin' } };
   // units row + summary rows 5..20 + debt 22..25 + capital 27 (same layout as site Summary)
-  const put = (r: number, label: string, srcCell: string, opts: { bold?: boolean; fmt?: string; noTotal?: boolean } = {}) => {
+  const LT0 = wsP.getColumn(totCol).letter;
+  const LU = wsP.getColumn(uwColP).letter;
+  const put = (r: number, label: string, srcCell: string, opts: { bold?: boolean; fmt?: string; noTotal?: boolean; uwCell?: string } = {}) => {
     wsP.getCell(r, 2).value = label;
     wsP.getCell(r, 2).font = { size: 8.5, bold: !!opts.bold };
     sites.forEach((s, i) => {
@@ -189,8 +200,24 @@ export async function buildPortfolioWorkbook(sites: ReviewArgs[], portfolioLabel
       const L0 = wsP.getColumn(3).letter, L1 = wsP.getColumn(totCol - 1).letter;
       c.value = { formula: `SUM(${L0}${r}:${L1}${r})` } as any;
       c.numFmt = opts.fmt || ACCT; c.font = { size: 8.5, bold: true };
+      // analytics: UW Y1 (sum of the site Summaries' D column), Δ, per unit, per unit/mo
+      if (opts.uwCell) {
+        const cu = wsP.getCell(r, uwColP);
+        cu.value = { formula: sites.map((s) => `${sq(s)}${opts.uwCell}`).join('+') } as any;
+        cu.numFmt = ACCT; cu.font = { size: 8.5, bold: !!opts.bold };
+        cu.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: UWFILL } };
+        const cd = wsP.getCell(r, dColP);
+        cd.value = { formula: `${LT0}${r}-${LU}${r}` } as any;
+        cd.numFmt = ACCT; cd.font = { size: 8.5, bold: !!opts.bold };
+      }
+      const cpu = wsP.getCell(r, puColP);
+      cpu.value = { formula: `${LT0}${r}/$${LT0}$3` } as any;
+      cpu.numFmt = PU; cpu.font = { size: 8.5, bold: !!opts.bold };
+      const cpm = wsP.getCell(r, pumColP);
+      cpm.value = { formula: `${LT0}${r}/$${LT0}$3/12` } as any;
+      cpm.numFmt = PU; cpm.font = { size: 8.5, bold: !!opts.bold };
     }
-    if (opts.bold) for (let c2 = 2; c2 <= totCol; c2++) wsP.getCell(r, c2).border = { top: { style: 'thin' } };
+    if (opts.bold) for (let c2 = 2; c2 <= pumColP; c2++) wsP.getCell(r, c2).border = { top: { style: 'thin' } };
   };
   wsP.getCell(3, 2).value = 'Units';
   wsP.getCell(3, 2).font = f8b;
@@ -205,7 +232,7 @@ export async function buildPortfolioWorkbook(sites: ReviewArgs[], portfolioLabel
     [17, 'TOTAL CONTRACT SERVICES', false], [18, 'TOTAL REHAB/REPLACEMENT', false],
     [19, 'TOTAL OPERATING EXPENSES', true], [20, 'NET OPERATING INCOME', true],
   ];
-  for (const [r, label, bold] of S_ROWS) put(r, label, `E${r}`, { bold });
+  for (const [r, label, bold] of S_ROWS) put(r, label, `E${r}`, { bold, uwCell: `D${r}` });
   put(S_DEBT_START, 'Interest Expense', `E${S_DEBT_START}`);
   put(S_DEBT_START + 1, 'Principal', `E${S_DEBT_START + 1}`);
   put(S_DEBT_START + 2, 'Special Projects', `E${S_DEBT_START + 2}`);
