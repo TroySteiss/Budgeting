@@ -1005,15 +1005,75 @@ router.get('/budgets/:id/export.xlsx', h(async (req, res) => {
   res.send(buf);
 }));
 
+/* Bundle: ALL exports for the selected budgets in one zip, organized by
+   report type — "<year> Yardi Uploads/", "Budget Drafts/" — each subfolder
+   holding every selected site's file under the standard names. */
+router.get('/export/bundle.zip', h(async (req, res) => {
+  const ids = String(req.query.ids || '').split(',').map(Number).filter(Boolean);
+  if (!ids.length) return res.status(400).json({ error: 'ids required (comma-separated budget ids)' });
+  const cutoff = Math.max(0, Math.min(11, Number(req.query.cutoff) || 0));
+  const user = req.session.username || '';
+  const ini = initialsOf(user);
+  const stamp = mmddyyyy();
+  const { default: JSZip } = await import('jszip');
+  const zip = new JSZip();
+  for (const id of ids) {
+    const lb = await loadBudget(id);
+    if (!lb) continue;
+    const code = lb.budget.property_code.toUpperCase();
+    const start = lb.budget.inputs?.startMonth || 1;
+    for (const calYear of start > 1 ? [lb.budget.year, lb.budget.year + 1] : [lb.budget.year]) {
+      const sliced: BudgetLine[] = lb.lines.map((l) => ({ ...l, months: calendarSlice(l.months, lb.budget.year, start, calYear) }));
+      const isRevision = cutoff > 0 || (calYear === lb.budget.year && start > 1);
+      const kind = isRevision ? 'Revision' : 'Upload';
+      const csv = buildBudgetCsv(lb.coa, sliced, {
+        propertyId: lb.budget.property_code, year: calYear,
+        description: `${lb.budget.property_code} ${calYear} Budget ${kind} ${ini} ${stamp}`,
+        cutoffMonth: calYear === lb.budget.year ? cutoff : 0,
+      });
+      zip.file(`${calYear} Yardi Uploads/${code} ${calYear} Budget ${kind} ${ini} ${stamp}.csv`, csv);
+    }
+    const prop = (await query('select * from properties where code=$1', [lb.budget.property_code])).rows[0];
+    let compName = '';
+    if (lb.budget.comp_set_id) compName = (await query('select name from comp_sets where id=$1', [lb.budget.comp_set_id])).rows[0]?.name || '';
+    const wbBuf = await buildReviewWorkbook({
+      propertyCode: lb.budget.property_code, propertyName: prop?.name || lb.budget.property_code,
+      year: lb.budget.year, units: Number(lb.budget.inputs?.units) || prop?.units || 0,
+      coa: lb.coa, lines: lb.lines, inputs: lb.budget.inputs, uw: lb.uw,
+      compWeights: lb.comps?.byGl || null, compUnits: lb.comps?.units || null, compName,
+    });
+    zip.file(`Budget Drafts/${code} ${lb.budget.year} Budget Draft ${ini} ${stamp}.xlsx`, wbBuf);
+    await captureExportPoint(lb, user);
+  }
+  const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  logChange(user, 'bundle export', { ids, cutoff });
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="Budget Exports ${ini} ${stamp}.zip"`);
+  res.send(buf);
+}));
+
 /* All-sites workbook: every budget's Budget/Summary/Raw Data tabs by site +
-   a live Portfolio rollup tab. ?year= filters; defaults to every budget. */
+   a live Portfolio rollup tab. ?ids=1,2,3 exports just those budgets (e.g.
+   the 4 Bismarck sites in one workbook, the 2 Jamestown in another);
+   ?year= filters; default = every budget. */
 router.get('/export/portfolio.xlsx', h(async (req, res) => {
   const year = Number(req.query.year) || null;
-  const rows = (await query(
-    year ? 'select id from budgets where year=$1 order by property_code' : 'select id from budgets order by property_code',
-    year ? [year] : []
-  )).rows;
+  const ids = String(req.query.ids || '').split(',').map(Number).filter(Boolean);
+  const rows = ids.length
+    ? (await query('select id from budgets where id = any($1) order by property_code', [ids])).rows
+    : (await query(
+        year ? 'select id from budgets where year=$1 order by property_code' : 'select id from budgets order by property_code',
+        year ? [year] : []
+      )).rows;
   if (!rows.length) return res.status(404).json({ error: 'No budgets to export' });
+  // label = the shared portfolio name when the selection is one portfolio
+  const pf = (await query(
+    `select distinct coalesce(pf.name, '') as name
+       from budgets b join properties p on p.code = b.property_code
+       left join portfolios pf on pf.id = p.portfolio_id
+      where b.id = any($1)`, [rows.map((r: any) => r.id)]
+  )).rows.map((r: any) => r.name).filter(Boolean);
+  const label = pf.length === 1 ? pf[0] : year ? `${year} Budgets` : 'Selected Budgets';
   const sites: ReviewArgs[] = [];
   for (const r of rows) {
     const lb = (await loadBudget(r.id))!;
@@ -1028,9 +1088,9 @@ router.get('/export/portfolio.xlsx', h(async (req, res) => {
     });
     await captureExportPoint(lb, req.session.username || '');
   }
-  const buf = await buildPortfolioWorkbook(sites, year ? `${year} Budgets` : 'All Budgets');
+  const buf = await buildPortfolioWorkbook(sites, label);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="PORTFOLIO ${year || ''} Budget Draft ${initialsOf(req.session.username || '')} ${mmddyyyy()}.xlsx"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${label.toUpperCase()} Budget Draft ${initialsOf(req.session.username || '')} ${mmddyyyy()}.xlsx"`);
   res.send(buf);
 }));
 

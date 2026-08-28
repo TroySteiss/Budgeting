@@ -188,14 +188,16 @@ function renderDash(el) {
     <div class="card">
       <h2>Budgets
         <button class="btn" id="newb" style="float:right">+ New budget</button>
-        <button class="btn sub" id="pf-export" style="float:right; margin-right:8px" title="One workbook: every budget's Budget / Summary / Raw Data tabs by site, plus a live Portfolio rollup tab">⬇ Portfolio workbook</button>
+        <button class="btn sub" id="pf-export" style="float:right; margin-right:8px" title="One workbook for the TICKED budgets (all if none ticked): each site's Budget / Summary / Raw Data tabs plus a live Portfolio rollup tab — tick the 4 Bismarck sites for a Bismarck WB, the 2 Jamestown for a JT WB">⬇ Portfolio workbook</button>
+        <button class="btn sub" id="bundle-export" style="float:right; margin-right:8px" title="ZIP of ALL exports for the TICKED budgets (all if none ticked), sorted by report type: '2026 Yardi Uploads/', '2027 Yardi Uploads/', 'Budget Drafts/' — each budget saved as an iteration">⬇ All exports (zip)</button>
       </h2>
-      ${st.budgets.length ? `<table class="list"><tr><th>Property</th><th>Window</th><th>Income</th><th>OpEx</th><th>NOI</th><th>Δ NOI vs UW</th><th>Δ EGI vs UW</th><th>CoC</th><th>Overrides</th><th>LTL</th><th>Save pts</th><th>Status</th><th>Updated</th><th></th></tr>
+      ${st.budgets.length ? `<table class="list"><tr><th><input type="checkbox" id="sel-all" title="Select all budgets"></th><th>Property</th><th>Window</th><th>Income</th><th>OpEx</th><th>NOI</th><th>Δ NOI vs UW</th><th>Δ EGI vs UW</th><th>CoC</th><th>Overrides</th><th>LTL</th><th>Save pts</th><th>Status</th><th>Updated</th><th></th></tr>
         ${st.budgets.map((b) => {
           const d = b.dash || {};
           const varCell = (v) => (v == null ? '<td class="muted">—</td>' : `<td class="${Math.abs(v) < 1 ? '' : v > 0 ? '' : 'neg'}" style="${Math.abs(v) < 1 ? 'color:var(--good)' : ''}">${Math.abs(v) < 1 ? 'tied' : money(v)}</td>`);
           const sm = d.startMonth > 1 ? `${MONTHS[d.startMonth - 1]}-${String(b.year).slice(2)} – ${MONTHS[(d.startMonth + 10) % 12]}-${String(b.year + 1).slice(2)}` : String(b.year);
           return `<tr class="click" data-id="${b.id}">
+          <td><input type="checkbox" data-sel="${b.id}"></td>
           <td><b>${esc(b.property_code)}</b> · ${esc(b.property_name)}<div class="muted" style="font-size:11px">${esc(b.label)}</div></td>
           <td class="muted">${sm}</td>
           <td>${money(d.income)}</td><td>${money(d.expense)}</td><td><b>${money(d.noi)}</b></td>
@@ -254,7 +256,23 @@ function renderDash(el) {
     openPayrollEditor(Number(b.dataset.pmedit));
   }));
   document.getElementById('newb').addEventListener('click', () => newBudgetDialog(props));
-  document.getElementById('pf-export').addEventListener('click', () => window.open('/api/export/portfolio.xlsx', '_blank'));
+  const selectedIds = () => [...el.querySelectorAll('[data-sel]')].filter((c) => c.checked).map((c) => c.dataset.sel);
+  el.querySelectorAll('[data-sel]').forEach((c) => c.addEventListener('click', (e) => e.stopPropagation()));
+  const selAll = document.getElementById('sel-all');
+  if (selAll) selAll.addEventListener('click', (e) => {
+    e.stopPropagation();
+    el.querySelectorAll('[data-sel]').forEach((c) => { c.checked = selAll.checked; });
+  });
+  document.getElementById('pf-export').addEventListener('click', () => {
+    const ids = selectedIds();
+    window.open(`/api/export/portfolio.xlsx${ids.length ? `?ids=${ids.join(',')}` : ''}`, '_blank');
+  });
+  document.getElementById('bundle-export').addEventListener('click', () => {
+    const ids = selectedIds();
+    const all = ids.length ? ids : st.budgets.map((b) => b.id);
+    if (!all.length) return;
+    window.open(`/api/export/bundle.zip?ids=${all.join(',')}`, '_blank');
+  });
 }
 
 function newBudgetDialog() {
