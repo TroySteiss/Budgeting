@@ -189,6 +189,24 @@ export function parseUwBook(buf: Buffer): UwParsedSheet[] {
         perProp.set(norm(nm), { capital, price: cPrice >= 0 ? num(fg[r]?.[cPrice]) : 0 });
         totalCap = Math.round((totalCap + capital) * 100) / 100;
       }
+      // the per-property column is CASH to close — true CAPITAL raised adds
+      // the Organize fee on top (Troy: "that is how much cash, not capital").
+      // Bismarck: 26.0M cash + 3.25M organize = 29.25M capital (×1.125).
+      let organize = 0;
+      for (let r = 0; r < Math.min(fg.length, 30); r++) {
+        if (!/^organize/i.test(s(fg[r]?.[0]))) continue;
+        const nums = (fg[r] || []).filter((v: any) => typeof v === 'number' || (typeof v === 'string' && num(v) > 0)).map((v: any) => num(v));
+        organize = Math.max(0, ...nums.filter((v: number) => v > 10000));
+        if (!organize) {
+          const rate = nums.find((v: number) => v > 0 && v < 1) || 0;
+          const priceRow = fg.find((row: any[]) => /^purchase price/i.test(s(row?.[0])));
+          organize = rate && priceRow ? Math.round(rate * num(priceRow[1])) : 0;
+        }
+        break;
+      }
+      const factor = totalCap > 0 ? (totalCap + organize) / totalCap : 1;
+      for (const v of perProp.values()) v.capital = Math.round(v.capital * factor * 100) / 100;
+      totalCap = Math.round(totalCap * factor * 100) / 100;
       for (const sheet of out) {
         if (sheet.isPortfolio) {
           if (totalCap) sheet.data.assumptions['capitalToClose'] = totalCap;
