@@ -40,10 +40,11 @@ router.get('/state', h(async (_req, res) => {
     query('select * from portfolios order by name'),
     query('select * from properties order by code'),
     query(`select b.id, b.property_code, b.year, b.label, b.budget_type, b.status, b.updated_at,
-                  b.uw_snapshot_id, b.comp_set_id, b.rent_snapshot_id, p.name as property_name
+                  b.uw_snapshot_id, b.comp_set_id, b.rent_snapshot_id, b.payroll_model_id, b.t12_snapshot_id,
+                  b.inputs, p.name as property_name, p.units
            from budgets b join properties p on p.code=b.property_code order by b.updated_at desc`),
     query(`select u.id, u.property_code, u.label, u.created_at,
-                  (u.data->>'noi')::numeric as noi, (u.data->>'units')::int as units
+                  (u.data->>'noi')::numeric as noi, (u.data->>'egi')::numeric as egi, (u.data->>'units')::int as units
            from uw_snapshots u order by u.created_at desc`),
     query('select id, name, period, book, created_at from comp_sets order by created_at desc'),
     query('select id, property_code, label, period, book, created_at from t12_snapshots order by created_at desc'),
@@ -54,6 +55,35 @@ router.get('/state', h(async (_req, res) => {
                   (data->>'units')::int as units
            from rent_snapshots order by created_at desc`),
   ]);
+  // dashboard breakdown of each budget's CURRENT iteration: totals, ties vs
+  // UW, override mix, save-point count — computed from the live lines
+  const allLines = (await query('select budget_id, gl_code, months, override, driver from budget_lines')).rows;
+  const spCounts = new Map((await query('select budget_id, count(*)::int as n from budget_snapshots group by 1')).rows.map((r: any) => [r.budget_id, r.n]));
+  const byBudget = new Map<number, any[]>();
+  for (const l of allLines) {
+    if (!byBudget.has(l.budget_id)) byBudget.set(l.budget_id, []);
+    byBudget.get(l.budget_id)!.push(l);
+  }
+  const uwById = new Map(uws.rows.map((u: any) => [u.id, u]));
+  for (const b of budgets.rows as any[]) {
+    const ls = byBudget.get(b.id) || [];
+    const monthsMap = new Map(ls.map((l: any) => [l.gl_code, l.months]));
+    const k = kpis(monthsMap as any, Number(b.inputs?.capital) || 0);
+    const uw: any = b.uw_snapshot_id ? uwById.get(b.uw_snapshot_id) : null;
+    const ovF = ls.filter((l: any) => l.override && l.driver?.method && l.driver.method !== 'manual' && l.driver.method !== 'setTotal' && l.driver.method !== 'zero').length;
+    const ovAll = ls.filter((l: any) => l.override).length;
+    b.dash = {
+      income: k.income, expense: k.expense, noi: k.noi, cashFlow: k.cashFlow, coc: k.coc,
+      capital: Number(b.inputs?.capital) || 0,
+      egiVar: uw?.egi != null ? r2(k.income - Number(uw.egi)) : null,
+      noiVar: uw?.noi != null ? r2(k.noi - Number(uw.noi)) : null,
+      overridesFormula: ovF, overridesFixed: ovAll - ovF,
+      savePoints: spCounts.get(b.id) || 0,
+      startMonth: Number(b.inputs?.startMonth) || 1,
+      ltlMode: b.inputs?.ltl?.mode === 'ramp' ? 'ramp' : 'leases',
+    };
+    delete b.inputs;   // keep /state light
+  }
   res.json({
     coa, portfolios: portfolios.rows, properties: properties.rows,
     budgets: budgets.rows, uwSnapshots: uws.rows, compSets: comps.rows,
@@ -216,6 +246,7 @@ interface LoadedBudget {
   uw: UwSnapshotData | null; comps: CompWeights | null; catShapes: Record<string, Months> | null;
   payrollWages: Record<string, number> | null; leases: Lease[] | null;
   sellerUtil: SellerUtilRow[] | null; charges: Record<string, number> | null;
+  savePoints?: any[];
   sellerRows: any[] | null;
 }
 
@@ -291,7 +322,11 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
     if (Array.isArray(rs?.data?.leases) && rs.data.leases.length) leases = rs.data.leases;
     if (rs?.data?.charges && Object.keys(rs.data.charges).length) charges = rs.data.charges;
   }
-  return { budget, lines, coa, coaMap: new Map(coa.map((a) => [a.code, a])), uw, comps, catShapes, payrollWages, leases, sellerUtil, charges, sellerRows };
+  const savePoints = (await query(
+    'select id, name, created_by, created_at, summary from budget_snapshots where budget_id=$1 order by created_at desc limit 50',
+    [id]
+  )).rows;
+  return { budget, lines, coa, coaMap: new Map(coa.map((a) => [a.code, a])), uw, comps, catShapes, payrollWages, leases, sellerUtil, charges, sellerRows, savePoints };
 }
 
 async function saveLines(budgetId: number, lines: BudgetLine[]): Promise<void> {
@@ -310,6 +345,7 @@ async function saveLines(budgetId: number, lines: BudgetLine[]): Promise<void> {
 function budgetView(lb: LoadedBudget) {
   const monthsMap = new Map(lb.lines.map((l) => [l.gl_code, l.months]));
   return {
+    savePoints: lb.savePoints || [],
     budget: lb.budget,
     lines: lb.lines,
     tieout: computeTieout(lb.lines, lb.coaMap, lb.uw),
@@ -623,6 +659,51 @@ router.put('/budgets/:id/lines/:gl', h(async (req, res) => {
   await query('update budgets set updated_at=now() where id=$1', [id]);
   logChange(req.session.username || '', 'edit line', { id, gl, annual: sum(existing.months) });
   res.json(budgetView((await loadBudget(id))!));
+}));
+
+/* ---------------- save points (persisted iterations) ---------------- */
+
+function snapshotSummary(lb: LoadedBudget): Record<string, number> {
+  const monthsMap = new Map(lb.lines.map((l) => [l.gl_code, l.months]));
+  const k = kpis(monthsMap, Number(lb.budget.inputs?.capital) || 0);
+  return { income: k.income, expense: k.expense, noi: k.noi, cashFlow: k.cashFlow,
+           overrides: lb.lines.filter((l) => l.override).length };
+}
+
+async function captureSnapshot(lb: LoadedBudget, name: string, user: string): Promise<number> {
+  const row = (await query(
+    'insert into budget_snapshots(budget_id, name, created_by, inputs, lines, summary) values($1,$2,$3,$4,$5,$6) returning id',
+    [lb.budget.id, name, user, JSON.stringify(lb.budget.inputs), JSON.stringify(lb.lines), JSON.stringify(snapshotSummary(lb))]
+  )).rows[0];
+  return row.id;
+}
+
+router.post('/budgets/:id/snapshots', h(async (req, res) => {
+  const lb = await loadBudget(Number(req.params.id));
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  const name = String(req.body?.name || '').trim() || `Save point ${new Date().toLocaleString()}`;
+  const sid = await captureSnapshot(lb, name, req.session.username || '');
+  logChange(req.session.username || '', 'save point', { id: lb.budget.id, sid, name });
+  res.json(budgetView((await loadBudget(lb.budget.id))!));
+}));
+
+router.post('/budgets/:id/snapshots/:sid/restore', h(async (req, res) => {
+  const id = Number(req.params.id);
+  const lb = await loadBudget(id);
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  const snap = (await query('select * from budget_snapshots where id=$1 and budget_id=$2', [Number(req.params.sid), id])).rows[0];
+  if (!snap) return res.status(404).json({ error: 'Save point not found' });
+  // safety: capture the CURRENT state before rolling back
+  await captureSnapshot(lb, `before restoring “${snap.name}”`, req.session.username || '');
+  await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(snap.inputs)]);
+  await saveLines(id, snap.lines as BudgetLine[]);
+  logChange(req.session.username || '', 'restore save point', { id, sid: snap.id, name: snap.name });
+  res.json(budgetView((await loadBudget(id))!));
+}));
+
+router.delete('/budgets/:id/snapshots/:sid', h(async (req, res) => {
+  await query('delete from budget_snapshots where id=$1 and budget_id=$2', [Number(req.params.sid), Number(req.params.id)]);
+  res.json(budgetView((await loadBudget(Number(req.params.id)))!));
 }));
 
 /* Undo support: restore a client-held snapshot of lines (+ inputs) verbatim —

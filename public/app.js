@@ -186,13 +186,24 @@ function renderDash(el) {
   el.innerHTML = `
     <div class="card">
       <h2>Budgets <button class="btn" id="newb" style="float:right">+ New budget</button></h2>
-      ${st.budgets.length ? `<table class="list"><tr><th>Property</th><th>Year</th><th>Label</th><th>Type</th><th>Status</th><th>Updated</th><th></th></tr>
-        ${st.budgets.map((b) => `<tr class="click" data-id="${b.id}">
-          <td><b>${esc(b.property_code)}</b> · ${esc(b.property_name)}</td>
-          <td>${b.year}</td><td>${esc(b.label)}</td><td>${esc(b.budget_type)}</td><td>${esc(b.status)}</td>
+      ${st.budgets.length ? `<table class="list"><tr><th>Property</th><th>Window</th><th>Income</th><th>OpEx</th><th>NOI</th><th>Δ NOI vs UW</th><th>Δ EGI vs UW</th><th>CoC</th><th>Overrides</th><th>LTL</th><th>Save pts</th><th>Status</th><th>Updated</th><th></th></tr>
+        ${st.budgets.map((b) => {
+          const d = b.dash || {};
+          const varCell = (v) => (v == null ? '<td class="muted">—</td>' : `<td class="${Math.abs(v) < 1 ? '' : v > 0 ? '' : 'neg'}" style="${Math.abs(v) < 1 ? 'color:var(--good)' : ''}">${Math.abs(v) < 1 ? 'tied' : money(v)}</td>`);
+          const sm = d.startMonth > 1 ? `${MONTHS[d.startMonth - 1]}-${String(b.year).slice(2)} – ${MONTHS[(d.startMonth + 10) % 12]}-${String(b.year + 1).slice(2)}` : String(b.year);
+          return `<tr class="click" data-id="${b.id}">
+          <td><b>${esc(b.property_code)}</b> · ${esc(b.property_name)}<div class="muted" style="font-size:11px">${esc(b.label)}</div></td>
+          <td class="muted">${sm}</td>
+          <td>${money(d.income)}</td><td>${money(d.expense)}</td><td><b>${money(d.noi)}</b></td>
+          ${varCell(d.noiVar)}${varCell(d.egiVar)}
+          <td>${d.coc != null ? (d.coc * 100).toFixed(1) + '%' : '—'}${d.capital ? `<div class="muted" style="font-size:10.5px">on ${money(d.capital)}</div>` : ''}</td>
+          <td class="muted">${d.overridesFormula || 0} fx · ${d.overridesFixed || 0} fixed</td>
+          <td class="muted">${d.ltlMode === 'leases' ? 'per-lease' : 'ramp'}</td>
+          <td class="muted">${d.savePoints || 0}</td>
+          <td>${esc(b.status)}</td>
           <td class="muted">${new Date(b.updated_at).toLocaleDateString()}</td>
           <td>${S.auth.isAdmin ? `<button class="btn danger" data-del="${b.id}">Delete</button>` : ''}</td>
-        </tr>`).join('')}</table>` : '<p class="muted">No budgets yet. Upload a UW book, rent roll and comp set, then create one.</p>'}
+        </tr>`; }).join('')}</table>` : '<p class="muted">No budgets yet. Upload a UW book, rent roll and comp set, then create one.</p>'}
     </div>
     <div class="card">
       <h2>Data on file</h2>
@@ -495,6 +506,7 @@ function renderEditor(el) {
         <button class="btn sub" id="ex-xlsx">⬇ Review workbook</button>
         <button class="btn sub" id="recalc">↻ Recalc</button>
         <button class="btn sub" id="undo-btn" ${S.undo.budgetId === b.id && S.undo.stack.length ? '' : 'disabled'}>↶ Undo${S.undo.budgetId === b.id && S.undo.stack.length ? ` (${S.undo.stack.length})` : ''}</button>
+        <button class="btn sub" id="sp-btn" title="Named, permanent save points for this budget — capture the current iteration, restore any earlier one (a safety point is captured before every restore)">⎘ Save points${(bv.savePoints || []).length ? ` (${bv.savePoints.length})` : ''}</button>
         <button class="btn sub" id="cols-btn">▦ Columns</button>
         <button class="btn sub" id="side-btn" title="Hide/show the side panel (trend, tie-out, data sources) — frees ~430px for the month columns">${localStorage.getItem('bt-side') === '0' ? '⏵ Panel' : '⏴ Panel'}</button>
         <button class="btn sub" id="round-btn" title="Round selected lines' months to a multiple">⌁ MROUND…</button>
@@ -554,7 +566,8 @@ function renderEditor(el) {
     <dialog class="assump" id="assump-dlg"></dialog>
     <dialog class="assump" id="round-dlg"></dialog>
     <dialog class="assump" id="copy-dlg"></dialog>
-    <dialog class="assump" id="ovr-dlg"></dialog>`;
+    <dialog class="assump" id="ovr-dlg"></dialog>
+    <dialog class="assump" id="sp-dlg"></dialog>`;
 
   document.getElementById('ex-csv').addEventListener('click', () => {
     const c = document.getElementById('ex-cutoff').value;
@@ -574,6 +587,7 @@ function renderEditor(el) {
   document.getElementById('copyfx-btn').addEventListener('click', () => openCopyFormulas(b));
   const ovrBtn = document.getElementById('ovr-btn');
   if (ovrBtn) ovrBtn.addEventListener('click', () => openOverridesAudit(b));
+  document.getElementById('sp-btn').addEventListener('click', () => openSavePoints(b));
   // condensed section headers: click toggles, choice is locked in localStorage
   el.querySelectorAll('tr.header[data-sec]').forEach((tr) => tr.addEventListener('click', () => {
     const sec = tr.dataset.sec;
@@ -1912,6 +1926,66 @@ function openRoundDialog(b) {
       render();
     } catch (e) { dlg.querySelector('#rd-err').textContent = e.message; }
   });
+  dlg.showModal();
+}
+
+/* ---------------- save points (persisted iterations) ----------------
+   Named server-side snapshots of the whole budget (lines + inputs). Restore
+   brings one back verbatim; a "before restoring" point is captured first so
+   a restore can itself be undone. */
+function openSavePoints(b) {
+  const dlg = document.getElementById('sp-dlg');
+  const paint = () => {
+    const sps = S.bv.savePoints || [];
+    dlg.innerHTML = `
+      <h2>Save points — ${sps.length} iteration${sps.length === 1 ? '' : 's'} kept</h2>
+      <div class="row">
+        <div class="fld" style="flex:1"><label>Name this iteration</label><input id="sp-name" placeholder="e.g. pre-utility rework · sent to review · v2" style="width:100%"></div>
+        <button class="btn" id="sp-save" style="align-self:flex-end">⎘ Save current</button>
+      </div>
+      <div style="max-height:46vh; overflow:auto; margin-top:10px; border:1px solid var(--line); border-radius:8px">
+        ${sps.length ? `<table class="list" style="width:100%"><tr><th>Save point</th><th>NOI</th><th>Income</th><th>OpEx</th><th>Overrides</th><th>By</th><th>When</th><th></th></tr>
+          ${sps.map((s) => {
+            const sm = s.summary || {};
+            return `<tr><td>${esc(s.name)}</td>
+              <td>${money(sm.noi)}</td><td>${money(sm.income)}</td><td>${money(sm.expense)}</td>
+              <td class="muted">${sm.overrides ?? ''}</td>
+              <td class="muted">${esc(s.created_by)}</td>
+              <td class="muted">${new Date(s.created_at).toLocaleString()}</td>
+              <td style="white-space:nowrap">
+                <button class="rb" data-sprestore="${s.id}" title="Restore this iteration verbatim (current state is saved first)">⟲ restore</button>
+                <button class="rb" data-spdel="${s.id}" title="Delete this save point">🗑</button>
+              </td></tr>`;
+          }).join('')}</table>` : '<p class="muted" style="padding:10px">No save points yet — capture one before big changes (copies, releases, re-links).</p>'}
+      </div>
+      <div class="err" id="sp-err"></div>
+      <div class="foot"><button class="btn sub" id="sp-x">Close</button></div>`;
+    // NOTE: no render() while the dialog is open — a full re-render would
+    // replace the dialog element out from under us; the grid refreshes on Close
+    dlg.querySelector('#sp-x').addEventListener('click', () => { dlg.close(); render(); });
+    dlg.querySelector('#sp-save').addEventListener('click', async () => {
+      try {
+        S.bv = await POST(`/budgets/${b.id}/snapshots`, { name: dlg.querySelector('#sp-name').value });
+        paint();
+      } catch (e) { dlg.querySelector('#sp-err').textContent = e.message; }
+    });
+    dlg.querySelectorAll('[data-sprestore]').forEach((x) => x.addEventListener('click', async () => {
+      if (!confirm('Restore this iteration? The current state is saved as its own point first.')) return;
+      try {
+        S.bv = await POST(`/budgets/${b.id}/snapshots/${x.dataset.sprestore}/restore`);
+        S.undo = { budgetId: b.id, stack: [] };   // undo stack belongs to the old iteration
+        paint();
+      } catch (e) { dlg.querySelector('#sp-err').textContent = e.message; }
+    }));
+    dlg.querySelectorAll('[data-spdel]').forEach((x) => x.addEventListener('click', async () => {
+      if (!confirm('Delete this save point permanently?')) return;
+      try {
+        S.bv = await DEL(`/budgets/${b.id}/snapshots/${x.dataset.spdel}`);
+        paint();
+      } catch (e) { dlg.querySelector('#sp-err').textContent = e.message; }
+    }));
+  };
+  paint();
   dlg.showModal();
 }
 
