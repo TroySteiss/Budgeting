@@ -7,6 +7,7 @@
      numbers (≤4dp, no separators), income +, contra −.
    Revision mode zeroes every month before the cutoff (Yardi keeps actuals). */
 import type { CoaAccount, BudgetLine } from '../shared/domain.js';
+import { splitCsvLine, type BudgetCsvParsed } from './importers.js';
 
 const BUDGET_HEADER =
   '//Budget:BudgetNumber,Property Id,Book,Start Month,Budget Description,Domain,Domain Interval, Segment1, Segment2, Segment3, Segment4, Segment5, Segment6, Segment7, Segment8, Segment9, Segment10, Segment11, Segment12,,,,,';
@@ -53,4 +54,53 @@ export function buildBudgetCsv(coa: CoaAccount[], lines: BudgetLine[], opts: Csv
     ].join(','));
   });
   return rows.join('\r\n') + '\r\n';
+}
+
+/* ---------------- revise an existing budget CSV (partial-month rule off Yardi) ----------------
+   Re-issue a budget CSV — exported from Yardi, or the file last uploaded — with
+   ONE calendar month replaced 1:1 by posted actuals. Every other cell, the row
+   order and the file's own number formatting are preserved verbatim, so the
+   revision runs off the budget AS IT SITS IN YARDI and undoes nothing changed
+   there. Chart GLs that posted but have no row are appended. */
+export interface ReviseResult { csv: string; rewritten: number; appended: string[]; description: string }
+
+export function reviseBudgetCsv(base: BudgetCsvParsed, calMonth: number, glMonths: Record<string, number>, opts: { description?: string; stamp?: string } = {}): ReviseResult {
+  if (calMonth < 1 || calMonth > 12) throw new Error(`reviseBudgetCsv: bad month ${calMonth}`);
+  const col = 12 + (calMonth - 1);
+  const fmt = (v: number): string => {
+    if (base.decimals) { const p = 10 ** base.decimals; return (Math.round(v * p) / p).toFixed(base.decimals); }
+    return fmtAmount(v);
+  };
+  const seen = new Set<string>();
+  const body: string[] = [];
+  for (const r of base.rows) {
+    seen.add(r.gl);
+    const t = [...r.tokens];
+    t[col] = fmt(glMonths[r.gl] || 0);
+    body.push(t.join(','));
+  }
+  const appended: string[] = [];
+  const tmpl = base.rows[0].tokens;
+  for (const [gl, v] of Object.entries(glMonths)) {
+    if (!v || seen.has(gl)) continue;
+    const t = [...tmpl];
+    t[0] = String(base.rows.length + appended.length + 1);
+    t[1] = gl;
+    for (let k = 12; k < 24; k++) t[k] = fmt(0);
+    t[col] = fmt(v);
+    body.push(t.join(','));
+    appended.push(gl);
+  }
+  // header record: restamp the description ("TS 08282026" → today's initials+date), Upload → Revision
+  const pre = [...base.preamble];
+  const rec = splitCsvLine(pre[base.headerIdx]);
+  const quoted = /^\s*".*"\s*$/.test(rec[4] || '');
+  let desc = opts.description ?? base.description;
+  if (opts.description == null && opts.stamp) {
+    desc = /\b[A-Z]{1,3} \d{8}\b/.test(desc) ? desc.replace(/\b[A-Z]{1,3} \d{8}\b/, opts.stamp) : `${desc} ${opts.stamp}`;
+    desc = desc.replace(/\bUpload\b/, 'Revision');
+  }
+  rec[4] = quoted ? `"${desc}"` : desc;
+  pre[base.headerIdx] = rec.join(',');
+  return { csv: [...pre, ...body].join(base.eol) + base.eol, rewritten: base.rows.length, appended, description: desc };
 }

@@ -2,7 +2,7 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
+> Last updated: 2026-09-10 — actualized months (partial-month rule; section above Exports). Earlier: 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
 > w/ per-unit basis + ND payroll model).
 
 ## What this is
@@ -193,6 +193,52 @@ lines instead of setting standing multiples (RRND's "138 manual overrides" were 
 "tie" button) scales a category's non-overridden lines so the total hits the UW-derived target,
 keeping overrides — with a penny-fix on the largest line.
 
+**Actualized months — the partial-month rule (Troy 2026-09-10)**: after the first
+(partial) month of ownership closes, that month is budgeted 1:1 to what posted, so
+Yardi's variance reports stop comparing a full-month plan to a part-month of
+actuals. Editor button **✓ Actualize month…** → upload the month-end Yardi *Property
+Comparison* (Book = Cash, ONE period, Actual/Budget column pairs per property;
+`parseComparisonActuals`). `actualizeFromComparison()` (domain.ts, pure) turns the
+budget's own Actual column into upload-chart amounts: every detail GL with a
+`csv_order` is mirrored; **5006 TENANT RENT → 4994** (`ACTUAL_REMAP` — a new
+acquisition's first-month rent posts to 5006, which is not in the chart); sections
+`principal` (3080–3091 loan proceeds) and `below_noi` (depreciation/amortization)
+are excluded, as are balance-sheet rows (<4000) and the report's subtotal rows —
+every exclusion is listed back to the user, never dropped silently. Result lives on
+**`inputs.actuals["YYYY-MM"]`** (`ActualizedMonth`: period, book, source, glMonths,
+summary); **budget_lines stay the pure plan**. `effectiveLines(lb)` =
+`applyActuals()` overlays each in-window actualized month on read (budgetView, all
+exports) so the other 11 months stay live on their formulas and the locked month
+shows as honest tie-out variance. A **pre-start closing month** (close mid-Aug, plan
+starts Sep — the Bismarck/Jamestown case) is outside the 12 plan columns:
+`injectPreStartActuals()` writes it into its calendar column of the calendar-year
+CSV slice only (+ the Raw Data sheet of the review workbook). Grid: locked columns
+get a ✓ header and the `drv-act` fill; an edit inside a locked month corrects the
+POSTED figure (PUT lines writes to inputs.actuals, no override); plan edits never
+absorb a locked month's shown value. "Release" (in the dialog) deletes the key —
+the plan takes the month back. A save point is captured before apply/release; one
+Undo reverses (undo snapshots carry `planLines`, never the overlaid view).
+Verified end-to-end: the rrnd Sep-start plan + the real Aug-26 ND Cash comparison
+reproduces Troy's hand-built "rrnd 2026 Budget Revision TS 09102026.csv" to the
+penny (fixture `comparison-northda-aug26.xlsx`).
+
+**Off the Yardi CSV (Troy 2026-09-10 PM — "changes are sometimes made in Yardi; make
+sure not to undo them")**: the same rule runs off the budget AS IT SITS IN YARDI
+instead of the tool's plan. Dashboard **✓ Actualize from Yardi CSVs…** → one Property
+Comparison + N budget CSVs (exported from Yardi, or the files last uploaded).
+`parseBudgetCsv` keeps every token verbatim and reads the PROPERTY FROM THE FILE's
+header record (never from the UI); `reviseBudgetCsv` (csv-export.ts) rewrites only
+the closed month's Amount column — the file's own decimal format is kept, the
+description is restamped `<INI> mmddyyyy` (Upload → Revision), and posted chart GLs
+with no row are appended — tested byte-for-byte against Troy's hand-built RRND
+revision. `POST /actualize-csv` (multer fields `comparison` + `csv[]`) returns every
+revised CSV (the client downloads them) and records the actualized month on the
+matching budget (same property; CSV year = start year or start year + 1; save point
+first). `adopt=1` (dialog default ON) also copies the CSV's other in-window months
+onto plan lines that differ (override, driver `yardiCsv`, YARDI chip) so a later
+export from the tool cannot undo Yardi-side edits. Fixtures:
+`rrnd-budget-yardi-export-2026.csv`, `rrnd-budget-revision-aug26-hand.csv`.
+
 ## Exports
 
 - **CSV** (`src/csv-export.ts`): reproduces the real Yardi ETL format byte-for-byte
@@ -210,7 +256,9 @@ keeping overrides — with a penny-fix on the largest line.
 `GET/PUT /budgets/:id` (PUT inputs ⇒ regenerate), `PUT /budgets/:id/lines/:gl`,
 `POST /budgets/:id/recalc | /rebalance {pcode}`, `DELETE /budgets/:id` (admin),
 `GET /budgets/:id/export.csv?cutoff= | export.xlsx`,
-`POST /properties` (admin upsert), `PUT /gl/:code` (admin: pcode/curve/active).
+`POST /budgets/:id/actualize` (multer: one-period Property Comparison → inputs.actuals), `DELETE /budgets/:id/actualize/:key` (release),
+`POST /actualize-csv` (bulk; property from each CSV header → revised CSVs + recorded months),
+`POST /budgets/:id/import-draft` (multer), `POST /properties` (admin upsert), `PUT /gl/:code` (admin: pcode/curve/active).
 
 ## Tests (vitest, `npm test`)
 

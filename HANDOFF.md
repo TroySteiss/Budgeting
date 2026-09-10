@@ -143,6 +143,30 @@ layout + ⏴ Panel + condensable headers · SP section always visible, orange ·
 save points (⎘, persisted iterations, auto pre-restore capture) · dashboard
 shows per-budget income/opex/NOI, Δ vs UW, CoC, override mix, save points.
 
+## 2026-09-10 — Actualize month (Troy's partial-month rule)
+
+After the first partial month of ownership closes, that month is budgeted 1:1
+to what posted (Cash book). In the editor: **✓ Actualize month…** → upload the
+month-end Yardi Property Comparison (Book = Cash, one period) → the budget's own
+Actual column is mirrored onto the upload chart; 5006 TENANT RENT lands on 4994;
+loan proceeds (3080), depreciation/amortization (8500/8601) and balance-sheet
+rows are excluded and LISTED; report subtotal rows are skipped. Stored on
+`inputs.actuals["YYYY-MM"]`; plan lines untouched (overlaid on read/export).
+For the Sep-start Bismarck/Jamestown budgets Aug-26 is a **pre-start** month:
+it appears only in the 2026 Yardi CSV (Amount8) + Raw Data, not in the grid.
+Cells in a locked in-window column stay editable (an edit corrects the posted
+figure); "release" hands the month back to the plan. Save point + Undo cover
+both. RRND was done by hand first (2026-09-10: 40 lines, income 175,435.10 /
+opex 8,873.63 tie to the report) and the tool reproduces that file exactly.
+**Off Yardi (same day, Troy: "changes are sometimes made in Yardi — don't undo
+them"):** dashboard **✓ Actualize from Yardi CSVs…** — upload the comparison + each
+property's budget CSV exported from Yardi; the property comes from the CSV header;
+only the closed month's column changes, everything else stays verbatim; the
+matching budget records the month and (adopt, default on) takes the CSV's other
+months as YARDI overrides. Done 2026-09-10 for rrnd, lhnd, nrnd, drnd off their
+Yardi exports (each ties to 5500 / 7279 / 7315). Next: cwnd + mwnd once their
+budget CSVs are exported from Yardi.
+
 ## Known gaps / next steps
 
 - **Unit-level rent roll support LANDED (2026-08-21 PM):** the parser now reads

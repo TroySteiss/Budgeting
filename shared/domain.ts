@@ -82,6 +82,10 @@ export interface BudgetInputs {
   loan: number;
   rate: number;               // interest rate, e.g. 0.06
   startMonth: number;         // 1..12 — first month the budget is "live" (1 = full year)
+  /** Closed months budgeted 1:1 to posted Cash actuals, keyed by calendar
+      month "YYYY-MM" (the partial-month rule). Overlaid on read/export only —
+      budget_lines stay the pure plan. See applyActuals / injectPreStartActuals. */
+  actuals?: Record<string, ActualizedMonth> | null;
   gpr: { baseMonthly: number; growthPct: Months };  // monthly % change, compounding off base
   ltl: {
     /** 'leases' = per-lease burnoff at each lease's turnover month (needs a
@@ -304,6 +308,138 @@ export function calendarSlice(months: Months, year: number, startMonth: number, 
     if (calYearOf(year, startMonth, i) === calYear) out[calMonthOf(startMonth, i) - 1] = months[i];
   }
   return out;
+}
+
+/* ---------------- actualized months (closed month = posted actuals) ---------------- */
+
+/** Troy's partial-month rule: once the first (partial) month of ownership has
+    closed, that month's budget is re-uploaded 1:1 to what actually posted, so
+    Yardi's variance reports stop comparing a full-month plan to a part-month
+    of actuals. Stored on budgets.inputs.actuals keyed by CALENDAR month
+    "YYYY-MM" so a closing month BEFORE the ownership window (close Aug 15,
+    start Sep) is representable too — it never touches the 12 plan columns and
+    only surfaces in the calendar-year CSV slice + review data. budget_lines
+    always hold the pure plan; the overlay is applied on read/export. */
+export interface ActualException { gl: string; name: string; amount: number; reason: string; to?: string }
+export interface ActualizedMonth {
+  period: string;                 // as printed on the report, e.g. "Aug 2026"
+  book: string;                   // "Cash"
+  source: string;                 // upload filename
+  appliedAt: string;              // ISO timestamp
+  appliedBy?: string;
+  glMonths: Record<string, number>;   // upload-chart GL → posted amount (signed as posted)
+  summary: { mirrored: number; remapped: ActualException[]; excluded: ActualException[]; unmapped: ActualException[]; subtotals: number };
+}
+
+/** Postings on accounts OUTSIDE the upload chart that belong on a chart line:
+    a new acquisition's first-month rent posts to 5006 TENANT RENT (no
+    GPR/LTL/vacancy split exists yet) → budget it on 4994 so net rental income
+    equals what posted. */
+export const ACTUAL_REMAP: Record<string, string> = { '5006': '4994' };
+
+/** Chart sections whose postings are never mirrored: loan proceeds/principal
+    (3080–3091) and depreciation/amortization. Neither is budgeted in the plan
+    months, so mirroring them would CREATE variance instead of removing it. */
+export const ACTUAL_EXCLUDED_SECTIONS: Record<string, string> = {
+  principal: 'Loan proceeds / principal — financing, not budgeted',
+  below_noi: 'Depreciation / amortization — non-cash, not budgeted',
+};
+
+export interface ActualRow { gl: string; name: string; amount: number }
+
+export const actualKey = (calYear: number, calMonth: number): string => `${calYear}-${String(calMonth).padStart(2, '0')}`;
+export const parseActualKey = (key: string): { calYear: number; calMonth: number } => {
+  const [y, m] = String(key).split('-').map(Number);
+  return { calYear: y, calMonth: m };
+};
+
+/** Ownership-month index of a calendar month, or -1 when it is outside the
+    12-month window. */
+export function ownershipIndexOf(year: number, startMonth: number, calYear: number, calMonth: number): number {
+  for (let i = 0; i < 12; i++) if (calYearOf(year, startMonth, i) === calYear && calMonthOf(startMonth, i) === calMonth) return i;
+  return -1;
+}
+
+const uploadableSet = (coaList: CoaAccount[]): Set<string> =>
+  new Set(coaList.filter((a) => a.kind === 'detail' && a.csv_order != null).map((a) => a.code));
+
+/** Posted actuals for ONE property/period → the upload-chart amounts to
+    budget, plus everything deliberately not carried (shown to the user, never
+    silently dropped). Pure — unit-tested against the real North Dakota Aug-26
+    Cash comparison. */
+export function actualizeFromComparison(coaList: CoaAccount[], rows: ActualRow[]): { glMonths: Record<string, number>; summary: ActualizedMonth['summary'] } {
+  const coa = new Map(coaList.map((a) => [a.code, a]));
+  const glMonths: Record<string, number> = {};
+  const summary: ActualizedMonth['summary'] = { mirrored: 0, remapped: [], excluded: [], unmapped: [], subtotals: 0 };
+  const add = (gl: string, v: number): void => { glMonths[gl] = r2((glMonths[gl] || 0) + v); };
+  for (const row of rows) {
+    const v = r2(Number(row.amount) || 0);
+    if (!v) continue;
+    const gl = String(row.gl);
+    const ex = (reason: string, to?: string): ActualException => ({ gl, name: row.name, amount: v, reason, ...(to ? { to } : {}) });
+    const to = ACTUAL_REMAP[gl];
+    if (to) { add(to, v); summary.remapped.push(ex(`${gl} is not an upload-chart account — budgeted on ${to}`, to)); continue; }
+    const a = coa.get(gl);
+    if (a && a.kind === 'detail' && a.csv_order != null) {
+      const why = ACTUAL_EXCLUDED_SECTIONS[a.section];
+      if (why) { summary.excluded.push(ex(why)); continue; }
+      add(gl, v); summary.mirrored++; continue;
+    }
+    if (a || /^(total|net |sub-total)/i.test(row.name)) { summary.subtotals++; continue; }   // report subtotal rows
+    if (Number(gl) < 4000) { summary.excluded.push(ex('Balance-sheet / equity movement — not an operating budget line')); continue; }
+    summary.unmapped.push(ex('Posted to an account outside the upload chart — review; add by hand if it belongs'));
+  }
+  return { glMonths, summary };
+}
+
+/** Write posted amounts into the given column of each upload-chart line (0
+    where nothing posted); add a row for any posted GL the plan never had. */
+function overlayColumns(lines: BudgetLine[], coaList: CoaAccount[], cols: { i: number; glMonths: Record<string, number> }[]): BudgetLine[] {
+  const uploadable = uploadableSet(coaList);
+  const seen = new Set<string>();
+  const out = lines.map((l) => {
+    seen.add(l.gl_code);
+    if (!uploadable.has(l.gl_code)) return l;
+    const months = [...l.months] as Months;
+    for (const c of cols) months[c.i] = r2(c.glMonths[l.gl_code] || 0);
+    return { ...l, months };
+  });
+  for (const c of cols) {
+    for (const [gl, v] of Object.entries(c.glMonths)) {
+      if (!v || seen.has(gl) || !uploadable.has(gl)) continue;
+      seen.add(gl);
+      const months = zero12();
+      for (const c2 of cols) months[c2.i] = r2(c2.glMonths[gl] || 0);
+      out.push({ gl_code: gl, months, driver: { method: 'zero' }, override: false, note: '' });
+    }
+  }
+  return out;
+}
+
+/** Read/export overlay: every actualized month INSIDE the ownership window
+    replaces that column of the plan. Plan lines are never mutated, so the
+    other months stay live on their formulas and the locked month reads as
+    honest tie-out variance. Returns the same array when nothing applies. */
+export function applyActuals(lines: BudgetLine[], coaList: CoaAccount[], actuals: Record<string, ActualizedMonth> | null | undefined, year: number, startMonth: number): BudgetLine[] {
+  const cols: { i: number; glMonths: Record<string, number> }[] = [];
+  for (const [key, a] of Object.entries(actuals || {})) {
+    const { calYear, calMonth } = parseActualKey(key);
+    const i = ownershipIndexOf(year, startMonth, calYear, calMonth);
+    if (i >= 0) cols.push({ i, glMonths: a.glMonths || {} });
+  }
+  return cols.length ? overlayColumns(lines, coaList, cols) : lines;
+}
+
+/** Calendar-year CSV slice: a PRE-START actualized month (the partial closing
+    month, before the ownership window) is injected into its calendar column. */
+export function injectPreStartActuals(sliced: BudgetLine[], coaList: CoaAccount[], actuals: Record<string, ActualizedMonth> | null | undefined, year: number, startMonth: number, calYear: number): BudgetLine[] {
+  const cols: { i: number; glMonths: Record<string, number> }[] = [];
+  for (const [key, a] of Object.entries(actuals || {})) {
+    const { calYear: cy, calMonth } = parseActualKey(key);
+    if (cy !== calYear || ownershipIndexOf(year, startMonth, cy, calMonth) >= 0) continue;
+    cols.push({ i: calMonth - 1, glMonths: a.glMonths || {} });
+  }
+  return cols.length ? overlayColumns(sliced, coaList, cols) : sliced;
 }
 
 export const PCODES = ['1', 'loss', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14'] as const;

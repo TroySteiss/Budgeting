@@ -674,3 +674,125 @@ export function parseComparison(buf: Buffer): ComparisonParsed {
   if (!rows.length) throw new Error('Property Comparison: no GL rows parsed');
   return { label, period, book, properties: codes.map((x) => x.code), rows };
 }
+
+/* ========================= COMPARISON — POSTED ACTUALS (one period) ========================= */
+
+export interface ComparisonActualsParsed {
+  label: string; period: string; book: string;
+  calYear: number; calMonth: number;          // parsed from "Period = Aug 2026"
+  properties: string[];                        // yardi codes that have an Actual column
+  rows: { gl: string; name: string; actual: Record<string, number>; budget: Record<string, number> }[];
+}
+
+/** Yardi Property Comparison for ONE period with Actual/Budget column pairs
+    per property (the month-end variance export: codes on one header row,
+    " Actual"/" Budget" on the next). Feeds the actualize-month feature — the
+    budget picks its own property's Actual column. */
+export function parseComparisonActuals(buf: Buffer): ComparisonActualsParsed {
+  const g = grids(buf)[0].g;
+  const label = s(g[0]?.[0]);
+  let period = '', book = '';
+  for (const row of g.slice(0, 6)) {
+    const t = s(row?.[0]);
+    if (/period\s*=/i.test(t)) period = t.replace(/.*period\s*=\s*/i, '').trim();
+    if (/book\s*=/i.test(t)) book = t.replace(/.*book\s*=\s*/i, '').split(';')[0].trim();
+  }
+  const pm = period.match(/^([a-z]{3})[a-z]*\.?\s+(\d{4})$/i);
+  if (!pm) throw new Error(`Property Comparison: expected a single-month period ("Aug 2026"), got "${period || '?'}"`);
+  const calMonth = MONTH_NAMES.indexOf(pm[1].toLowerCase()) + 1;
+  const calYear = Number(pm[2]);
+  if (!calMonth) throw new Error(`Property Comparison: unrecognised month in "${period}"`);
+  // property-code header row + the Actual/Budget row right under it
+  let h = -1;
+  const cols: Record<string, { actual?: number; budget?: number }> = {};
+  for (let r = 0; r < Math.min(g.length, 12) && h < 0; r++) {
+    const kinds = (g[r + 1] || []).map((v: any) => low(v));
+    if (!kinds.includes('actual')) continue;
+    for (let c = 2; c < (g[r] || []).length; c++) {
+      const code = low(g[r]?.[c]);
+      const kind = kinds[c];
+      if (!/^[a-z]{3,6}\d?$/.test(code) || code === 'total') continue;
+      if (kind !== 'actual' && kind !== 'budget') continue;
+      (cols[code] ||= {})[kind] = c;
+    }
+    if (Object.keys(cols).length) h = r;
+  }
+  if (h < 0) throw new Error('Property Comparison: property-code header with Actual/Budget columns not found');
+  const properties = Object.keys(cols).filter((k) => cols[k].actual != null);
+  const rows: ComparisonActualsParsed['rows'] = [];
+  for (let r = h + 2; r < g.length; r++) {
+    const gl = s(g[r]?.[0]);
+    if (!/^\d{3,4}$/.test(gl)) continue;
+    const actual: Record<string, number> = {}, budget: Record<string, number> = {};
+    for (const p of properties) {
+      actual[p] = num(g[r]?.[cols[p].actual!]);
+      if (cols[p].budget != null) budget[p] = num(g[r]?.[cols[p].budget!]);
+    }
+    rows.push({ gl, name: s(g[r]?.[1]), actual, budget });
+  }
+  if (!rows.length) throw new Error('Property Comparison: no GL rows parsed');
+  return { label, period, book, calYear, calMonth, properties, rows };
+}
+
+/* ========================= YARDI BUDGET CSV (ETL format — exported from Yardi, or a prior upload) ========================= */
+
+export interface BudgetCsvParsed {
+  propertyId: string;          // lowercase yardi code, FROM THE FILE's header record
+  book: string;
+  year: number;                // calendar year of the Start Month
+  startMonth: string;          // as written, e.g. "1/1/2026"
+  description: string;
+  eol: string;
+  preamble: string[];          // every line up to and including the //BudgetDetail header, verbatim
+  headerIdx: number;           // index of the header RECORD within preamble
+  rows: { gl: string; tokens: string[]; amounts: number[] }[];   // tokens verbatim (quotes kept), Amount1..12 numeric
+  decimals: number | null;     // amount formatting seen in the file (4 → "0.0000"); null → plain numbers
+}
+
+/** Split one CSV line into raw tokens — quotes preserved, commas inside quotes kept. */
+export function splitCsvLine(line: string): string[] {
+  const out: string[] = [];
+  let cur = '', q = false;
+  for (const ch of line) {
+    if (ch === '"') { q = !q; cur += ch; continue; }
+    if (ch === ',' && !q) { out.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+const unq = (t: string): string => t.trim().replace(/^"(.*)"$/, '$1');
+
+/** Parse a Yardi budget ETL CSV keeping every token verbatim, so it can be
+    re-issued with one month changed and nothing else touched. The property
+    is read from the file — never from the UI. */
+export function parseBudgetCsv(buf: Buffer): BudgetCsvParsed {
+  const text = buf.toString('utf8').replace(/^﻿/, '');
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  const hb = lines.findIndex((l) => l.startsWith('//Budget:'));
+  const hd = lines.findIndex((l) => l.startsWith('//BudgetDetail:'));
+  if (hb < 0 || hd < 0 || hd < hb + 2) throw new Error('Budget CSV: expected a //Budget header, its record, then //BudgetDetail');
+  const rec = splitCsvLine(lines[hb + 1]);
+  const propertyId = unq(rec[1] || '').toLowerCase();
+  const startMonth = unq(rec[3] || '');
+  const ym = startMonth.match(/(\d{4})/);
+  if (!propertyId || !ym) throw new Error('Budget CSV: the header record needs a Property Id and a Start Month');
+  const rows: BudgetCsvParsed['rows'] = [];
+  let decimals: number | null = null;
+  for (const l of lines.slice(hd + 1)) {
+    if (!l.trim() || l.startsWith('//')) continue;
+    const tokens = splitCsvLine(l);
+    if (tokens.length < 24) continue;
+    const gl = unq(tokens[1]);
+    if (!/^\d{3,4}$/.test(gl)) continue;
+    if (decimals == null) { const m = tokens[12].trim().match(/\.(\d+)$/); decimals = m ? m[1].length : 0; }
+    rows.push({ gl, tokens, amounts: tokens.slice(12, 24).map((t) => parseFloat(unq(t)) || 0) });
+  }
+  if (!rows.length) throw new Error('Budget CSV: no //BudgetDetail rows found');
+  return {
+    propertyId, book: unq(rec[2] || ''), year: Number(ym[1]), startMonth, description: unq(rec[4] || ''),
+    eol, preamble: lines.slice(0, hd + 1), headerIdx: hb + 1, rows, decimals: decimals || null,
+  };
+}

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parseReviewDraft } from '../src/importers.js';
+import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parseReviewDraft, parseComparisonActuals } from '../src/importers.js';
 import { t12CategoryShapes } from '../shared/domain.js';
 
 const fx = (name: string): Buffer => readFileSync(join(process.cwd(), 'test', 'fixtures', name));
@@ -261,5 +261,31 @@ describe('parseComparison — Minot 4', () => {
   it('captures period/book', () => {
     expect(c.period).toContain('2026');
     expect(c.book.toLowerCase()).toContain('cash');
+  });
+});
+
+describe('parseComparisonActuals — North Dakota Aug-26 Cash comparison (one period, Actual/Budget pairs)', () => {
+  const p = parseComparisonActuals(fx('comparison-northda-aug26.xlsx'));
+
+  it('reads the period, book and property columns', () => {
+    expect(p.period).toBe('Aug 2026');
+    expect(p.calYear).toBe(2026);
+    expect(p.calMonth).toBe(8);
+    expect(p.book).toBe('Cash');
+    expect(p.properties).toContain('rrnd');
+    expect(p.properties).toContain('bcnd');
+    expect(p.properties).not.toContain('total');
+  });
+  it('pairs Actual and Budget per property', () => {
+    const gpr = p.rows.find((r) => r.gl === '4994')!;
+    expect(gpr.actual.bcnd).toBe(754268);
+    expect(gpr.budget.bcnd).toBe(731845);
+    expect(gpr.actual.rrnd).toBe(0);                                   // new acquisition: rent posted to 5006 instead
+    expect(p.rows.find((r) => r.gl === '5006')!.actual.rrnd).toBeCloseTo(168807.15, 2);
+    expect(p.rows.find((r) => r.gl === '7300')!.actual.rrnd).toBe(75656);
+    expect(p.rows.find((r) => r.gl === '6924')!.actual.rrnd).toBeCloseTo(-645.48, 2);
+  });
+  it('rejects a multi-month or annual comparison', () => {
+    expect(() => parseComparisonActuals(fx('comparison-minot4.xlsx'))).toThrow(/single-month period|Actual\/Budget/);
   });
 });

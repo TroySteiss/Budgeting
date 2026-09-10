@@ -58,6 +58,7 @@ function drvMetaBase(l) {
     case 'zero': return { cls: 'drv-int', tag: 'ZERO', label: 'Zeroed out — this GL carries nothing' };
     case 't12curve': return { cls: 'drv-t12', tag: 'T12C', label: `Seller ${l.driver.name || ''} T12 TOTAL × ${(l.driver.pct || 0).toFixed(1)}% on ${l.driver.shape === 'minot' ? 'the Minot' : l.driver.shape || 'flat'} curve${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
     case 'linkLine': return { cls: 'drv-fee', tag: 'LINK', label: `= ${l.driver.src || ''} ${l.driver.srcName || ''} × ${l.driver.weight ?? 1} — follows it live on every regeneration` };
+    case 'yardiCsv': return { cls: 'drv-man', tag: 'YARDI', label: `Adopted from the Yardi budget CSV${l.driver.file ? ` (${l.driver.file})` : ''} — the month as it sits in Yardi` };
     case 'imported': return { cls: 'drv-man', tag: 'IMP', label: `Imported from draft workbook${l.driver.file ? ` (${l.driver.file})` : ''}` };
     case 'smooth': return { cls: 'drv-t12', tag: 'SMOOTH', label: `Missed-bill smoothing ×${l.driver.passes || 0}${l.driver.of ? ` of ${String(l.driver.of).toUpperCase()}${l.driver.srcName ? ' ' + l.driver.srcName : ''}` : ''} — spikes spread into surrounding months, total kept` };
     case 'setTotal': return { cls: 'drv-man', tag: 'TOTAL', label: `Total set to ${Math.round(l.driver.total || 0).toLocaleString()} — ${l.driver.of ? `${String(l.driver.of).toUpperCase()} distribution kept` : 'prior distribution kept'}` };
@@ -69,7 +70,7 @@ function pushUndo() {
   if (!S.bv) return;
   if (S.undo.budgetId !== S.bv.budget.id) S.undo = { budgetId: S.bv.budget.id, stack: [] };
   S.undo.stack.push({
-    lines: JSON.parse(JSON.stringify(S.bv.lines)),
+    lines: JSON.parse(JSON.stringify(S.bv.planLines || S.bv.lines)),   // the PLAN — actualized months overlay on read
     inputs: JSON.parse(JSON.stringify(S.bv.budget.inputs || {})),
   });
   if (S.undo.stack.length > 25) S.undo.stack.shift();
@@ -189,6 +190,7 @@ function renderDash(el) {
       <h2>Budgets
         <button class="btn" id="newb" style="float:right">+ New budget</button>
         <button class="btn sub" id="pf-export" style="float:right; margin-right:8px" title="One workbook for the TICKED budgets (all if none ticked): each site's Budget / Summary / Raw Data tabs plus a live Portfolio rollup tab — tick the 4 Bismarck sites for a Bismarck WB, the 2 Jamestown for a JT WB">⬇ Portfolio workbook</button>
+        <button class="btn sub" id="act-csv" style="float:right; margin-right:8px" title="Partial-month rule off the budget as it sits in Yardi: upload the month-end Property Comparison (Cash) + each property's budget CSV exported from Yardi — every CSV comes back with the closed month set 1:1 to what posted, everything else untouched">✓ Actualize from Yardi CSVs…</button>
         <button class="btn sub" id="bundle-export" style="float:right; margin-right:8px" title="ZIP of ALL exports for the TICKED budgets (all if none ticked), sorted by report type: '2026 Yardi Uploads/', '2027 Yardi Uploads/', 'Budget Drafts/' — each budget saved as an iteration">⬇ All exports (zip)</button>
       </h2>
       ${st.budgets.length ? `<table class="list"><tr><th><input type="checkbox" id="sel-all" title="Select all budgets"></th><th>Property</th><th>Window</th><th>Income</th><th>OpEx</th><th>NOI</th><th>Δ NOI vs UW</th><th>Δ EGI vs UW</th><th>CoC</th><th>Overrides</th><th>LTL</th><th>Save pts</th><th>Status</th><th>Updated</th><th></th></tr>
@@ -231,7 +233,8 @@ function renderDash(el) {
         ${st.compSets.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.period)}</td><td>${esc(c.book)}</td><td class="muted">${new Date(c.created_at).toLocaleDateString()}</td><td>${S.auth.isAdmin ? `<button class="rb" data-deld="comp:${c.id}" title="Delete — pointing budgets unlink & regenerate">🗑</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
     </div>
     <dialog id="newdlg"></dialog>
-    <dialog class="assump" id="pm-dlg"></dialog>`;
+    <dialog class="assump" id="pm-dlg"></dialog>
+    <dialog class="assump" id="actcsv-dlg"></dialog>`;
 
   el.querySelectorAll('tr.click').forEach((tr) => tr.addEventListener('click', async (e) => {
     if (e.target.dataset.del) return;
@@ -267,6 +270,7 @@ function renderDash(el) {
     const ids = selectedIds();
     window.open(`/api/export/portfolio.xlsx${ids.length ? `?ids=${ids.join(',')}` : ''}`, '_blank');
   });
+  document.getElementById('act-csv').addEventListener('click', () => openActualizeCsv());
   document.getElementById('bundle-export').addEventListener('click', () => {
     const ids = selectedIds();
     const all = ids.length ? ids : st.budgets.map((b) => b.id);
@@ -518,9 +522,10 @@ function renderEditor(el) {
   const labels = S.bv.monthLabels || MONTHS;
   const start = inp.startMonth || 1;
   const windowLabel = start > 1 ? `${labels[0]} – ${labels[11]}` : `${b.year}`;
+  const acts = bv.actualMonths || [];
   el.innerHTML = `
     <div class="row" style="justify-content:space-between; margin-bottom:10px">
-      <h2 style="margin:0">${esc(prop.name)} <span class="muted">(${esc(b.property_code)}) — Year 1 budget · ${windowLabel}</span></h2>
+      <h2 style="margin:0">${esc(prop.name)} <span class="muted">(${esc(b.property_code)}) — Year 1 budget · ${windowLabel}</span>${acts.length ? ` <span class="badge" title="Closed months budgeted 1:1 to posted actuals">✓ actuals: ${acts.map((a) => esc(a.period)).join(', ')}</span>` : ''}</h2>
       <div class="row">
         <div class="fld"><label>CSV: zero calendar months through</label>
           <select id="ex-cutoff"><option value="0">— none —</option>${MONTHS.slice(0, 11).map((m, i) => `<option value="${i + 1}">${m}</option>`).join('')}</select></div>
@@ -530,6 +535,7 @@ function renderEditor(el) {
         <button class="btn" id="ex-all" title="Download the ${b.year} Yardi CSV, the ${b.year + 1} Yardi CSV and the Budget Draft workbook in one go — the budget is captured as a save point">⬇ All exports</button>
         <button class="btn sub" id="imp-draft" title="Upload an EDITED Budget Draft workbook — the current state is saved as its own iteration first, then every changed month imports as an override (IMP chip); Summary D27 updates capital">⬆ Import draft…</button>
         <input type="file" id="imp-file" accept=".xlsx" style="display:none">
+        <button class="btn sub" id="act-btn" title="Partial-month rule: after a month closes, upload its Yardi Property Comparison (Cash) and that month is budgeted 1:1 to what posted — locked through recalcs and exports">✓ Actualize month…${acts.length ? ` (${acts.length})` : ''}</button>
         <button class="btn sub" id="recalc">↻ Recalc</button>
         <button class="btn sub" id="undo-btn" ${S.undo.budgetId === b.id && S.undo.stack.length ? '' : 'disabled'}>↶ Undo${S.undo.budgetId === b.id && S.undo.stack.length ? ` (${S.undo.stack.length})` : ''}</button>
         <button class="btn sub" id="sp-btn" title="Named, permanent save points for this budget — capture the current iteration, restore any earlier one (a safety point is captured before every restore)">⎘ Save points${(bv.savePoints || []).length ? ` (${bv.savePoints.length})` : ''}</button>
@@ -563,6 +569,7 @@ function renderEditor(el) {
           <span><span class="dot drv-t12"></span>Seller stmt / recovery</span>
           <span><span class="dot drv-man"></span>Manual override</span>
           <span><span class="dot drv-sp"></span>Special projects (enter per site)</span>
+          <span><span class="dot drv-act"></span>Posted actuals (locked month)</span>
           <span class="muted">· click a row's chip to change its formula</span>
           ${(() => {
             const ov = bv.lines.filter((l) => l.override);
@@ -580,6 +587,7 @@ function renderEditor(el) {
         </div>
         <div class="card tie">
           <h2>Tie-out vs UW</h2>
+          ${acts.some((a) => a.index >= 0) ? `<p class="muted" style="margin:0 0 6px; font-size:11.5px">✓ ${acts.filter((a) => a.index >= 0).map((a) => esc(a.period)).join(', ')} locked to posted actuals — that month's actual-vs-plan gap shows here as variance.</p>` : ''}
           ${tieHtml(bv)}
         </div>
         <div class="card">
@@ -593,7 +601,9 @@ function renderEditor(el) {
     <dialog class="assump" id="round-dlg"></dialog>
     <dialog class="assump" id="copy-dlg"></dialog>
     <dialog class="assump" id="ovr-dlg"></dialog>
-    <dialog class="assump" id="sp-dlg"></dialog>`;
+    <dialog class="assump" id="sp-dlg"></dialog>
+    <dialog class="assump" id="act-dlg"></dialog>
+    <dialog class="assump" id="actcsv-dlg"></dialog>`;
 
   document.getElementById('ex-csv').addEventListener('click', () => {
     const c = document.getElementById('ex-cutoff').value;
@@ -645,6 +655,7 @@ function renderEditor(el) {
   const ovrBtn = document.getElementById('ovr-btn');
   if (ovrBtn) ovrBtn.addEventListener('click', () => openOverridesAudit(b));
   document.getElementById('sp-btn').addEventListener('click', () => openSavePoints(b));
+  document.getElementById('act-btn').addEventListener('click', () => openActualize(b));
   // condensed section headers: click toggles, choice is locked in localStorage
   el.querySelectorAll('tr.header[data-sec]').forEach((tr) => tr.addEventListener('click', () => {
     const sec = tr.dataset.sec;
@@ -868,8 +879,9 @@ function gridHtml(bv, totals) {
   const cols = { fx: !hide.has('fx'), annual: !hide.has('annual'), punit: !hide.has('punit'), note: !hide.has('note') };
   const span = 2 + (cols.fx ? 1 : 0) + monthIdx.length + (cols.annual ? 1 : 0) + (cols.punit ? 1 : 0) + (cols.note ? 1 : 0);
   const rows = [];
-  rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th>${labels[i]}</th>`).join('')}${cols.annual ? '<th>Year 1</th>' : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
+  rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th${actIdx.has(i) ? ' class="actcol" title="Locked to posted actuals — an edit here corrects the posted figure"' : ''}>${labels[i]}${actIdx.has(i) ? ' ✓' : ''}</th>`).join('')}${cols.annual ? '<th>Year 1</th>' : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
   const units = Number(bv.budget.inputs?.units) || 1;
+  const actIdx = new Set((bv.actualMonths || []).filter((a) => a.index >= 0).map((a) => a.index));   // months locked to posted actuals
   const GRAND = new Set(['5500', '7279', '7280', '8200', '9000']);
   // condensed (collapsed) sections — locked via localStorage across renders
   if (!S.gridCollapsed) S.gridCollapsed = new Set(JSON.parse(localStorage.getItem('bt-collapse') || '[]'));
@@ -923,7 +935,7 @@ function gridHtml(bv, totals) {
       <td class="code">${a.code}</td>
       <td class="name" title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}">${esc(a.name)}${smell ? ` <span class="warnflag" title="Seller billing looks NON-ACCRUAL: ${esc(smell.join('; '))}. Likely bad bills — review, or smooth via WAVG / flat / Minot seasonal.">⚠</span>` : ''}${a.active === false ? ' <span class="badge" title="Deactivated GL still carrying dollars — Recalc zeroes it">inactive — recalc to zero</span>' : ''}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
       ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">` : ''}</td>` : ''}
-      ${monthIdx.map((i) => `<td class="m ${sp ? '' : dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money2(m[i]) : ''}"></td>`).join('')}
+      ${monthIdx.map((i) => `<td class="m ${actIdx.has(i) ? 'drv-act' : sp ? '' : dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money2(m[i]) : ''}"></td>`).join('')}
       ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}"><input data-ann="${a.code}" value="${ann ? money2(ann) : ''}" title="Year 1 total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
       ${cols.punit ? `<td>${ann ? money(ann / units) : ''}</td>` : ''}
       ${cols.note ? `<td class="note"><input data-gl="${a.code}" value="${esc(l ? l.note : '')}" placeholder="note"></td>` : ''}
@@ -2417,3 +2429,144 @@ function renderSettings(el) {
 }
 
 boot();
+
+
+/* ---------------- actualize a closed month (partial-month rule) ----------------
+   After a month closes, its Yardi Property Comparison (Cash) locks that month
+   of the budget 1:1 to what posted. In-window months overlay the grid (✓
+   column); a pre-start closing month (close mid-Aug, plan starts Sep) rides
+   only in the calendar-year CSV. Plan formulas are untouched — release
+   hands the month back to them. */
+function openActualize(b, result) {
+  const dlg = document.getElementById('act-dlg');
+  if (!dlg) return;
+  const acts = (S.bv && S.bv.actualMonths) || [];
+  const labels = (S.bv && S.bv.monthLabels) || MONTHS;
+  const code = String(b.property_code).toUpperCase();
+  const exList = (title, arr, cls) => arr && arr.length ? `<div style="margin-top:6px"><b style="font-size:11.5px; color:var(--dim)">${title}</b>${arr.map((e) =>
+    `<div style="font-size:11.5px"><span class="drv ${cls}" style="margin-right:4px">${esc(e.gl)}</span>${esc(e.name)} <b>${money2(e.amount)}</b>${e.to ? ` → budgeted on ${esc(e.to)}` : ''} <span class="muted">— ${esc(e.reason)}</span></div>`).join('')}</div>` : '';
+  const summaryHtml = (a) => {
+    const tot = Object.values(a.glMonths || {}).reduce((x, y) => x + y, 0);
+    const s = a.summary || {};
+    return `<div style="border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-top:8px">
+      <b>✓ ${esc(a.period)}</b> · ${esc(a.book)} · ${a.index >= 0 ? `ownership month <b>${esc(labels[a.index])}</b> — column locked in the grid` : 'partial closing month before the ownership window — carried in the calendar-year Yardi CSV only'}
+      <div class="muted" style="font-size:11.5px; margin-top:2px">${Object.keys(a.glMonths || {}).length} GL lines budgeted 1:1 (${s.mirrored || 0} mirrored${(s.remapped || []).length ? `, ${s.remapped.length} remapped` : ''}) · signed total ${money2(tot)} · ${s.subtotals || 0} report subtotal rows skipped · source ${esc(a.source || '')}</div>
+      ${exList('Remapped', s.remapped, 'drv-rr')}
+      ${exList('Not carried', s.excluded, 'drv-int')}
+      ${exList('⚠ Unmapped — review', s.unmapped, 'drv-man')}
+    </div>`;
+  };
+  dlg.innerHTML = `
+    <h2>Actualize a closed month — ${esc(code)}</h2>
+    <p class="muted" style="margin:0 0 8px; font-size:12px">Upload the Yardi <b>Property Comparison</b> for the closed month (Book = <b>Cash</b>, one period). Every upload-chart GL in that month is set 1:1 to what posted for ${esc(code)}; GLs with nothing posted go to zero. The month stays locked through every recalc and export — cells stay editable, an edit corrects the posted figure. Tenant rent posted to 5006 is budgeted on 4994; loan proceeds, depreciation/amortization and balance-sheet movements are never mirrored (listed, not dropped).</p>
+    ${acts.length ? `<h3>Locked months</h3>${acts.map((a) => `<div class="row" style="justify-content:space-between; align-items:center; font-size:12.3px; padding:3px 0">
+        <span>✓ <b>${esc(a.period)}</b> · ${esc(a.book)} · ${a.index >= 0 ? esc(labels[a.index]) : 'pre-start (CSV only)'} · ${Object.keys(a.glMonths || {}).length} lines · applied ${esc(String(a.appliedAt || '').slice(0, 10))}${a.appliedBy ? ' by ' + esc(a.appliedBy) : ''}</span>
+        <span><button class="rb" data-actshow="${esc(a.key)}">details</button> <button class="rb" data-actrel="${esc(a.key)}" title="Unlock this month — the plan formulas take it back over">release</button></span></div>`).join('')}` : ''}
+    <p class="muted" style="font-size:12px; margin:0 0 6px">Budget already uploaded to Yardi and edited there? <button class="rb" id="act-tocsv">✓ Actualize from Yardi CSVs…</button> instead — it revises the exported CSV in place, so nothing changed in Yardi is undone.</p>
+    <h3>Upload (this budget's plan as the base)</h3>
+    <div class="row"><input type="file" id="act-file" accept=".xlsx"><button class="btn" id="act-go">Apply</button></div>
+    <div id="act-result">${result ? summaryHtml(result) : ''}</div>
+    <div class="err" id="act-err"></div>
+    <div class="foot">
+      <span class="muted" style="align-self:center; margin-right:auto; font-size:11.5px">The current iteration is captured as a save point first; one Undo reverses it.</span>
+      <button class="btn sub" id="act-x">Close</button>
+    </div>`;
+  dlg.querySelector('#act-x').addEventListener('click', () => dlg.close());
+  dlg.querySelector('#act-tocsv').addEventListener('click', () => { dlg.close(); openActualizeCsv(); });
+  dlg.querySelectorAll('[data-actshow]').forEach((x) => x.addEventListener('click', () => {
+    const a = acts.find((y) => y.key === x.dataset.actshow);
+    if (a) dlg.querySelector('#act-result').innerHTML = summaryHtml(a);
+  }));
+  dlg.querySelectorAll('[data-actrel]').forEach((x) => x.addEventListener('click', async () => {
+    const a = acts.find((y) => y.key === x.dataset.actrel);
+    if (!a || !confirm(`Release ${a.period}? The plan formulas take that month back over.`)) return;
+    try {
+      pushUndo();
+      S.bv = await DEL(`/budgets/${b.id}/actualize/${encodeURIComponent(a.key)}`);
+      render();
+      openActualize(S.bv.budget);
+    } catch (e) { S.undo.stack.pop(); dlg.querySelector('#act-err').textContent = e.message; }
+  }));
+  dlg.querySelector('#act-go').addEventListener('click', async () => {
+    const f = dlg.querySelector('#act-file').files[0];
+    const err = dlg.querySelector('#act-err');
+    if (!f) { err.textContent = 'Choose the Property Comparison .xlsx first'; return; }
+    const go = dlg.querySelector('#act-go'); go.disabled = true; err.textContent = '';
+    const fd = new FormData(); fd.append('file', f);
+    try {
+      pushUndo();
+      S.bv = await POST(`/budgets/${b.id}/actualize`, fd);
+      const r = S.bv.actualizeResult;
+      render();
+      openActualize(S.bv.budget, r);
+    } catch (e) { S.undo.stack.pop(); err.textContent = 'Actualize failed: ' + e.message; go.disabled = false; }
+  });
+  if (!dlg.open) dlg.showModal();
+}
+
+
+/* ---------------- actualize from Yardi budget CSVs (bulk, dashboard) ----------------
+   Runs the partial-month rule off the budget AS IT SITS IN YARDI: each CSV
+   (exported from Yardi, or the file last uploaded) comes back with the closed
+   month set 1:1 to what posted and every other cell untouched. The property
+   is read from each CSV's header; the matching budget records the month and,
+   with "adopt", takes the CSV's other months as its plan. */
+function openActualizeCsv(resp) {
+  const dlg = document.getElementById('actcsv-dlg');
+  if (!dlg) return;
+  const exList = (title, arr, cls) => arr && arr.length ? `<div style="margin-top:4px"><b style="font-size:11px; color:var(--dim)">${title}</b> ${arr.map((e) =>
+    `<span style="font-size:11px; margin-right:8px"><span class="drv ${cls}">${esc(e.gl)}</span> ${esc(e.name)} <b>${money2(e.amount)}</b>${e.to ? ` → ${esc(e.to)}` : ''}</span>`).join('')}</div>` : '';
+  const resultsHtml = (rr) => `<h3>Result — ${esc(rr.period || '')}</h3>${(rr.results || []).map((r) => {
+    const s = r.summary || {};
+    return `<div style="border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-top:6px; font-size:12.3px">
+      <b>${esc((r.code || '?').toUpperCase())}</b> <span class="muted">${esc(r.file)}</span><br>
+      ${r.error ? `<span class="neg">✗ ${esc(r.error)}</span>` : `✓ ${r.glCount} GL lines set 1:1 (${s.mirrored || 0} mirrored${(s.remapped || []).length ? `, ${s.remapped.length} remapped` : ''}) · ${r.rewritten} rows kept verbatim${(r.appended || []).length ? ` · ${r.appended.length} row(s) appended (${r.appended.join(', ')})` : ''} → <b>${esc(r.filename)}</b>
+        ${r.adopted ? `<div class="muted">adopted into budget #${r.budgetId}: ${r.adopted.changed} plan line(s) differed from the tool and now follow Yardi (YARDI chip)</div>` : r.budgetId ? `<div class="muted">recorded on budget #${r.budgetId} (plan not adopted)</div>` : ''}
+        ${exList('Remapped', s.remapped, 'drv-rr')}${exList('Not carried', s.excluded, 'drv-int')}${exList('⚠ Unmapped — review', s.unmapped, 'drv-man')}`}
+      ${(r.warnings || []).map((w) => `<div class="neg" style="font-size:11.5px">⚠ ${esc(w)}</div>`).join('')}
+    </div>`; }).join('')}`;
+  dlg.innerHTML = `
+    <h2>Actualize a closed month from Yardi budget CSVs</h2>
+    <p class="muted" style="margin:0 0 8px; font-size:12px">Runs the partial-month rule off the budget <b>as it sits in Yardi</b>. Export each property's budget from Yardi (or use the CSV you last uploaded), add the month-end <b>Property Comparison</b> (Book = Cash, one period), and every CSV comes back with that month set 1:1 to what posted — every other cell untouched, so anything changed in Yardi is kept. The property is read from each CSV's header. The matching budget in the tool records the month (a save point is captured first). Tenant rent on 5006 → 4994; loan proceeds, depreciation/amortization and balance-sheet rows are never mirrored (listed, not dropped).</p>
+    <div class="row">
+      <div class="fld"><label>Property Comparison (.xlsx)</label><input type="file" id="ac-cmp" accept=".xlsx"></div>
+      <div class="fld"><label>Budget CSVs (one or more)</label><input type="file" id="ac-csv" accept=".csv" multiple></div>
+    </div>
+    <label style="display:block; margin-top:8px; font-size:12.3px"><input type="checkbox" id="ac-adopt" checked> Adopt each CSV into its budget — months that differ from the tool's plan become <b>YARDI</b> overrides, so a later export from the tool can't undo changes made in Yardi</label>
+    <div id="ac-res">${resp ? resultsHtml(resp) : ''}</div>
+    <div class="err" id="ac-err"></div>
+    <div class="foot">
+      <span class="muted" style="align-self:center; margin-right:auto; font-size:11.5px">Revised CSVs download automatically. Roll back a budget via ⎘ Save points.</span>
+      <button class="btn sub" id="ac-x">Close</button>
+      <button class="btn" id="ac-go">Run</button>
+    </div>`;
+  dlg.querySelector('#ac-x').addEventListener('click', () => dlg.close());
+  dlg.querySelector('#ac-go').addEventListener('click', async () => {
+    const cmp = dlg.querySelector('#ac-cmp').files[0];
+    const csvs = [...dlg.querySelector('#ac-csv').files];
+    const err = dlg.querySelector('#ac-err');
+    if (!cmp) { err.textContent = 'Choose the Property Comparison .xlsx'; return; }
+    if (!csvs.length) { err.textContent = 'Choose at least one budget CSV'; return; }
+    const go = dlg.querySelector('#ac-go'); go.disabled = true; err.textContent = '';
+    const fd = new FormData();
+    fd.append('comparison', cmp);
+    for (const f of csvs) fd.append('csv', f);
+    fd.append('adopt', dlg.querySelector('#ac-adopt').checked ? '1' : '0');
+    try {
+      const out = await POST('/actualize-csv', fd);
+      for (const r of out.results || []) {
+        if (!r.csv) continue;
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([r.csv], { type: 'text/csv' }));
+        a.download = r.filename;
+        document.body.appendChild(a); a.click(); a.remove();
+        await new Promise((res) => setTimeout(res, 600));
+      }
+      S.state = await GET('/state');
+      if (S.bv && (out.results || []).some((r) => r.budgetId === S.bv.budget.id)) S.bv = await GET(`/budgets/${S.bv.budget.id}`);
+      render();
+      openActualizeCsv(out);
+    } catch (e) { err.textContent = 'Failed: ' + e.message; go.disabled = false; }
+  });
+  if (!dlg.open) dlg.showModal();
+}

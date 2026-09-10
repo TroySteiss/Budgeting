@@ -15,6 +15,7 @@
   --drv-man: #f6e3f2;  --drv-man-ink: #a1147f;  /* manual override */
   --drv-t12: #fbe8d9;  --drv-t12-ink: #b05a10;  /* seller statement / recovery */
   --drv-sp: #ffe7c2;   --drv-sp-ink: #9a5b00;   /* special projects — manual per site */
+  --drv-act: #d6efe3;  --drv-act-ink: #135c3d;  /* posted actuals — closed month locked 1:1 */
 }
 [data-theme="dark"] {
   --bg: #12161d; --panel: #1a2029; --line: #2b3441; --ink: #dde4ec; --dim: #8b97a6;
@@ -32,6 +33,7 @@
   --drv-man: #331327;  --drv-man-ink: #f181cf;
   --drv-t12: #33210f;  --drv-t12-ink: #e79b52;
   --drv-sp: #3a2a10;   --drv-sp-ink: #f0a848;
+  --drv-act: #10302a;  --drv-act-ink: #6fd3a6;
 }
 
 * { box-sizing: border-box; }
@@ -197,3 +199,9 @@ button.rowtool:hover { background: var(--soft); color: var(--ink); }
 .rowmenu button:hover { background: var(--hover); color: var(--accent); }
 .rowmenu label { display: block; padding: 5px 9px; font-size: 12.5px; border-radius: 6px; cursor: pointer; }
 .rowmenu label:hover { background: var(--hover); }
+
+/* posted actuals — a closed month budgeted 1:1 to what posted (partial-month rule) */
+td.m.drv-act { background: var(--drv-act); } td.m.drv-act input { color: var(--drv-act-ink); font-weight: 600; }
+.dot.drv-act { background: var(--drv-act); }
+.drv.drv-act { background: var(--drv-act); color: var(--drv-act-ink); }
+th.actcol { color: var(--drv-act-ink); }

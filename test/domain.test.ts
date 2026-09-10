@@ -6,7 +6,9 @@ import {
   categoryTotals, computeTieout, defaultInputs, tieNoiToUw, tieIncomeToUw,
   calendarSlice, monthLabels, rotate12, ltlMonths, buildUtilityModel, chargeGlMonthly,
   applyRounding, regenerate, sum, zero12, CoaAccount, UwSnapshotData, Months, Lease, SellerUtilRow,
+  actualizeFromComparison, applyActuals, injectPreStartActuals, ownershipIndexOf, actualKey, parseActualKey, BudgetLine,
 } from '../shared/domain.js';
+import { parseComparisonActuals } from '../src/importers.js';
 
 const coaList: CoaAccount[] = JSON.parse(readFileSync(join(process.cwd(), 'seed', 'coa.json'), 'utf8'));
 const coaMap = new Map(coaList.map((a) => [a.code, a]));
@@ -528,5 +530,69 @@ describe('ownership year (UW Year 1, e.g. Aug 2026 – Jul 2027)', () => {
     for (const p of ['4', '5', '6', '8', '9', '10', '11', '12', '13', '14']) {
       expect(cats[p], `category ${p}`).toBeCloseTo(fakeUw.y1[p], 2);
     }
+  });
+});
+
+describe('actualized months — the partial-month rule (rrnd, Aug-26 Cash)', () => {
+  const parsed = parseComparisonActuals(readFileSync(join(process.cwd(), 'test', 'fixtures', 'comparison-northda-aug26.xlsx')));
+  const rows = parsed.rows.map((r) => ({ gl: r.gl, name: r.name, amount: r.actual.rrnd || 0 }));
+  const { glMonths, summary } = actualizeFromComparison(coaList, rows);
+  const acts = { '2026-08': { period: 'Aug 2026', book: 'Cash', source: 'fixture', appliedAt: '2026-09-10T00:00:00Z', glMonths, summary } };
+  const line = (gl: string, months: number[], override = false): BudgetLine => ({ gl_code: gl, months, driver: { method: 'manual' }, override, note: '' });
+
+  it('mirrors every upload-chart posting and remaps 5006 tenant rent onto 4994', () => {
+    expect(glMonths['4994']).toBeCloseTo(168807.15, 2);
+    expect(summary.remapped.map((e) => e.gl)).toEqual(['5006']);
+    expect(summary.remapped[0].to).toBe('4994');
+    expect(glMonths['7300']).toBe(75656);
+    expect(glMonths['7354']).toBeCloseTo(21306.33, 2);
+    expect(glMonths['6924']).toBeCloseTo(-645.48, 2);
+    expect(summary.mirrored).toBe(39);
+    expect(Object.keys(glMonths).length).toBe(40);
+    expect(summary.unmapped).toEqual([]);
+  });
+  it('never carries financing, depreciation, balance-sheet or subtotal rows — but lists them', () => {
+    const ex = summary.excluded.map((e) => e.gl);
+    expect(ex).toEqual(expect.arrayContaining(['3080', '8500', '8601', '1245', '3848', '2504']));
+    for (const gl of ['3080', '8500', '8601', '5500', '7280', '9000', '1245']) expect(glMonths[gl]).toBeUndefined();
+    expect(summary.subtotals).toBeGreaterThan(10);
+  });
+  it('ties income and operating expense to the report subtotals to the penny', () => {
+    const inc = Object.entries(glMonths).filter(([g]) => +g < 5500).reduce((a, [, v]) => a + v, 0);
+    const opx = Object.entries(glMonths).filter(([g]) => +g >= 6000 && +g <= 7279).reduce((a, [, v]) => a + v, 0);
+    expect(inc).toBeCloseTo(175435.10, 2);
+    expect(opx).toBeCloseTo(8873.63, 2);
+  });
+  it('overlays an in-window month, zeroes unposted GLs there, and leaves plan months alone', () => {
+    const plan = [line('4994', Array(12).fill(260475)), line('5003', Array(12).fill(-19000)), line('7499', Array(12).fill(5), true)];
+    const out = applyActuals(plan, coaList, acts, 2026, 8);        // Aug-26 = ownership month 0
+    const g = out.find((l) => l.gl_code === '4994')!;
+    expect(g.months[0]).toBeCloseTo(168807.15, 2);
+    expect(g.months[1]).toBe(260475);
+    expect(out.find((l) => l.gl_code === '5003')!.months[0]).toBe(0);      // nothing posted → zero
+    expect(out.find((l) => l.gl_code === '7499')!.months[0]).toBe(5);      // not an upload-chart GL → untouched
+    expect(out.find((l) => l.gl_code === '7300')!.months[0]).toBe(75656);  // row added for a GL the plan never had
+    expect(plan[0].months[0]).toBe(260475);                                // plan not mutated
+    expect(applyActuals(plan, coaList, acts, 2026, 9)).toBe(plan);         // Aug is pre-start for a Sep plan: no overlay
+    expect(applyActuals(plan, coaList, null, 2026, 8)).toBe(plan);
+  });
+  it('injects a pre-start closing month into its calendar-year CSV slice only', () => {
+    const slice2026 = [line('4994', [0, 0, 0, 0, 0, 0, 0, 0, 260475, 260475, 260475, 260475])];   // Sep–Dec of a Sep-start plan
+    const out = injectPreStartActuals(slice2026, coaList, acts, 2026, 9, 2026);
+    const g = out.find((l) => l.gl_code === '4994')!;
+    expect(g.months[7]).toBeCloseTo(168807.15, 2);                       // Amount8 = August
+    expect(g.months[8]).toBe(260475);
+    expect(out.find((l) => l.gl_code === '7300')!.months[7]).toBe(75656);
+    expect(injectPreStartActuals(slice2026, coaList, acts, 2026, 9, 2027)).toBe(slice2026);   // not this calendar year
+    expect(injectPreStartActuals(slice2026, coaList, acts, 2026, 8, 2026)).toBe(slice2026);   // in-window → handled by applyActuals instead
+  });
+  it('ownershipIndexOf / actualKey round-trip', () => {
+    expect(ownershipIndexOf(2026, 9, 2026, 9)).toBe(0);
+    expect(ownershipIndexOf(2026, 9, 2027, 8)).toBe(11);
+    expect(ownershipIndexOf(2026, 9, 2026, 8)).toBe(-1);
+    expect(ownershipIndexOf(2026, 9, 2027, 9)).toBe(-1);
+    expect(ownershipIndexOf(2026, 1, 2026, 12)).toBe(11);
+    expect(actualKey(2026, 8)).toBe('2026-08');
+    expect(parseActualKey('2026-08')).toEqual({ calYear: 2026, calMonth: 8 });
   });
 });

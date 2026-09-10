@@ -607,8 +607,23 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
       else rawRow([`${prefix}${k}`, Array.isArray(v) ? (v as any[]).join(', ') : (v as any)]);
     }
   };
-  flat(inputs);
+  const { actuals: rawActuals, ...inputsNoActuals } = inputs as any;
+  flat(inputsNoActuals);
   rrw++;
+  if (rawActuals && Object.keys(rawActuals).length) {
+    rawRow(['Actualized months — closed months budgeted 1:1 to posted Cash actuals (partial-month rule)'], true);
+    for (const [key, a] of Object.entries(rawActuals as Record<string, any>)) {
+      rawRow([`${key} · ${a.period} · ${a.book}`, `source: ${a.source || ''}`, '', `applied ${String(a.appliedAt || '').slice(0, 10)}${a.appliedBy ? ' by ' + a.appliedBy : ''}`], true);
+      rawRow(['gl', 'posted amount (budgeted 1:1)'], true);
+      for (const [gl, v] of Object.entries(a.glMonths || {})) rawRow([gl, v]);
+      const ex = [...(a.summary?.remapped || []), ...(a.summary?.excluded || []), ...(a.summary?.unmapped || [])];
+      if (ex.length) {
+        rawRow(['gl', 'name', 'posted amount', 'not carried 1:1 on its own account — why'], true);
+        for (const e of ex) rawRow([e.gl, e.name, e.amount, e.to ? `${e.reason}` : e.reason]);
+      }
+      rrw++;
+    }
+  }
   rawRow(['UW Year-1 by category (tie-out targets)'], true);
   rawRow(['pcode', 'label', 'UW Y1'], true);
   if (uw) {
