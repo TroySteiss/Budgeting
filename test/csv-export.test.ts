@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildBudgetCsv, reviseBudgetCsv } from '../src/csv-export.js';
-import { parseBudgetCsv, parseComparisonActuals } from '../src/importers.js';
+import { parseBudgetCsv, parseBudgetCsvBlocks, parseComparisonActuals } from '../src/importers.js';
 import { actualizeFromComparison, type CoaAccount, type BudgetLine } from '../shared/domain.js';
 
 const coaList: CoaAccount[] = JSON.parse(readFileSync(join(process.cwd(), 'seed', 'coa.json'), 'utf8'));
@@ -107,5 +107,53 @@ describe('reviseBudgetCsv — partial-month rule off the budget as it sits in Ya
     expect(last[19]).toBe('75656.0000');
     expect(last[20]).toBe('0.0000');
     expect(out.description).toBe('rrnd 2026 Budget Revision TS 09102026');
+  });
+});
+
+describe('multi-budget Yardi export — six budgets in one file (the Meadows incident, 2026-09-10)', () => {
+  const buf = readFileSync(join(process.cwd(), 'test', 'fixtures', 'nd6-budget-yardi-export-2026.csv'));
+  const blocks = parseBudgetCsvBlocks(buf);
+  const cmp = parseComparisonActuals(readFileSync(join(process.cwd(), 'test', 'fixtures', 'comparison-northda-aug26.xlsx')));
+
+  it('splits into one block per //Budget header, each property from its own header record', () => {
+    expect(blocks.map((b) => b.propertyId)).toEqual(['mwnd', 'rrnd', 'nrnd', 'lhnd', 'cwnd', 'drnd']);
+    for (const b of blocks) expect(b.rows.length).toBe(335);
+    expect(blocks[0].description).toBe('mwnd 2026 Budget Revision TS 08282026');
+    expect(blocks[0].rows.find((r) => r.gl === '4994')!.amounts[8]).toBe(136585);   // mwnd Sep GPR
+    expect(blocks[4].rows.find((r) => r.gl === '4994')!.amounts[8]).toBe(433530);   // cwnd Sep GPR (433,530/mo rent roll)
+    expect(() => parseBudgetCsv(buf)).toThrow(/6 budgets/);
+  });
+
+  it('revises every block with ITS OWN property and re-emits the file complete, everything else verbatim', () => {
+    const pieces = blocks.map((b) => {
+      const rows = cmp.rows.map((r) => ({ gl: r.gl, name: r.name, amount: r.actual[b.propertyId] || 0 }));
+      const { glMonths } = actualizeFromComparison(coaList, rows);
+      return reviseBudgetCsv(b, cmp.calMonth, glMonths, { stamp: 'TS 09102026' }).csv;
+    });
+    const out = pieces.join('');
+    const orig = buf.toString('utf8').split('\r\n');
+    const rev = out.split('\r\n');
+    expect(rev.length).toBe(orig.length);
+    const again = parseBudgetCsvBlocks(Buffer.from(out));
+    expect(again.map((b) => b.propertyId)).toEqual(blocks.map((b) => b.propertyId));
+    const aug = (k: number, gl: string) => again[k].rows.find((r) => r.gl === gl)!.amounts[7];
+    expect(aug(0, '4994')).toBeCloseTo(85787.83, 2);      // mwnd tenant rent → its own GPR line
+    expect(aug(1, '4994')).toBeCloseTo(168807.15, 2);     // rrnd
+    expect(aug(4, '4994')).toBeCloseTo(271851.21, 2);     // cwnd
+    expect(aug(5, '4994')).toBeCloseTo(177097.03, 2);     // drnd
+    expect(aug(0, '7354')).toBeCloseTo(19543.85, 2);      // mwnd acquisition costs
+    expect(aug(1, '7354')).toBeCloseTo(21306.33, 2);      // rrnd's, not mwnd's
+    // every non-August cell identical to the export
+    for (let k = 0; k < blocks.length; k++) {
+      for (let i = 0; i < 335; i++) {
+        const a = blocks[k].rows[i].tokens, b = again[k].rows[i].tokens;
+        for (let c = 0; c < a.length; c++) if (c !== 19) expect(b[c]).toBe(a[c]);
+      }
+      expect(again[k].description).toBe(blocks[k].description.replace('08282026', '09102026'));
+    }
+    // the rrnd block matches the single-file hand-built revision row for row
+    const hand = readFileSync(join(process.cwd(), 'test', 'fixtures', 'rrnd-budget-revision-aug26-hand.csv'), 'utf8').split('\r\n');
+    const rrndHeader = rev.findIndex((l) => l.startsWith('2,rrnd,'));
+    for (let i = 0; i < 335; i++) expect(rev[rrndHeader + 2 + i]).toBe(hand[3 + i]);
   });
 });

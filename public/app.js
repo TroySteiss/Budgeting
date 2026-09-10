@@ -878,10 +878,10 @@ function gridHtml(bv, totals) {
   const monthIdx = Array.from({ length: 12 }, (_, i) => i).filter(showM);
   const cols = { fx: !hide.has('fx'), annual: !hide.has('annual'), punit: !hide.has('punit'), note: !hide.has('note') };
   const span = 2 + (cols.fx ? 1 : 0) + monthIdx.length + (cols.annual ? 1 : 0) + (cols.punit ? 1 : 0) + (cols.note ? 1 : 0);
+  const actIdx = new Set((bv.actualMonths || []).filter((a) => a.index >= 0).map((a) => a.index));   // months locked to posted actuals (declared BEFORE the header row uses it)
   const rows = [];
   rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th${actIdx.has(i) ? ' class="actcol" title="Locked to posted actuals — an edit here corrects the posted figure"' : ''}>${labels[i]}${actIdx.has(i) ? ' ✓' : ''}</th>`).join('')}${cols.annual ? '<th>Year 1</th>' : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
   const units = Number(bv.budget.inputs?.units) || 1;
-  const actIdx = new Set((bv.actualMonths || []).filter((a) => a.index >= 0).map((a) => a.index));   // months locked to posted actuals
   const GRAND = new Set(['5500', '7279', '7280', '8200', '9000']);
   // condensed (collapsed) sections — locked via localStorage across renders
   if (!S.gridCollapsed) S.gridCollapsed = new Set(JSON.parse(localStorage.getItem('bt-collapse') || '[]'));
@@ -2527,7 +2527,7 @@ function openActualizeCsv(resp) {
     </div>`; }).join('')}`;
   dlg.innerHTML = `
     <h2>Actualize a closed month from Yardi budget CSVs</h2>
-    <p class="muted" style="margin:0 0 8px; font-size:12px">Runs the partial-month rule off the budget <b>as it sits in Yardi</b>. Export each property's budget from Yardi (or use the CSV you last uploaded), add the month-end <b>Property Comparison</b> (Book = Cash, one period), and every CSV comes back with that month set 1:1 to what posted — every other cell untouched, so anything changed in Yardi is kept. The property is read from each CSV's header. The matching budget in the tool records the month (a save point is captured first). Tenant rent on 5006 → 4994; loan proceeds, depreciation/amortization and balance-sheet rows are never mirrored (listed, not dropped).</p>
+    <p class="muted" style="margin:0 0 8px; font-size:12px">Runs the partial-month rule off the budget <b>as it sits in Yardi</b>. Export each property's budget from Yardi (or use the CSV you last uploaded), add the month-end <b>Property Comparison</b> (Book = Cash, one period), and every CSV comes back with that month set 1:1 to what posted — every other cell untouched, so anything changed in Yardi is kept. The property is read from each budget's header record — a Yardi export holding several budgets in one file (the six-site ND export) is handled per budget and re-emitted as one complete file. The matching budget in the tool records the month (a save point is captured first). Tenant rent on 5006 → 4994; loan proceeds, depreciation/amortization and balance-sheet rows are never mirrored (listed, not dropped).</p>
     <div class="row">
       <div class="fld"><label>Property Comparison (.xlsx)</label><input type="file" id="ac-cmp" accept=".xlsx"></div>
       <div class="fld"><label>Budget CSVs (one or more)</label><input type="file" id="ac-csv" accept=".csv" multiple></div>
@@ -2554,8 +2554,7 @@ function openActualizeCsv(resp) {
     fd.append('adopt', dlg.querySelector('#ac-adopt').checked ? '1' : '0');
     try {
       const out = await POST('/actualize-csv', fd);
-      for (const r of out.results || []) {
-        if (!r.csv) continue;
+      for (const r of out.files || []) {
         const a = document.createElement('a');
         a.href = URL.createObjectURL(new Blob([r.csv], { type: 'text/csv' }));
         a.download = r.filename;

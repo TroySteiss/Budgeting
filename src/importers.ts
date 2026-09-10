@@ -743,7 +743,7 @@ export interface BudgetCsvParsed {
   startMonth: string;          // as written, e.g. "1/1/2026"
   description: string;
   eol: string;
-  preamble: string[];          // every line up to and including the //BudgetDetail header, verbatim
+  preamble: string[];          // every line from this block's //Budget header through its //BudgetDetail header, verbatim
   headerIdx: number;           // index of the header RECORD within preamble
   rows: { gl: string; tokens: string[]; amounts: number[] }[];   // tokens verbatim (quotes kept), Amount1..12 numeric
   decimals: number | null;     // amount formatting seen in the file (4 → "0.0000"); null → plain numbers
@@ -763,14 +763,7 @@ export function splitCsvLine(line: string): string[] {
 }
 const unq = (t: string): string => t.trim().replace(/^"(.*)"$/, '$1');
 
-/** Parse a Yardi budget ETL CSV keeping every token verbatim, so it can be
-    re-issued with one month changed and nothing else touched. The property
-    is read from the file — never from the UI. */
-export function parseBudgetCsv(buf: Buffer): BudgetCsvParsed {
-  const text = buf.toString('utf8').replace(/^﻿/, '');
-  const eol = text.includes('\r\n') ? '\r\n' : '\n';
-  const lines = text.split(/\r?\n/);
-  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+function parseBudgetCsvBlock(lines: string[], eol: string): BudgetCsvParsed {
   const hb = lines.findIndex((l) => l.startsWith('//Budget:'));
   const hd = lines.findIndex((l) => l.startsWith('//BudgetDetail:'));
   if (hb < 0 || hd < 0 || hd < hb + 2) throw new Error('Budget CSV: expected a //Budget header, its record, then //BudgetDetail');
@@ -790,9 +783,37 @@ export function parseBudgetCsv(buf: Buffer): BudgetCsvParsed {
     if (decimals == null) { const m = tokens[12].trim().match(/\.(\d+)$/); decimals = m ? m[1].length : 0; }
     rows.push({ gl, tokens, amounts: tokens.slice(12, 24).map((t) => parseFloat(unq(t)) || 0) });
   }
-  if (!rows.length) throw new Error('Budget CSV: no //BudgetDetail rows found');
+  if (!rows.length) throw new Error(`Budget CSV: no //BudgetDetail rows found for ${propertyId}`);
   return {
     propertyId, book: unq(rec[2] || ''), year: Number(ym[1]), startMonth, description: unq(rec[4] || ''),
     eol, preamble: lines.slice(0, hd + 1), headerIdx: hb + 1, rows, decimals: decimals || null,
   };
+}
+
+/** A Yardi budget export may hold SEVERAL budgets back to back (one //Budget
+    block per property — the ND six-site export is 6 × 338 lines). One parsed
+    block per header, in file order, every token verbatim; each block's
+    property comes from ITS OWN header record. */
+export function parseBudgetCsvBlocks(buf: Buffer): BudgetCsvParsed[] {
+  const text = buf.toString('utf8').replace(/^﻿/, '');
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  const starts = lines.map((l, i) => (l.startsWith('//Budget:') ? i : -1)).filter((i) => i >= 0);
+  if (!starts.length) throw new Error('Budget CSV: no //Budget header found');
+  return starts.map((s, k) => parseBudgetCsvBlock(lines.slice(s, k + 1 < starts.length ? starts[k + 1] : lines.length), eol));
+}
+
+/** Single-budget convenience — refuses a multi-budget file so a caller can
+    never mistake six budgets for one. */
+export function parseBudgetCsv(buf: Buffer): BudgetCsvParsed {
+  const blocks = parseBudgetCsvBlocks(buf);
+  if (blocks.length > 1) throw new Error(`Budget CSV holds ${blocks.length} budgets (${blocks.map((b) => b.propertyId).join(', ')}) — use parseBudgetCsvBlocks`);
+  return blocks[0];
+}
+
+/** A block re-emitted unchanged (used to keep a multi-budget file complete
+    when one of its budgets could not be revised). */
+export function budgetCsvBlockText(b: BudgetCsvParsed): string {
+  return [...b.preamble, ...b.rows.map((r) => r.tokens.join(','))].join(b.eol) + b.eol;
 }

@@ -2,7 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import multer from 'multer';
 import { query, tx } from './db.js';
 import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
-import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsv } from './importers.js';
+import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, type BudgetCsvParsed } from './importers.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
 import {
@@ -1250,12 +1250,15 @@ router.delete('/budgets/:id/actualize/:key', h(async (req, res) => {
 }));
 
 /* Bulk: revise Yardi budget CSVs (as exported from Yardi, or the files last
-   uploaded) so the closed month = posted actuals. THE PROPERTY COMES FROM EACH
-   CSV's header record — never from the UI. Every other cell is kept verbatim,
-   so changes made directly in Yardi are never undone. The matching budget in
-   the tool (same property, that calendar year inside its window) records the
-   actualized month; with adopt=1 its plan also takes the CSV's other months
-   (YARDI overrides) so a later tool export can't undo Yardi-side edits. */
+   uploaded) so the closed month = posted actuals. A Yardi export can hold
+   SEVERAL budgets in one file (one //Budget block per property) — each block
+   is revised with ITS OWN property's postings, read from its header record,
+   never from the UI, and the file is re-emitted complete and in order. Every
+   other cell is kept verbatim, so changes made directly in Yardi are never
+   undone. The matching budget in the tool (same property, that calendar year
+   inside its window) records the actualized month; with adopt=1 its plan also
+   takes that block's other months (YARDI overrides) so a later tool export
+   can't undo Yardi-side edits. */
 router.post('/actualize-csv', upload.fields([{ name: 'comparison', maxCount: 1 }, { name: 'csv', maxCount: 20 }]), h(async (req, res) => {
   const files = (req.files || {}) as Record<string, Express.Multer.File[]>;
   const cmpFile = files.comparison?.[0];
@@ -1271,78 +1274,96 @@ router.post('/actualize-csv', upload.fields([{ name: 'comparison', maxCount: 1 }
   const stamp = `${initialsOf(user)} ${mmddyyyy()}`;
   const coa = await loadCoa();
   const results: any[] = [];
+  const outFiles: { filename: string; csv: string; codes: string[] }[] = [];
   for (const f of csvFiles) {
-    const r: any = { file: f.originalname, warnings: [] as string[] };
-    try {
-      const base = parseBudgetCsv(f.buffer);
+    let blocks: BudgetCsvParsed[];
+    try { blocks = parseBudgetCsvBlocks(f.buffer); }
+    catch (e: any) { results.push({ file: f.originalname, error: e?.message || String(e), warnings: [] }); continue; }
+    const pieces: string[] = [];
+    const codes: string[] = [];
+    const fileResults: any[] = [];
+    for (const base of blocks) {
       const code = base.propertyId;
-      r.code = code;
-      if (!parsed.properties.includes(code)) throw new Error(`the comparison has no ${code.toUpperCase()} Actual column`);
-      if (parsed.calYear !== base.year) throw new Error(`${parsed.period} is not in this CSV's calendar year (${base.year})`);
-      const rows = parsed.rows.map((x) => ({ gl: x.gl, name: x.name, amount: x.actual[code] || 0 }));
-      const { glMonths, summary } = actualizeFromComparison(coa, rows);
-      if (!summary.mirrored && !summary.remapped.length) throw new Error(`no ${code.toUpperCase()} postings for ${parsed.period}`);
-      const rev = reviseBudgetCsv(base, parsed.calMonth, glMonths, { stamp });
-      Object.assign(r, {
-        period: parsed.period, csv: rev.csv, description: rev.description, rewritten: rev.rewritten, appended: rev.appended,
-        summary, glCount: Object.keys(glMonths).length,
-        filename: `${code.toUpperCase()} ${base.year} Budget Revision ${stamp}.csv`,
-      });
-      // record the month on the matching budget (the CSV year is the budget's
-      // start year, or the following year for the Jan–… slice)
-      const b = (await query(
-        'select id from budgets where lower(property_code)=$1 and (year=$2 or year=$2-1) order by (year=$2) desc, updated_at desc limit 1',
-        [code, base.year]
-      )).rows[0];
-      if (!b) { r.warnings.push(`no budget for ${code.toUpperCase()} covering ${base.year} in the tool — CSV revised, nothing recorded`); results.push(r); continue; }
-      const lb = (await loadBudget(b.id))!;
-      r.budgetId = b.id;
-      await captureSnapshot(lb, `before actualize ${parsed.period} (Yardi CSV)`, user);
-      const key = actualKey(parsed.calYear, parsed.calMonth);
-      const entry: ActualizedMonth = {
-        period: parsed.period, book: parsed.book || 'Cash',
-        source: `${cmpFile.originalname.slice(0, 60)} + ${f.originalname.slice(0, 60)}`,
-        appliedAt: new Date().toISOString(), appliedBy: user, glMonths, summary,
-      };
-      const inputs: BudgetInputs = { ...lb.budget.inputs, actuals: { ...(lb.budget.inputs?.actuals || {}), [key]: entry } };
-      let adopted: { changed: number } | null = null;
-      if (adopt) {
-        const start = inputs.startMonth || 1;
-        const byGl = new Map(base.rows.map((x) => [x.gl, x.amounts]));
-        let changed = 0;
-        for (const l of lb.lines) {
-          const a = lb.coaMap.get(l.gl_code);
-          if (!a || a.kind !== 'detail' || a.csv_order == null) continue;
-          const am = byGl.get(l.gl_code);
-          if (!am) continue;
-          const next = [...l.months] as Months;
-          let diff = false;
-          for (let i = 0; i < 12; i++) {
-            if (calYearOf(Number(lb.budget.year), start, i) !== base.year) continue;   // other calendar year: not in this CSV
-            const cm = calMonthOf(start, i);
-            if (cm === parsed.calMonth) continue;                                      // the actualized month is an overlay, never plan
-            const v = r2(am[cm - 1] || 0);
-            if (Math.abs(v - (l.months[i] || 0)) >= 0.005) { next[i] = v; diff = true; }
+      const r: any = { file: f.originalname, code, warnings: [] as string[] };
+      try {
+        if (!parsed.properties.includes(code)) throw new Error(`the comparison has no ${code.toUpperCase()} Actual column`);
+        if (parsed.calYear !== base.year) throw new Error(`${parsed.period} is not in this budget's calendar year (${base.year})`);
+        const rows = parsed.rows.map((x) => ({ gl: x.gl, name: x.name, amount: x.actual[code] || 0 }));
+        const { glMonths, summary } = actualizeFromComparison(coa, rows);
+        if (!summary.mirrored && !summary.remapped.length) throw new Error(`no ${code.toUpperCase()} postings for ${parsed.period}`);
+        const rev = reviseBudgetCsv(base, parsed.calMonth, glMonths, { stamp });
+        pieces.push(rev.csv);
+        codes.push(code);
+        Object.assign(r, {
+          period: parsed.period, description: rev.description, rewritten: rev.rewritten, appended: rev.appended,
+          summary, glCount: Object.keys(glMonths).length,
+        });
+        // record the month on the matching budget (the CSV year is the budget's
+        // start year, or the following year for the Jan–… slice)
+        const b = (await query(
+          'select id from budgets where lower(property_code)=$1 and (year=$2 or year=$2-1) order by (year=$2) desc, updated_at desc limit 1',
+          [code, base.year]
+        )).rows[0];
+        if (!b) { r.warnings.push(`no budget for ${code.toUpperCase()} covering ${base.year} in the tool — CSV revised, nothing recorded`); fileResults.push(r); continue; }
+        const lb = (await loadBudget(b.id))!;
+        r.budgetId = b.id;
+        await captureSnapshot(lb, `before actualize ${parsed.period} (Yardi CSV)`, user);
+        const key = actualKey(parsed.calYear, parsed.calMonth);
+        const entry: ActualizedMonth = {
+          period: parsed.period, book: parsed.book || 'Cash',
+          source: `${cmpFile.originalname.slice(0, 60)} + ${f.originalname.slice(0, 60)} [${code}]`,
+          appliedAt: new Date().toISOString(), appliedBy: user, glMonths, summary,
+        };
+        const inputs: BudgetInputs = { ...lb.budget.inputs, actuals: { ...(lb.budget.inputs?.actuals || {}), [key]: entry } };
+        let adopted: { changed: number } | null = null;
+        if (adopt) {
+          const start = inputs.startMonth || 1;
+          const byGl = new Map(base.rows.map((x) => [x.gl, x.amounts]));   // THIS block's rows only
+          let changed = 0;
+          for (const l of lb.lines) {
+            const a = lb.coaMap.get(l.gl_code);
+            if (!a || a.kind !== 'detail' || a.csv_order == null) continue;
+            const am = byGl.get(l.gl_code);
+            if (!am) continue;
+            const next = [...l.months] as Months;
+            let diff = false;
+            for (let i = 0; i < 12; i++) {
+              if (calYearOf(Number(lb.budget.year), start, i) !== base.year) continue;   // other calendar year: not in this CSV
+              const cm = calMonthOf(start, i);
+              if (cm === parsed.calMonth) continue;                                      // the actualized month is an overlay, never plan
+              const v = r2(am[cm - 1] || 0);
+              if (Math.abs(v - (l.months[i] || 0)) >= 0.005) { next[i] = v; diff = true; }
+            }
+            if (!diff) continue;
+            l.months = next;
+            l.override = true;
+            l.driver = { method: 'yardiCsv', file: f.originalname.slice(0, 40) } as any;
+            changed++;
           }
-          if (!diff) continue;
-          l.months = next;
-          l.override = true;
-          l.driver = { method: 'yardiCsv', file: f.originalname.slice(0, 40) } as any;
-          changed++;
+          adopted = { changed };
         }
-        adopted = { changed };
+        await query('update budgets set inputs=$2, updated_at=now() where id=$1', [b.id, JSON.stringify(inputs)]);
+        const built = buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lb.lines);
+        await saveLines(b.id, built.lines);
+        logChange(user, 'actualize month (Yardi CSV)', { id: b.id, key, file: f.originalname, adopted: adopted?.changed ?? null, appended: rev.appended.length });
+        r.adopted = adopted;
+      } catch (e: any) {
+        r.error = e?.message || String(e);
+        pieces.push(budgetCsvBlockText(base));   // keep the file complete: this budget goes out unchanged
+        r.warnings.push('this budget was left unchanged in the output file');
       }
-      await query('update budgets set inputs=$2, updated_at=now() where id=$1', [b.id, JSON.stringify(inputs)]);
-      const built = buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lb.lines);
-      await saveLines(b.id, built.lines);
-      logChange(user, 'actualize month (Yardi CSV)', { id: b.id, key, file: f.originalname, adopted: adopted?.changed ?? null, appended: rev.appended.length });
-      r.adopted = adopted;
-    } catch (e: any) {
-      r.error = e?.message || String(e);
+      fileResults.push(r);
     }
-    results.push(r);
+    if (pieces.length) {
+      const year = blocks[0].year;
+      const label = codes.length === 0 ? 'Budget' : codes.length <= 3 ? codes.map((c) => c.toUpperCase()).join('-') : `${codes.length} sites`;
+      const filename = `${label} ${year} Budget Revision ${stamp}.csv`;
+      outFiles.push({ filename, csv: pieces.join(''), codes });
+      for (const r of fileResults) r.filename = filename;
+    }
+    results.push(...fileResults);
   }
-  res.json({ period: parsed.period, book: parsed.book, results });
+  res.json({ period: parsed.period, book: parsed.book, results, files: outFiles.map(({ filename, csv, codes }) => ({ filename, csv, codes })) });
 }));
 
 /* ---------------- admin: properties & COA ---------------- */

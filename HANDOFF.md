@@ -164,8 +164,13 @@ property's budget CSV exported from Yardi; the property comes from the CSV heade
 only the closed month's column changes, everything else stays verbatim; the
 matching budget records the month and (adopt, default on) takes the CSV's other
 months as YARDI overrides. Done 2026-09-10 for rrnd, lhnd, nrnd, drnd off their
-Yardi exports (each ties to 5500 / 7279 / 7315). Next: cwnd + mwnd once their
-budget CSVs are exported from Yardi.
+Yardi exports (each ties to 5500 / 7279 / 7315), then all six off the six-budget
+Yardi export (Budget.csv, one //Budget block per property — the first cut read it as
+one MWND budget and broke Meadows; fixed the same day, per-block parsing + a test).
+Also fixed the same day: a TDZ bug (actIdx used before declaration in gridHtml) that
+blanked the editor for every budget on the first deploy. If MWND's plan shows odd
+YARDI overrides from the broken run, re-run the CSV feature with adopt on (it
+re-syncs the differing lines) or restore its "before actualize" save point.
 
 ## Known gaps / next steps
 

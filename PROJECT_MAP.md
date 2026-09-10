@@ -227,7 +227,13 @@ sure not to undo them")**: the same rule runs off the budget AS IT SITS IN YARDI
 instead of the tool's plan. Dashboard **✓ Actualize from Yardi CSVs…** → one Property
 Comparison + N budget CSVs (exported from Yardi, or the files last uploaded).
 `parseBudgetCsv` keeps every token verbatim and reads the PROPERTY FROM THE FILE's
-header record (never from the UI); `reviseBudgetCsv` (csv-export.ts) rewrites only
+header record (never from the UI) — and a Yardi export can hold SEVERAL budgets in one
+file (the ND six-site export is 6 × 338 lines): `parseBudgetCsvBlocks` splits at every
+`//Budget:` header and each block is revised with its OWN property, then re-emitted in
+order as one complete file (a block that cannot be revised goes out unchanged, flagged).
+The 2026-09-10 "Meadows" incident was the single-block parser applying MWND's August to
+all six budgets; `parseBudgetCsv` now refuses multi-budget files. `reviseBudgetCsv`
+(csv-export.ts) rewrites only
 the closed month's Amount column — the file's own decimal format is kept, the
 description is restamped `<INI> mmddyyyy` (Upload → Revision), and posted chart GLs
 with no row are appended — tested byte-for-byte against Troy's hand-built RRND
