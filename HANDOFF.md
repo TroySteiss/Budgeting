@@ -266,6 +266,33 @@ to the rent roll (current) or October actual for existing sites; HAP / Section 8
 properties may need 4995/4996 driven off the HAP roll; the ManFeeMatrix tiers are
 shown, not auto-applied (fee % stays an input).
 
+## 2026-10-01 PM — UI de-clunk (Troy: "look at the entire UI again, it is way too clunky")
+
+- **New budget dialog is template-first.** Annual: the Yardi template is the one
+  required file; it sets property + budget year and CARRIES its own T12 actuals and
+  CY budget (`stmtsForTemplate` in routes resolves the two `stmt_snapshots` from
+  the template's `upload_id` on `POST /budgets` and on `PUT` relink; `/state`
+  templates rows expose `py_stmt_id`/`cy_budget_stmt_id`/`actual_period`/
+  `budget_period`). The statement pickers live under a collapsed "separate Monarch
+  export" link; **no comp set for annual** (the property is its own comp).
+- **Every picker has an ⬆ upload** (`dlgUpload` in app.js): template / statement →
+  `parse-many` + `apply` mapped to the guessed property (creates it if unknown);
+  rent roll → saves every property the chart recognises, selects the current one;
+  payroll → saved under its own label. Selections survive the re-render via `S.nb`.
+- **Uploads page → "Data" page**: one drop zone, kind auto-detected server-side
+  (`detectUploadKind` in importers + `POST /uploads/detect`; tests cover every
+  fixture — Monarch statement vs seller T12 is decided by the title's property
+  code being letters vs a numeric id). "On file" is ONE table grouped by property;
+  a template's two statements are shown on the template row, not separately.
+- **Dashboard** = budgets table only (10 cols, CoC only when an acq budget exists)
+  + one Export ▾ menu (portfolio WB / zip / actualize from CSVs).
+- **Editor toolbar** = Undo · Recalc · More ▾ · Export ▾ · Assumptions. Export ▾
+  holds the CSVs (+ cutoff select, remembered in `S.exCutoff`), review workbook,
+  import draft, actualize month. More ▾ holds save points, MROUND, copy formulas,
+  overrides audit, columns, side panel, zero-rows / %-dist toggles. Legend lists
+  only the fills the open budget uses. Generic `popMenu()` (rowmenu look, closes on
+  outside click / Escape; `data-keep` keeps the menu open for inline controls).
+
 ## Known gaps / next steps
 
 - **Unit-level rent roll support LANDED (2026-08-21 PM):** the parser now reads

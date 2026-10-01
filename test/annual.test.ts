@@ -6,7 +6,7 @@ import {
   refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, type TemplateData, type AnnualSources,
 } from '../shared/annual.js';
 import { sum, zero12, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
-import { parseYardiBudgetTemplate, parseRentRoll, parseMonarchStatement } from '../src/importers.js';
+import { parseYardiBudgetTemplate, parseRentRoll, parseMonarchStatement, detectUploadKind } from '../src/importers.js';
 import { loadAnnualRules } from '../src/annual-rules.js';
 
 const coaList: CoaAccount[] = JSON.parse(readFileSync(join(process.cwd(), 'seed', 'coa.json'), 'utf8'));
@@ -329,4 +329,29 @@ describe('CORP_RATES', () => {
     expect(CORP_RATES['6310'].flatMo).toBe(483);
     expect(zero12().length).toBe(12);
   });
+});
+
+/* The Data page takes any file and guesses what it is — every fixture on disk
+   must come back as its own kind (the Yardi template must never be mistaken
+   for a statement, the rent roll never for a comp set). */
+describe('detectUploadKind — Data page auto-detect', () => {
+  const cases: [string, string][] = [
+    ['yardi-template-clnd.xlsm', 'yardi_template'],
+    ['yardi-template-grks-draft.xlsm', 'yardi_template'],
+    ['rentroll-lease-charges.xlsx', 'rent_roll'],
+    ['rentroll-summary.xlsx', 'rent_roll'],
+    ['rentroll-unit-level.xlsx', 'rent_roll'],
+    ['minot4-12mo-budget.xlsx', 'statement'],
+    ['comparison-minot4.xlsx', 'comparison'],
+    ['comparison-northda-aug26.xlsx', 'comparison'],
+    ['bismarck-uw.xlsx', 'uw_book'],
+    ['jamestown-uw.xlsx', 'uw_book'],
+    ['deerridge-t12.xlsx', 'seller_t12'],
+  ];
+  for (const [file, kind] of cases) {
+    it(`${file} → ${kind}`, () => {
+      if (!existsSync(fx(file))) return;
+      expect(detectUploadKind(readFileSync(fx(file)))).toBe(kind);
+    });
+  }
 });

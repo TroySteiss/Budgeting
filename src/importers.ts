@@ -1187,3 +1187,33 @@ export function parseBudgetCsv(buf: Buffer): BudgetCsvParsed {
 export function budgetCsvBlockText(b: BudgetCsvParsed): string {
   return [...b.preamble, ...b.rows.map((r) => r.tokens.join(','))].join(b.eol) + b.eol;
 }
+
+/** Guess which upload a workbook is from its sheet names / title cells so the
+    Data page can take any file without asking what it is first. Returns null
+    when nothing recognisable is found (the user then picks the kind). */
+export type UploadKind = 'uw_book' | 'rent_roll' | 'comparison' | 'seller_t12' | 'payroll' | 'yardi_template' | 'statement';
+export function detectUploadKind(buf: Buffer): UploadKind | null {
+  const wb = XLSX.read(buf, { type: 'buffer', sheetRows: 150 });
+  const names = wb.SheetNames;
+  if (names.some((n) => /^budget worksheet$/i.test(n)) && names.some((n) => /priorfinancials/i.test(n))) return 'yardi_template';
+  if (names.some((n) => /^wages$/i.test(n))) return 'payroll';
+  const first = XLSX.utils.sheet_to_json<any[]>(wb.Sheets[names[0]], { header: 1, raw: true, defval: null }) as any[][];
+  const head = first.slice(0, 8).map((r) => (r || []).map((v) => (v == null ? '' : String(v))).join(' ')).join('\n');
+  if (/rent roll/i.test(head)) return 'rent_roll';
+  if (/property comparison/i.test(head)) return 'comparison';
+  const monthHeader = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4}\b/i.test(head);
+  if (monthHeader && /period\s*=/i.test(head) && /book\s*=/i.test(head)) {
+    // a Yardi monthly statement: Monarch's own property (title "Name (code)",
+    // letter code) vs a seller's export (numeric property id)
+    const title = String(first[0]?.[0] ?? '');
+    const code = title.match(/\(([^()]{1,12})\)\s*$/)?.[1] || '';
+    return /^\d+$/.test(code) ? 'seller_t12' : 'statement';
+  }
+  // UW book: a sheet whose column B carries "Gross Potential Rent"
+  for (const n of names) {
+    const g = XLSX.utils.sheet_to_json<any[]>(wb.Sheets[n], { header: 1, raw: true, defval: null }) as any[][];
+    if (g.some((r) => /^gross potential rent/i.test(String(r?.[1] ?? '').trim()))) return 'uw_book';
+  }
+  if (monthHeader) return 'seller_t12';
+  return null;
+}

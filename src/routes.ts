@@ -2,7 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import multer from 'multer';
 import { query, tx } from './db.js';
 import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
-import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, type BudgetCsvParsed } from './importers.js';
+import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, stmtLastMonth, stmtAnnualized,
   refFromCalendar, refColumn, type TemplateData, type StmtData, type AnnualSources,
@@ -78,8 +78,14 @@ router.get('/state', h(async (_req, res) => {
   const stmtById = new Map<number, any>();
   if (refIds.length) for (const r of (await query('select id, data from stmt_snapshots where id = any($1)', [refIds])).rows) stmtById.set(r.id, r.data);
   const [stmts, templates] = await Promise.all([
-    query('select id, property_code, kind, label, period, book, created_at from stmt_snapshots order by created_at desc'),
-    query('select id, property_code, budget_year, label, created_at from template_snapshots order by created_at desc'),
+    query('select id, property_code, upload_id, kind, label, period, book, created_at from stmt_snapshots order by created_at desc'),
+    // each template carries the two statements parsed out of its PriorFinancials (same upload)
+    query(`select t.id, t.property_code, t.upload_id, t.budget_year, t.label, t.created_at,
+                  a.id as py_stmt_id, a.period as actual_period, b.id as cy_budget_stmt_id, b.period as budget_period
+             from template_snapshots t
+             left join lateral (select id, period from stmt_snapshots s where s.upload_id = t.upload_id and s.property_code = t.property_code and s.kind = 'actual' order by id limit 1) a on true
+             left join lateral (select id, period from stmt_snapshots s where s.upload_id = t.upload_id and s.property_code = t.property_code and s.kind = 'budget' order by id limit 1) b on true
+            order by t.created_at desc`),
   ]);
   for (const b of budgets.rows as any[]) {
     const ls = byBudget.get(b.id) || [];
@@ -179,6 +185,13 @@ router.post('/uploads/parse-many', upload.array('files', 40), h(async (req, res)
     catch (e: any) { out.push({ filename: f.originalname, error: e?.message || String(e) }); }
   }
   res.json({ kind, files: out });
+}));
+
+/** Guess each file's upload kind from its contents (Data page: drop any file). */
+router.post('/uploads/detect', upload.array('files', 40), h(async (req, res) => {
+  const files = (req.files as Express.Multer.File[]) || [];
+  if (!files.length) return res.status(400).json({ error: 'No files' });
+  res.json({ files: files.map((f) => { try { return { filename: f.originalname, kind: detectUploadKind(f.buffer) }; } catch (e: any) { return { filename: f.originalname, kind: null, error: e?.message || String(e) }; } }) });
 }));
 
 router.post('/uploads/apply', h(async (req, res) => {
@@ -729,9 +742,23 @@ function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLin
   return { lines };
 }
 
+/** The actuals + budget statements parsed out of a Yardi template's PriorFinancials (same upload). */
+async function stmtsForTemplate(templateId: number): Promise<{ pyStmtId: number | null; cyBudgetStmtId: number | null }> {
+  const t = (await query('select upload_id, property_code from template_snapshots where id=$1', [templateId])).rows[0];
+  if (!t) return { pyStmtId: null, cyBudgetStmtId: null };
+  const rows = (await query('select id, kind from stmt_snapshots where upload_id=$1 and property_code=$2 order by id', [t.upload_id, t.property_code])).rows;
+  return { pyStmtId: rows.find((r) => r.kind === 'actual')?.id ?? null, cyBudgetStmtId: rows.find((r) => r.kind === 'budget')?.id ?? null };
+}
+
 router.post('/budgets', h(async (req, res) => {
-  const { propertyCode, year, label, uwSnapshotId, compSetId, rentSnapshotId, t12SnapshotId, payrollModelId, budgetType, pyStmtId, cyBudgetStmtId, templateId } = req.body || {};
+  let { propertyCode, year, label, uwSnapshotId, compSetId, rentSnapshotId, t12SnapshotId, payrollModelId, budgetType, pyStmtId, cyBudgetStmtId, templateId } = req.body || {};
   if (!propertyCode || !year) return res.status(400).json({ error: 'propertyCode and year are required' });
+  // the Yardi template carries its own trailing-12 + current-year budget — fill
+  // those in from the template unless the caller pointed at other statements
+  if (budgetType === 'annual' && templateId && (!pyStmtId || !cyBudgetStmtId)) {
+    const sib = await stmtsForTemplate(Number(templateId));
+    pyStmtId = pyStmtId || sib.pyStmtId; cyBudgetStmtId = cyBudgetStmtId || sib.cyBudgetStmtId;
+  }
   const prop = (await query('select * from properties where code=$1', [propertyCode])).rows[0];
   if (!prop) return res.status(400).json({ error: `Unknown property ${propertyCode}` });
   const annual = budgetType === 'annual';
@@ -788,7 +815,13 @@ router.put('/budgets/:id', h(async (req, res) => {
   const id = Number(req.params.id);
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
-  const { inputs, label, status: st, rentSnapshotId, uwSnapshotId, compSetId, t12SnapshotId, payrollModelId, pyStmtId, cyBudgetStmtId, templateId } = req.body || {};
+  let { inputs, label, status: st, rentSnapshotId, uwSnapshotId, compSetId, t12SnapshotId, payrollModelId, pyStmtId, cyBudgetStmtId, templateId } = req.body || {};
+  // re-pointing at a template also re-points at the statements it carries (unless given explicitly)
+  if (templateId && (pyStmtId === undefined || cyBudgetStmtId === undefined)) {
+    const sib = await stmtsForTemplate(Number(templateId));
+    if (pyStmtId === undefined && sib.pyStmtId) pyStmtId = sib.pyStmtId;
+    if (cyBudgetStmtId === undefined && sib.cyBudgetStmtId) cyBudgetStmtId = sib.cyBudgetStmtId;
+  }
   if (label != null || st != null) {
     await query('update budgets set label=coalesce($2,label), status=coalesce($3,status), updated_at=now() where id=$1', [id, label ?? null, st ?? null]);
   }

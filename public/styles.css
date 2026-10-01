@@ -53,6 +53,7 @@ input, select, textarea { font: inherit; color: var(--ink); background: var(--in
 .topbar nav button { background: none; border: none; color: var(--head-dim); padding: 6px 12px; border-radius: 6px; }
 .topbar nav button.on { background: rgba(255,255,255,.14); color: #fff; }
 .topbar .spacer { flex: 1; }
+.topbar .crumb { color: var(--head-dim); padding: 0 2px; }
 .topbar .who { color: var(--head-dim); font-size: 12.5px; }
 .topbar .who button { background: none; border: 1px solid #46536a; color: var(--head-dim); border-radius: 6px; padding: 3px 10px; margin-left: 8px; }
 .topbar .theme { background: none; border: 1px solid #46536a; color: var(--head-dim); border-radius: 6px; padding: 3px 9px; }
@@ -215,3 +216,9 @@ td.m.drv-act { background: var(--drv-act); } td.m.drv-act input { color: var(--d
 .dot.drv-act { background: var(--drv-act); }
 .drv.drv-act { background: var(--drv-act); color: var(--drv-act-ink); }
 th.actcol { color: var(--drv-act-ink); }
+
+/* ---------- data page drop zone ---------- */
+.drop { border: 1.5px dashed var(--line); border-radius: 10px; padding: 22px 18px; text-align: center; cursor: pointer; background: var(--soft2); transition: border-color .15s, background .15s; }
+.drop:hover, .drop.over { border-color: var(--accent); background: var(--hover); }
+.drop .link { color: var(--accent); text-decoration: underline; }
+.rowmenu select { border: 1px solid var(--line); border-radius: 5px; padding: 2px 4px; background: var(--input); color: var(--ink); }

@@ -8,7 +8,7 @@ const S = {
   view: 'dash',        // dash | uploads | editor | settings
   bv: null,            // budget view payload {budget, lines, tieout, kpis, uw, compWeights}
   showZero: false,
-  upload: { kind: 'uw_book', parsed: null, busy: false, msg: '', err: '' },
+  upload: { kind: 'yardi_template', files: [], parsed: null, busy: false, msg: '', err: '' },
   err: '',
   theme: localStorage.getItem('bt-theme') || 'light',
   hiddenCols: new Set(JSON.parse(localStorage.getItem('bt-hidecols') || '[]')),
@@ -154,8 +154,8 @@ function render() {
       <span class="brand">${esc(S.auth.appTitle || 'Budget Tool')}</span>
       <nav>
         <button data-v="dash" class="${S.view === 'dash' ? 'on' : ''}">Budgets</button>
-        <button data-v="uploads" class="${S.view === 'uploads' ? 'on' : ''}">Uploads</button>
-        ${S.view === 'editor' ? '<button data-v="editor" class="on">Editor</button>' : ''}
+        ${S.view === 'editor' && S.bv ? `<span class="crumb">›</span><button data-v="editor" class="on">${esc(S.bv.budget.property_code)} ${S.bv.budget.year}</button>` : ''}
+        <button data-v="uploads" class="${S.view === 'uploads' ? 'on' : ''}">Data</button>
         <button data-v="settings" class="${S.view === 'settings' ? 'on' : ''}">Settings</button>
       </nav>
       <span class="spacer"></span>
@@ -195,63 +195,58 @@ function wireLogin() {
   document.getElementById('lp').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
 }
 
+/* A small popup menu anchored under a button. `html` is the body (buttons /
+   labels), `wire(menu)` attaches handlers; any click inside that is not on a
+   checkbox closes it. */
+function popMenu(anchorBtn, html, wire) {
+  document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'rowmenu';
+  menu.innerHTML = html;
+  const r = anchorBtn.getBoundingClientRect();
+  document.body.appendChild(menu);
+  const w = menu.offsetWidth;
+  menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + window.scrollX}px`;
+  menu.style.top = `${r.bottom + window.scrollY + 2}px`;
+  menu.addEventListener('click', (e) => { e.stopPropagation(); if (e.target.closest('button') && !e.target.closest('[data-keep]')) menu.remove(); });
+  const close = () => { menu.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (ev) => { if (ev.key === 'Escape') close(); };
+  setTimeout(() => { document.addEventListener('click', close, { once: true }); document.addEventListener('keydown', onKey); }, 0);
+  if (wire) wire(menu);
+  return menu;
+}
+
 /* ---------------- dashboard ---------------- */
 function renderDash(el) {
   const st = S.state;
   const props = new Map(st.properties.map((p) => [p.code, p]));
+  const hasAcq = st.budgets.some((b) => b.budget_type !== 'annual');
   el.innerHTML = `
     <div class="card">
-      <h2>Budgets
-        <button class="btn" id="newb" style="float:right">+ New budget</button>
-        <button class="btn sub" id="pf-export" style="float:right; margin-right:8px" title="One workbook for the TICKED budgets (all if none ticked): each site's Budget / Summary / Raw Data tabs plus a live Portfolio rollup tab — tick the 4 Bismarck sites for a Bismarck WB, the 2 Jamestown for a JT WB">⬇ Portfolio workbook</button>
-        <button class="btn sub" id="act-csv" style="float:right; margin-right:8px" title="Partial-month rule off the budget as it sits in Yardi: upload the month-end Property Comparison (Cash) + each property's budget CSV exported from Yardi — every CSV comes back with the closed month set 1:1 to what posted, everything else untouched">✓ Actualize from Yardi CSVs…</button>
-        <button class="btn sub" id="bundle-export" style="float:right; margin-right:8px" title="ZIP of ALL exports for the TICKED budgets (all if none ticked), sorted by report type: '2026 Yardi Uploads/', '2027 Yardi Uploads/', 'Budget Drafts/' — each budget saved as an iteration">⬇ All exports (zip)</button>
-      </h2>
-      ${st.budgets.length ? `<table class="list"><tr><th><input type="checkbox" id="sel-all" title="Select all budgets"></th><th>Property</th><th>Type</th><th>Window</th><th>Income</th><th>OpEx</th><th>NOI</th><th>Δ NOI vs ref</th><th>Δ EGI vs ref</th><th>CoC</th><th>Overrides</th><th>LTL</th><th>Save pts</th><th>Status</th><th>Updated</th><th></th></tr>
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:10px">
+        <h2 style="margin:0">Budgets</h2>
+        <div class="row">
+          <button class="btn sub" id="dash-export" title="Exports for the ticked budgets (all if none ticked)">⬇ Export ▾</button>
+          <button class="btn" id="newb">+ New budget</button>
+        </div>
+      </div>
+      ${st.budgets.length ? `<table class="list"><tr><th><input type="checkbox" id="sel-all" title="Select all budgets"></th><th>Property</th><th>Budget</th><th>Income</th><th>OpEx</th><th>NOI</th><th title="NOI vs the budget's reference (T12 actuals / CY budget for annual, UW for acquisitions)">Δ NOI</th><th title="EGI vs the reference">Δ EGI</th>${hasAcq ? '<th>CoC</th>' : ''}<th>Status</th><th>Updated</th><th></th></tr>
         ${st.budgets.map((b) => {
           const d = b.dash || {};
           const varCell = (v) => (v == null ? '<td class="muted">—</td>' : `<td class="${Math.abs(v) < 1 ? '' : v > 0 ? '' : 'neg'}" style="${Math.abs(v) < 1 ? 'color:var(--good)' : ''}" title="vs ${esc(d.refLabel || 'UW')}">${Math.abs(v) < 1 ? 'tied' : money(v)}</td>`);
           const sm = d.startMonth > 1 ? `${MONTHS[d.startMonth - 1]}-${String(b.year).slice(2)} – ${MONTHS[(d.startMonth + 10) % 12]}-${String(b.year + 1).slice(2)}` : String(b.year);
+          const ov = (d.overridesFormula || 0) + (d.overridesFixed || 0);
           return `<tr class="click" data-id="${b.id}">
           <td><input type="checkbox" data-sel="${b.id}"></td>
-          <td><b>${esc(b.property_code)}</b> · ${esc(b.property_name)}<div class="muted" style="font-size:11px">${esc(b.label)}</div></td>
-          <td>${b.budget_type === 'annual' ? `<span class="badge" title="Annual operating budget — compares to ${esc(d.refLabel || 'T12')}">annual</span>` : '<span class="badge" title="New acquisition — UW Year 1">acq</span>'}</td>
-          <td class="muted">${sm}</td>
+          <td><b>${esc(b.property_code)}</b> · ${esc(b.property_name)}</td>
+          <td>${b.budget_type === 'annual' ? `<b>${sm}</b> <span class="muted">annual</span>` : `<b>${sm}</b> <span class="muted">acquisition · UW Y1</span>`}<div class="muted" style="font-size:11px">${ov ? `${ov} override${ov === 1 ? '' : 's'}` : 'no overrides'}${d.ltlMode === 'leases' ? ' · per-lease LTL' : ''}${d.savePoints ? ` · ${d.savePoints} save pt${d.savePoints === 1 ? '' : 's'}` : ''}</div></td>
           <td>${money(d.income)}</td><td>${money(d.expense)}</td><td><b>${money(d.noi)}</b></td>
           ${varCell(d.noiVar)}${varCell(d.egiVar)}
-          <td>${d.coc != null ? (d.coc * 100).toFixed(1) + '%' : '—'}${d.capital ? `<div class="muted" style="font-size:10.5px">on ${money(d.capital)}</div>` : ''}</td>
-          <td class="muted">${d.overridesFormula || 0} fx · ${d.overridesFixed || 0} fixed</td>
-          <td class="muted">${d.ltlMode === 'leases' ? 'per-lease' : 'ramp'}</td>
-          <td class="muted">${d.savePoints || 0}</td>
+          ${hasAcq ? `<td>${d.coc != null ? (d.coc * 100).toFixed(1) + '%' : '—'}${d.capital ? `<div class="muted" style="font-size:10.5px">on ${money(d.capital)}</div>` : ''}</td>` : ''}
           <td>${esc(b.status)}</td>
           <td class="muted">${new Date(b.updated_at).toLocaleDateString()}</td>
-          <td>${S.auth.isAdmin ? `<button class="btn danger" data-del="${b.id}">Delete</button>` : ''}</td>
-        </tr>`; }).join('')}</table>` : '<p class="muted">No budgets yet. For an annual budget: upload the Yardi budget template (budgetYSR…xlsm) and the rent roll, then create one. For a new acquisition: UW book, rent roll and comp set.</p>'}
-    </div>
-    <div class="card">
-      <h2>Data on file</h2>
-      <p class="muted" style="font-size:11.5px">🗑 deletes a snapshot — budgets pointing at it are unlinked and regenerate. Payroll models are editable (✎) — the numbers are fixable in place, no re-upload needed.</p>
-      <h3>Yardi budget templates <span class="badge">annual budgets</span></h3>
-      ${(st.templates || []).length ? `<table class="list"><tr><th>Property</th><th>Template</th><th>Budget year</th><th>Added</th><th></th></tr>
-        ${st.templates.map((t) => `<tr><td>${esc(t.property_code)}</td><td>${esc(t.label)}</td><td>${t.budget_year}</td><td class="muted">${new Date(t.created_at).toLocaleDateString()}</td><td>${S.auth.isAdmin ? `<button class="rb" data-deld="template:${t.id}" title="Delete — pointing budgets unlink & regenerate">🗑</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">None yet — upload each property\'s budgetYSR&lt;year&gt;_budget_….xlsm (Uploads → Yardi budget template). It carries the trailing-12 actuals, the current-year budget, the debt schedule, Conservice utility forecasts, corporate suggestions and lease expirations in one file.</p>'}
-      <h3>Statements (trailing-12 actuals / current-year budget) <span class="badge">annual budgets</span></h3>
-      ${(st.stmtSnapshots || []).length ? `<table class="list"><tr><th>Property</th><th>Kind</th><th>Period</th><th>Book</th><th>Label</th><th></th></tr>
-        ${st.stmtSnapshots.map((t) => `<tr><td>${esc(t.property_code)}</td><td>${t.kind === 'budget' ? 'CY budget' : 'actuals'}</td><td>${esc(t.period)}</td><td class="muted">${esc(t.book)}</td><td class="muted">${esc(t.label)}</td><td>${S.auth.isAdmin ? `<button class="rb" data-deld="stmt:${t.id}" title="Delete — pointing budgets re-point to the newest remaining statement of the same kind">🗑</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
-      <h3>UW snapshots</h3>
-      ${st.uwSnapshots.length ? `<table class="list"><tr><th>Property</th><th>Label</th><th>Units</th><th>UW NOI</th><th>Added</th><th></th></tr>
-        ${st.uwSnapshots.map((u) => `<tr><td>${esc(u.property_code)}</td><td>${esc(u.label)}</td><td>${u.units ?? ''}</td><td>${money(u.noi)}</td><td class="muted">${new Date(u.created_at).toLocaleDateString()}</td><td>${S.auth.isAdmin ? `<button class="rb" data-deld="uw:${u.id}" title="Delete — pointing budgets unlink & regenerate">🗑</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
-      <h3>Rent snapshots</h3>
-      ${st.rentSnapshots.length ? `<table class="list"><tr><th>Property</th><th>As of</th><th>Units</th><th>Market / mo</th><th>In-place / mo</th><th></th></tr>
-        ${st.rentSnapshots.map((r) => `<tr><td>${esc(r.property_code)}</td><td>${r.as_of ? new Date(r.as_of).toLocaleDateString() : ''}</td><td>${r.units ?? ''}</td><td>${money(r.market_monthly)}</td><td>${money(r.inplace_monthly)}</td><td>${S.auth.isAdmin ? `<button class="rb" data-deld="rent:${r.id}" title="Delete — pointing budgets unlink & regenerate">🗑</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
-      <h3>Seller T12s</h3>
-      ${(st.t12Snapshots || []).length ? `<table class="list"><tr><th>Property</th><th>Statement</th><th>Period</th><th>Book</th><th></th></tr>
-        ${st.t12Snapshots.map((t) => `<tr><td>${esc(t.property_code)}</td><td>${esc(t.label)}</td><td>${esc(t.period)}</td><td>${esc(t.book)}</td><td>${S.auth.isAdmin ? `<button class="rb" data-deld="t12:${t.id}" title="Delete — pointing budgets unlink & regenerate">🗑</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
-      <h3>Payroll models</h3>
-      ${(st.payrollModels || []).length ? `<table class="list"><tr><th>Model</th><th>Added</th><th></th></tr>
-        ${st.payrollModels.map((p) => `<tr><td>${esc(p.label)}</td><td class="muted">${new Date(p.created_at).toLocaleDateString()}</td><td>${S.auth.isAdmin ? `<button class="rb" data-pmedit="${p.id}" title="Edit the wage numbers in place — linked budgets regenerate">✎ edit</button> <button class="rb" data-deld="payroll:${p.id}" title="Delete — pointing budgets unlink & regenerate">🗑</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
-      <h3>Comp sets</h3>
-      ${st.compSets.length ? `<table class="list"><tr><th>Name</th><th>Period</th><th>Book</th><th>Added</th><th></th></tr>
-        ${st.compSets.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.period)}</td><td>${esc(c.book)}</td><td class="muted">${new Date(c.created_at).toLocaleDateString()}</td><td>${S.auth.isAdmin ? `<button class="rb" data-deld="comp:${c.id}" title="Delete — pointing budgets unlink & regenerate">🗑</button>` : ''}</td></tr>`).join('')}</table>` : '<p class="muted">None yet.</p>'}
+          <td>${S.auth.isAdmin ? `<button class="rb" data-del="${b.id}" title="Delete this budget">🗑</button>` : ''}</td>
+        </tr>`; }).join('')}</table>` : `<p class="muted">No budgets yet. Click <b>+ New budget</b> — for an annual budget you only need the property's Yardi budget template (budgetYSR…xlsm); it carries the trailing-12 actuals and the current-year budget. Add the rent roll for the GPR anchor and per-lease burnoff.</p>`}
     </div>
     <dialog id="newdlg"></dialog>
     <dialog class="assump" id="pm-dlg"></dialog>
@@ -267,19 +262,7 @@ function renderDash(el) {
     await DEL(`/budgets/${b.dataset.del}`);
     await refreshState(); render();
   }));
-  el.querySelectorAll('[data-deld]').forEach((b) => b.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    const [kind, id] = b.dataset.deld.split(':');
-    if (!confirm(`Delete this ${kind === 'payroll' ? 'payroll model' : kind + ' snapshot'}? Budgets pointing at it re-point to the newest remaining upload (or unlink if none is left) and regenerate.`)) return;
-    const resp = await DEL(`/uploads/data/${kind}/${id}`);
-    S.upload = S.upload || {}; S.upload.msg = `Deleted · ${resp.repointed || 0} budget(s) re-pointed to the newest upload${(resp.unlinked || 0) > (resp.repointed || 0) ? `, ${resp.unlinked - resp.repointed} unlinked` : ''}`;
-    await refreshState(); render();
-  }));
-  el.querySelectorAll('[data-pmedit]').forEach((b) => b.addEventListener('click', (e) => {
-    e.stopPropagation();
-    openPayrollEditor(Number(b.dataset.pmedit));
-  }));
-  document.getElementById('newb').addEventListener('click', () => newBudgetDialog(props));
+  document.getElementById('newb').addEventListener('click', () => { S.nb = null; newBudgetDialog(); });
   const selectedIds = () => [...el.querySelectorAll('[data-sel]')].filter((c) => c.checked).map((c) => c.dataset.sel);
   el.querySelectorAll('[data-sel]').forEach((c) => c.addEventListener('click', (e) => e.stopPropagation()));
   const selAll = document.getElementById('sel-all');
@@ -287,17 +270,56 @@ function renderDash(el) {
     e.stopPropagation();
     el.querySelectorAll('[data-sel]').forEach((c) => { c.checked = selAll.checked; });
   });
-  document.getElementById('pf-export').addEventListener('click', () => {
-    const ids = selectedIds();
-    window.open(`/api/export/portfolio.xlsx${ids.length ? `?ids=${ids.join(',')}` : ''}`, '_blank');
+  document.getElementById('dash-export').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const n = selectedIds().length;
+    popMenu(e.currentTarget, `
+      <div class="rm-head">${n ? `${n} ticked budget${n === 1 ? '' : 's'}` : 'All budgets'}</div>
+      <button data-x="pf" title="One workbook: each site's Budget / Summary / Raw Data tabs plus a live Portfolio rollup tab — tick the 4 Bismarck sites for a Bismarck WB, the 2 Jamestown for a JT WB">⬇ Portfolio workbook</button>
+      <button data-x="zip" title="ZIP of every export, sorted by report type: Yardi Uploads per year + Budget Drafts — each budget saved as an iteration">⬇ All exports (zip)</button>
+      <button data-x="act" title="Partial-month rule off the budget as it sits in Yardi: upload the month-end Property Comparison (Cash) + each property's budget CSV — every CSV comes back with the closed month set 1:1 to what posted">✓ Actualize from Yardi CSVs…</button>`, (menu) => {
+      menu.querySelector('[data-x="pf"]').addEventListener('click', () => { const ids = selectedIds(); window.open(`/api/export/portfolio.xlsx${ids.length ? `?ids=${ids.join(',')}` : ''}`, '_blank'); });
+      menu.querySelector('[data-x="zip"]').addEventListener('click', () => { const ids = selectedIds(); const all = ids.length ? ids : st.budgets.map((b) => b.id); if (all.length) window.open(`/api/export/bundle.zip?ids=${all.join(',')}`, '_blank'); });
+      menu.querySelector('[data-x="act"]').addEventListener('click', () => openActualizeCsv());
+    });
   });
-  document.getElementById('act-csv').addEventListener('click', () => openActualizeCsv());
-  document.getElementById('bundle-export').addEventListener('click', () => {
-    const ids = selectedIds();
-    const all = ids.length ? ids : st.budgets.map((b) => b.id);
-    if (!all.length) return;
-    window.open(`/api/export/bundle.zip?ids=${all.join(',')}`, '_blank');
-  });
+}
+
+/* Everything on file, one table, grouped by property. A template's own two
+   statements are implied by the template row (not listed twice). */
+function dataOnFileHtml(st) {
+  const tplUploads = new Set((st.templates || []).map((t) => t.upload_id));
+  const fmtd = (d) => (d ? new Date(d).toLocaleDateString() : '');
+  const rows = [];
+  for (const t of st.templates || []) rows.push({ prop: t.property_code, kind: 'Yardi template', detail: `budget ${t.budget_year}${t.actual_period ? ` · T12 ${t.actual_period}` : ''}${t.budget_period ? ` · CY budget ${t.budget_period}` : ''}`, sub: t.label, added: t.created_at, del: `template:${t.id}` });
+  for (const x of (st.stmtSnapshots || []).filter((x) => !tplUploads.has(x.upload_id))) rows.push({ prop: x.property_code, kind: x.kind === 'budget' ? 'CY budget statement' : 'T12 statement', detail: `${x.period || ''}${x.book ? ` · ${x.book}` : ''}`, sub: x.label, added: x.created_at, del: `stmt:${x.id}` });
+  for (const r of st.rentSnapshots || []) rows.push({ prop: r.property_code, kind: 'Rent roll', detail: `${r.as_of ? fmtd(r.as_of) : ''} · ${r.units || '?'}u · mkt ${money(r.market_monthly)}/mo · in-place ${money(r.inplace_monthly)}/mo`, added: r.created_at, del: `rent:${r.id}` });
+  for (const u of st.uwSnapshots || []) rows.push({ prop: u.property_code, kind: 'UW book', detail: `${u.units ?? ''}u · NOI ${money(u.noi)}`, sub: u.label, added: u.created_at, del: `uw:${u.id}` });
+  for (const x of st.t12Snapshots || []) rows.push({ prop: x.property_code, kind: 'Seller T12', detail: `${x.period || ''}${x.book ? ` · ${x.book}` : ''}`, sub: x.label, added: x.created_at, del: `t12:${x.id}` });
+  for (const p of st.payrollModels || []) rows.push({ prop: '', kind: 'Payroll model', detail: p.label, added: p.created_at, del: `payroll:${p.id}`, edit: p.id });
+  for (const c of st.compSets || []) rows.push({ prop: '', kind: 'Comp set', detail: `${c.name}${c.period ? ` · ${c.period}` : ''}${c.book ? ` · ${c.book}` : ''}`, added: c.created_at, del: `comp:${c.id}` });
+  if (!rows.length) return '<p class="muted">Nothing on file yet — drop a file above.</p>';
+  rows.sort((a, b) => (a.prop || '~').localeCompare(b.prop || '~') || a.kind.localeCompare(b.kind) || new Date(b.added) - new Date(a.added));
+  let last = null;
+  return `<table class="list"><tr><th>Property</th><th>Data</th><th>Detail</th><th>Added</th><th></th></tr>
+    ${rows.map((r) => { const first = r.prop !== last; last = r.prop; return `<tr>
+      <td>${first ? `<b>${esc(r.prop || 'shared')}</b>` : ''}</td>
+      <td>${esc(r.kind)}</td>
+      <td>${esc(r.detail)}${r.sub ? `<div class="muted" style="font-size:10.5px">${esc(r.sub)}</div>` : ''}</td>
+      <td class="muted">${fmtd(r.added)}</td>
+      <td style="white-space:nowrap">${S.auth.isAdmin ? `${r.edit ? `<button class="rb" data-pmedit="${r.edit}" title="Edit the wage numbers in place — linked budgets regenerate">✎</button> ` : ''}<button class="rb" data-deld="${r.del}" title="Delete — budgets pointing at it re-point to the newest remaining upload and regenerate">🗑</button>` : ''}</td>
+    </tr>`; }).join('')}</table>`;
+}
+function wireDataOnFile(el) {
+  el.querySelectorAll('[data-deld]').forEach((b) => b.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const [kind, id] = b.dataset.deld.split(':');
+    if (!confirm(`Delete this ${kind === 'payroll' ? 'payroll model' : kind + ' snapshot'}? Budgets pointing at it re-point to the newest remaining upload (or unlink if none is left) and regenerate.`)) return;
+    const resp = await DEL(`/uploads/data/${kind}/${id}`);
+    S.upload.msg = `Deleted · ${resp.repointed || 0} budget(s) re-pointed to the newest upload${(resp.unlinked || 0) > (resp.repointed || 0) ? `, ${resp.unlinked - resp.repointed} unlinked` : ''}`;
+    await refreshState(); render();
+  }));
+  el.querySelectorAll('[data-pmedit]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); openPayrollEditor(Number(b.dataset.pmedit)); }));
 }
 
 function newBudgetDialog() {
@@ -305,88 +327,187 @@ function newBudgetDialog() {
   const dlg = document.getElementById('newdlg');
   const subjects = st.properties.filter((p) => p.role === 'subject');
   const yearNow = new Date().getFullYear() + 1;
-  if (!S.newType) S.newType = (st.templates || []).length || (st.stmtSnapshots || []).length ? 'annual' : 'new_acq';
+  if (!S.newType) S.newType = (st.templates || []).length || !st.uwSnapshots.length ? 'annual' : 'new_acq';
   const annual = S.newType === 'annual';
+  const nb = S.nb || (S.nb = {});           // selections survive the re-render after an inline upload
+  const KIND_LABEL = { yardi_template: 'Yardi budget template (budgetYSR…xlsm)', rent_roll: 'rent roll', payroll: 'payroll model', statement: '12 Month Statement / Budget' };
+  // a picker: select + an Upload button that parses, saves and selects the file right here
+  const pick = (id, label, hint, uploadKind) => `
+    <div class="fld" style="flex:1; min-width:240px"><label>${label}${hint ? ` <span class="muted">— ${hint}</span>` : ''}</label>
+      <div class="row" style="gap:6px; flex-wrap:nowrap"><select id="${id}" style="flex:1; min-width:0"></select>${uploadKind ? `<button class="btn sub" data-up="${uploadKind}" data-for="${id}" title="Upload a ${KIND_LABEL[uploadKind]} and use it">⬆</button>` : ''}</div>
+    </div>`;
   dlg.innerHTML = `
     <h2>New budget</h2>
-    <div class="row" style="margin-bottom:8px">
-      <label title="Calendar-year operating budget for a property Monarch already runs — levels from its own trailing-12 statements and the Yardi budget template rules; nothing ties automatically"><input type="radio" name="nb-type" value="annual" ${annual ? 'checked' : ''}> <b>Annual operating budget</b> (existing property)</label>
-      <label style="margin-left:14px" title="UW Year 1 for a new acquisition: 12 ownership months from the start month, ties to the UW book"><input type="radio" name="nb-type" value="new_acq" ${!annual ? 'checked' : ''}> New acquisition (UW Year 1)</label>
-    </div>
-    <div class="row">
-      <div class="fld"><label>Property</label><select id="nb-prop">${subjects.map((p) => `<option value="${p.code}">${p.code} — ${esc(p.name)}</option>`).join('')}</select></div>
-      <div class="fld"><label>Budget year</label><input id="nb-year" type="number" value="${yearNow}" style="width:90px"></div>
+    <div class="row" style="margin-bottom:10px; gap:16px">
+      <label title="Calendar-year operating budget for a property Monarch already runs — levels from its own trailing-12 and the Yardi template rules; nothing ties automatically"><input type="radio" name="nb-type" value="annual" ${annual ? 'checked' : ''}> <b>Annual operating budget</b></label>
+      <label title="UW Year 1 for a new acquisition: 12 ownership months from the start month, ties to the UW book"><input type="radio" name="nb-type" value="new_acq" ${!annual ? 'checked' : ''}> New acquisition (UW Year 1)</label>
     </div>
     ${annual ? `
-    <div class="row" style="margin-top:8px">
-      <div class="fld"><label>Yardi budget template (debt, fees, forecasts, expirations)</label><select id="nb-tpl"></select></div>
-      <div class="fld"><label>Trailing-12 actuals (the PY base)</label><select id="nb-py"></select></div>
-      <div class="fld"><label>Current-year budget (comparison)</label><select id="nb-cyb"></select></div>
+    <div class="row">${pick('nb-tpl', 'Yardi budget template', 'the property, its trailing-12 actuals and current-year budget come from this file', 'yardi_template')}</div>
+    <p class="muted" id="nb-tplnote" style="font-size:11.5px; margin:4px 0 8px"></p>
+    <div class="row">
+      <div class="fld"><label>Property</label><select id="nb-prop">${subjects.map((p) => `<option value="${p.code}">${p.code} — ${esc(p.name)}</option>`).join('')}</select></div>
+      <div class="fld"><label>Budget year</label><input id="nb-year" type="number" value="${nb.year || yearNow}" style="width:90px"></div>
     </div>
     <div class="row" style="margin-top:8px">
-      <div class="fld"><label>Rent roll (GPR anchor, per-lease LTL, charges)</label><select id="nb-rent"></select></div>
-      <div class="fld"><label>Payroll model (wages)</label><select id="nb-pay"><option value="">— none (own T12 payroll) —</option>${(st.payrollModels || []).map((p) => `<option value="${p.id}">${esc(p.label)}</option>`).join('')}</select></div>
-      <div class="fld"><label>Comp set (row tools only)</label><select id="nb-comp"><option value="">— none —</option>${st.compSets.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+      ${pick('nb-rent', 'Rent roll', 'GPR anchor, per-lease LTL, charges', 'rent_roll')}
+      ${pick('nb-pay', 'Payroll model', 'wages', 'payroll')}
     </div>
-    <p class="muted" style="font-size:11.5px; margin:8px 0 0">Defaults: every line = same month last year × the template's increase factor (admin 5%, maintenance 5%, reims 5%, trash 7%, utilities per Conservice forecast), October-actual lines flat, GPR from the rent roll (or October actual) × the template's monthly % changes, LTL burnoff by renewals, vacancy at the October %, mgmt fee at the Q4 actual %, interest and principal off the amortization schedule, payroll from the model. Review the Δ columns and adjust — nothing ties on its own.</p>` : `
+    <details style="margin-top:8px"><summary class="muted" style="font-size:12px; cursor:pointer">Use statements from a separate Monarch export instead of the template's</summary>
+      <div class="row" style="margin-top:6px">
+        ${pick('nb-py', 'Trailing-12 actuals', '', 'statement')}
+        ${pick('nb-cyb', 'Current-year budget', '', 'statement')}
+      </div>
+    </details>
+    <p class="muted" style="font-size:11.5px; margin:10px 0 0">Every line starts as the same month last year × the GRKS foundation factor (admin 5%, maintenance 10%, reims 5%, utilities 5%), October-actual lines flat, GPR off the rent roll, vacancy at the October %, mgmt fee at the Q4 %, debt off the amortization schedule, payroll from the model. Nothing ties on its own — review the Δ columns.</p>` : `
+    <div class="row">
+      <div class="fld"><label>Property</label><select id="nb-prop">${subjects.map((p) => `<option value="${p.code}">${p.code} — ${esc(p.name)}</option>`).join('')}</select></div>
+      <div class="fld"><label>Budget year</label><input id="nb-year" type="number" value="${nb.year || yearNow}" style="width:90px"></div>
+    </div>
     <div class="row" style="margin-top:8px">
-      <div class="fld"><label>UW snapshot (tie-out target)</label><select id="nb-uw"></select></div>
-      <div class="fld"><label>Rent snapshot (GPR anchor)</label><select id="nb-rent"></select></div>
-      <div class="fld"><label>Comp set (line distribution)</label><select id="nb-comp"><option value="">— none —</option>${st.compSets.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
-      <div class="fld"><label>Seller T12 (monthly shapes)</label><select id="nb-t12"></select></div>
-      <div class="fld"><label>Payroll model (wages)</label><select id="nb-pay"><option value="">— none —</option>${(st.payrollModels || []).map((p) => `<option value="${p.id}">${esc(p.label)}</option>`).join('')}</select></div>
-    </div>`}
+      ${pick('nb-uw', 'UW book', 'tie-out target', null)}
+      ${pick('nb-rent', 'Rent roll', 'GPR anchor', 'rent_roll')}
+    </div>
+    <div class="row" style="margin-top:8px">
+      ${pick('nb-comp', 'Comp set', 'line distribution', null)}
+      ${pick('nb-t12', 'Seller T12', 'monthly shapes', null)}
+      ${pick('nb-pay', 'Payroll model', 'wages', 'payroll')}
+    </div>
+    <p class="muted" style="font-size:11.5px; margin:8px 0 0">UW books, comp sets and seller statements are added on the Data page.</p>`}
     <div class="err" id="nb-err"></div>
-    <div class="row" style="margin-top:12px">
-      <button class="btn" id="nb-go">Create & generate</button>
+    <div class="row" style="margin-top:12px; justify-content:flex-end">
       <button class="btn sub" id="nb-x">Cancel</button>
-    </div>`;
+      <button class="btn" id="nb-go">Create &amp; generate</button>
+    </div>
+    <input type="file" id="nb-file" accept=".xlsx,.xls,.xlsm" style="display:none">`;
+  const $ = (id) => dlg.querySelector('#' + id);
+  const setSel = (id, opts, cur, fallback) => {
+    const e = $(id); if (!e) return;
+    e.innerHTML = `<option value="">— none —</option>` + opts;
+    const want = cur != null && [...e.options].some((o) => o.value === String(cur)) ? String(cur) : (fallback != null ? String(fallback) : '');
+    e.value = want;
+  };
+  const tplNote = () => {
+    const n = $('nb-tplnote'); if (!n) return;
+    const tpl = (st.templates || []).find((x) => String(x.id) === $('nb-tpl').value);
+    n.textContent = tpl
+      ? `Carries the trailing-12 actuals${tpl.actual_period ? ` (${tpl.actual_period})` : ''} and the ${tpl.budget_year - 1} budget${tpl.budget_period ? ` (${tpl.budget_period})` : ''} — nothing else to pull for this site.`
+      : 'No template on file for this property — upload its budgetYSR…xlsm (⬆) or pick a property that has one.';
+  };
   const fillSnaps = () => {
-    const code = dlg.querySelector('#nb-prop').value;
+    const code = $('nb-prop').value;
     const rents = st.rentSnapshots.filter((r) => r.property_code === code);
-    dlg.querySelector('#nb-rent').innerHTML = `<option value="">— none —</option>` + rents.map((r) => `<option value="${r.id}">${r.as_of ? new Date(r.as_of).toLocaleDateString() : ''} · mkt ${money(r.market_monthly)}/mo${r.units ? ` · ${r.units}u` : ''}</option>`).join('');
-    if (rents.length) dlg.querySelector('#nb-rent').value = rents[0].id;
-    if ((st.payrollModels || []).length) dlg.querySelector('#nb-pay').value = st.payrollModels[0].id;
+    setSel('nb-rent', rents.map((r) => `<option value="${r.id}">${r.as_of ? new Date(r.as_of).toLocaleDateString() : ''} · mkt ${money(r.market_monthly)}/mo${r.units ? ` · ${r.units}u` : ''}</option>`).join(''), nb.rent, rents[0]?.id);
+    setSel('nb-pay', (st.payrollModels || []).map((p) => `<option value="${p.id}">${esc(p.label)}</option>`).join(''), nb.pay, (st.payrollModels || [])[0]?.id);
     if (annual) {
-      const tpls = (st.templates || []).filter((t) => t.property_code === code);
-      const pys = (st.stmtSnapshots || []).filter((t) => t.property_code === code && t.kind === 'actual');
-      const cybs = (st.stmtSnapshots || []).filter((t) => t.property_code === code && t.kind === 'budget');
-      dlg.querySelector('#nb-tpl').innerHTML = `<option value="">— none —</option>` + tpls.map((t) => `<option value="${t.id}">${esc(t.label)} (${t.budget_year})</option>`).join('');
-      dlg.querySelector('#nb-py').innerHTML = `<option value="">— none —</option>` + pys.map((t) => `<option value="${t.id}">${esc(t.period || '')} · ${esc(t.label)}</option>`).join('');
-      dlg.querySelector('#nb-cyb').innerHTML = `<option value="">— none —</option>` + cybs.map((t) => `<option value="${t.id}">${esc(t.period || '')} · ${esc(t.label)}</option>`).join('');
-      if (tpls.length) { dlg.querySelector('#nb-tpl').value = tpls[0].id; dlg.querySelector('#nb-year').value = tpls[0].budget_year || yearNow; }
-      if (pys.length) dlg.querySelector('#nb-py').value = pys[0].id;
-      if (cybs.length) dlg.querySelector('#nb-cyb').value = cybs[0].id;
+      const tpls = (st.templates || []).filter((x) => x.property_code === code);
+      const pys = (st.stmtSnapshots || []).filter((x) => x.property_code === code && x.kind === 'actual');
+      const cybs = (st.stmtSnapshots || []).filter((x) => x.property_code === code && x.kind === 'budget');
+      setSel('nb-tpl', tpls.map((x) => `<option value="${x.id}">${esc(x.label)} (${x.budget_year})</option>`).join(''), nb.tpl, tpls[0]?.id);
+      setSel('nb-py', pys.map((x) => `<option value="${x.id}">${esc(x.period || '')} · ${esc(x.label)}</option>`).join(''), nb.py, null);
+      setSel('nb-cyb', cybs.map((x) => `<option value="${x.id}">${esc(x.period || '')} · ${esc(x.label)}</option>`).join(''), nb.cyb, null);
+      const tpl = tpls.find((x) => String(x.id) === $('nb-tpl').value);
+      if (tpl && !nb.year) $('nb-year').value = tpl.budget_year || yearNow;
+      tplNote();
     } else {
       const uws = st.uwSnapshots.filter((u) => u.property_code === code);
-      const t12s = (st.t12Snapshots || []).filter((t) => t.property_code === code);
-      dlg.querySelector('#nb-uw').innerHTML = `<option value="">— none —</option>` + uws.map((u) => `<option value="${u.id}">${esc(u.label)} (NOI ${money(u.noi)})</option>`).join('');
-      dlg.querySelector('#nb-t12').innerHTML = `<option value="">— none —</option>` + t12s.map((t) => `<option value="${t.id}">${esc(t.label)} (${esc(t.period)})</option>`).join('');
-      if (uws.length) dlg.querySelector('#nb-uw').value = uws[0].id;
-      if (t12s.length) dlg.querySelector('#nb-t12').value = t12s[0].id;
+      const t12s = (st.t12Snapshots || []).filter((x) => x.property_code === code);
+      setSel('nb-uw', uws.map((u) => `<option value="${u.id}">${esc(u.label)} (NOI ${money(u.noi)})</option>`).join(''), nb.uw, uws[0]?.id);
+      setSel('nb-t12', t12s.map((x) => `<option value="${x.id}">${esc(x.label)} (${esc(x.period)})</option>`).join(''), nb.t12, t12s[0]?.id);
+      setSel('nb-comp', st.compSets.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join(''), nb.comp, null);
     }
   };
+  // remember the form so an inline upload's re-render keeps what was chosen
+  const remember = () => {
+    const v = (id) => { const e = $(id); return e && e.value ? Number(e.value) : null; };
+    Object.assign(nb, { prop: $('nb-prop').value, year: Number($('nb-year').value) || null, tpl: v('nb-tpl'), rent: v('nb-rent'), pay: v('nb-pay'), py: v('nb-py'), cyb: v('nb-cyb'), uw: v('nb-uw'), t12: v('nb-t12'), comp: v('nb-comp') });
+  };
+  // default to the property whose template was added most recently (annual) — the list is newest-first
+  const firstTpl = annual ? (st.templates || []).find((x) => subjects.some((p) => p.code === x.property_code)) : null;
+  if (nb.prop && subjects.some((p) => p.code === nb.prop)) $('nb-prop').value = nb.prop;
+  else if (firstTpl) $('nb-prop').value = firstTpl.property_code;
   fillSnaps();
-  dlg.querySelector('#nb-prop').addEventListener('change', fillSnaps);
-  dlg.querySelectorAll('input[name="nb-type"]').forEach((r) => r.addEventListener('change', () => { S.newType = r.value; newBudgetDialog(); }));
-  dlg.querySelector('#nb-x').addEventListener('click', () => dlg.close());
-  dlg.querySelector('#nb-go').addEventListener('click', async () => {
+  $('nb-prop').addEventListener('change', () => { nb.tpl = nb.rent = nb.py = nb.cyb = nb.uw = nb.t12 = null; nb.year = null; fillSnaps(); });
+  if ($('nb-tpl')) $('nb-tpl').addEventListener('change', () => { const tpl = (st.templates || []).find((x) => String(x.id) === $('nb-tpl').value); if (tpl) $('nb-year').value = tpl.budget_year || yearNow; tplNote(); });
+  dlg.querySelectorAll('input[name="nb-type"]').forEach((r) => r.addEventListener('change', () => { S.newType = r.value; S.nb = null; newBudgetDialog(); }));
+  $('nb-x').addEventListener('click', () => dlg.close());
+  // inline uploads: parse → save → re-render the dialog with the new file selected
+  dlg.querySelectorAll('[data-up]').forEach((btn) => btn.addEventListener('click', () => {
+    const file = $('nb-file');
+    file.onchange = async () => {
+      const f = file.files[0]; file.value = '';
+      if (!f) return;
+      remember();
+      btn.disabled = true; btn.textContent = '…'; $('nb-err').textContent = '';
+      try {
+        const got = await dlgUpload(btn.dataset.up, f, nb.prop);
+        await refreshState();
+        if (got.propertyCode) nb.prop = got.propertyCode;
+        if (got.templateId) { nb.tpl = got.templateId; nb.year = got.budgetYear || nb.year; }
+        if (got.rentSnapshotId) nb.rent = got.rentSnapshotId;
+        if (got.payrollModelId) nb.pay = got.payrollModelId;
+        if (got.pyStmtId && btn.dataset.for === 'nb-py') nb.py = got.pyStmtId;
+        if (got.cyBudgetStmtId && btn.dataset.for === 'nb-cyb') nb.cyb = got.cyBudgetStmtId;
+        newBudgetDialog();
+        const err = got.warning ? got.warning : '';
+        if (err) document.getElementById('newdlg').querySelector('#nb-err').textContent = err;
+      } catch (e) { btn.disabled = false; btn.textContent = '⬆'; $('nb-err').textContent = e.message; }
+    };
+    file.click();
+  }));
+  $('nb-go').addEventListener('click', async () => {
     try {
-      const v = (id) => { const e = dlg.querySelector(id); return e ? (Number(e.value) || null) : null; };
+      const v = (id) => { const e = $(id); return e ? (Number(e.value) || null) : null; };
+      if (annual && !v('nb-tpl') && !v('nb-py')) throw new Error('Pick or upload the Yardi budget template (or a trailing-12 statement) first — it is the PY base every line builds on.');
       const bv = await POST('/budgets', {
-        propertyCode: dlg.querySelector('#nb-prop').value,
-        year: Number(dlg.querySelector('#nb-year').value),
+        propertyCode: $('nb-prop').value,
+        year: Number($('nb-year').value),
         budgetType: annual ? 'annual' : 'new_acq',
-        uwSnapshotId: v('#nb-uw'), compSetId: v('#nb-comp'), rentSnapshotId: v('#nb-rent'),
-        t12SnapshotId: v('#nb-t12'), payrollModelId: v('#nb-pay'),
-        templateId: v('#nb-tpl'), pyStmtId: v('#nb-py'), cyBudgetStmtId: v('#nb-cyb'),
+        uwSnapshotId: v('nb-uw'), compSetId: v('nb-comp'), rentSnapshotId: v('nb-rent'),
+        t12SnapshotId: v('nb-t12'), payrollModelId: v('nb-pay'),
+        templateId: v('nb-tpl'), pyStmtId: v('nb-py'), cyBudgetStmtId: v('nb-cyb'),
       });
-      dlg.close();
+      dlg.close(); S.nb = null;
       await refreshState();
       S.bv = bv; S.view = 'editor'; render();
-    } catch (e) { dlg.querySelector('#nb-err').textContent = e.message; }
+    } catch (e) { $('nb-err').textContent = e.message; }
   });
   if (!dlg.open) dlg.showModal();
+}
+
+/* One-file upload from inside a dialog: parse, map to a property, save.
+   Returns the ids created (propertyCode, templateId, pyStmtId, cyBudgetStmtId,
+   rentSnapshotId, payrollModelId) so the caller can select them. */
+async function dlgUpload(kind, file, currentProp) {
+  const fd = new FormData();
+  const known = (code) => code && S.state.properties.some((p) => p.code === code);
+  if (kind === 'yardi_template' || kind === 'statement') {
+    fd.append('files', file);
+    const parsed = await api(`/uploads/parse-many?kind=${kind}`, { method: 'POST', body: fd });
+    const f = parsed.files[0];
+    if (f.error) throw new Error(f.error);
+    let code = f.propertyGuess || guessProp(f.template?.name || f.statement?.label);
+    if (kind === 'statement' && !known(code)) code = currentProp;           // a statement is for the property being budgeted
+    if (!code) throw new Error('Could not tell which property this file is for');
+    const resp = await POST('/uploads/apply', { kind, filename: file.name, payload: parsed, mappings: [{ index: 0, propertyCode: code }], relink: false });
+    const c = resp.created[0] || {};
+    return { propertyCode: c.propertyCode || code, templateId: c.templateId, pyStmtId: c.pyStmtId, cyBudgetStmtId: c.cyBudgetStmtId, budgetYear: f.template?.budgetYear };
+  }
+  fd.append('file', file);
+  const parsed = await api(`/uploads/parse?kind=${kind}`, { method: 'POST', body: fd });
+  if (kind === 'rent_roll') {
+    // the roll covers every property — save each one the chart knows, select the current one
+    const mappings = parsed.properties.map((p) => ({ sourceCode: p.code, sourceName: p.name, propertyCode: known(p.code) ? p.code : guessProp(p.name) || null })).filter((m) => m.propertyCode);
+    if (!mappings.length) throw new Error('No property in this rent roll matches the chart — upload it on the Data page to map by hand');
+    const resp = await POST('/uploads/apply', { kind, filename: file.name, payload: parsed, mappings, relink: false });
+    const mine = (resp.created || []).find((c) => c.propertyCode === currentProp);
+    return { rentSnapshotId: mine?.id, warning: mine ? '' : `Rent roll saved for ${resp.created.length} propert${resp.created.length === 1 ? 'y' : 'ies'}, but ${currentProp} was not in it.` };
+  }
+  if (kind === 'payroll') {
+    const resp = await POST('/uploads/apply', { kind, filename: file.name, payload: parsed, name: parsed.payroll?.label || file.name.replace(/\.xlsx?$/i, ''), relink: false });
+    return { payrollModelId: resp.payrollModelId };
+  }
+  throw new Error(`Cannot upload a ${kind} here`);
 }
 
 async function openBudget(id) {
@@ -395,50 +516,93 @@ async function openBudget(id) {
   render();
 }
 
-/* ---------------- uploads ---------------- */
+/* ---------------- data (uploads) ---------------- */
+const UPLOAD_KINDS = [
+  ['yardi_template', 'Yardi budget template (budgetYSR…xlsm)'],
+  ['rent_roll', 'Rent roll (Yardi summary, unit detail or lease charges)'],
+  ['statement', 'Monarch 12 Month Statement / 12 Month Budget'],
+  ['payroll', 'ND payroll model (wage aggregates)'],
+  ['uw_book', 'UW book model (.xlsx)'],
+  ['comparison', 'Property comparison (comp set)'],
+  ['seller_t12', 'Seller T12 statement (monthly actuals)'],
+];
 function renderUploads(el) {
   const u = S.upload;
+  const files = u.files || [];
+  const multi = u.kind === 'yardi_template' || u.kind === 'statement';
   el.innerHTML = `
     <div class="card">
-      <h2>Upload data</h2>
-      <div class="row">
-        <div class="fld"><label>What is this file?</label>
-          <select id="up-kind">
-            <option value="uw_book" ${u.kind === 'uw_book' ? 'selected' : ''}>UW book model (.xlsx)</option>
-            <option value="rent_roll" ${u.kind === 'rent_roll' ? 'selected' : ''}>Rent roll (Yardi summary or OneSite detail)</option>
-            <option value="comparison" ${u.kind === 'comparison' ? 'selected' : ''}>Property comparison (comp set)</option>
-            <option value="seller_t12" ${u.kind === 'seller_t12' ? 'selected' : ''}>Seller T12 statement (monthly actuals)</option>
-            <option value="payroll" ${u.kind === 'payroll' ? 'selected' : ''}>ND payroll model (wage aggregates)</option>
-            <option value="yardi_template" ${u.kind === 'yardi_template' ? 'selected' : ''}>Yardi budget template (budgetYSR…xlsm) — annual budgets</option>
-            <option value="statement" ${u.kind === 'statement' ? 'selected' : ''}>Monarch 12 Month Statement / 12 Month Budget — annual budgets</option>
-          </select></div>
-        <div class="fld"><label>File${u.kind === 'yardi_template' || u.kind === 'statement' ? 's (one per property)' : ''}</label><input type="file" id="up-file" accept=".xlsx,.xls,.xlsm" ${u.kind === 'yardi_template' || u.kind === 'statement' ? 'multiple' : ''}></div>
-        <button class="btn" id="up-parse" ${u.busy ? 'disabled' : ''}>${u.busy ? 'Parsing…' : 'Parse'}</button>
+      <h2>Add data</h2>
+      <div class="drop" id="drop" tabindex="0">
+        <div><b>Drop files here</b> or <span class="link">choose files</span></div>
+        <div class="muted" style="font-size:11.5px; margin-top:4px">Yardi budget templates · rent rolls · Monarch statements · payroll model · UW books · comp sets — the type is recognized from the file. Several templates or statements at once is fine.</div>
+        <input type="file" id="up-file" accept=".xlsx,.xls,.xlsm" multiple style="display:none">
       </div>
-      ${u.kind === 'yardi_template' ? '<p class="muted" style="font-size:11.5px">Everything in the template is read EXCEPT the pasted payroll roster (restricted — individual compensation never enters the tool; payroll comes from the regional payroll model). PriorFinancials become the trailing-12 actuals + current-year budget; the debt schedule, fee matrix, Conservice utility forecasts, corporate suggestions and lease expirations drive the template rules.</p>' : ''}
+      ${files.length ? `<div class="row" style="margin-top:10px; align-items:center">
+        <span>${files.length === 1 ? esc(files[0].name) : `${files.length} files`}</span>
+        <span class="muted">read as</span>
+        <select id="up-kind">${UPLOAD_KINDS.map(([k, l]) => `<option value="${k}" ${u.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <button class="btn sub" id="up-parse" ${u.busy ? 'disabled' : ''}>${u.busy ? 'Reading…' : 'Read again'}</button>
+        <button class="rb" id="up-clear" title="Forget these files">✕</button>
+      </div>` : ''}
+      ${u.kind === 'yardi_template' && files.length ? '<p class="muted" style="font-size:11.5px">Everything in the template is read EXCEPT the pasted payroll roster (restricted — individual compensation never enters the tool). Each file saves the trailing-12 actuals, the current-year budget and the template facts (debt schedule, fee matrix, Conservice forecasts, corporate suggestions, lease expirations).</p>' : ''}
       ${u.err ? `<div class="err">${esc(u.err)}</div>` : ''}
       ${u.msg ? `<div class="ok">${esc(u.msg)}</div>` : ''}
       <div id="up-preview"></div>
-    </div>`;
-  el.querySelector('#up-kind').addEventListener('change', (e) => { u.kind = e.target.value; u.parsed = null; u.err = ''; u.msg = ''; render(); });
-  el.querySelector('#up-parse').addEventListener('click', async () => {
-    const files = [...el.querySelector('#up-file').files];
-    if (!files.length) { u.err = 'Choose a file first'; render(); return; }
+    </div>
+    <div class="card">
+      <h2>On file</h2>
+      ${dataOnFileHtml(S.state)}
+    </div>
+    <dialog class="assump" id="pm-dlg"></dialog>`;
+  const drop = el.querySelector('#drop');
+  const input = el.querySelector('#up-file');
+  drop.addEventListener('click', () => input.click());
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); takeFiles([...e.dataTransfer.files]); });
+  input.addEventListener('change', () => { takeFiles([...input.files]); input.value = ''; });
+  const parse = async () => {
+    const fs = S.upload.files || [];
+    if (!fs.length) return;
     u.busy = true; u.err = ''; u.msg = ''; render();
     try {
       const fd = new FormData();
       if (u.kind === 'yardi_template' || u.kind === 'statement') {
-        for (const f of files) fd.append('files', f);
+        for (const f of fs) fd.append('files', f);
         u.parsed = await api(`/uploads/parse-many?kind=${u.kind}`, { method: 'POST', body: fd });
       } else {
-        fd.append('file', files[0]);
+        if (fs.length > 1) throw new Error(`A ${UPLOAD_KINDS.find((k) => k[0] === u.kind)[1]} is read one file at a time — drop the others separately`);
+        fd.append('file', fs[0]);
         u.parsed = await api(`/uploads/parse?kind=${u.kind}`, { method: 'POST', body: fd });
       }
-      u.err = '';
     } catch (e) { u.err = e.message; u.parsed = null; }
     u.busy = false; render();
-  });
+  };
+  async function takeFiles(fs) {
+    if (!fs.length) return;
+    u.files = fs; u.parsed = null; u.err = ''; u.msg = ''; u.busy = true; render();
+    try {
+      const fd = new FormData();
+      for (const f of fs) fd.append('files', f);
+      const det = await api('/uploads/detect', { method: 'POST', body: fd });
+      const kinds = [...new Set(det.files.map((f) => f.kind).filter(Boolean))];
+      if (kinds.length === 1 && det.files.every((f) => f.kind)) { u.kind = kinds[0]; await parse(); return; }
+      u.busy = false;
+      u.err = kinds.length > 1
+        ? `These files are different types (${kinds.join(', ')}) — drop one type at a time.`
+        : `Could not recognize ${det.files.filter((f) => !f.kind).map((f) => f.name || f.filename).join(', ')} — pick what it is and press Read again.`;
+      render();
+    } catch (e) { u.busy = false; u.err = e.message; render(); }
+  }
+  const kindSel = el.querySelector('#up-kind');
+  if (kindSel) kindSel.addEventListener('change', (e) => { u.kind = e.target.value; u.parsed = null; u.err = ''; parse(); });
+  const parseBtn = el.querySelector('#up-parse');
+  if (parseBtn) parseBtn.addEventListener('click', parse);
+  const clearBtn = el.querySelector('#up-clear');
+  if (clearBtn) clearBtn.addEventListener('click', () => { u.files = []; u.parsed = null; u.err = ''; u.msg = ''; render(); });
   if (u.parsed) renderUploadPreview(el.querySelector('#up-preview'), u.parsed);
+  wireDataOnFile(el);
 }
 
 function propOptions(selected) {
@@ -588,25 +752,12 @@ function renderEditor(el) {
     <div class="row" style="justify-content:space-between; margin-bottom:10px">
       <h2 style="margin:0">${esc(prop.name)} <span class="muted">(${esc(b.property_code)}) — ${bv.annual ? `${b.year} annual budget` : `Year 1 budget · ${windowLabel}`}</span>${bv.annual ? (() => { const t12 = (bv.refs || []).find((r) => r.key === 'actual'); return t12 ? ` <span class="badge" title="The property's own trailing-12 actuals drive every PY-based line; last actual month = ${MONTHS[(bv.lastMonth || 10) - 1]}">T12 ${esc(t12.period)}</span>` : ' <span class="badge" style="color:var(--warn)" title="No trailing-12 statement linked — upload the Yardi budget template or a 12 Month Statement">⚠ no T12 statement</span>'; })() + (bv.template ? ` <span class="badge" title="Yardi budget template on file: debt schedule, fee matrix, Conservice utility forecasts, corporate suggestions, lease expirations">template ${esc(String(bv.template.budgetYear || ''))}</span>` : '') : ''}${acts.length ? ` <span class="badge" title="Closed months budgeted 1:1 to posted actuals">✓ actuals: ${acts.map((a) => esc(a.period)).join(', ')}</span>` : ''}</h2>
       <div class="row">
-        <div class="fld"><label>CSV: zero calendar months through</label>
-          <select id="ex-cutoff"><option value="0">— none —</option>${MONTHS.slice(0, 11).map((m, i) => `<option value="${i + 1}">${m}</option>`).join('')}</select></div>
-        <button class="btn sub" id="ex-csv">⬇ ${b.year} Yardi CSV${start > 1 ? ` (${labels[0]}–Dec)` : ''}</button>
-        ${start > 1 ? `<button class="btn sub" id="ex-csv2">⬇ ${b.year + 1} Yardi CSV (Jan–${labels[11].split('-')[0]})</button>` : ''}
-        <button class="btn sub" id="ex-xlsx">⬇ Review workbook</button>
-        <button class="btn" id="ex-all" title="Download the ${b.year} Yardi CSV, the ${b.year + 1} Yardi CSV and the Budget Draft workbook in one go — the budget is captured as a save point">⬇ All exports</button>
-        <button class="btn sub" id="imp-draft" title="Upload an EDITED Budget Draft workbook — the current state is saved as its own iteration first, then every changed month imports as an override (IMP chip); Summary D27 updates capital">⬆ Import draft…</button>
-        <input type="file" id="imp-file" accept=".xlsx" style="display:none">
-        <button class="btn sub" id="act-btn" title="Partial-month rule: after a month closes, upload its Yardi Property Comparison (Cash) and that month is budgeted 1:1 to what posted — locked through recalcs and exports">✓ Actualize month…${acts.length ? ` (${acts.length})` : ''}</button>
-        <button class="btn sub" id="recalc">↻ Recalc</button>
         <button class="btn sub" id="undo-btn" ${S.undo.budgetId === b.id && S.undo.stack.length ? '' : 'disabled'}>↶ Undo${S.undo.budgetId === b.id && S.undo.stack.length ? ` (${S.undo.stack.length})` : ''}</button>
-        <button class="btn sub" id="sp-btn" title="Named, permanent save points for this budget — capture the current iteration, restore any earlier one (a safety point is captured before every restore)">⎘ Save points${(bv.savePoints || []).length ? ` (${bv.savePoints.length})` : ''}</button>
-        <button class="btn sub" id="cols-btn">▦ Columns</button>
-        <button class="btn sub" id="side-btn" title="Hide/show the side panel (trend, tie-out, data sources) — frees ~430px for the month columns">${localStorage.getItem('bt-side') === '0' ? '⏵ Panel' : '⏴ Panel'}</button>
-        <button class="btn sub" id="round-btn" title="Round selected lines' months to a multiple">⌁ MROUND…</button>
-        <button class="btn sub" id="copyfx-btn" title="Replay another budget's named formulas here, re-evaluated on this property's own data">⧉ Copy formulas…</button>
+        <button class="btn sub" id="recalc" title="Re-run every formula line on the current inputs (overrides kept)">↻ Recalc</button>
+        <button class="btn sub" id="more-btn">⋯ More ▾</button>
+        <button class="btn sub" id="ex-btn">⬇ Export ▾</button>
         <button class="btn" id="assump-open">⚙ Assumptions</button>
-        <label style="align-self:center"><input type="checkbox" id="showzero" ${S.showZero ? 'checked' : ''}> show zero rows</label>
-        <label style="align-self:center" title="Show each total row's monthly % of Year 1"><input type="checkbox" id="showdist" ${S.showDist ? 'checked' : ''}> % dist</label>
+        <input type="file" id="imp-file" accept=".xlsx" style="display:none">
       </div>
     </div>
     <div class="kpis">
@@ -620,18 +771,13 @@ function renderEditor(el) {
     <div class="editor${localStorage.getItem('bt-side') === '0' ? ' noside' : ''}">
       <div>
         <div class="legend">
-          <b style="color:var(--dim)">Formula fills:</b>
-          <span><span class="dot drv-rr"></span>Rent roll / income</span>
-          <span><span class="dot drv-uw"></span>UW tie</span>
-          <span><span class="dot drv-comp"></span>Minot comps</span>
-          <span><span class="dot drv-pay"></span>Payroll model</span>
-          <span><span class="dot drv-fee"></span>% of income</span>
-          <span><span class="dot drv-int"></span>Interest</span>
-          ${bv.annual ? `<span><span class="dot drv-base"></span>Own T12 × factor (template rule)</span>
-          <span><span class="dot drv-corp"></span>Corporate rate / suggestion</span>` : `<span><span class="dot drv-t12"></span>Seller stmt / recovery</span>`}
-          <span><span class="dot drv-man"></span>Manual override</span>
-          <span><span class="dot drv-sp"></span>Special projects (enter per site)</span>
-          <span><span class="dot drv-act"></span>Posted actuals (locked month)</span>
+          ${(() => {
+            const used = new Set(bv.lines.filter((l) => l.months && l.months.some((v) => v)).map((l) => drvMeta(l).cls));
+            if (acts.length) used.add('drv-act');
+            const items = [['drv-rr', 'Rent roll / income'], ['drv-uw', 'UW tie'], ['drv-comp', 'Minot comps'], ['drv-pay', 'Payroll model'], ['drv-fee', '% of income'], ['drv-int', bv.annual ? 'Debt schedule / zero' : 'Interest'],
+              ['drv-base', 'Own T12 × factor (foundation rule)'], ['drv-corp', 'Corporate rate / suggestion'], ['drv-t12', 'Seller stmt / recovery'], ['drv-man', 'Manual override'], ['drv-act', 'Posted actuals (locked month)']];
+            return items.filter(([c]) => used.has(c)).map(([c, lb]) => `<span><span class="dot ${c}"></span>${lb}</span>`).join('');
+          })()}
           <span class="muted">· click a row's chip to change its formula</span>
           ${(() => {
             const ov = bv.lines.filter((l) => l.override);
@@ -672,21 +818,13 @@ function renderEditor(el) {
     <dialog class="assump" id="act-dlg"></dialog>
     <dialog class="assump" id="actcsv-dlg"></dialog>`;
 
-  document.getElementById('ex-csv').addEventListener('click', () => {
-    const c = document.getElementById('ex-cutoff').value;
-    window.open(`/api/budgets/${b.id}/export.csv?calYear=${b.year}&cutoff=${c}`, '_blank');
-  });
-  const ex2 = document.getElementById('ex-csv2');
-  if (ex2) ex2.addEventListener('click', () => {
-    const c = document.getElementById('ex-cutoff').value;
-    window.open(`/api/budgets/${b.id}/export.csv?calYear=${b.year + 1}&cutoff=${c}`, '_blank');
-  });
-  document.getElementById('ex-xlsx').addEventListener('click', () => window.open(`/api/budgets/${b.id}/export.xlsx`, '_blank'));
-  document.getElementById('ex-all').addEventListener('click', async () => {
-    const c = document.getElementById('ex-cutoff').value;
+  // exports: cutoff (zero calendar months through) lives in the menu, remembered per session
+  S.exCutoff = S.exCutoff || 0;
+  const exportCsv = (yr) => window.open(`/api/budgets/${b.id}/export.csv?calYear=${yr}&cutoff=${S.exCutoff}`, '_blank');
+  const exportAll = async () => {
     const urls = [
-      `/api/budgets/${b.id}/export.csv?calYear=${b.year}&cutoff=${c}`,
-      ...(start > 1 ? [`/api/budgets/${b.id}/export.csv?calYear=${b.year + 1}&cutoff=${c}`] : []),
+      `/api/budgets/${b.id}/export.csv?calYear=${b.year}&cutoff=${S.exCutoff}`,
+      ...(start > 1 ? [`/api/budgets/${b.id}/export.csv?calYear=${b.year + 1}&cutoff=${S.exCutoff}`] : []),
       `/api/budgets/${b.id}/export.xlsx`,
     ];
     for (const u2 of urls) {
@@ -697,8 +835,54 @@ function renderEditor(el) {
     }
     S.bv = await GET(`/budgets/${b.id}`);   // pick up the export save point
     render();
+  };
+  document.getElementById('ex-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    popMenu(e.currentTarget, `
+      <div class="rm-head">Export</div>
+      <button data-x="all" title="The ${b.year} Yardi CSV${start > 1 ? `, the ${b.year + 1} Yardi CSV` : ''} and the Budget Draft workbook in one go — the budget is captured as a save point"><b>⬇ All exports</b></button>
+      <button data-x="csv1">⬇ ${b.year} Yardi CSV${start > 1 ? ` (${labels[0]}–Dec)` : ''}</button>
+      ${start > 1 ? `<button data-x="csv2">⬇ ${b.year + 1} Yardi CSV (Jan–${labels[11].split('-')[0]})</button>` : ''}
+      <button data-x="xlsx">⬇ Review workbook (Budget Draft)</button>
+      <label data-keep style="display:flex; gap:6px; align-items:center">CSV: zero months through <select data-cutoff style="font-size:12px"><option value="0">— none —</option>${MONTHS.slice(0, 11).map((m, i) => `<option value="${i + 1}" ${S.exCutoff === i + 1 ? 'selected' : ''}>${m}</option>`).join('')}</select></label>
+      <div class="rm-head" style="margin-top:4px">Bring back</div>
+      <button data-x="imp" title="Upload an EDITED Budget Draft workbook — the current state is saved as its own iteration first, then every changed month imports as an override (IMP chip); Summary D27 updates capital">⬆ Import edited draft…</button>
+      <button data-x="act" title="Partial-month rule: after a month closes, upload its Yardi Property Comparison (Cash) and that month is budgeted 1:1 to what posted — locked through recalcs and exports">✓ Actualize a closed month…${acts.length ? ` (${acts.length})` : ''}</button>`, (menu) => {
+      menu.querySelector('[data-cutoff]').addEventListener('change', (ev) => { S.exCutoff = Number(ev.target.value) || 0; });
+      menu.querySelector('[data-x="all"]').addEventListener('click', exportAll);
+      menu.querySelector('[data-x="csv1"]').addEventListener('click', () => exportCsv(b.year));
+      const c2 = menu.querySelector('[data-x="csv2"]'); if (c2) c2.addEventListener('click', () => exportCsv(b.year + 1));
+      menu.querySelector('[data-x="xlsx"]').addEventListener('click', () => window.open(`/api/budgets/${b.id}/export.xlsx`, '_blank'));
+      menu.querySelector('[data-x="imp"]').addEventListener('click', () => document.getElementById('imp-file').click());
+      menu.querySelector('[data-x="act"]').addEventListener('click', () => openActualize(b));
+    });
   });
-  document.getElementById('imp-draft').addEventListener('click', () => document.getElementById('imp-file').click());
+  document.getElementById('more-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const anchor = e.currentTarget;
+    const ov = bv.lines.filter((l) => l.override);
+    const fixed = ov.filter((l) => !l.driver || !l.driver.method || l.driver.method === 'manual' || l.driver.method === 'setTotal').length;
+    const sideOn = localStorage.getItem('bt-side') !== '0';
+    popMenu(anchor, `
+      <button data-x="sp" title="Named, permanent save points for this budget — capture the current iteration, restore any earlier one">⎘ Save points${(bv.savePoints || []).length ? ` (${bv.savePoints.length})` : ''}</button>
+      <button data-x="round" title="Round selected lines' months to a multiple">⌁ MROUND lines…</button>
+      <button data-x="copy" title="Replay another budget's named formulas here, re-evaluated on this property's own data">⧉ Copy formulas from another budget…</button>
+      ${ov.length ? `<button data-x="ovr" title="Audit this budget's overridden lines — release old MROUND-locks back to live formulas">🔓 Overrides: ${ov.length - fixed} formula · ${fixed} fixed</button>` : ''}
+      <div class="rm-head" style="margin-top:4px">View</div>
+      <button data-x="cols">▦ Columns…</button>
+      <button data-x="side">${sideOn ? '⏵ Hide side panel' : '⏴ Show side panel'}</button>
+      <label><input type="checkbox" data-x="zero" ${S.showZero ? 'checked' : ''}> Show zero rows</label>
+      <label title="Show each total row's monthly % of the year"><input type="checkbox" data-x="dist" ${S.showDist ? 'checked' : ''}> % distribution on totals</label>`, (menu) => {
+      menu.querySelector('[data-x="sp"]').addEventListener('click', () => openSavePoints(b));
+      menu.querySelector('[data-x="round"]').addEventListener('click', () => openRoundDialog(b));
+      menu.querySelector('[data-x="copy"]').addEventListener('click', () => openCopyFormulas(b));
+      const o = menu.querySelector('[data-x="ovr"]'); if (o) o.addEventListener('click', () => openOverridesAudit(b));
+      menu.querySelector('[data-x="cols"]').addEventListener('click', () => setTimeout(() => openColsMenu(anchor, labels), 0));
+      menu.querySelector('[data-x="side"]').addEventListener('click', () => { localStorage.setItem('bt-side', sideOn ? '0' : '1'); render(); });
+      menu.querySelector('[data-x="zero"]').addEventListener('change', (ev) => { S.showZero = ev.target.checked; render(); });
+      menu.querySelector('[data-x="dist"]').addEventListener('change', (ev) => { S.showDist = ev.target.checked; localStorage.setItem('bt-dist', S.showDist ? '1' : '0'); render(); });
+    });
+  });
   document.getElementById('imp-file').addEventListener('change', async (e) => {
     const f = e.target.files[0];
     if (!f) return;
@@ -714,15 +898,7 @@ function renderEditor(el) {
     e.target.value = '';
   });
   document.getElementById('recalc').addEventListener('click', async () => { pushUndo(); S.bv = await POST(`/budgets/${b.id}/recalc`); render(); });
-  document.getElementById('showzero').addEventListener('change', (e) => { S.showZero = e.target.checked; render(); });
-  document.getElementById('showdist').addEventListener('change', (e) => { S.showDist = e.target.checked; localStorage.setItem('bt-dist', S.showDist ? '1' : '0'); render(); });
   document.getElementById('undo-btn').addEventListener('click', () => doUndo(b.id));
-  document.getElementById('round-btn').addEventListener('click', () => openRoundDialog(b));
-  document.getElementById('copyfx-btn').addEventListener('click', () => openCopyFormulas(b));
-  const ovrBtn = document.getElementById('ovr-btn');
-  if (ovrBtn) ovrBtn.addEventListener('click', () => openOverridesAudit(b));
-  document.getElementById('sp-btn').addEventListener('click', () => openSavePoints(b));
-  document.getElementById('act-btn').addEventListener('click', () => openActualize(b));
   // condensed section headers: click toggles, choice is locked in localStorage
   el.querySelectorAll('tr.header[data-sec]').forEach((tr) => tr.addEventListener('click', () => {
     const sec = tr.dataset.sec;
@@ -740,7 +916,6 @@ function renderEditor(el) {
     S.bv = await PUT(`/budgets/${b.id}`, body);
     render();
   }));
-  document.getElementById('cols-btn').addEventListener('click', (e) => { e.stopPropagation(); openColsMenu(e.currentTarget, labels); });
   // annual: which reference the tie-out compares to (+ typed targets)
   const refSel = el.querySelector('[data-refsrc]');
   if (refSel) refSel.addEventListener('change', async () => { pushUndo(); S.bv = await PUT(`/budgets/${b.id}`, { inputs: { refSource: refSel.value } }); render(); });
@@ -750,10 +925,6 @@ function renderEditor(el) {
     t[box.dataset.target] = Number.isFinite(v) ? v : null;
     pushUndo(); S.bv = await PUT(`/budgets/${b.id}`, { inputs: { targets: t } }); render();
   }));
-  document.getElementById('side-btn').addEventListener('click', () => {
-    localStorage.setItem('bt-side', localStorage.getItem('bt-side') === '0' ? '1' : '0');
-    render();
-  });
   el.querySelectorAll('.trend-chip').forEach((chip) => chip.addEventListener('click', () => {
     const sel = trendSeriesSel();
     if (sel.has(chip.dataset.trend)) sel.delete(chip.dataset.trend); else sel.add(chip.dataset.trend);
@@ -1344,19 +1515,25 @@ function dataLinksHtml(bv) {
   const st = S.state, b = bv.budget;
   const own = (list) => list.filter((x) => !x.property_code || x.property_code === b.property_code);
   const stale = (list, cur) => cur && list.length && Number(list[0].id) !== Number(cur); // list is newest-first
+  // annual: the template's own two statements are implied — only list them
+  // separately when the budget points somewhere else (a Monarch export)
+  const tpl = (st.templates || []).find((x) => Number(x.id) === Number(b.template_id));
+  const stmtsFromTpl = tpl && Number(tpl.py_stmt_id) === Number(b.py_stmt_id) && Number(tpl.cy_budget_stmt_id) === Number(b.cy_budget_stmt_id);
   const LINKS = bv.annual ? [
-    { key: 'templateId', cur: b.template_id, label: 'Yardi budget template', list: own(st.templates || []), name: (x) => `${x.label} (${x.budget_year})` },
-    { key: 'pyStmtId', cur: b.py_stmt_id, label: 'Trailing-12 actuals', list: own((st.stmtSnapshots || []).filter((x) => x.kind === 'actual')), name: (x) => `${x.period || ''} · ${x.label}` },
-    { key: 'cyBudgetStmtId', cur: b.cy_budget_stmt_id, label: 'Current-year budget', list: own((st.stmtSnapshots || []).filter((x) => x.kind === 'budget')), name: (x) => `${x.period || ''} · ${x.label}` },
+    { key: 'templateId', cur: b.template_id, label: 'Yardi budget template', list: own(st.templates || []), name: (x) => `${x.label} (${x.budget_year})`,
+      note: stmtsFromTpl ? `T12 actuals${tpl.actual_period ? ` ${tpl.actual_period}` : ''} and CY budget come from this template` : '' },
+    ...(stmtsFromTpl ? [] : [
+      { key: 'pyStmtId', cur: b.py_stmt_id, label: 'Trailing-12 actuals', list: own((st.stmtSnapshots || []).filter((x) => x.kind === 'actual')), name: (x) => `${x.period || ''} · ${x.label}` },
+      { key: 'cyBudgetStmtId', cur: b.cy_budget_stmt_id, label: 'Current-year budget', list: own((st.stmtSnapshots || []).filter((x) => x.kind === 'budget')), name: (x) => `${x.period || ''} · ${x.label}` },
+    ]),
     { key: 'rentSnapshotId', cur: b.rent_snapshot_id, label: 'Rent roll (GPR anchor, per-lease LTL, charges)', list: own(st.rentSnapshots), name: (x) => `${x.as_of ? new Date(x.as_of).toLocaleDateString() : '#' + x.id} · ${x.units || '?'}u` },
     { key: 'payrollModelId', cur: b.payroll_model_id, label: `Payroll model${b.payroll_model_id && !bv.payrollWages ? ' <span class="warnflag" title="The linked model has NO wages for this property">⚠ no wages for this property</span>' : ''}`, list: st.payrollModels || [], name: (x) => x.label },
-    { key: 'compSetId', cur: b.comp_set_id, label: 'Comp set (row tools only)', list: st.compSets, name: (x) => x.name },
   ] : [
     { key: 'uwSnapshotId', cur: b.uw_snapshot_id, label: 'UW book', list: own(st.uwSnapshots), name: (x) => x.label },
     { key: 'rentSnapshotId', cur: b.rent_snapshot_id, label: 'Rent roll', list: own(st.rentSnapshots), name: (x) => `${x.as_of ? new Date(x.as_of).toLocaleDateString() : '#' + x.id} · ${x.units || '?'}u` },
     { key: 't12SnapshotId', cur: b.t12_snapshot_id, label: 'Seller T12', list: own(st.t12Snapshots || []), name: (x) => `${x.label} · ${x.period || ''}` },
     { key: 'compSetId', cur: b.comp_set_id, label: 'Comp set', list: st.compSets, name: (x) => x.name },
-    { key: 'payrollModelId', cur: b.payroll_model_id, label: `Payroll model${b.payroll_model_id && !bv.payrollWages ? ' <span class="warnflag" title="The linked model has NO wages for this property — ✎ edit it on the Uploads page (add/fix this property\'s row)">⚠ no wages for this property</span>' : ''}`, list: st.payrollModels || [], name: (x) => x.label },
+    { key: 'payrollModelId', cur: b.payroll_model_id, label: `Payroll model${b.payroll_model_id && !bv.payrollWages ? ' <span class="warnflag" title="The linked model has NO wages for this property — ✎ edit it on the Data page (add/fix this property\'s row)">⚠ no wages for this property</span>' : ''}`, list: st.payrollModels || [], name: (x) => x.label },
   ];
   return LINKS.map((L) => `
     <div class="fld" style="margin:0 0 6px">
@@ -1364,8 +1541,8 @@ function dataLinksHtml(bv) {
       <select data-link="${L.key}" style="max-width:260px">
         <option value="">— none —</option>
         ${L.list.map((x) => `<option value="${x.id}" ${Number(L.cur) === Number(x.id) ? 'selected' : ''}>${esc(String(L.name(x) || '#' + x.id).slice(0, 44))}</option>`).join('')}
-      </select>
-    </div>`).join('');
+      </select>${L.note ? `<div class="muted" style="font-size:10.5px; margin-top:2px">${esc(L.note)}</div>` : ''}
+    </div>`).join('') + (bv.annual ? '<p class="muted" style="font-size:10.5px; margin:4px 0 0">More files: Data page, or ⬆ in the New budget dialog.</p>' : '');
 }
 
 /* Non-accrual billing smell test: sellers that book bills as paid (no
