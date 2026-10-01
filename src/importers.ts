@@ -2,6 +2,7 @@
    numbers — the Cottonwood UW sheet is offset +20 rows vs its siblings). */
 import * as XLSX from 'xlsx';
 import type { UwSnapshotData } from '../shared/domain.js';
+import type { TemplateData } from '../shared/annual.js';
 
 type Grid = any[][];
 
@@ -260,9 +261,10 @@ export function parseRentRoll(buf: Buffer): RentParsedProperty[] {
     let h = -1;
     for (let r = 0; r < Math.min(g.length, 12); r++) if (low(g[r]?.[0]) === 'property') { h = r; break; }
     if (h < 0) {
+      const withCharges = /lease charges/i.test(s(g[0]?.[0]));
       for (let r = 0; r < Math.min(g.length, 12); r++) {
         if (low(g[r]?.[0]) === 'unit' && (g[r] || []).map(low).some((c) => c.includes('market'))) {
-          return parseYardiUnitLevel(g, r, asOf);
+          return withCharges ? parseYardiLeaseCharges(g, r, asOf) : parseYardiUnitLevel(g, r, asOf);
         }
       }
       throw new Error('Yardi rent roll: neither a "Property" (summary) nor "Unit" (detail) header row found');
@@ -423,6 +425,7 @@ function parseYardiUnitLevel(g: Grid, h: number, asOf: string | null): RentParse
         });
       }
       reset();
+      section = 'cur';   // next property may start without a section marker (see parseYardiLeaseCharges)
       continue;
     }
     if (section !== 'cur' || !a0 || g[r]?.[cMkt] == null) continue;
@@ -440,6 +443,105 @@ function parseYardiUnitLevel(g: Grid, h: number, asOf: string | null): RentParse
     }
   }
   if (!out.length) throw new Error('Yardi unit-level rent roll: no property sections parsed');
+  return out;
+}
+
+/** Yardi multi-property "Rent Roll with Lease Charges": one row per unit
+    (Unit / Unit Type / Sq Ft / Resident / Name / Market Rent / Charge Code /
+    Amount / deposits / Move In / Lease Expiration / Move Out / Balance) with
+    the unit's recurring charges as continuation rows (code + amount) closed by
+    a per-unit "Total" row. Properties are delimited by the same section
+    markers as the plain unit-level roll and closed by "Total | Name(code)".
+    Occupied = resident id (t…); VACANT/MODEL/ADMIN count as units. The 'rent'
+    charge is the in-place rent; every other code is captured per property
+    (monthly $, occupied units only) — the charge-driven other-income source
+    the plain roll never had. Futures/applicants are skipped. */
+function parseYardiLeaseCharges(g: Grid, h: number, asOf: string | null): RentParsedProperty[] {
+  const width = Math.max(...g.slice(h, h + 2).map((r) => (r || []).length));
+  const heads: string[] = [];
+  for (let c = 0; c < width; c++) heads[c] = [g[h]?.[c], g[h + 1]?.[c]].map(low).filter(Boolean).join(' ');
+  const cRes = heads.findIndex((c) => c === 'resident');
+  const cName = heads.findIndex((c) => c === 'name');
+  const cMkt = heads.findIndex((c) => c.includes('market'));
+  const cCode = heads.findIndex((c) => c.includes('charge') && c.includes('code'));
+  const cAmt = heads.findIndex((c) => c === 'amount');
+  const cEnd = heads.findIndex((c) => c.includes('lease') && c.includes('expiration'));
+  if (cMkt < 0 || cRes < 0 || cCode < 0 || cAmt < 0) throw new Error('Rent Roll with Lease Charges: Resident/Market Rent/Charge Code/Amount columns not found');
+  const toIso = (v: any): string | null => {
+    if (v == null || v === '') return null;
+    if (typeof v === 'number') return new Date(Math.round((v - 25569) * 86400 * 1000)).toISOString().slice(0, 10);
+    const d = new Date(s(v).replace(/\s+\d{2}:\d{2}.*$/, ''));
+    return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  };
+  const out: RentParsedProperty[] = [];
+  let section: 'cur' | 'fut' | null = null;
+  let units = 0, market = 0, inPlace = 0, occ = 0;
+  let leases: { m: number; r: number; e: string | null }[] = [];
+  let charges: Record<string, number> = {};
+  // the unit block being read: its market, occupancy, lease end and charges so far
+  let cur: { mkt: number; occupied: boolean; end: string | null; rent: number; other: Record<string, number> } | null = null;
+  const closeUnit = () => {
+    if (!cur) return;
+    if (cur.occupied) {
+      inPlace += cur.rent;
+      occ++;
+      if (cur.rent > 0) leases.push({ m: Math.round(cur.mkt * 100) / 100, r: Math.round(cur.rent * 100) / 100, e: cur.end });
+      for (const [code, v] of Object.entries(cur.other)) charges[code] = Math.round(((charges[code] || 0) + v) * 100) / 100;
+    }
+    cur = null;
+  };
+  const reset = () => { units = 0; market = 0; inPlace = 0; occ = 0; leases = []; charges = {}; cur = null; section = null; };
+  const addCharge = (codeRaw: any, amtRaw: any) => {
+    if (!cur) return;
+    const code = low(codeRaw);
+    if (!code || code === 'total') return;
+    const v = num(amtRaw);
+    if (code === 'rent') cur.rent += v;
+    else if (v) cur.other[code] = Math.round(((cur.other[code] || 0) + v) * 100) / 100;
+  };
+  for (let r = h + 2; r < g.length; r++) {
+    const a0 = s(g[r]?.[0]);
+    const res = s(g[r]?.[cRes]);
+    if (/^current\/notice/i.test(a0)) { closeUnit(); section = 'cur'; continue; }
+    if (/^future residents/i.test(a0)) { closeUnit(); section = 'fut'; continue; }
+    if (/^summary/i.test(a0)) break;
+    if (res === 'Total') {
+      closeUnit();
+      const nm = s(g[r]?.[cName]);
+      const m = nm.match(/^(.*?)\(([a-z0-9]+)\)\s*$/i);
+      if (m && units > 0) {
+        for (const k of Object.keys(charges)) if (!charges[k]) delete charges[k];
+        out.push({
+          code: m[2].toLowerCase(), name: m[1].trim(), units,
+          marketMonthly: Math.round(market * 100) / 100, inPlaceMonthly: Math.round(inPlace * 100) / 100,
+          occupiedUnits: occ, asOf, source: 'unit_level', leases, charges,
+        });
+      }
+      reset();
+      // Yardi omits the "Current/Notice/Vacant Residents" marker when the
+      // previous property had no Future section — the next property's unit
+      // rows start right away (phnd in the 9/30/26 roll)
+      section = 'cur';
+      continue;
+    }
+    if (section !== 'cur') continue;
+    if (a0 && g[r]?.[cMkt] != null && g[r]?.[cMkt] !== '') {
+      // a new unit row
+      closeUnit();
+      units++;
+      const mkt = num(g[r]?.[cMkt]);
+      market += mkt;
+      cur = { mkt, occupied: /^t\d/i.test(res), end: cEnd >= 0 ? toIso(g[r]?.[cEnd]) : null, rent: 0, other: {} };
+      addCharge(g[r]?.[cCode], g[r]?.[cAmt]);
+      continue;
+    }
+    if (!a0 && cur) {
+      const code = low(g[r]?.[cCode]);
+      if (code === 'total') { closeUnit(); continue; }
+      addCharge(g[r]?.[cCode], g[r]?.[cAmt]);
+    }
+  }
+  if (!out.length) throw new Error('Rent Roll with Lease Charges: no property sections parsed');
   return out;
 }
 
@@ -594,6 +696,274 @@ export function parseSellerT12(buf: Buffer): SellerT12Parsed {
   }
   if (!rows.length) throw new Error('Seller T12: no detail GL rows parsed');
   return { label, period, book, monthCal, rows };
+}
+
+/* ========================= MONARCH 12-MONTH STATEMENT / BUDGET ========================= */
+
+export interface MonarchStmtParsed {
+  label: string;                 // report title, e.g. "Fair Hills Apartments (fhnd)"
+  propertyGuess: string | null;  // lowercase yardi code from the title's "(code)"
+  kind: 'actual' | 'budget';     // "Statement (12 months)" → actual; "Budget" → budget
+  period: string;
+  book: string;
+  monthCal: number[];            // calendar month 1-12 per value column
+  monthYear: number[];           // calendar year per value column
+  rows: { gl: string; name: string; months: number[]; total: number }[];
+  gpr: number; egi: number; noi: number;   // headline figures off the report's own total rows (for the preview)
+}
+
+/** Yardi 12 Month Statement (posted actuals) or 12 Month Budget export for ONE
+    Monarch property: Monarch 4-digit GLs down column A, 12 "Mon YYYY" columns,
+    a Total column. Only DETAIL GL rows are kept (the report's own subtotal
+    rows — TOTAL…, NET OPERATING INCOME… — are recomputed by the chart). The
+    data layer for annual budgets. */
+export function parseMonarchStatement(buf: Buffer, coaDetail?: Set<string>): MonarchStmtParsed {
+  const g = grids(buf)[0].g;
+  const label = s(g[0]?.[0]);
+  const pg = label.match(/\(([a-z0-9]{3,6})\)\s*$/i);
+  const propertyGuess = pg ? pg[1].toLowerCase() : null;
+  let period = '', book = '';
+  let kind: 'actual' | 'budget' = 'actual';
+  for (const row of g.slice(0, 6)) {
+    const t = s(row?.[0]);
+    if (/period\s*=/i.test(t)) period = t.replace(/.*period\s*=\s*/i, '').trim();
+    if (/book\s*=/i.test(t)) book = t.replace(/.*book\s*=\s*/i, '').split(';')[0].trim();
+    if (/^budget$/i.test(t)) kind = 'budget';
+  }
+  let h = -1;
+  let monthCols: number[] = [], monthCal: number[] = [], monthYear: number[] = [];
+  for (let r = 0; r < Math.min(g.length, 10); r++) {
+    const cols: number[] = [], cal: number[] = [], yrs: number[] = [];
+    for (let c = 1; c < (g[r] || []).length; c++) {
+      const m = low(g[r]?.[c]).match(/^([a-z]{3})[a-z]*\s+(\d{4})$/);
+      if (m) {
+        const mi = MONTH_NAMES.indexOf(m[1]);
+        if (mi >= 0) { cols.push(c); cal.push(mi + 1); yrs.push(Number(m[2])); }
+      }
+    }
+    if (cols.length >= 10) { h = r; monthCols = cols.slice(0, 12); monthCal = cal.slice(0, 12); monthYear = yrs.slice(0, 12); break; }
+  }
+  if (h < 0) throw new Error('Monarch statement: 12-month header row ("Jan 2026" …) not found — export the 12 Month Statement / 12 Month Budget, not the Property Comparison');
+  const totalCol = monthCols[monthCols.length - 1] + 1;
+  const rows: MonarchStmtParsed['rows'] = [];
+  const totals: Record<string, number> = {};
+  for (let r = h + 1; r < g.length; r++) {
+    const gl = s(g[r]?.[0]);
+    if (!/^\d{3,4}$/.test(gl)) continue;
+    const name = s(g[r]?.[1]);
+    const months = monthCols.map((c) => num(g[r]?.[c]));
+    const total = num(g[r]?.[totalCol]) || months.reduce((a, b) => a + b, 0);
+    totals[gl] = total;
+    // the report's own subtotal rows: known total codes, or named like one
+    const isTotal = coaDetail ? !coaDetail.has(gl) : /^\s*(total|net |sub-total)/i.test(name) || /^(5004|5029|5049|5070|5190|5500|6170|6370|6399|6470|6570|6670|6770|6870|6970|7070|7098|7099|7279|7280|7315|7500|8200|8602|8950|9000)$/.test(gl);
+    if (isTotal) continue;
+    if (!months.some((v) => v)) continue;
+    rows.push({ gl, name, months, total });
+  }
+  if (!rows.length) throw new Error('Monarch statement: no detail GL rows parsed');
+  return {
+    label, propertyGuess, kind, period, book, monthCal, monthYear, rows,
+    gpr: totals['4994'] || 0, egi: totals['5500'] || 0, noi: totals['7280'] || 0,
+  };
+}
+
+/* ========================= YARDI BUDGET TEMPLATE (budgetYSR<year>_budget_<id>.xlsm) ========================= */
+
+export interface TemplateParsed {
+  template: TemplateData;
+  actual: MonarchStmtParsed;     // trailing-12 posted actuals (PriorFinancials MTD, the template's PY months)
+  budget: MonarchStmtParsed;     // the current year's budget (PriorFinancials MTDBudget, Jan–Dec)
+  skippedSheets: string[];
+}
+
+const serialDate = (v: any): { y: number; m: number } | null => {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') { const d = new Date(Math.round((v - 25569) * 86400 * 1000)); return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1 }; }
+  const t = s(v);
+  const mm = t.match(/^(\d{1,2})\/\d{1,2}\/(\d{2,4})/);
+  if (mm) { let y = Number(mm[2]); if (y < 100) y += 2000; return { y, m: Number(mm[1]) }; }
+  const d = new Date(t);
+  return isNaN(d.getTime()) ? null : { y: d.getFullYear(), m: d.getMonth() + 1 };
+};
+const pctNum = (v: any): number => {
+  if (typeof v === 'number') return v;
+  const t = s(v);
+  if (!t) return 0;
+  const n = parseFloat(t.replace(/[%,\s]/g, ''));
+  if (!Number.isFinite(n)) return 0;
+  return /%/.test(t) ? n / 100 : n;
+};
+
+/** Monarch's Yardi budget template for ONE property. Reads PriorFinancials
+    (monthly actual + budget per GL), PropertyInfo, Debt Service, ManFeeMatrix,
+    ManagementFeeActual, Utility Change Forecasts, BudgetSuggestions,
+    LeaseGoals, LeaseExpirations, DistHist, MortgageDetail and the Budget
+    Worksheet's assumption cells (PY month anchors, GPR % changes, renewal %,
+    burnoffs, vacancy / delinquency / collections %). RESTRICTED-DATA GUARD:
+    "Paste Payroll Here" (the pasted roster — individual compensation) is never
+    read; payroll comes from the regional payroll model instead. */
+export function parseYardiBudgetTemplate(buf: Buffer, coaDetail?: Set<string>): TemplateParsed {
+  const wb = XLSX.read(buf, { type: 'buffer', cellFormula: false });
+  const skippedSheets = wb.SheetNames.filter((n) => /payroll/i.test(n));
+  const sheet = (name: RegExp): any[][] | null => {
+    const sn = wb.SheetNames.find((n) => name.test(n) && !/payroll/i.test(n));
+    return sn ? (XLSX.utils.sheet_to_json<any[]>(wb.Sheets[sn], { header: 1, raw: true, defval: null }) as any[][]) : null;
+  };
+  const bwName = wb.SheetNames.find((n) => /^budget worksheet$/i.test(n));
+  if (!bwName) throw new Error('Yardi budget template: no "Budget Worksheet" sheet');
+  const bw = wb.Sheets[bwName];
+  const cell = (addr: string): any => { const c = bw[addr]; return c ? c.v : undefined; };
+  const bwGrid = XLSX.utils.sheet_to_json<any[]>(bw, { header: 1, raw: true, defval: null }) as any[][];
+
+  // property
+  const pi = sheet(/^propertyinfo$/i);
+  const pRow = pi?.[1] || [];
+  const code = low(pRow[0]) || null;
+  if (!code) throw new Error('Yardi budget template: PropertyInfo has no property code');
+  const name = s(pRow[1]);
+  const units = Math.round(num(pRow[2]));
+  const capital = num(pRow[3]);
+  const acq = serialDate(pRow[4]);
+  const budgetYear = Math.round(num(pRow[5])) || 0;
+
+  // Budget Worksheet row 1: the PY month anchors (E1..P1), last actual month (N1)
+  const anchors: { y: number; m: number }[] = [];
+  for (const col of 'EFGHIJKLMNOP'.split('')) { const d = serialDate(cell(`${col}1`)); if (d) anchors.push(d); }
+  if (anchors.length !== 12) throw new Error('Yardi budget template: Budget Worksheet row 1 month anchors not found');
+  const pyYears = Array(12).fill(0) as number[];
+  for (const a of anchors) pyYears[a.m - 1] = a.y;
+  const lastActual = serialDate(cell('N1')) || anchors[9];
+  const curYear = anchors[0].y;                                   // E1 = Jan of the current year
+  const year = budgetYear || curYear + 1;
+
+  // assumption cells, found by GL label (rows shift between template versions)
+  const rowOf = (gl: string): number => bwGrid.findIndex((r) => s(r?.[0]) === gl);
+  const rowWhere = (col: number, re: RegExp): number => bwGrid.findIndex((r) => re.test(s(r?.[col])));
+  const dOf = (r: number): any => (r >= 0 ? bwGrid[r]?.[3] : undefined);
+  const gprRow = rowOf('4993');
+  const gprPct = Array(12).fill(0) as number[];
+  if (gprRow >= 0) for (let i = 0; i < 12; i++) gprPct[i] = pctNum(bwGrid[gprRow]?.[4 + i]);
+  const renewRow = rowWhere(2, /renewal percentage/i);
+  const renewalPct = renewRow >= 0 && dOf(renewRow) != null ? pctNum(dOf(renewRow)) : null;
+  const bRow = rowWhere(2, /burnoff on renewals/i), nRow = rowWhere(2, /burnoff on new move/i);
+  const burnoffRenew = bRow >= 0 && dOf(bRow) != null ? pctNum(dOf(bRow)) : null;
+  const burnoffNew = nRow >= 0 && dOf(nRow) != null ? pctNum(dOf(nRow)) : null;
+  const pctCell = (gl: string): number | null => { const r = rowOf(gl); const v = dOf(r); return r >= 0 && typeof v === 'number' ? v : null; };
+  const vacancyPct = pctCell('5031');
+  const delinqPct = pctCell('5035');
+  const priorPeriodPct = pctCell('5036');
+  const swRow = bwGrid.findIndex((r) => /computer software/i.test(s(r?.[1])) && /\$\s*[\d,.]+\s*\/\s*month/i.test(s(r?.[2])));
+  const swM = swRow >= 0 ? s(bwGrid[swRow][2]).match(/\$\s*([\d,.]+)\s*\/\s*month/i) : null;
+  const softwareFixedMo = swM ? num(swM[1]) : null;
+
+  // PriorFinancials → actual (PY months) + budget (current year) statements
+  const pf = sheet(/^priorfinancials$/i);
+  if (!pf || pf.length < 2) throw new Error('Yardi budget template: PriorFinancials sheet missing or empty');
+  const hdr = (pf[0] || []).map(low);
+  const cAcct = hdr.findIndex((h) => h === 'account'), cName = hdr.findIndex((h) => h === 'acctname'),
+    cMonth = hdr.findIndex((h) => h === 'month'), cMtd = hdr.findIndex((h) => h === 'mtd'), cMtdB = hdr.findIndex((h) => h === 'mtdbudget');
+  if ([cAcct, cMonth, cMtd, cMtdB].some((c) => c < 0)) throw new Error('Yardi budget template: PriorFinancials columns (Account, Month, MTD, MTDBudget) not found');
+  const act: Record<string, { name: string; months: number[] }> = {};
+  const bud: Record<string, { name: string; months: number[] }> = {};
+  const keep = (gl: string): boolean => (coaDetail ? coaDetail.has(gl) : /^\d{4}$/.test(gl) && Number(gl) >= 3000);
+  for (const r of pf.slice(1)) {
+    const gl = s(r?.[cAcct]);
+    if (!gl || !keep(gl)) continue;
+    const d = serialDate(r[cMonth]);
+    if (!d) continue;
+    const nm = s(r[cName]);
+    if (d.y === pyYears[d.m - 1]) {
+      (act[gl] ||= { name: nm, months: Array(12).fill(0) }).months[d.m - 1] += num(r[cMtd]);
+    }
+    if (d.y === curYear) {
+      (bud[gl] ||= { name: nm, months: Array(12).fill(0) }).months[d.m - 1] += num(r[cMtdB]);
+    }
+  }
+  const toStmt = (src: Record<string, { name: string; months: number[] }>, kind: 'actual' | 'budget', monthYear: number[], period: string): MonarchStmtParsed => {
+    const rows = Object.entries(src)
+      .map(([gl, v]) => ({ gl, name: v.name, months: v.months.map((x) => Math.round(x * 100) / 100), total: Math.round(v.months.reduce((a, b) => a + b, 0) * 100) / 100 }))
+      .filter((r) => r.months.some((v) => v))
+      .sort((a, b) => Number(a.gl) - Number(b.gl));
+    const tot = (gl: string) => rows.find((r) => r.gl === gl)?.total || 0;
+    return { label: `${name} (${code})`, propertyGuess: code, kind, period, book: 'Cash', monthCal: Array.from({ length: 12 }, (_, i) => i + 1), monthYear, rows, gpr: tot('4994'), egi: 0, noi: 0 };
+  };
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const order = anchors.slice().sort((a, b) => a.y * 12 + a.m - (b.y * 12 + b.m));
+  const actual = toStmt(act, 'actual', pyYears, `${MON[order[0].m - 1]} ${order[0].y}-${MON[order[11].m - 1]} ${order[11].y}`);
+  const budget = toStmt(bud, 'budget', Array(12).fill(curYear), `Jan ${curYear}-Dec ${curYear}`);
+
+  // Debt Service: the budget year's months
+  const ds = sheet(/^debt service$/i) || [];
+  const interest = Array(12).fill(0) as number[], principal = Array(12).fill(0) as number[];
+  const loans = new Set<string>();
+  let principalGl = '3080';
+  for (const r of ds.slice(1)) {
+    const d = serialDate(r?.[2]);
+    if (!d || d.y !== year) continue;
+    loans.add(s(r[1]));
+    interest[d.m - 1] += num(r[5]);
+    principal[d.m - 1] += num(r[4]);
+    if (s(r[7])) principalGl = s(r[7]);
+  }
+  // management fee matrix + actual
+  const mf = sheet(/^manfeematrix$/i) || [];
+  const matrix: Record<string, number> = {};
+  let override: number | null = null, notes = '';
+  if (mf.length >= 2) {
+    (mf[0] || []).forEach((h: any, i: number) => {
+      // headers are "5%" … "17%" — or the numbers 0.05 … 0.17 formatted as %
+      const t = typeof h === 'number' && h > 0 && h < 1 ? `${Math.round(h * 100)}%` : s(h);
+      if (/^\d+%$/.test(t)) matrix[t] = pctNum(mf[1][i]);
+      else if (/^override$/i.test(t)) override = num(mf[1][i]) || null;
+      else if (/overridenotes/i.test(t)) notes = s(mf[1][i]);
+    });
+  }
+  const mfa = sheet(/^managementfeeactual$/i) || [];
+  const mgmtFee = {
+    actualPct: mfa[1] && typeof mfa[1][4] === 'number' ? mfa[1][4] : null,
+    actualFee: mfa[1] ? num(mfa[1][2]) : 0, actualIncome: mfa[1] ? num(mfa[1][3]) : 0,
+    matrix, override, notes,
+  };
+  // Conservice utility forecasts (gl, month → %)
+  const uf = sheet(/^utility change forecasts$/i) || [];
+  const utilForecast: Record<string, number[]> = {};
+  for (const r of uf.slice(1)) {
+    const gl = s(r?.[2]); const d = serialDate(r?.[1]);
+    if (!gl || !d || d.y !== year) continue;
+    (utilForecast[gl] ||= Array(12).fill(0))[d.m - 1] = pctNum(r[3]);
+  }
+  // corporate budget suggestions (gl, month → $, notes)
+  const bs = sheet(/^budgetsuggestions$/i) || [];
+  const suggestions: Record<string, number[]> = {};
+  const suggestionNotes: Record<string, string[]> = {};
+  for (const r of bs.slice(1)) {
+    const gl = s(r?.[2]); const d = serialDate(r?.[1]);
+    if (!gl || !d || d.y !== year) continue;
+    (suggestions[gl] ||= Array(12).fill(0))[d.m - 1] = Math.round(((suggestions[gl]?.[d.m - 1] || 0) + num(r[3])) * 100) / 100;
+    const note = s(r[4]);
+    if (note && !(suggestionNotes[gl] ||= []).includes(note)) suggestionNotes[gl].push(note);
+  }
+  const row12 = (re: RegExp): number[] => { const g2 = sheet(re); const r = g2?.[1] || []; return Array.from({ length: 12 }, (_, i) => num(r[1 + i])); };
+  const leaseGoals = row12(/^leasegoals$/i);
+  const leaseExpirations = row12(/^leaseexpirations$/i);
+  const dh = sheet(/^disthist$/i) || [];
+  const distHist = dh.slice(1).filter((r) => r?.[0]).map((r) => { const d = serialDate(r[1]); return { date: d ? `${d.y}-${String(d.m).padStart(2, '0')}` : s(r[1]), type: s(r[2]), pct: num(r[3]), amount: num(r[4]) }; });
+  const md = sheet(/^mortgagedetail$/i) || [];
+  const mortgage = md.slice(1).filter((r) => r?.[0]).map((r) => {
+    const io = serialDate(r[15]), due = serialDate(r[10]);
+    return { loanCode: s(r[1]), lender: s(r[5]), program: s(r[6]), origBal: num(r[7]), rate: num(r[13]),
+             ioEnd: io ? `${io.y}-${String(io.m).padStart(2, '0')}` : null, dueDate: due ? `${due.y}-${String(due.m).padStart(2, '0')}` : null,
+             amortYears: num(r[11]) || null };
+  });
+
+  const template: TemplateData = {
+    code, name, units, capital, acquisitionDate: acq ? `${acq.y}-${String(acq.m).padStart(2, '0')}` : null, budgetYear: year,
+    lastActual: { year: lastActual.y, month: lastActual.m }, pyYears,
+    debt: { interest: interest.map((v) => Math.round(v * 100) / 100), principal: principal.map((v) => Math.round(v * 100) / 100), principalGl, loans: [...loans] },
+    mgmtFee, utilForecast, suggestions, suggestionNotes, leaseGoals, leaseExpirations,
+    renewalPct, burnoffRenew, burnoffNew, gprPct, vacancyPct, delinqPct, priorPeriodPct, distHist, mortgage, softwareFixedMo,
+  };
+  return { template, actual, budget, skippedSheets };
 }
 
 /* ========================= PROPERTY COMPARISON ========================= */

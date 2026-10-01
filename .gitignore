@@ -5,3 +5,6 @@ dist/
 test/fixtures/*.xlsx
 test/fixtures/*.csv
 scripts/e2e-out.*
+test/fixtures/*.xlsm
+.pgdata/
+scripts/tmp/

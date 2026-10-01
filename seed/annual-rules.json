@@ -1,0 +1,1381 @@
+{
+ "source": "yardi-template-grks-draft.xlsm",
+ "extracted": "2026-10-01",
+ "rules": {
+  "3080": {
+   "method": "debt",
+   "name": "1ST MORTGAGE"
+  },
+  "3090": {
+   "method": "debt",
+   "name": "2ND MORTGAGE"
+  },
+  "3091": {
+   "method": "debt",
+   "name": "3rd MORTGAGE"
+  },
+  "4992": {
+   "method": "engine",
+   "name": "RENTAL INCOME",
+   "formula": "LeaseExpirations!B2"
+  },
+  "4994": {
+   "method": "last",
+   "name": "TENANT GROSS POTENTIAL"
+  },
+  "4995": {
+   "method": "last",
+   "name": "HAP CONTRACT RENT"
+  },
+  "4996": {
+   "method": "last",
+   "name": "HAP VOUCHER RENT"
+  },
+  "5003": {
+   "method": "engine",
+   "name": "LOSS/GAIN TO LEASE",
+   "formula": "E20-F17+F18+F19"
+  },
+  "5004": {
+   "method": "engine",
+   "name": "TOTAL NET GROSS POTENTIAL RENT",
+   "formula": "SUM(E14:E16)+ABS(E20)*SIGN(E20)"
+  },
+  "5018": {
+   "method": "last",
+   "name": "BOND CONCESSION"
+  },
+  "5019": {
+   "method": "last",
+   "factor": 0,
+   "name": "PEP CONCESSION"
+  },
+  "5022": {
+   "method": "engine",
+   "name": "CONCESSION RECAPTURE",
+   "formula": "SUM(E24,E25,E26,E29,E30,E31,E33)*-$D28"
+  },
+  "5023": {
+   "method": "last",
+   "name": "RENEWAL CONCESSION"
+  },
+  "5024": {
+   "method": "last",
+   "name": "MOVE-IN CONCESSION"
+  },
+  "5025": {
+   "method": "last",
+   "name": "REFERRAL CONCESSION"
+  },
+  "5027": {
+   "method": "same",
+   "name": "SUMMER STORAGE CONCESSION"
+  },
+  "5028": {
+   "method": "last",
+   "name": "FIRE CONCESSION"
+  },
+  "5029": {
+   "method": "engine",
+   "name": "TOTAL CONCESSIONS",
+   "formula": "SUM(E24:E33)"
+  },
+  "5031": {
+   "method": "engine",
+   "name": "Less: VACANCY",
+   "formula": "IF($D$36=\"Flat Amount\",$D37*(E14-E34),E$36*(E14-E34))"
+  },
+  "5032": {
+   "method": "last",
+   "name": "Less: MODELS"
+  },
+  "5033": {
+   "method": "last",
+   "name": "Less: ADMIN"
+  },
+  "5034": {
+   "method": "last",
+   "name": "Less: DOWN"
+  },
+  "5035": {
+   "method": "engine",
+   "name": "Less: CURRENT DELINQUENCY",
+   "formula": "$D41*(E21+E34+SUM(E37:E40))"
+  },
+  "5036": {
+   "method": "engine",
+   "name": "PRIOR PERIOD COLLECTIONS",
+   "formula": "$D42*E21"
+  },
+  "5040": {
+   "method": "last",
+   "name": "WRITE-OFFS"
+  },
+  "5049": {
+   "method": "engine",
+   "name": "TOTAL RENTAL LOSS",
+   "formula": "SUM(E37:E43)"
+  },
+  "5070": {
+   "method": "engine",
+   "name": "TOTAL RENTAL INCOME",
+   "formula": "E21+E34+E44"
+  },
+  "5103": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "ALARM FEE"
+  },
+  "5104": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "AMENITY MEMBERSHIP"
+  },
+  "5105": {
+   "method": "wavg",
+   "mround": 50,
+   "factor": 0.05,
+   "name": "APPLICATION FEES"
+  },
+  "5110": {
+   "method": "engine",
+   "name": "BAD DEBT RECOVERY",
+   "formula": "$D51"
+  },
+  "5112": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "CELL TOWER RENT"
+  },
+  "5115": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "CABLE TV/INTERNET"
+  },
+  "5116": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "CORPORATE FEES"
+  },
+  "5117": {
+   "method": "wavg",
+   "mround": 50,
+   "factor": 0,
+   "name": "CONVENIENCE FEE"
+  },
+  "5118": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "COMMERCIAL RENT"
+  },
+  "5119": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "VENDOR COMMISSIONS"
+  },
+  "5120": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "DAMAGE REIMBURSEMENT"
+  },
+  "5121": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "FURNITURE RENTAL INCOME"
+  },
+  "5122": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "HAP UTILITY ALLOWANCE"
+  },
+  "5124": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "HAP REPAYMENT EXPENSE RECOVERY"
+  },
+  "5125": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "INTEREST INCOME"
+  },
+  "5126": {
+   "method": "wavg",
+   "mround": 50,
+   "factor": 0,
+   "name": "INSURANCE NON-COMPLIANCE FEES"
+  },
+  "5130": {
+   "method": "wavg",
+   "mround": 50,
+   "factor": 0,
+   "name": "OTHER MISCELLANEOUS INCOME"
+  },
+  "5131": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "EQUIPMENT LEASE"
+  },
+  "5132": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "WASHER/DRYER RENTAL INCOME"
+  },
+  "5135": {
+   "method": "flatT12",
+   "factor": 0,
+   "name": "LAUNDRY INCOME"
+  },
+  "5136": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "STORAGE UNIT INCOME"
+  },
+  "5138": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "CLUBHOUSE RENTAL"
+  },
+  "5140": {
+   "method": "wavg",
+   "mround": 100,
+   "factor": 0,
+   "name": "LEASE TERMINATION"
+  },
+  "5145": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "LEGAL FEES"
+  },
+  "5147": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "MODEL INCOME"
+  },
+  "5149": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "HOLD OVER COMMERCIAL"
+  },
+  "5150": {
+   "method": "wavg",
+   "mround": 100,
+   "factor": 0,
+   "name": "MONTH-TO-MONTH"
+  },
+  "5151": {
+   "method": "flatT12",
+   "factor": 0,
+   "name": "SHORT TERM LEASE PREMIUM"
+  },
+  "5155": {
+   "method": "same",
+   "factor": 0,
+   "name": "NSF FEES INCOME"
+  },
+  "5156": {
+   "method": "same",
+   "factor": 0,
+   "name": "CREDIT APPROVAL FEE"
+  },
+  "5157": {
+   "method": "same",
+   "mround": 50,
+   "name": "NON-REFUND ADMIN FEE"
+  },
+  "5158": {
+   "method": "flatT12",
+   "name": "PEST CONTROL FEE"
+  },
+  "5159": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "PARKING GARAGE-MONTHLY NON-TENANT"
+  },
+  "5160": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "PARKING INCOME"
+  },
+  "5161": {
+   "method": "flatT12",
+   "factor": 0.01,
+   "name": "PARKING GARAGE INCOME"
+  },
+  "5162": {
+   "method": "flatT12",
+   "factor": 0,
+   "name": "COMMERCIAL PARKING GARAGE-OTHER"
+  },
+  "5163": {
+   "method": "flatT12",
+   "factor": 0,
+   "name": "PAYMENT PLAN FEE"
+  },
+  "5164": {
+   "method": "flatT12",
+   "factor": 0,
+   "name": "TRASH REIM - VALET SVC"
+  },
+  "5165": {
+   "method": "same",
+   "mround": 50,
+   "factor": 0,
+   "name": "PET FEE / RENT"
+  },
+  "5166": {
+   "method": "wavg",
+   "mround": 100,
+   "factor": 0,
+   "name": "INITIAL PET MOVE IN CHARGE"
+  },
+  "5167": {
+   "method": "wavg",
+   "mround": 100,
+   "factor": 0.05,
+   "name": "SEWER REIM"
+  },
+  "5168": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "TRANSFER FEE"
+  },
+  "5172": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "STREET REIM"
+  },
+  "5175": {
+   "method": "flatT12",
+   "factor": 0,
+   "name": "VENDING MACHINES"
+  },
+  "5178": {
+   "method": "flatT12",
+   "factor": 0.02,
+   "name": "VENDOR REBATES"
+  },
+  "5180": {
+   "method": "flatT12",
+   "factor": 0.02,
+   "name": "OTHER INCOME"
+  },
+  "5181": {
+   "method": "flatT12",
+   "factor": 0,
+   "name": "OTHER COMMISSION INCOME"
+  },
+  "5183": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "COMM- CAM RECOVERY"
+  },
+  "5184": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "COMM- INS RECOVERY"
+  },
+  "5185": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "COMM - TAX RECOVERY"
+  },
+  "5186": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0,
+   "name": "COMM- FIXED RECOVERY"
+  },
+  "5190": {
+   "method": "engine",
+   "name": "NET OTHER INCOME",
+   "formula": "SUM(E48:E103)"
+  },
+  "5500": {
+   "method": "engine",
+   "name": "TOTAL INCOME",
+   "formula": "E104+E45"
+  },
+  "6102": {
+   "method": "suggested",
+   "name": "ACCOUNTING FEES"
+  },
+  "6104": {
+   "method": "last",
+   "name": "AUTO INSURANCE"
+  },
+  "6108": {
+   "method": "corpRate",
+   "name": "INSURANCE EXPENSE"
+  },
+  "6110": {
+   "method": "last",
+   "name": "INSURANCE - FLOOD"
+  },
+  "6112": {
+   "method": "engine",
+   "name": "MANAGEMENT FEE",
+   "formula": "ROUND(E106*$D117,0)"
+  },
+  "6113": {
+   "method": "same",
+   "mround": 10,
+   "name": "PERSONAL PROPERTY TAX"
+  },
+  "6115": {
+   "method": "same",
+   "mround": 10,
+   "name": "CAM EXPENSE"
+  },
+  "6116": {
+   "method": "fixedAnnual",
+   "name": "REAL ESTATE TAXES"
+  },
+  "6117": {
+   "method": "same",
+   "mround": 10,
+   "name": "FRANCHISE TAX"
+  },
+  "6119": {
+   "method": "same",
+   "mround": 10,
+   "name": "HOA FEES"
+  },
+  "6122": {
+   "method": "same",
+   "mround": 10,
+   "name": "LOAN FEES"
+  },
+  "6140": {
+   "method": "same",
+   "mround": 10,
+   "name": "INCOME TAX"
+  },
+  "6170": {
+   "method": "engine",
+   "name": "TOTAL FIXED ADMINISTRATIVE",
+   "formula": "SUM(E113:E124)"
+  },
+  "6302": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0.05,
+   "name": "ADMIN ADVERTISING"
+  },
+  "6308": {
+   "method": "same",
+   "mround": 50,
+   "factor": 0.05,
+   "name": "BANK CHARGES"
+  },
+  "6309": {
+   "method": "flatT12",
+   "noThreshold": true,
+   "factor": 0.05,
+   "name": "COLLECTION FEES"
+  },
+  "6310": {
+   "method": "corpRate",
+   "name": "CONSULTING SERVICE"
+  },
+  "6311": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "PAYMENT PROCESSING FEES"
+  },
+  "6312": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "CREDIT / BACKGROUND CHECKS"
+  },
+  "6314": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0.05,
+   "name": "CORPORATE APARTMENT"
+  },
+  "6315": {
+   "method": "same",
+   "mround": 10,
+   "name": "DONATIONS"
+  },
+  "6316": {
+   "method": "engine",
+   "name": "EDUCATION / DUES",
+   "formula": "'Employee Relations Budget'!D102"
+  },
+  "6317": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "IN-HOUSE TRAINING"
+  },
+  "6319": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "LATE FEES"
+  },
+  "6320": {
+   "method": "corpRate",
+   "name": "LEGAL SERVICES"
+  },
+  "6322": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "LEGAL - EVICTIONS"
+  },
+  "6324": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "LICENSES / MINOR TAXES"
+  },
+  "6325": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "OFFICE LEASE"
+  },
+  "6326": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "OFFICE EQUIPMENT LEASE"
+  },
+  "6327": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "CORP EQUIPMENT LEASES"
+  },
+  "6328": {
+   "method": "same",
+   "mround": 50,
+   "factor": 0.05,
+   "name": "OFFICE EQUIPMENT PURCHASES"
+  },
+  "6329": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "IT EQUIPMENT"
+  },
+  "6330": {
+   "method": "same",
+   "mround": 50,
+   "factor": 0.05,
+   "name": "OFFICE EQUIPMENT REPAIRS"
+  },
+  "6331": {
+   "method": "engine",
+   "name": "COMPUTER SOFTWARE",
+   "formula": "E151"
+  },
+  "6332": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "OFFICE SUPPLIES"
+  },
+  "6334": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "POSTAGE / FED-EX"
+  },
+  "6335": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "PARKING FEES"
+  },
+  "6336": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "ADMINISTRATIVE PRINT/FORMS"
+  },
+  "6338": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "RELOCATION EXPENSE"
+  },
+  "6340": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "STORAGE RENTAL"
+  },
+  "6342": {
+   "method": "flatT12",
+   "name": "MILEAGE REIMBURSEMENTS"
+  },
+  "6343": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "TRAVEL"
+  },
+  "6350": {
+   "method": "flatT12",
+   "factor": 0,
+   "name": "THIRD PARTY BILLING"
+  },
+  "6359": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "USE TAX EXPENSE"
+  },
+  "6360": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "NEW PROJECT DEVELOPMENT"
+  },
+  "6362": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "CORP. TEAM RELATIONS DEPT"
+  },
+  "6363": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "WASHER/DRYER RENTAL"
+  },
+  "6364": {
+   "method": "flatT12",
+   "factor": 0,
+   "name": "LAUNDRY ROOM EXPENSES"
+  },
+  "6365": {
+   "method": "flatT12",
+   "factor": 0,
+   "name": "OTHER ADMINISTRATIVE EXP"
+  },
+  "6366": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "RECRUITING - GENERAL ADMIN"
+  },
+  "6367": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "RECRUITING - DIRECT JOB ADS"
+  },
+  "6368": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "RECRUITING - OUTREACH PROGRAMS"
+  },
+  "6370": {
+   "method": "engine",
+   "name": "TOTAL ADMINISTRATIVE EXP",
+   "formula": "SUM(E128:E171)-E151-E152"
+  },
+  "6399": {
+   "method": "engine",
+   "name": "TOTAL CORPORATE EVENTS",
+   "formula": "SUM(E175:E182)"
+  },
+  "6470": {
+   "method": "engine",
+   "name": "TOTAL PAYROLL EXPENSE",
+   "formula": "SUM(E186:E203)"
+  },
+  "6501": {
+   "method": "engine",
+   "name": "ADVERTISING - DIGITAL",
+   "formula": "INDEX('Marketing Budget'!$C$4:$P$22,MATCH('Budget Worksheet'!$A207,'Marketing Budget'!$C$4:$C$22,0),MATCH('Budget Worksh"
+  },
+  "6502": {
+   "method": "engine",
+   "name": "ADVERTISING - ILS",
+   "formula": "INDEX('Marketing Budget'!$C$4:$P$22,MATCH('Budget Worksheet'!$A208,'Marketing Budget'!$C$4:$C$22,0),MATCH('Budget Worksh"
+  },
+  "6503": {
+   "method": "engine",
+   "name": "ADVERTISING - PHOTOGRAPHY",
+   "formula": "INDEX('Marketing Budget'!$C$4:$P$22,MATCH('Budget Worksheet'!$A209,'Marketing Budget'!$C$4:$C$22,0),MATCH('Budget Worksh"
+  },
+  "6504": {
+   "method": "engine",
+   "name": "ADVERTISING - PRINT",
+   "formula": "INDEX('Marketing Budget'!$C$4:$P$22,MATCH('Budget Worksheet'!$A210,'Marketing Budget'!$C$4:$C$22,0),MATCH('Budget Worksh"
+  },
+  "6506": {
+   "method": "engine",
+   "name": "ADVERTISING - LOCAL VENDORS",
+   "formula": "INDEX('Marketing Budget'!$C$4:$P$22,MATCH('Budget Worksheet'!$A211,'Marketing Budget'!$C$4:$C$22,0),MATCH('Budget Worksh"
+  },
+  "6508": {
+   "method": "engine",
+   "name": "APARTMENT LOCATORS",
+   "formula": "INDEX('Marketing Budget'!$C$4:$P$22,MATCH('Budget Worksheet'!$A212,'Marketing Budget'!$C$4:$C$22,0),MATCH('Budget Worksh"
+  },
+  "6509": {
+   "method": "engine",
+   "name": "REPUTATION MANAGEMENT",
+   "formula": "INDEX('Marketing Budget'!$C$4:$P$22,MATCH('Budget Worksheet'!$A213,'Marketing Budget'!$C$4:$C$22,0),MATCH('Budget Worksh"
+  },
+  "6510": {
+   "method": "engine",
+   "name": "RESIDENT/PROSPECT SWAG",
+   "formula": "INDEX('Marketing Budget'!$C$4:$P$22,MATCH('Budget Worksheet'!$A214,'Marketing Budget'!$C$4:$C$22,0),MATCH('Budget Worksh"
+  },
+  "6511": {
+   "method": "engine",
+   "name": "MODEL APARTMENT",
+   "formula": "INDEX('Marketing Budget'!$C$4:$P$22,MATCH('Budget Worksheet'!$A215,'Marketing Budget'!$C$4:$C$22,0),MATCH('Budget Worksh"
+  },
+  "6512": {
+   "method": "engine",
+   "name": "MODEL FURNITURE",
+   "formula": "INDEX('Marketing Budget'!$C$4:$P$22,MATCH('Budget Worksheet'!$A216,'Marketing Budget'!$C$4:$C$22,0),MATCH('Budget Worksh"
+  },
+  "6514": {
+   "method": "engine",
+   "name": "MARKETING COLLATERAL",
+   "formula": "INDEX('Marketing Budget'!$C$4:$P$22,MATCH('Budget Worksheet'!$A217,'Marketing Budget'!$C$4:$C$22,0),MATCH('Budget Worksh"
+  },
+  "6516": {
+   "method": "engine",
+   "name": "RESIDENT / PUBLIC RELATIONS",
+   "formula": "INDEX('Marketing Budget'!$C$4:$P$22,MATCH('Budget Worksheet'!$A218,'Marketing Budget'!$C$4:$C$22,0),MATCH('Budget Worksh"
+  },
+  "6518": {
+   "method": "engine",
+   "name": "MARKETING - SIGNAGE",
+   "formula": "INDEX('Marketing Budget'!$C$4:$P$22,MATCH('Budget Worksheet'!$A219,'Marketing Budget'!$C$4:$C$22,0),MATCH('Budget Worksh"
+  },
+  "6520": {
+   "method": "engine",
+   "name": "MARKETING SITE VISIT",
+   "formula": "INDEX('Marketing Budget'!$C$4:$P$22,MATCH('Budget Worksheet'!$A220,'Marketing Budget'!$C$4:$C$22,0),MATCH('Budget Worksh"
+  },
+  "6550": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0.05,
+   "name": "PROPERTY WEBSITES"
+  },
+  "6555": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0.05,
+   "name": "WEBSITE PORTALS"
+  },
+  "6560": {
+   "method": "corpRate",
+   "name": "MARKETING ALLOCATIONS"
+  },
+  "6565": {
+   "method": "engine",
+   "name": "OTHER MARKETING",
+   "formula": "INDEX('Marketing Budget'!$C$4:$P$22,MATCH('Budget Worksheet'!$A224,'Marketing Budget'!$C$4:$C$22,0),MATCH('Budget Worksh"
+  },
+  "6570": {
+   "method": "engine",
+   "name": "TOTAL MARKETING EXPENSE",
+   "formula": "SUM(E207:E225)"
+  },
+  "6601": {
+   "method": "last",
+   "name": "CABLE - CORP UNIT"
+  },
+  "6602": {
+   "method": "last",
+   "name": "CABLE TV"
+  },
+  "6604": {
+   "method": "wavg",
+   "mround": 250,
+   "factor": 0.05,
+   "name": "ELECTRIC - COMMON"
+  },
+  "6605": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "ELECTRIC - CORP UNIT"
+  },
+  "6606": {
+   "method": "wavg",
+   "mround": 25,
+   "factor": 0.05,
+   "name": "ELECTRIC - VACANTS"
+  },
+  "6607": {
+   "method": "same",
+   "mround": 10,
+   "name": "ELEC- COMMERCIAL"
+  },
+  "6608": {
+   "method": "wavg",
+   "mround": 250,
+   "factor": 0.05,
+   "name": "GAS - COMMON"
+  },
+  "6609": {
+   "method": "wavg",
+   "mround": 25,
+   "factor": 0.05,
+   "name": "GAS - CORP UNIT"
+  },
+  "6610": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "GAS - VACANTS"
+  },
+  "6611": {
+   "method": "wavg",
+   "mround": 25,
+   "name": "GAS- COMMERCIAL"
+  },
+  "6614": {
+   "method": "wavg",
+   "mround": 250,
+   "factor": 0.05,
+   "name": "SEWER / STORM DRAINS"
+  },
+  "6615": {
+   "method": "wavg",
+   "mround": 25,
+   "name": "SEWER-COMMERCIAL"
+  },
+  "6616": {
+   "method": "last",
+   "name": "TELEPHONE - CELLULAR"
+  },
+  "6617": {
+   "method": "last",
+   "name": "TELEPHONE - CORP UNIT"
+  },
+  "6618": {
+   "method": "last",
+   "name": "TELEPHONE - OFFICE"
+  },
+  "6619": {
+   "method": "flatT12",
+   "factor": 0.03,
+   "name": "INTERNET"
+  },
+  "6620": {
+   "method": "wavg",
+   "mround": 250,
+   "factor": 0.07,
+   "name": "TRASH"
+  },
+  "6621": {
+   "method": "wavg",
+   "mround": 25,
+   "factor": 0.07,
+   "name": "TRASH - VALET SVC"
+  },
+  "6622": {
+   "method": "wavg",
+   "mround": 250,
+   "factor": 0.05,
+   "name": "WATER"
+  },
+  "6623": {
+   "method": "wavg",
+   "mround": 25,
+   "factor": 0.05,
+   "name": "WATER- COMMERCIAL"
+  },
+  "6630": {
+   "method": "flatT12",
+   "name": "INTERNET - CORP UNIT"
+  },
+  "6650": {
+   "method": "flatT12",
+   "name": "UTILITY LATE FEES"
+  },
+  "6665": {
+   "method": "wavg",
+   "mround": 25,
+   "factor": 0,
+   "name": "OTHER UTILITY"
+  },
+  "6670": {
+   "method": "engine",
+   "name": "TOTAL UTILITY EXPENSES",
+   "formula": "SUM(E229:E251)"
+  },
+  "6702": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "APPLIANCE PARTS/SMALL APPLIANCES"
+  },
+  "6704": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "DRAPES/BLINDS"
+  },
+  "6706": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "CARPET CLEANING SUPPLIES"
+  },
+  "6708": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "DOORS/SUPPLIES (INTERIOR/ENTRY)"
+  },
+  "6710": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "ELECTRICAL (INTERIOR/EXTERIOR)"
+  },
+  "6712": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "EQUIPMENT REPAIRS"
+  },
+  "6714": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "EQUIPMENT PURCHASES - NEW"
+  },
+  "6716": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "EXTERMINATING SUPPLIES"
+  },
+  "6718": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "FIRE / SAFETY SUPPLIES"
+  },
+  "6720": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "HVAC / BOILER SUPPLIES"
+  },
+  "6722": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "JANITORIAL SUPPLIES"
+  },
+  "6724": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "LANDSCAPING SUPPLIES"
+  },
+  "6726": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "LOCKS / KEYS"
+  },
+  "6728": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "PAINT / DRYWALL"
+  },
+  "6730": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "PLUMBING SUPPLIES"
+  },
+  "6732": {
+   "method": "flatT12",
+   "name": "UNIFORMS"
+  },
+  "6733": {
+   "method": "flatT12",
+   "name": "TOOLS - EMPLOYEE REIMBURSEMENT"
+  },
+  "6734": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "POOL / REC SUPPLIES"
+  },
+  "6736": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "WINDOWS"
+  },
+  "6738": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "HARDWARE"
+  },
+  "6765": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "OTHER SUPPLIES"
+  },
+  "6770": {
+   "method": "engine",
+   "name": "TOTAL IN-HOUSE EXPENSES",
+   "formula": "SUM(E257:E277)"
+  },
+  "6802": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "CONCRETE REPAIRS"
+  },
+  "6804": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "DOORS (EXTERIOR / CAM)"
+  },
+  "6806": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "FENCING"
+  },
+  "6808": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "GUTTERS / DOWN SPOUTS"
+  },
+  "6810": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "LIFT STATION"
+  },
+  "6812": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "PARKING / DRIVEWAYS"
+  },
+  "6813": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "PAINT (EXTERIOR)"
+  },
+  "6814": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "ROOF REPAIRS"
+  },
+  "6816": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "SIGNAGE/MAINTENANCE"
+  },
+  "6820": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "STAIR / BANISTERS"
+  },
+  "6822": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "STRUCTURE IMPROVEMENTS"
+  },
+  "6824": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "OTHER EXTERIOR/CAM EXP."
+  },
+  "6870": {
+   "method": "engine",
+   "name": "TOTAL EXTERIOR / CAM EXP",
+   "formula": "SUM(E281:E293)"
+  },
+  "6902": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "ALARM SERVICE"
+  },
+  "6904": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "ANSWERING SERVICE"
+  },
+  "6905": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "APPLIANCE REPAIR CONTRACTOR"
+  },
+  "6906": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "BOILER CONTRACTOR"
+  },
+  "6907": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "CABINETS/COUNTERTOP CONTRACTOR"
+  },
+  "6908": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "CARPET CLEANING/REPAIRS CONTRACTOR"
+  },
+  "6910": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "COURTESY PATROL/SECURITY"
+  },
+  "6912": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "DRAPE / BLINDS CONTRACTOR"
+  },
+  "6914": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "ELECTRICAL CONTRACTOR"
+  },
+  "6916": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "ELEVATOR SERVICE"
+  },
+  "6917": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "FIRE/SAFETY CONTRACTOR"
+  },
+  "6918": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "EXTERMINATING CONTRACTOR"
+  },
+  "6919": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "GARAGE DOOR CONTRACTOR"
+  },
+  "6920": {
+   "method": "flatT12",
+   "factor": 0.1,
+   "name": "HVAC CONTRACTOR"
+  },
+  "6921": {
+   "method": "flatT12",
+   "name": "INSPECTIONS"
+  },
+  "6922": {
+   "method": "flatT12",
+   "name": "JANITORIAL CONTRACTOR"
+  },
+  "6924": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "LANDSCAPING CONTRACTOR"
+  },
+  "6926": {
+   "method": "wavg",
+   "mround": 300,
+   "name": "PAINTING CONTRACTOR"
+  },
+  "6928": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0.05,
+   "name": "PLUMBING CONTRACTOR"
+  },
+  "6930": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0.05,
+   "name": "POOL CONTRACTOR"
+  },
+  "6932": {
+   "method": "flatT12",
+   "factor": 0.05,
+   "name": "ROOFING CONTRACTOR"
+  },
+  "6934": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0.05,
+   "name": "SNOW REMOVAL CONTRACTOR"
+  },
+  "6935": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0.05,
+   "name": "TUB RESURFACING CONTRACTOR"
+  },
+  "6936": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0.05,
+   "name": "WINDOWS CONTRACTOR"
+  },
+  "6965": {
+   "method": "same",
+   "mround": 10,
+   "factor": 0.05,
+   "name": "OTHER CONTRACTORS"
+  },
+  "6970": {
+   "method": "engine",
+   "name": "TOTAL CONTRACT EXPENSES",
+   "formula": "SUM(E298:E323)"
+  },
+  "7002": {
+   "method": "flatT12",
+   "factor": 0.15,
+   "name": "RR - APPLIANCES"
+  },
+  "7004": {
+   "method": "flatT12",
+   "factor": 0.15,
+   "name": "RR - CABINETS/COUNTERTOPS"
+  },
+  "7006": {
+   "method": "flatT12",
+   "factor": 0.15,
+   "name": "RR - CARPET/VINYL"
+  },
+  "7008": {
+   "method": "same",
+   "factor": 0.15,
+   "name": "RR - DOORS(INTERIOR/ENTRY)"
+  },
+  "7009": {
+   "method": "same",
+   "factor": 0.15,
+   "name": "RR - FURNITURE"
+  },
+  "7010": {
+   "method": "flatT12",
+   "factor": 0.15,
+   "name": "RR - DRAPES/BLINDS"
+  },
+  "7012": {
+   "method": "flatT12",
+   "factor": 0.15,
+   "name": "RR - ELECTRICAL FIXTURES"
+  },
+  "7014": {
+   "method": "flatT12",
+   "factor": 0.15,
+   "name": "RR - HVAC/BOILER"
+  },
+  "7015": {
+   "method": "flatT12",
+   "factor": 0.15,
+   "name": "RR - PAINTING"
+  },
+  "7016": {
+   "method": "flatT12",
+   "factor": 0.15,
+   "name": "RR - PLUMBING FIXTURES"
+  },
+  "7018": {
+   "method": "flatT12",
+   "factor": 0.15,
+   "name": "RR - PARKING/SIDEWALK"
+  },
+  "7019": {
+   "method": "flatT12",
+   "factor": 0.15,
+   "name": "RR - ROOFING"
+  },
+  "7020": {
+   "method": "flatT12",
+   "factor": 0.15,
+   "name": "RR - FENCING"
+  },
+  "7025": {
+   "method": "flatT12",
+   "factor": 0.15,
+   "name": "RR - POOL"
+  },
+  "7069": {
+   "method": "flatT12",
+   "factor": 0.15,
+   "name": "REHAB CAPITALIZATION CONTRA"
+  },
+  "7070": {
+   "method": "engine",
+   "name": "TOTAL REHAB / REPLACE EXP",
+   "formula": "SUM(E327:E344)-E339-E333"
+  },
+  "7098": {
+   "method": "engine",
+   "name": "SUB-TOTAL MAINTENANCE EXP",
+   "formula": "E278+E294+E324+E346"
+  },
+  "7099": {
+   "method": "engine",
+   "name": "TOTAL OPERATING EXPENSES",
+   "formula": "E125+E172+E204+E252+E226+E348+E183"
+  },
+  "7279": {
+   "method": "engine",
+   "name": "TOTAL EXPENSE",
+   "formula": "E350"
+  },
+  "7280": {
+   "method": "engine",
+   "name": "NET OPERATING INCOME",
+   "formula": "E106-E351"
+  },
+  "7300": {
+   "method": "debt",
+   "name": "GENERAL INTEREST EXPENSE"
+  },
+  "7301": {
+   "method": "same",
+   "name": "REFI INTEREST EXPENSE"
+  },
+  "7302": {
+   "method": "same",
+   "name": "INTEREST ON SECURITY DEPOSITS"
+  },
+  "7315": {
+   "method": "engine",
+   "name": "TOTAL INTEREST EXPENSE",
+   "formula": "SUM(E355:E357)"
+  },
+  "7500": {
+   "method": "engine",
+   "name": "TOTAL SPECIAL PROJECT EXP",
+   "formula": "SUM(E361:E410)"
+  },
+  "8200": {
+   "method": "engine",
+   "name": "NET INCOME BEFORE DEPRECIATION",
+   "formula": "E352-E358-E411"
+  },
+  "8500": {
+   "method": "last",
+   "name": "DEPRECIATION EXPENSE"
+  },
+  "8502": {
+   "method": "last",
+   "name": "LOSS/GAIN ON DISPOSAL OF FIXED ASSETS"
+  },
+  "8503": {
+   "method": "last",
+   "name": "SELLING EXPENSES"
+  },
+  "8601": {
+   "method": "last",
+   "name": "AMORTIZATION EXPENSE"
+  },
+  "8602": {
+   "method": "engine",
+   "name": "TOTAL DEP/AMOR EXPENSE",
+   "formula": "SUM(E416:E419)"
+  },
+  "8950": {
+   "method": "engine",
+   "name": "TOTAL OTHER INCOME/EXPENSE",
+   "formula": "SUM(E423:E423)"
+  },
+  "9000": {
+   "method": "engine",
+   "name": "NET PROFIT / LOSS",
+   "formula": "E413-E420"
+  }
+ }
+}

@@ -58,7 +58,25 @@ export type Driver = { revised?: boolean } & (
   | { method: 'sellerUtil' }                                   // seller-statement utility level
   | { method: 'recovery'; pct: number }                        // % of prior-month utility billing
   | { method: 'charges'; codes: string }                       // rent-roll charge codes × 12
+  /** ANNUAL mode: the property's OWN statement line (trailing-12 actuals or
+      the current-year budget) × (1+growth), on a shape — Troy's 1-2-1 weighted
+      distribution by default, optionally MROUNDed. */
+  | { method: 'baseline'; src: 'actual' | 'budget'; pct: number; shape: BaselineShape; mult?: number; base: number; pcts?: Months; rule?: string }
+  /** ANNUAL mode: a line at its ratio to GPR (or net GPR / net rental income) × the budget's own */
+  | { method: 'pctGpr'; pct: number; of?: 'gpr' | 'netgpr' | 'net'; basis?: 'last' | 't12' }
+  /** ANNUAL mode (Yardi budget template rules) */
+  | { method: 'suggested'; note?: string }                       // corporate BudgetSuggestions amounts
+  | { method: 'corpRate'; perUnitYr?: number; flatMo?: number }   // corporate per-unit / flat monthly rate
+  | { method: 'debtService'; kind: 'interest' | 'principal'; loan?: string }  // amortization schedule from Yardi
+  | { method: 'perTurn'; amount: number; turns: number }          // $ per new move-in × projected move-ins
+  | { method: 'recapture'; pct: number }                          // concession recapture % of the other concessions
   | { method: 'zero' });
+
+/** 'actual' = same calendar month of the statement; 'wavg' = Troy's cyclic
+    1-2-1 weighted distribution; 'flat' = annual total / 12; 'curve' = total on
+    the GL's named curve; 'last' = the last actual month, flat; 'avgnz' =
+    average of the non-zero months, flat. */
+export type BaselineShape = 'wavg' | 'actual' | 'flat' | 'curve' | 'last' | 'avgnz';
 
 /** Everything the generator needs. Stored on budgets.inputs (jsonb). */
 export interface BudgetInputs {
@@ -95,6 +113,9 @@ export interface BudgetInputs {
     renewalPct?: number;      // share of expiring leases that renew (default .70)
     burnoffRenew?: number;    // LTL share burned at a renewal (default .50 — "half")
     burnoffNew?: number;      // LTL share burned at a new move-in (default 1.00)
+    /** ANNUAL: market rent growth deepens the loss to lease 1:1 (the Yardi
+        template's "change in market rent" row). Default true. */
+    followGpr?: boolean;
   };
   vacancyPct: Months;         // positive fractions, e.g. 0.05
   concessionPct: number;      // of GPR (positive fraction) — UW-derived
@@ -118,9 +139,50 @@ export interface BudgetInputs {
   /** utilities model: 'seller' = levels from the seller statements with
       recovery-lag income (default when a seller T12 is linked); 'uw' = UW
       allocation like other categories. */
-  utilities?: { source?: 'seller' | 'uw'; growthPct?: number; recoveryPct?: number | null };
+  utilities?: { source?: 'seller' | 'uw' | 'baseline' | 'recovery'; growthPct?: number; recoveryPct?: number | null };
   /** legacy field from the (removed) stub-proration design — ignored. */
   uwProration?: Record<string, number>;
+
+  /* ---- ANNUAL (non-acquisition) mode — see generateAnnualLines ---- */
+  /** 'annual' = calendar-year operating budget for a property Monarch already
+      runs: levels come from the property's OWN statements, not a UW book. */
+  mode?: 'new_acq' | 'annual';
+  /** How every "ordinary" GL is budgeted in annual mode: its own statement
+      line × (1+growth) on a shape. growthPct is keyed by pcode with '*' as
+      the default; glGrowth overrides one GL (the inline chip input). */
+  baseline?: {
+    source: 'actual' | 'budget';
+    growthPct: Record<string, number>;
+    glGrowth?: Record<string, number>;
+    /** per-GL shape override (the row menu's "Own T12 → shape × factor") */
+    glShape?: Record<string, BaselineShape>;
+    /** per-GL MROUND override */
+    glMround?: Record<string, number>;
+    shape: BaselineShape;
+    /** budget-wide MROUND (0 = each GL's foundation-rule multiple) */
+    mround: number;
+    /** apply the template's Conservice per-month utility forecast % instead of
+        the flat factor (the GRKS foundation used the flat factor) */
+    useUtilForecast?: boolean;
+  };
+  /** per-GL override of the contra-income % of GPR (cats 2 & 3) */
+  pctGpr?: Record<string, number>;
+  /** which reference the tie-out compares to: trailing-12 actuals, the
+      current-year budget, or typed EGI/NOI targets (actual by category). */
+  refSource?: 'actual' | 'budget' | 'target';
+  targets?: { egi?: number | null; noi?: number | null };
+  /** lease expirations per budget month (Yardi template LeaseExpirations;
+      derived from the unit-level rent roll when no template is linked) */
+  expirations?: Months | null;
+  /** per-GL $ per new move-in for the turnover-driven income lines
+      (application fee 5105, deposit forfeiture 5152, admin fee 5157) */
+  turnFees?: Record<string, number>;
+  /** corporate per-unit / flat rates (insurance $/unit, IT, legal, marketing
+      allocations) — defaults from the Yardi template year */
+  corpRates?: Record<string, { perUnitYr?: number; flatMo?: number }>;
+  /** GLs that take the corporate BudgetSuggestions amounts (default: the
+      template's own set — accounting, third-party billing, donations) */
+  suggestionGls?: string[];
 }
 
 /* ============================================================================
@@ -232,13 +294,18 @@ export function buildUtilityModel(
 export const CHARGE_GL_MAP: [RegExp, string][] = [
   [/pet/i, '5165'], [/garage|park/i, '5160'], [/storage/i, '5136'],
   [/corpfurn|furn/i, '5121'], [/mtm|month/i, '5150'], [/stlp|short/i, '5151'],
+  // Yardi "Rent Roll with Lease Charges" utility-billing codes → utility income
+  [/^ubtrash$|^trash$/i, '5169'], [/^ubutil$|^util$/i, '5170'], [/^subsidy$/i, '4996'],
 ];
+/** Charge codes that are NOT recurring other income (base rent, deposits,
+    one-time fees, employee/concession credits) — reported, never budgeted. */
+export const CHARGE_SKIP = /^(rent|conc|emp|payroll|move-in|renewal|referral|appl|adminfee|trfr|pep)$/i;
 
 /** charges: {PETRENT: monthly $, ...} → {gl: monthly $} for mapped codes. */
 export function chargeGlMonthly(charges: Record<string, number>): Record<string, number> {
   const out: Record<string, number> = {};
   for (const [code, v] of Object.entries(charges || {})) {
-    if (!v) continue;
+    if (!v || CHARGE_SKIP.test(code)) continue;
     for (const [re, gl] of CHARGE_GL_MAP) {
       if (re.test(code)) { out[gl] = r2((out[gl] || 0) + v); break; }
     }
@@ -967,15 +1034,26 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
     explicit instruction that it must carry nothing, so even an overridden
     inactive line regenerates to the fresh zero. */
 export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null, leases?: Lease[] | null, sellerUtil?: SellerUtilRow[] | null, charges?: Record<string, number> | null): BudgetLine[] {
-  // MANUAL wage-line overrides feed the burden base: benefits/bonuses (Minot
-  // ratio × wage total) must follow the wages actually budgeted, not the
-  // model's stale number (Troy 2026-08-21).
+  const effWages = overriddenWages(existing, payrollWages);
+  return mergeFresh(existing, coaList, generateLines(coaList, inputs, uw, comps, catShapes, effWages, leases, sellerUtil, charges));
+}
+
+/** MANUAL wage-line overrides feed the burden base: benefits/bonuses (ratio ×
+    wage total) must follow the wages actually budgeted, not the model's stale
+    number (Troy 2026-08-21). */
+export function overriddenWages(existing: BudgetLine[], payrollWages?: Record<string, number> | null): Record<string, number> | null | undefined {
   let effWages = payrollWages;
   for (const gl of WAGE_GLS) {
     const old = existing.find((l) => l.gl_code === gl);
     if (old && old.override) effWages = { ...(effWages || {}), [gl]: r2(sum(old.months)) };
   }
-  const fresh = new Map(generateLines(coaList, inputs, uw, comps, catShapes, effWages, leases, sellerUtil, charges).map((l) => [l.gl_code, l]));
+  return effWages;
+}
+
+/** Merge freshly generated lines over the existing ones: overrides survive
+    (unless the GL is inactive), notes and standing MROUNDs carry over. */
+export function mergeFresh(existing: BudgetLine[], coaList: CoaAccount[], freshLines: BudgetLine[]): BudgetLine[] {
+  const fresh = new Map(freshLines.map((l) => [l.gl_code, l]));
   const inactive = new Set(coaList.filter((a) => a.active === false).map((a) => a.code));
   const out: BudgetLine[] = [];
   const seen = new Set<string>();

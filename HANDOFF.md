@@ -172,6 +172,100 @@ blanked the editor for every budget on the first deploy. If MWND's plan shows od
 YARDI overrides from the broken run, re-run the CSV feature with adopt on (it
 re-syncs the differing lines) or restore its "before actualize" save point.
 
+## 2026-10-01 — ANNUAL (non-acquisition) budgets — the primary use from here on
+
+Phase 3 landed: `budget_type = 'annual'`, a calendar-year operating budget for a
+property Monarch already runs. **No UW book — the reference is the property's own
+statements**, and the METHODOLOGY IS MONARCH'S YARDI BUDGET TEMPLATE
+(`budgetYSR<year>_budget_<id>.xlsm`, one per property, exported from Yardi; Troy
+supplied the raw clnd/grks templates + last year's GRKS/THMO RMC drafts as the spec).
+Engine: `shared/annual.ts` (pure, 32 tests in `test/annual.test.ts`, incl. a
+reproduction of the clnd template's own cached Budget Worksheet values and the
+GRKS draft's Summary T12 income/expense/NOI to the cent).
+
+**Data flow.** Uploads → *Yardi budget template* (multi-file, one per property):
+`parseYardiBudgetTemplate` reads PriorFinancials (14 months of MTD actual +
+MTDBudget per GL) → two `stmt_snapshots` (kind `actual` = the template's PY months
+Jan–Oct this year + Nov–Dec last year; kind `budget` = Jan–Dec current-year budget)
++ one `template_snapshots` row (debt schedule, ManFeeMatrix + Q4 actual fee %,
+Conservice utility forecasts by GL/month, BudgetSuggestions, LeaseGoals /
+LeaseExpirations, PropertyInfo units/capital, MortgageDetail, DistHist, the
+Budget Worksheet assumption cells: renewal %, burnoffs, GPR % changes, October
+vacancy %). **"Paste Payroll Here" is never read** (restricted roster) — payroll
+comes from the regional payroll model. A property the chart doesn't know (grks)
+is created on the fly. A plain *12 Month Statement / 12 Month Budget* export also
+works (`parseMonarchStatement`). Budgets link `py_stmt_id`, `cy_budget_stmt_id`,
+`template_id` (Data sources panel re-points; delete re-points to the newest).
+
+**Rules (defaults = the template; Troy's upgrades where the data exists):**
+every ordinary GL = SAME CALENDAR MONTH of the T12 × (1 + factor): admin 5%,
+maint/rehab 5%, reims + websites 5%, trash 7%, utilities per the Conservice
+forecast (per GL per month), other income 0% · "October actual" lines flat
+(HAP, RE tax, auto ins, phones/cable/internet, models/admin/down, write-offs,
+concession lines) · GPR = rent-roll market rents (or Oct actual) × the template's
+monthly % changes · LTL = per-lease burnoff when the rent roll is linked, else the
+template's expiration method; market growth deepens LTL 1:1 (`ltl.followGpr`) ·
+vacancy = Oct % × GPR · delinquency / prior-period / PEP / recapture at their
+ratios (`pctGpr`) · application / deposit / admin fees = last year's $ spread by
+this year's projected move-ins (`perTurn`) · rent-roll charges × 12 (pet, garage,
+storage, ub*) · corporate rates: insurance $285/unit/yr, IT $483/mo + $43.14/unit,
+legal $7.86/unit, marketing alloc $24.76/unit (`corpRate`, editable) · accounting /
+third-party billing / donations from BudgetSuggestions, software $275/mo
+(`suggested`) · mgmt fee = Q4 actual % × income, whole dollars · interest 7300 and
+principal 3080 straight off the amortization schedule (`debtService`) · payroll
+model wages + burden at the property's own benefit/wage ratios · special projects
+zero (per site). **NOTHING ties automatically** (tieNoi/tieIncome default off);
+the tie-out compares to T12 actuals / CY budget / typed targets (picker in the
+tie card), category "tie" = match the reference. Grid shows T12 and CY-budget
+columns; row menu adds "Own T12 → shape × factor…", "% of GPR…", "Corporate
+suggestion…"; the seller-line / WAVG / T12-curve tools run on the own statement.
+
+**Exports**: single calendar-year Yardi CSV (same byte-exact format); review
+workbook = Budget tab with T12 Actuals + CY Budget columns, Summary in the
+template's analysis layout (Trailing 12 / Budget / Δ / per unit / CY budget / Δ /
+4-months-annualized / % change — same rows A–H so the Portfolio tab still rolls
+up), Raw Data lists the reference columns + template facts.
+
+**New rent-roll format**: Yardi "Rent Roll with Lease Charges" (9/30/26 export,
+15 ND sites, 3,305 units) parses with per-lease detail AND per-property recurring
+charge codes (the charge-driven other income the plain roll never had). Also
+fixed: Yardi omits the section marker between properties when the prior one has
+no Future section (phnd was dropped) — both unit-level parsers now continue.
+
+**Local dev without a system Postgres**: `npm run db:local` boots an embedded
+PostgreSQL 18 in `.pgdata/` (devDependency `embedded-postgres`), then
+`npm run dev`. Fixtures (gitignored): `yardi-template-clnd.xlsm`,
+`yardi-template-grks-draft.xlsm`, `rentroll-lease-charges.xlsx`.
+
+**The foundation = the GRKS draft's formulas (Troy, same day).** Every Budget
+Worksheet formula of `GRKS Budget Draft RMC 11.16.2025.xlsm` was classified and
+written to `seed/annual-rules.json` (272 GLs; `node scripts/extract-annual-rules.mjs
+<draft.xlsm> --write` regenerates it from any draft). Four history methods carry
+~210 GLs: `same` (PY same month × factor, MROUND $10 / $50 — most other income,
+admin lines), `wavg` (the 1-2-1 weighted average × factor, MROUND $25–$300 —
+electric, gas, sewer, water, trash, application / NSF / misc fees, lease
+terminations, MTM, pet move-in, sewer reim, painting contractor), `flatT12` (T12 ×
+factor ÷ 12, flat, only when the T12 exceeds $1,000 — ~110 small / erratic lines:
+most admin, all in-house maintenance, CAM, contract services, rehab), `last`
+(October actual flat — HAP, concessions, models / admin / down, write-offs, taxes,
+phones, cable). Factors by section as RMC set them: other income 0%, reims 5%,
+admin 5%, maintenance / CAM / contract services 10%, rehab 15%, utilities 5% flat
+(trash 7%, internet 3%) — the Conservice per-month forecast is now OPT-IN
+(`baseline.useUtilForecast`). The engine's precedence: a budget's own per-GL
+override (chip input / "Own T12 → shape × factor…" / `glMround`) → the GL's
+foundation rule → the built-in template rules → the budget-wide shape / category %.
+RMC's typed numbers (payroll, reims flat 9,000, RE tax 103,355 ÷ 12, delinquency
+seasonal multipliers) are property decisions, not rules — they stay with the engine
+defaults (payroll model, PY × factor, October actual × 3%, T12 ratio). Verified:
+with the rules on, the engine lands on RMC's own cells where the formulas were left
+alone (6604 Jan 800, 6702 2,092, 5165 Jan 1,050).
+
+**Open items for Troy**: confirm the default increase factors and corporate
+rates for 2027 (they're the 2026 template's); decide whether GPR should default
+to the rent roll (current) or October actual for existing sites; HAP / Section 8
+properties may need 4995/4996 driven off the HAP roll; the ManFeeMatrix tiers are
+shown, not auto-applied (fee % stays an input).
+
 ## Known gaps / next steps
 
 - **Unit-level rent roll support LANDED (2026-08-21 PM):** the parser now reads

@@ -8,12 +8,13 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "esbuild src/server.ts src/db.ts src/auth.ts src/migrate.ts src/routes.ts src/importers.ts src/csv-export.ts src/xlsx-export.ts src/seed-if-empty.ts shared/domain.ts --platform=node --format=esm --outdir=dist --outbase=. --sourcemap",
+    "build": "esbuild src/server.ts src/db.ts src/auth.ts src/migrate.ts src/routes.ts src/importers.ts src/csv-export.ts src/xlsx-export.ts src/seed-if-empty.ts src/annual-rules.ts shared/domain.ts shared/annual.ts --platform=node --format=esm --outdir=dist --outbase=. --sourcemap",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "migrate": "tsx src/migrate.ts",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/src/server.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:local": "node scripts/dev-db.mjs"
   },
   "dependencies": {
     "connect-pg-simple": "^9.0.1",
@@ -34,6 +35,7 @@
     "@types/multer": "^1.4.12",
     "@types/node": "^22.10.2",
     "@types/pg": "^8.11.10",
+    "embedded-postgres": "^18.4.0-beta.17",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

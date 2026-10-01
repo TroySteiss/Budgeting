@@ -2,7 +2,12 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import multer from 'multer';
 import { query, tx } from './db.js';
 import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
-import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, type BudgetCsvParsed } from './importers.js';
+import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, type BudgetCsvParsed } from './importers.js';
+import {
+  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, stmtLastMonth, stmtAnnualized,
+  refFromCalendar, refColumn, type TemplateData, type StmtData, type AnnualSources,
+} from '../shared/annual.js';
+import { loadAnnualRules } from './annual-rules.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
 import {
@@ -43,6 +48,7 @@ router.get('/state', h(async (_req, res) => {
     query('select * from properties order by code'),
     query(`select b.id, b.property_code, b.year, b.label, b.budget_type, b.status, b.updated_at,
                   b.uw_snapshot_id, b.comp_set_id, b.rent_snapshot_id, b.payroll_model_id, b.t12_snapshot_id,
+                  b.py_stmt_id, b.cy_budget_stmt_id, b.template_id,
                   b.inputs, p.name as property_name, p.units
            from budgets b join properties p on p.code=b.property_code order by b.updated_at desc`),
     query(`select u.id, u.property_code, u.label, u.created_at,
@@ -67,11 +73,26 @@ router.get('/state', h(async (_req, res) => {
     byBudget.get(l.budget_id)!.push(l);
   }
   const uwById = new Map(uws.rows.map((u: any) => [u.id, u]));
+  // annual budgets compare to their trailing-12 statement (or CY budget) — load the referenced statements once
+  const refIds = [...new Set((budgets.rows as any[]).filter((b) => b.budget_type === 'annual').flatMap((b) => [b.py_stmt_id, b.cy_budget_stmt_id]).filter(Boolean))];
+  const stmtById = new Map<number, any>();
+  if (refIds.length) for (const r of (await query('select id, data from stmt_snapshots where id = any($1)', [refIds])).rows) stmtById.set(r.id, r.data);
+  const [stmts, templates] = await Promise.all([
+    query('select id, property_code, kind, label, period, book, created_at from stmt_snapshots order by created_at desc'),
+    query('select id, property_code, budget_year, label, created_at from template_snapshots order by created_at desc'),
+  ]);
   for (const b of budgets.rows as any[]) {
     const ls = byBudget.get(b.id) || [];
     const monthsMap = new Map(ls.map((l: any) => [l.gl_code, l.months]));
     const k = kpis(monthsMap as any, Number(b.inputs?.capital) || 0);
-    const uw: any = b.uw_snapshot_id ? uwById.get(b.uw_snapshot_id) : null;
+    let uw: any = b.uw_snapshot_id ? uwById.get(b.uw_snapshot_id) : null;
+    let refLabel = 'UW';
+    if (b.budget_type === 'annual') {
+      const useBudget = b.inputs?.refSource === 'budget';
+      const sd = stmtById.get(useBudget ? b.cy_budget_stmt_id : b.py_stmt_id) || stmtById.get(b.py_stmt_id);
+      uw = sd ? refFromCalendar(coa, stmtCalendar(sd), Number(b.units) || 0) : null;
+      refLabel = sd ? (useBudget && stmtById.has(b.cy_budget_stmt_id) ? 'CY budget' : 'T12') : '—';
+    }
     const ovF = ls.filter((l: any) => l.override && l.driver?.method && l.driver.method !== 'manual' && l.driver.method !== 'setTotal' && l.driver.method !== 'zero').length;
     const ovAll = ls.filter((l: any) => l.override).length;
     b.dash = {
@@ -83,6 +104,7 @@ router.get('/state', h(async (_req, res) => {
       savePoints: spCounts.get(b.id) || 0,
       startMonth: Number(b.inputs?.startMonth) || 1,
       ltlMode: b.inputs?.ltl?.mode === 'ramp' ? 'ramp' : 'leases',
+      refLabel,
     };
     delete b.inputs;   // keep /state light
   }
@@ -90,6 +112,7 @@ router.get('/state', h(async (_req, res) => {
     coa, portfolios: portfolios.rows, properties: properties.rows,
     budgets: budgets.rows, uwSnapshots: uws.rows, compSets: comps.rows,
     t12Snapshots: t12s.rows, payrollModels: payrolls.rows, rentSnapshots: rents.rows,
+    stmtSnapshots: stmts.rows, templates: templates.rows,
     curves: CURVES,   // named seasonal shapes (Jan-Dec weights) for client-side spread tools
   });
 }));
@@ -122,7 +145,40 @@ router.post('/uploads/parse', upload.single('file'), h(async (req, res) => {
     const parsed = parsePayrollModel(buf);
     return res.json({ kind, filename: req.file.originalname, payroll: parsed });
   }
+  if (kind === 'statement' || kind === 'yardi_template') {
+    const coa = await loadCoa();
+    return res.json({ kind, files: [parseAnnualFile(kind, req.file.originalname, buf, coa)] });
+  }
   res.status(400).json({ error: `Unknown upload kind "${kind}"` });
+}));
+
+/** Annual-mode data files: a Monarch 12 Month Statement / 12 Month Budget
+    export, or the Yardi budget template workbook (one property each). */
+function parseAnnualFile(kind: string, filename: string, buf: Buffer, coa: CoaAccount[]): any {
+  const detail = new Set(coa.filter((a) => a.kind === 'detail').map((a) => a.code));
+  if (kind === 'statement') {
+    const st = parseMonarchStatement(buf, detail);
+    return { filename, statement: st, propertyGuess: st.propertyGuess };
+  }
+  const t = parseYardiBudgetTemplate(buf, detail);
+  // the parsed payload carries NO payroll roster data — that sheet is never read
+  return { filename, template: t.template, actual: t.actual, budget: t.budget, skippedSheets: t.skippedSheets, propertyGuess: t.template.code };
+}
+
+/** Several annual-mode files in one go (one per property). A file that fails
+    to parse is reported, not fatal. */
+router.post('/uploads/parse-many', upload.array('files', 40), h(async (req, res) => {
+  const kind = String(req.query.kind || req.body?.kind || '');
+  const files = (req.files as Express.Multer.File[]) || [];
+  if (!files.length) return res.status(400).json({ error: 'No files' });
+  if (kind !== 'statement' && kind !== 'yardi_template') return res.status(400).json({ error: `Unknown upload kind "${kind}"` });
+  const coa = await loadCoa();
+  const out: any[] = [];
+  for (const f of files) {
+    try { out.push(parseAnnualFile(kind, f.originalname, f.buffer, coa)); }
+    catch (e: any) { out.push({ filename: f.originalname, error: e?.message || String(e) }); }
+  }
+  res.json({ kind, files: out });
 }));
 
 router.post('/uploads/apply', h(async (req, res) => {
@@ -239,10 +295,65 @@ router.post('/uploads/apply', h(async (req, res) => {
     logChange(user, 'upload payroll model', { filename, payrollModelId: row.id });
     return res.json({ ok: true, uploadId, payrollModelId: row.id, relinked });
   }
+  if (kind === 'statement' || kind === 'yardi_template') {
+    // mappings: [{index, propertyCode}] over payload.files; a property the
+    // chart doesn't know yet (a non-ND site's template) is created on the fly
+    const created: any[] = [];
+    let relinked = 0;
+    for (const m of mappings || []) {
+      const f = (payload.files || [])[Number(m.index)];
+      const code = String(m.propertyCode || '').toLowerCase();
+      if (!f || f.error || !code) continue;
+      const tplName = f.template?.name || f.statement?.label || code;
+      const exists = (await query('select code, units from properties where code=$1', [code])).rows[0];
+      if (!exists) {
+        await query(`insert into properties(code, name, units, market, role) values($1,$2,$3,'',$4) on conflict (code) do nothing`,
+          [code, String(tplName).replace(/\s*\([^)]*\)\s*$/, ''), Number(f.template?.units) || 0, 'subject']);
+      } else if (f.template?.units && !Number(exists.units)) {
+        await query('update properties set units=$2 where code=$1', [code, Number(f.template.units)]);
+      }
+      const saveStmt = async (st: any): Promise<number> => (await query(
+        'insert into stmt_snapshots(property_code, upload_id, kind, label, period, book, data) values($1,$2,$3,$4,$5,$6,$7) returning id',
+        [code, uploadId, st.kind, `${st.label || f.filename} — ${st.kind === 'budget' ? 'budget' : 'actuals'} ${st.period || ''}`.trim(), st.period || '', st.book || '',
+         JSON.stringify({ monthCal: st.monthCal, monthYear: st.monthYear || null, rows: st.rows })]
+      )).rows[0].id;
+      const ids: any = { propertyCode: code };
+      if (kind === 'statement') {
+        ids[f.statement.kind === 'budget' ? 'cyBudgetStmtId' : 'pyStmtId'] = await saveStmt(f.statement);
+      } else {
+        ids.pyStmtId = await saveStmt(f.actual);
+        ids.cyBudgetStmtId = await saveStmt(f.budget);
+        ids.templateId = (await query(
+          'insert into template_snapshots(property_code, upload_id, budget_year, label, data) values($1,$2,$3,$4,$5) returning id',
+          [code, uploadId, Number(f.template.budgetYear) || new Date().getFullYear() + 1, `${f.filename} — ${f.template.name || code} ${f.template.budgetYear || ''}`.trim(), JSON.stringify(f.template)]
+        )).rows[0].id;
+      }
+      created.push(ids);
+      // opt-in: point this property's ANNUAL budgets at the new data and regenerate (overrides kept)
+      if (req.body?.relink) {
+        const budgets = await query(`select id from budgets where property_code=$1 and budget_type='annual'`, [code]);
+        for (const b of budgets.rows) {
+          await query(
+            `update budgets set py_stmt_id = coalesce($2, py_stmt_id), cy_budget_stmt_id = coalesce($3, cy_budget_stmt_id),
+                                template_id = coalesce($4, template_id), updated_at = now() where id=$1`,
+            [b.id, ids.pyStmtId ?? null, ids.cyBudgetStmtId ?? null, ids.templateId ?? null]
+          );
+          const lb = (await loadBudget(b.id))!;
+          const built = buildLines(lb, lb.budget.inputs, lb.lines);
+          await saveLines(b.id, built.lines);
+          relinked++;
+        }
+      }
+    }
+    if (!created.length) return res.status(400).json({ error: 'Map at least one file to a property' });
+    logChange(user, `upload ${kind}`, { filename, created, relinked });
+    return res.json({ ok: true, uploadId, created, relinked });
+  }
   res.status(400).json({ error: `Unknown upload kind "${kind}"` });
 }));
 
 /* ---------------- budgets ---------------- */
+interface RefCol { key: string; label: string; period: string; byGl: Record<string, number>; totals: Record<string, number> }
 interface LoadedBudget {
   budget: any; lines: BudgetLine[]; coa: CoaAccount[]; coaMap: Map<string, CoaAccount>;
   uw: UwSnapshotData | null; comps: CompWeights | null; catShapes: Record<string, Months> | null;
@@ -250,7 +361,18 @@ interface LoadedBudget {
   sellerUtil: SellerUtilRow[] | null; charges: Record<string, number> | null;
   savePoints?: any[];
   sellerRows: any[] | null;
+  /* ---- annual (non-acquisition) mode ---- */
+  annual: boolean;
+  stmtActual: StmtData | null; stmtBudget: StmtData | null; template: TemplateData | null;
+  actualCal: Record<string, Months> | null; budgetCal: Record<string, Months> | null; lastMonth: number;
+  /** the tie-out reference (trailing-12 / CY budget / typed targets) — the annual budget's "UW" */
+  ref: UwSnapshotData | null; refLabel: string;
+  refs: RefCol[];
 }
+
+/** The tie-out reference: the UW snapshot for acquisitions, the chosen
+    statement for annual budgets. */
+const refOf = (lb: LoadedBudget): UwSnapshotData | null => (lb.annual ? lb.ref : lb.uw);
 
 async function loadBudget(id: number): Promise<LoadedBudget | null> {
   const budget = (await query('select * from budgets where id=$1', [id])).rows[0];
@@ -328,7 +450,49 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
     'select id, name, created_by, created_at, summary from budget_snapshots where budget_id=$1 order by created_at desc limit 50',
     [id]
   )).rows;
-  return { budget, lines, coa, coaMap: new Map(coa.map((a) => [a.code, a])), uw, comps, catShapes, payrollWages, leases, sellerUtil, charges, sellerRows, savePoints };
+  const coaMap = new Map(coa.map((a) => [a.code, a]));
+
+  /* ---- annual mode: own statements + the Yardi template ---- */
+  const annual = budget.budget_type === 'annual' || budget.inputs?.mode === 'annual';
+  let stmtActual: StmtData | null = null, stmtBudget: StmtData | null = null, template: TemplateData | null = null;
+  let actualCal: Record<string, Months> | null = null, budgetCal: Record<string, Months> | null = null;
+  let lastMonth = 10, ref: UwSnapshotData | null = null, refLabel = 'UW';
+  const refs: RefCol[] = [];
+  if (annual) {
+    const stmtRows = await query('select id, kind, period, data from stmt_snapshots where id = any($1)', [[budget.py_stmt_id, budget.cy_budget_stmt_id].filter(Boolean)]);
+    const sa = stmtRows.rows.find((r: any) => r.id === budget.py_stmt_id);
+    const sb = stmtRows.rows.find((r: any) => r.id === budget.cy_budget_stmt_id);
+    stmtActual = sa?.data || null; stmtBudget = sb?.data || null;
+    if (budget.template_id) template = (await query('select data from template_snapshots where id=$1', [budget.template_id])).rows[0]?.data || null;
+    actualCal = stmtActual ? stmtCalendar(stmtActual) : null;
+    budgetCal = stmtBudget ? stmtCalendar(stmtBudget) : null;
+    lastMonth = stmtActual ? stmtLastMonth(stmtActual) : (template?.lastActual?.month || 10);
+    const units = Number(budget.inputs?.units) || 0;
+    if (actualCal) refs.push({ key: 'actual', label: 'T12 actuals', period: sa?.period || '', ...refColumn(actualCal) });
+    if (budgetCal) refs.push({ key: 'budget', label: `${sb?.period?.match(/\d{4}/)?.[0] || 'CY'} budget`, period: sb?.period || '', ...refColumn(budgetCal) });
+    if (stmtActual) { const a4 = stmtAnnualized(stmtActual, 4); if (Object.keys(a4).length) refs.push({ key: 'ann4', label: '4 mo annualized', period: '', ...refColumn(a4) }); }
+    const src = budget.inputs?.refSource || 'actual';
+    if (src === 'budget' && budgetCal) { ref = refFromCalendar(coa, budgetCal, units, 'CY budget'); refLabel = refs.find((r) => r.key === 'budget')?.label || 'CY budget'; }
+    else if (actualCal) {
+      ref = refFromCalendar(coa, actualCal, units, 'T12 actuals'); refLabel = 'T12 actuals';
+      if (src === 'target' && budget.inputs?.targets) {
+        const t = budget.inputs.targets;
+        if (t.egi != null) ref.egi = r2(Number(t.egi));
+        if (t.noi != null) ref.noi = r2(Number(t.noi));
+        ref.toe = r2(ref.egi - ref.noi);
+        refLabel = 'targets';
+      }
+    }
+    // the row tools (match a line, WAVG, T12-on-curve) take the property's OWN actuals as the source
+    if (stmtActual?.rows?.length) {
+      sellerRows = stmtActual.rows.map((r) => ({
+        gl: r.gl, name: `${r.gl} ${(r.name || coaMap.get(r.gl)?.name || '').trim()}`, months: r.months,
+        monthCal: stmtActual!.monthCal || [], pcode: coaMap.get(r.gl)?.pcode || null, total: r.total || 0,
+      }));
+    }
+  }
+  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, sellerUtil, charges, sellerRows, savePoints,
+           annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, ref, refLabel, refs };
 }
 
 async function saveLines(budgetId: number, lines: BudgetLine[]): Promise<void> {
@@ -364,11 +528,23 @@ function budgetView(lb: LoadedBudget) {
     lines,
     planLines: lb.lines,
     actualMonths,
-    tieout: computeTieout(lines, lb.coaMap, lb.uw),
+    tieout: computeTieout(lines, lb.coaMap, refOf(lb)),
     monthLabels: monthLabels(lb.budget.year, start),
     kpis: kpis(monthsMap, Number(lb.budget.inputs?.capital) || 0),
     categoryTotals: categoryTotals(lines, lb.coaMap),
-    uw: lb.uw,
+    // the tie-out reference: UW book (acquisition) or trailing-12 / CY budget / targets (annual)
+    uw: refOf(lb),
+    refLabel: lb.annual ? lb.refLabel : 'UW Y1',
+    annual: lb.annual,
+    refs: lb.annual ? lb.refs : [],
+    template: lb.template ? {
+      units: lb.template.units, capital: lb.template.capital, budgetYear: lb.template.budgetYear, lastActual: lb.template.lastActual,
+      leaseExpirations: lb.template.leaseExpirations, leaseGoals: lb.template.leaseGoals, renewalPct: lb.template.renewalPct,
+      mgmtFee: lb.template.mgmtFee, debt: lb.template.debt, mortgage: lb.template.mortgage, distHist: lb.template.distHist,
+      suggestions: lb.template.suggestions, suggestionNotes: lb.template.suggestionNotes, utilForecast: lb.template.utilForecast,
+      softwareFixedMo: lb.template.softwareFixedMo,
+    } : null,
+    lastMonth: lb.annual ? lb.lastMonth : null,
     compWeights: lb.comps?.byGl || null,
     compUnits: lb.comps?.units || null,
     compShapes: lb.comps?.glShapes || null,
@@ -437,7 +613,8 @@ function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[], inputs?: Bu
   // the ones the seller's income mix happened to populate) — SEWER REIM must
   // auto-claim sewer even when the old owner billed W/S together. pct comes
   // from any generated recovery line, else the budget's recovery setting.
-  const sellerMode = inputs?.utilities?.source !== 'uw';
+  // 'baseline' (annual default: own history × growth) has no recovery pass
+  const sellerMode = inputs?.utilities?.source !== 'uw' && inputs?.utilities?.source !== 'baseline';
   const genRec = lines.find((l) => !l.override && (l.driver as any)?.method === 'recovery');
   const pctRaw = genRec ? Number((genRec.driver as any).pct) : inputs?.utilities?.recoveryPct;
   const recLines = sellerMode && pctRaw != null && Number.isFinite(Number(pctRaw))
@@ -530,13 +707,22 @@ function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[], inputs?: Bu
     (LTL) → NOI tie (flex). The whole 12-month window ties to UW Y1 in full. */
 function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLine[]): { lines: BudgetLine[] } {
   const wages = effectiveWages(lb.payrollWages, inputs.wages);
-  let lines = existing
-    ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges)
-    : generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges);
+  let lines: BudgetLine[];
+  if (lb.annual) {
+    // ANNUAL: the property's own statements + the Yardi template rules (shared/annual.ts)
+    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: loadAnnualRules(), comps: lb.comps, payrollWages: wages, leases: lb.leases, charges: lb.charges };
+    lines = existing ? regenerateAnnual(existing, lb.coa, inputs, src) : generateAnnualLines(lb.coa, inputs, src);
+  } else {
+    lines = existing
+      ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges)
+      : generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges);
+  }
   lines = applyDependentPasses(lb, lines, inputs);
-  if (lb.uw) {
-    if (inputs.tieIncome !== false) lines = tieIncomeToUw(lines, lb.coaMap, lb.uw.egi, inputs.tieIncomeGl || '5003');
-    if (inputs.tieNoi !== false) lines = tieNoiToUw(lines, lb.coaMap, lb.uw.noi, inputs.noiFlexPcodes || DEFAULT_NOI_FLEX, inputs.noiFlexFormulas === true);
+  const ref = refOf(lb);
+  if (ref) {
+    // annual budgets never tie unless asked (defaults false in defaultAnnualInputs)
+    if (inputs.tieIncome !== false && !(lb.annual && inputs.tieIncome !== true)) lines = tieIncomeToUw(lines, lb.coaMap, ref.egi, inputs.tieIncomeGl || '5003');
+    if (inputs.tieNoi !== false && !(lb.annual && inputs.tieNoi !== true)) lines = tieNoiToUw(lines, lb.coaMap, ref.noi, inputs.noiFlexPcodes || DEFAULT_NOI_FLEX, inputs.noiFlexFormulas === true);
   }
   // standing per-line MROUND re-applies as the final step (not a lock)
   lines = applyRounding(lines);
@@ -544,20 +730,29 @@ function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLin
 }
 
 router.post('/budgets', h(async (req, res) => {
-  const { propertyCode, year, label, uwSnapshotId, compSetId, rentSnapshotId, t12SnapshotId, payrollModelId } = req.body || {};
+  const { propertyCode, year, label, uwSnapshotId, compSetId, rentSnapshotId, t12SnapshotId, payrollModelId, budgetType, pyStmtId, cyBudgetStmtId, templateId } = req.body || {};
   if (!propertyCode || !year) return res.status(400).json({ error: 'propertyCode and year are required' });
   const prop = (await query('select * from properties where code=$1', [propertyCode])).rows[0];
   if (!prop) return res.status(400).json({ error: `Unknown property ${propertyCode}` });
+  const annual = budgetType === 'annual';
 
   let uw: UwSnapshotData | null = null;
-  if (uwSnapshotId) uw = ((await query('select data from uw_snapshots where id=$1', [uwSnapshotId])).rows[0]?.data as UwSnapshotData) || null;
+  if (!annual && uwSnapshotId) uw = ((await query('select data from uw_snapshots where id=$1', [uwSnapshotId])).rows[0]?.data as UwSnapshotData) || null;
   let rent: { marketMonthly: number; inPlaceMonthly: number } | null = null;
   if (rentSnapshotId) {
     const r = (await query('select data from rent_snapshots where id=$1', [rentSnapshotId])).rows[0];
     if (r) rent = { marketMonthly: Number(r.data.marketMonthly) || 0, inPlaceMonthly: Number(r.data.inPlaceMonthly) || 0 };
   }
 
-  const inputs: BudgetInputs = uw
+  let inputs: BudgetInputs;
+  if (annual) {
+    // defaults from the property's own trailing-12 + the Yardi template (when linked)
+    const coa = await loadCoa();
+    const sa = pyStmtId ? (await query('select data from stmt_snapshots where id=$1', [pyStmtId])).rows[0]?.data as StmtData | undefined : undefined;
+    const tpl = templateId ? (await query('select data from template_snapshots where id=$1', [templateId])).rows[0]?.data as TemplateData | undefined : undefined;
+    const actualCal = sa ? stmtCalendar(sa) : null;
+    inputs = defaultAnnualInputs(Number(year), Number(prop.units) || tpl?.units || 0, actualCal, rent, coa, tpl || null, sa ? stmtLastMonth(sa) : tpl?.lastActual?.month);
+  } else inputs = uw
     ? { ...defaultInputs(Number(year), uw, rent), units: uw.units || prop.units }
     : {
         year: Number(year), units: prop.units, capital: 0, loan: 0, rate: 0.06, startMonth: 1,
@@ -568,10 +763,12 @@ router.post('/budgets', h(async (req, res) => {
       };
 
   const id = (await query(
-    `insert into budgets(property_code, year, label, budget_type, inputs, uw_snapshot_id, comp_set_id, rent_snapshot_id, t12_snapshot_id, payroll_model_id, created_by)
-     values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning id`,
-    [propertyCode, year, label || `${propertyCode} ${year} Budget`, 'new_acq', JSON.stringify(inputs),
-     uwSnapshotId || null, compSetId || null, rentSnapshotId || null, t12SnapshotId || null, payrollModelId || null, req.session.username || '']
+    `insert into budgets(property_code, year, label, budget_type, inputs, uw_snapshot_id, comp_set_id, rent_snapshot_id, t12_snapshot_id, payroll_model_id, created_by,
+                         py_stmt_id, cy_budget_stmt_id, template_id)
+     values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning id`,
+    [propertyCode, year, label || `${propertyCode} ${year} ${annual ? 'Annual ' : ''}Budget`, annual ? 'annual' : 'new_acq', JSON.stringify(inputs),
+     annual ? null : (uwSnapshotId || null), compSetId || null, rentSnapshotId || null, annual ? null : (t12SnapshotId || null), payrollModelId || null, req.session.username || '',
+     annual ? (pyStmtId || null) : null, annual ? (cyBudgetStmtId || null) : null, annual ? (templateId || null) : null]
   )).rows[0].id;
 
   const lb = await loadBudget(id);
@@ -591,9 +788,21 @@ router.put('/budgets/:id', h(async (req, res) => {
   const id = Number(req.params.id);
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
-  const { inputs, label, status: st, rentSnapshotId, uwSnapshotId, compSetId, t12SnapshotId, payrollModelId } = req.body || {};
+  const { inputs, label, status: st, rentSnapshotId, uwSnapshotId, compSetId, t12SnapshotId, payrollModelId, pyStmtId, cyBudgetStmtId, templateId } = req.body || {};
   if (label != null || st != null) {
     await query('update budgets set label=coalesce($2,label), status=coalesce($3,status), updated_at=now() where id=$1', [id, label ?? null, st ?? null]);
+  }
+  if (pyStmtId !== undefined || cyBudgetStmtId !== undefined || templateId !== undefined) {
+    await query(
+      `update budgets set
+         py_stmt_id        = case when $2::boolean then $3::int else py_stmt_id end,
+         cy_budget_stmt_id = case when $4::boolean then $5::int else cy_budget_stmt_id end,
+         template_id       = case when $6::boolean then $7::int else template_id end,
+         updated_at = now()
+       where id=$1`,
+      [id, pyStmtId !== undefined, pyStmtId ?? null, cyBudgetStmtId !== undefined, cyBudgetStmtId ?? null, templateId !== undefined, templateId ?? null]
+    );
+    logChange(req.session.username || '', 'relink annual data', { id });
   }
   // relink data snapshots (then regenerate below — pass inputs:{} to just relink+regen)
   if (rentSnapshotId !== undefined || uwSnapshotId !== undefined || compSetId !== undefined || t12SnapshotId !== undefined || payrollModelId !== undefined) {
@@ -796,7 +1005,8 @@ router.post('/budgets/:id/tie-noi', h(async (req, res) => {
   const id = Number(req.params.id);
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
-  if (!lb.uw) return res.status(400).json({ error: 'No UW snapshot linked' });
+  const ref = refOf(lb);
+  if (!ref) return res.status(400).json({ error: lb.annual ? 'No statement linked to compare to' : 'No UW snapshot linked' });
   // optional chooser: which categories flex — persisted for future ties/regens
   let flex: string[] = lb.budget.inputs?.noiFlexPcodes || DEFAULT_NOI_FLEX;
   let inclFormulas: boolean = lb.budget.inputs?.noiFlexFormulas === true;
@@ -805,9 +1015,9 @@ router.post('/budgets/:id/tie-noi', h(async (req, res) => {
     if (Array.isArray(req.body?.flexPcodes) && req.body.flexPcodes.length) flex = req.body.flexPcodes.map(String);
     await query('update budgets set inputs=$2 where id=$1', [id, JSON.stringify({ ...lb.budget.inputs, noiFlexPcodes: flex, noiFlexFormulas: inclFormulas })]);
   }
-  const lines = applyRounding(tieNoiToUw(lb.lines, lb.coaMap, lb.uw.noi, flex, inclFormulas));
+  const lines = applyRounding(tieNoiToUw(lb.lines, lb.coaMap, ref.noi, flex, inclFormulas));
   await saveLines(id, lines);
-  logChange(req.session.username || '', 'tie NOI to UW', { id, target: lb.uw.noi, flex });
+  logChange(req.session.username || '', `tie NOI to ${lb.refLabel}`, { id, target: ref.noi, flex });
   res.json(budgetView((await loadBudget(id))!));
 }));
 
@@ -815,16 +1025,17 @@ router.post('/budgets/:id/tie-income', h(async (req, res) => {
   const id = Number(req.params.id);
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
-  if (!lb.uw) return res.status(400).json({ error: 'No UW snapshot linked' });
+  const ref = refOf(lb);
+  if (!ref) return res.status(400).json({ error: lb.annual ? 'No statement linked to compare to' : 'No UW snapshot linked' });
   // optional chooser: which contra-income line absorbs — persisted as the default
   let gl = lb.budget.inputs?.tieIncomeGl || '5003';
   if (typeof req.body?.gl === 'string' && req.body.gl) {
     gl = req.body.gl;
     await query('update budgets set inputs=$2 where id=$1', [id, JSON.stringify({ ...lb.budget.inputs, tieIncomeGl: gl })]);
   }
-  const lines = applyRounding(tieIncomeToUw(lb.lines, lb.coaMap, lb.uw.egi, gl));
+  const lines = applyRounding(tieIncomeToUw(lb.lines, lb.coaMap, ref.egi, gl));
   await saveLines(id, lines);
-  logChange(req.session.username || '', 'tie income to UW', { id, target: lb.uw.egi, gl });
+  logChange(req.session.username || '', `tie income to ${lb.refLabel}`, { id, target: ref.egi, gl });
   res.json(budgetView((await loadBudget(id))!));
 }));
 
@@ -870,7 +1081,13 @@ router.post('/budgets/:id/rebalance', h(async (req, res) => {
   // target: abs categories tie to UW $; GPR-relative categories tie to pct × current GPR
   let target: number | null = null;
   const gprAnnual = sum(lb.lines.find((l) => l.gl_code === '4994')?.months || zero12());
-  if (['4', '5', '6', '8', '9', '10', '11', '12', '13', '14'].includes(pcode)) {
+  if (lb.annual) {
+    // annual: "tie" a category = match the reference (T12 / CY budget) total
+    const ref = refOf(lb);
+    if (!ref) return res.status(400).json({ error: 'No statement linked to compare to' });
+    if (pcode === '7') return res.status(400).json({ error: 'Management fee is % of income — use recalc instead' });
+    target = r2(ref.y1[pcode] || 0);
+  } else if (['4', '5', '6', '8', '9', '10', '11', '12', '13', '14'].includes(pcode)) {
     if (inputs.catBasis?.[pcode] === 'perUnit' && lb.comps?.units && inputs.units) {
       // per-unit basis: tie to comp $/unit × subject units across the category's detail GLs
       let compCat = 0;
@@ -903,12 +1120,15 @@ router.delete('/budgets/:id', requireAdmin, h(async (req, res) => {
 /* Delete an uploaded snapshot / model. Budget links are FK 'on delete set
    null', so pointing budgets are unlinked automatically; each one is then
    regenerated so its lines stop reflecting the deleted data. */
-const SNAPSHOT_KINDS: Record<string, { table: string; col: string }> = {
+const SNAPSHOT_KINDS: Record<string, { table: string; col: string; cols?: string[] }> = {
   uw: { table: 'uw_snapshots', col: 'uw_snapshot_id' },
   rent: { table: 'rent_snapshots', col: 'rent_snapshot_id' },
   t12: { table: 't12_snapshots', col: 't12_snapshot_id' },
   comp: { table: 'comp_sets', col: 'comp_set_id' },
   payroll: { table: 'payroll_models', col: 'payroll_model_id' },
+  // annual mode: a statement may be a budget's trailing-12 OR its CY budget
+  stmt: { table: 'stmt_snapshots', col: 'py_stmt_id', cols: ['py_stmt_id', 'cy_budget_stmt_id'] },
+  template: { table: 'template_snapshots', col: 'template_id' },
 };
 /* Payroll model wage aggregates are EDITABLE — when a re-upload/repoint isn't
    the fix, edit the numbers in place; every budget linked to the model
@@ -953,7 +1173,10 @@ router.delete('/uploads/data/:kind/:id', requireAdmin, h(async (req, res) => {
   const k = SNAPSHOT_KINDS[String(req.params.kind)];
   if (!k) return res.status(400).json({ error: `Unknown snapshot kind "${req.params.kind}"` });
   const id = Number(req.params.id);
-  const affected = (await query(`select id, property_code from budgets where ${k.col}=$1`, [id])).rows;
+  const cols = k.cols || [k.col];
+  const affected = (await query(`select id, property_code, ${cols.join(', ')} from budgets where ${cols.map((c) => `${c}=$1`).join(' or ')}`, [id])).rows;
+  // which column(s) each budget used (stmt kind: actual vs budget statement)
+  const stmtKind = k.table === 'stmt_snapshots' ? (await query('select kind from stmt_snapshots where id=$1', [id])).rows[0]?.kind : null;
   const del = await query(`delete from ${k.table} where id=$1`, [id]);
   if (!del.rowCount) return res.status(404).json({ error: 'Not found' });
   // budgets that pointed at the deleted row RE-POINT to the newest remaining
@@ -969,10 +1192,13 @@ router.delete('/uploads/data/:kind/:id', requireAdmin, h(async (req, res) => {
       replacement = rows.rows.find((r: any) => r.data?.properties?.[b.property_code])?.id ?? rows.rows[0]?.id ?? null;
     } else if (k.table === 'comp_sets') {
       replacement = (await query('select id from comp_sets order by created_at desc limit 1')).rows[0]?.id ?? null;
+    } else if (k.table === 'stmt_snapshots') {
+      replacement = (await query(`select id from stmt_snapshots where property_code=$1 and kind=$2 order by created_at desc limit 1`, [b.property_code, stmtKind || 'actual'])).rows[0]?.id ?? null;
     } else {
       replacement = (await query(`select id from ${k.table} where property_code=$1 order by created_at desc limit 1`, [b.property_code])).rows[0]?.id ?? null;
     }
-    await query(`update budgets set ${k.col}=$2, updated_at=now() where id=$1`, [b.id, replacement]);
+    const col = k.table === 'stmt_snapshots' ? (stmtKind === 'budget' ? 'cy_budget_stmt_id' : 'py_stmt_id') : k.col;
+    await query(`update budgets set ${col}=$2, updated_at=now() where id=$1`, [b.id, replacement]);
     if (replacement) repointed++;
     const lb = (await loadBudget(b.id))!;
     const built = buildLines(lb, lb.budget.inputs, lb.lines);
@@ -991,6 +1217,19 @@ const mmddyyyy = (): string => {
   const n = new Date();
   return `${String(n.getMonth() + 1).padStart(2, '0')}${String(n.getDate()).padStart(2, '0')}${n.getFullYear()}`;
 };
+
+/** Review-workbook arguments: acquisition budgets carry the UW book; annual
+    budgets carry their reference columns (T12 actuals, CY budget, 4-mo
+    annualized) and the template facts instead. */
+function reviewArgs(lb: LoadedBudget, prop: any, compName: string): ReviewArgs {
+  return {
+    propertyCode: lb.budget.property_code, propertyName: prop?.name || lb.budget.property_code,
+    year: lb.budget.year, units: Number(lb.budget.inputs?.units) || prop?.units || 0,
+    coa: lb.coa, lines: effectiveLines(lb), inputs: lb.budget.inputs, uw: lb.annual ? null : lb.uw,
+    compWeights: lb.annual ? null : (lb.comps?.byGl || null), compUnits: lb.annual ? null : (lb.comps?.units || null), compName,
+    annual: lb.annual, refs: lb.annual ? lb.refs : [], refLabel: lb.refLabel, template: lb.template,
+  };
+}
 
 /** Every export captures the budget as a save point — one per budget per day
     per user (repeat exports of the same state don't stack up). */
@@ -1042,12 +1281,7 @@ router.get('/budgets/:id/export.xlsx', h(async (req, res) => {
   if (lb.budget.comp_set_id) {
     compName = (await query('select name from comp_sets where id=$1', [lb.budget.comp_set_id])).rows[0]?.name || '';
   }
-  const buf = await buildReviewWorkbook({
-    propertyCode: lb.budget.property_code, propertyName: prop?.name || lb.budget.property_code,
-    year: lb.budget.year, units: Number(lb.budget.inputs?.units) || prop?.units || 0,
-    coa: lb.coa, lines: effectiveLines(lb), inputs: lb.budget.inputs, uw: lb.uw,
-    compWeights: lb.comps?.byGl || null, compUnits: lb.comps?.units || null, compName,
-  });
+  const buf = await buildReviewWorkbook(reviewArgs(lb, prop, compName));
   await captureExportPoint(lb, req.session.username || '');
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   // Troy's naming convention: "CWND 2026 Budget Draft TS 08212026.xlsx"
@@ -1087,12 +1321,7 @@ router.get('/export/bundle.zip', h(async (req, res) => {
     const prop = (await query('select * from properties where code=$1', [lb.budget.property_code])).rows[0];
     let compName = '';
     if (lb.budget.comp_set_id) compName = (await query('select name from comp_sets where id=$1', [lb.budget.comp_set_id])).rows[0]?.name || '';
-    const wbBuf = await buildReviewWorkbook({
-      propertyCode: lb.budget.property_code, propertyName: prop?.name || lb.budget.property_code,
-      year: lb.budget.year, units: Number(lb.budget.inputs?.units) || prop?.units || 0,
-      coa: lb.coa, lines: effectiveLines(lb), inputs: lb.budget.inputs, uw: lb.uw,
-      compWeights: lb.comps?.byGl || null, compUnits: lb.comps?.units || null, compName,
-    });
+    const wbBuf = await buildReviewWorkbook(reviewArgs(lb, prop, compName));
     zip.file(`Budget Drafts/${code} ${lb.budget.year} Budget Draft ${ini} ${stamp}.xlsx`, wbBuf);
     await captureExportPoint(lb, user);
   }
@@ -1131,12 +1360,7 @@ router.get('/export/portfolio.xlsx', h(async (req, res) => {
     const prop = (await query('select * from properties where code=$1', [lb.budget.property_code])).rows[0];
     let compName = '';
     if (lb.budget.comp_set_id) compName = (await query('select name from comp_sets where id=$1', [lb.budget.comp_set_id])).rows[0]?.name || '';
-    sites.push({
-      propertyCode: lb.budget.property_code, propertyName: prop?.name || lb.budget.property_code,
-      year: lb.budget.year, units: Number(lb.budget.inputs?.units) || prop?.units || 0,
-      coa: lb.coa, lines: effectiveLines(lb), inputs: lb.budget.inputs, uw: lb.uw,
-      compWeights: lb.comps?.byGl || null, compUnits: lb.comps?.units || null, compName,
-    });
+    sites.push(reviewArgs(lb, prop, compName));
     await captureExportPoint(lb, req.session.username || '');
   }
   const buf = await buildPortfolioWorkbook(sites, label);

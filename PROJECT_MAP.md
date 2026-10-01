@@ -245,6 +245,48 @@ onto plan lines that differ (override, driver `yardiCsv`, YARDI chip) so a later
 export from the tool cannot undo Yardi-side edits. Fixtures:
 `rrnd-budget-yardi-export-2026.csv`, `rrnd-budget-revision-aug26-hand.csv`.
 
+## Annual (non-acquisition) mode — `shared/annual.ts` (2026-10-01)
+
+`budget_type='annual'` (`inputs.mode='annual'`): a calendar-year budget for an existing
+Monarch property. **Reference = the property's own statements, methodology = the Yardi
+budget template** (`budgetYSR<year>_budget_<id>.xlsm`). Tables: `stmt_snapshots`
+(kind actual|budget; `{monthCal, monthYear, rows[{gl,name,months,total}]}` — columns land on
+calendar months via `stmtCalendar`, the T12 is Jan–Oct this year + Nov–Dec last year exactly as
+the template's PriorFinancials anchors say) and `template_snapshots` (`TemplateData`: debt
+schedule, mgmtFee {actualPct, matrix}, utilForecast gl→%[12], suggestions gl→$[12] + notes,
+leaseGoals/leaseExpirations, renewalPct/burnoffs/gprPct/vacancyPct, mortgage, distHist,
+softwareFixedMo, lastActual, pyYears). Budget FKs: `py_stmt_id`, `cy_budget_stmt_id`,
+`template_id`. `routes.ts`: `loadBudget` builds `actualCal/budgetCal/lastMonth/template`,
+`ref` (= `refFromCalendar` of T12 / CY budget / typed targets per `inputs.refSource`) and
+`refs` (`refColumn`: annual $ by GL + Monarch totals for T12, CY budget, 4-mo annualized);
+`refOf(lb)` is what every tie / tie-out / rebalance uses in place of the UW. `buildLines`
+branches to `generateAnnualLines` / `regenerateAnnual` (shared `mergeFresh`). Uploads:
+`POST /uploads/parse-many?kind=yardi_template|statement` (multi-file) → `/uploads/apply`
+creates the statements + template (and the property if new), optional relink of the
+property's annual budgets. `parseYardiBudgetTemplate` never reads "Paste Payroll Here".
+
+**Foundation rules**: `seed/annual-rules.json` (gl → `{method same|wavg|flatT12|last|engine…,
+mround, factor, noThreshold}`) extracted from the GRKS 2026 RMC draft by
+`scripts/extract-annual-rules.mjs`; loaded by `src/annual-rules.ts` (`loadAnnualRules`, cached) and
+passed as `AnnualSources.rules`. `generateAnnualLines` → `baseline()` precedence: per-GL inputs
+(`baseline.glShape/glGrowth/glMround`) → rule → built-in sets (`LAST_MONTH_FLAT_GLS`,
+`TEMPLATE_GL_PCT`…) → `baseline.shape` / `growthPct`. Conservice forecasts apply only with
+`baseline.useUtilForecast`. Driver carries `rule` for the chip label.
+
+Drivers added: `baseline {src, pct|pcts, shape actual|wavg|flat|curve|last|avgnz, mult, base, rule}`,
+`pctGpr {pct, of gpr|netgpr|net, basis last|t12}`, `recapture`, `perTurn {amount, turns}`,
+`suggested`, `corpRate {perUnitYr, flatMo}`, `debtService {kind interest|principal}`. Inputs
+added: `baseline {source, growthPct by pcode ('*' default), glGrowth, glShape, shape, mround}`,
+`pctGpr`, `expirations[12]`, `turnFees`, `corpRates`, `suggestionGls`, `refSource`, `targets`,
+`ltl.followGpr`. Rule tables live at the top of annual.ts (`CORP_RATES`, `LAST_MONTH_FLAT_GLS`,
+`TEMPLATE_GL_PCT`, `TEMPLATE_CAT_PCT`, `TURN_GLS`, `FLAT_T12_GLS`, `AVG_NZ_GLS`,
+`DEFAULT_SUGGESTION_GLS`, `BASELINE_SKIP_SECTIONS`). Client: `annualInputsHtml` /
+`applyAnnualInputs` / `openShapeMenu` / `renderAnnualUploadPreview` (end of app.js); grid ref
+columns `ref1/ref2`; tie card reference picker; `drv-base` / `drv-corp` fills. Workbook:
+`ReviewArgs.annual/refs/template` — Budget tab's UW/comp slots hold T12 Actuals / CY Budget,
+Summary keeps rows A–H (Portfolio tab compatible) + columns I–L (CY budget, Δ, 4-mo
+annualized, % change). Tests: `test/annual.test.ts`.
+
 ## Exports
 
 - **CSV** (`src/csv-export.ts`): reproduces the real Yardi ETL format byte-for-byte
