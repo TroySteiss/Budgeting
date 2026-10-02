@@ -116,12 +116,30 @@ describe('generateAnnualLines — template rules on own history', () => {
     expect(sum(L(lines, '7321').months)).toBe(0);
     expect(L(lines, '7300').months[0]).toBe(1500);
   });
-  it('payroll without a model = own history; with a model, burden follows the own benefit/wage ratio', () => {
-    expect(L(lines, '6402').months[0]).toBe(2000);
+  it('payroll: wages flat × (1 + raise); burden = prior-year % of wages × budgeted wages, and it moves with wages', () => {
+    // no model: own T12 24,000 × 1.035 flat = 2,070/mo (never the lumpy same-month history)
+    const w = L(lines, '6402');
+    expect(w.months.every((v) => v === w.months[0])).toBe(true);
+    expect(sum(w.months)).toBeCloseTo(24000 * 1.035, 0);
+    // 6418 was 10% of wages last year → 10% of this year's wages, flat
+    const b = L(lines, '6418');
+    expect((b.driver as any).method).toBe('burdenRatio');
+    expect((b.driver as any).ratio).toBeCloseTo(0.1, 5);
+    expect(sum(b.months)).toBeCloseTo(0.1 * sum(w.months), 0);
+    expect(b.months.every((v) => Math.abs(v - b.months[0]) < 0.02)).toBe(true);
+    // a model (or a hand-typed wage line) changes wages → burden follows
     const withModel = generateAnnualLines(coaList, inputs, { ...src, payrollWages: { '6402': 30000 } });
     expect(sum(L(withModel, '6402').months)).toBeGreaterThan(30000);   // March raise
-    expect((L(withModel, '6418').driver as any).method).toBe('burdenRatio');
-    expect((L(withModel, '6418').driver as any).ratio).toBeCloseTo(0.1, 5);
+    expect(sum(L(withModel, '6418').months)).toBeCloseTo(0.1 * sum(L(withModel, '6402').months), 0);
+  });
+  it('loss to lease: flat mode holds the last actual month with no burnoff (deepens only with GPR when asked)', () => {
+    const flatIn = { ...inputs, ltl: { ...inputs.ltl, mode: 'flat' as const, followGpr: false } };
+    const l = L(generateAnnualLines(coaList, flatIn, src), '5003');
+    expect(l.months.every((v) => v === -500)).toBe(true);
+    const follow = { ...inputs, ltl: { ...inputs.ltl, mode: 'flat' as const, followGpr: true }, gpr: { ...inputs.gpr, growthPct: Array(12).fill(0.01) as Months } };
+    const l2 = L(generateAnnualLines(coaList, follow, src), '5003');
+    expect(l2.months[0]).toBe(-500);
+    expect(l2.months[11]).toBeLessThan(-500);
   });
   it('tie-out reference from the same history: budget at 0% factors reproduces its own T12 by category', () => {
     const flat = { ...inputs, baseline: { source: 'actual' as const, growthPct: { '*': 0 }, shape: 'actual' as const, mround: 0 } };

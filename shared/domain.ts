@@ -108,7 +108,7 @@ export interface BudgetInputs {
   ltl: {
     /** 'leases' = per-lease burnoff at each lease's turnover month (needs a
         unit-level rent roll); 'ramp' = simple linear ramp fallback. */
-    mode?: 'leases' | 'ramp';
+    mode?: 'leases' | 'ramp' | 'flat';
     startMonthly: number; targetPct: number; rampMonths: number;   // ramp params
     renewalPct?: number;      // share of expiring leases that renew (default .70)
     burnoffRenew?: number;    // LTL share burned at a renewal (default .50 — "half")
@@ -171,6 +171,9 @@ export interface BudgetInputs {
       current-year budget, or typed EGI/NOI targets (actual by category). */
   refSource?: 'actual' | 'budget' | 'target';
   targets?: { egi?: number | null; noi?: number | null };
+  /** annual: growth targets vs the reference per subtotal (pcode, plus 'opex'
+      and 'noi'); "tie" shifts the T12-based lines' growth factors to land there */
+  growthTargets?: Record<string, number>;
   /** lease expirations per budget month (Yardi template LeaseExpirations;
       derived from the unit-level rent roll when no template is linked) */
   expirations?: Months | null;

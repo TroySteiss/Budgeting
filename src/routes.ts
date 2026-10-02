@@ -12,7 +12,7 @@ import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
 import {
   CoaAccount, BudgetLine, BudgetInputs, UwSnapshotData, CompWeights, Months,
-  generateLines, regenerate, rebalanceCategory, defaultInputs, computeTieout,
+  generateLines, regenerate, rebalanceCategory, defaultInputs, computeTieout, PCODES,
   kpis, categoryTotals, t12CategoryShapes, tieNoiToUw, tieIncomeToUw, DEFAULT_NOI_FLEX,
   calendarSlice, monthLabels, applyRounding, zero12, r2, sum, CURVES, WAGE_GLS, type Lease, type SellerUtilRow,
   actualizeFromComparison, applyActuals, injectPreStartActuals, ownershipIndexOf, actualKey, parseActualKey, type ActualizedMonth,
@@ -1102,6 +1102,126 @@ router.post('/budgets/:id/round', h(async (req, res) => {
     await saveLines(id, lines);
   }
   logChange(req.session.username || '', 'set standing MROUND', { id, multiple, lines: touched });
+  res.json(budgetView((await loadBudget(id))!));
+}));
+
+/* ANNUAL growth-target tie. Troy: nothing derives from an underwriting — each
+   subtotal gets a growth % vs the reference (T12 / CY budget) and "tie" moves
+   the growth FACTORS of that subtotal's T12-based lines (uniform shift) until
+   the subtotal lands on reference × (1 + target). GPR solves the uniform
+   monthly % instead; a subtotal with no factor-driven lines falls back to a
+   proportional rebalance. 'opex' spreads over every expense category but the
+   management fee; 'noi' sets the opex total that yields the NOI target. */
+const GROWTH_EXPENSE_PCODES = ['6', '8', '9', '10', '11', '12', '13', '14'];
+router.post('/budgets/:id/tie-growth', h(async (req, res) => {
+  const id = Number(req.params.id);
+  const key = String(req.body?.pcode || '');
+  const lb = await loadBudget(id);
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  if (!lb.annual) return res.status(400).json({ error: 'Growth targets are for annual budgets' });
+  const ref = refOf(lb);
+  if (!ref) return res.status(400).json({ error: 'No statement linked to compare to' });
+  const inputs: BudgetInputs = JSON.parse(JSON.stringify(lb.budget.inputs));
+  const targets = { ...(inputs.growthTargets || {}) };
+  const pct = req.body?.pct != null && req.body.pct !== '' ? Number(req.body.pct) : targets[key];
+  if (!Number.isFinite(pct)) return res.status(400).json({ error: `No growth target set for ${key}` });
+  if (key === '7') return res.status(400).json({ error: 'Management fee follows income — set its % under Assumptions' });
+  targets[key] = pct;
+  inputs.growthTargets = targets;
+  const user = req.session.username || '';
+
+  // which detail lines move, and what their total must become
+  let members: string[];
+  let target: number;
+  const catOf = (lines: BudgetLine[], ps: string[]) => lines.reduce((a, l) => { const acc = lb.coaMap.get(l.gl_code); return acc?.kind === 'detail' && ps.includes(acc.pcode || '') ? r2(a + sum(l.months)) : a; }, 0);
+  if (key === 'opex') { members = GROWTH_EXPENSE_PCODES; target = r2(ref.toe * (1 + pct) - catOf(lb.lines, ['7'])); }
+  else if (key === 'noi') {
+    const tie = computeTieout(lb.lines, lb.coaMap, ref);
+    members = GROWTH_EXPENSE_PCODES;
+    target = r2(tie.egi.budget - ref.noi * (1 + pct) - catOf(lb.lines, ['7']));
+  } else {
+    if (!(PCODES as readonly string[]).includes(key)) return res.status(400).json({ error: `Unknown subtotal ${key}` });
+    members = [key]; target = r2((ref.y1[key] || 0) * (1 + pct));
+  }
+
+  let lines = lb.lines;
+  let how = '';
+  if (key === 'loss') return res.status(400).json({ error: 'Loss to lease is its own model (rent roll burnoff / flat / ramp) — set it under Assumptions' });
+  if (key === '2' || key === '3') {
+    // contra-income: the lines are % of GPR (+ vacancy %, + flat October lines) —
+    // scale every percentage by the same k so the subtotal lands exactly
+    // (recapture rides on the other concessions and scales by itself)
+    if (!catOf(lines, [key])) return res.status(400).json({ error: 'Nothing in this subtotal to scale' });
+    let kTotal = 1;
+    for (let pass = 0; pass < 4; pass++) {
+      const cur = catOf(lines, [key]);
+      if (!cur || Math.abs(target - cur) <= Math.max(1, Math.abs(target) * 0.0005)) break;
+      const k = target / cur;
+      kTotal *= k;
+      const pg = { ...(inputs.pctGpr || {}) };
+      const gg = { ...((inputs.baseline && inputs.baseline.glGrowth) || {}) };
+      for (const l of lines) {
+        const acc = lb.coaMap.get(l.gl_code);
+        if (acc?.kind !== 'detail' || acc.pcode !== key || l.override) continue;
+        const d: any = l.driver || {};
+        if (d.method === 'pctGpr') pg[l.gl_code] = Math.round(d.pct * k * 1e6) / 1e6;
+        else if (d.method === 'vacancy') inputs.vacancyPct = (inputs.vacancyPct || []).map((v) => Math.round(v * k * 1e6) / 1e6) as Months;
+        else if (d.method === 'baseline') gg[l.gl_code] = Math.max(-0.95, Math.round(((1 + (d.pct || 0)) * k - 1) * 1e6) / 1e6);
+      }
+      inputs.pctGpr = pg;
+      inputs.baseline = { ...(inputs.baseline || ({} as any)), glGrowth: gg };
+      lines = buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lines).lines;
+    }
+    how = `percentages scaled ×${kTotal.toFixed(4)}`;
+  } else if (key === '1') {
+    // GPR: uniform monthly growth g with base × Σ(1+g)^i = target (bisection)
+    const gprLine = lines.find((l) => l.gl_code === '4994');
+    if (gprLine?.override) return res.status(400).json({ error: 'GPR is overridden — release it first' });
+    const base = inputs.gpr?.baseMonthly > 0 ? inputs.gpr.baseMonthly : (lb.actualCal?.['4994'] || zero12())[(lb.lastMonth || 10) - 1] || 0;
+    if (!base) return res.status(400).json({ error: 'No GPR base (rent roll or last actual month)' });
+    const annualAt = (g: number) => { let c = base, s = 0; for (let i = 0; i < 12; i++) { c *= 1 + g; s += c; } return s; };
+    let lo = -0.5, hi = 0.5;
+    for (let i = 0; i < 60; i++) { const mid = (lo + hi) / 2; if (annualAt(mid) < target) lo = mid; else hi = mid; }
+    const g = Math.round(((lo + hi) / 2) * 1e6) / 1e6;
+    inputs.gpr = { ...(inputs.gpr || { baseMonthly: 0, growthPct: zero12() }), growthPct: Array(12).fill(g) as Months };
+    lines = buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lines).lines;
+    how = `GPR monthly growth ${(g * 100).toFixed(3)}%`;
+  } else {
+    const isMember = (l: BudgetLine) => { const acc = lb.coaMap.get(l.gl_code); return acc?.kind === 'detail' && members.includes(acc.pcode || ''); };
+    const adjustable = (l: BudgetLine) => { const d: any = l.driver; return isMember(l) && !l.override && d?.method === 'baseline' && d.src !== 'budget' && !d.pcts && sum(l.months) !== 0; };
+    if (!lines.some(adjustable)) {
+      if (members.length > 1) return res.status(400).json({ error: 'No trailing-12 × factor lines left to move in the expense categories' });
+      lines = rebalanceCategory(lines, lb.coaMap, key, target);
+      how = 'proportional rebalance (no factor-driven lines)';
+    } else {
+      // up to 4 passes: MROUND and the Jan/Dec edge rules make the response slightly non-linear
+      let shiftTotal = 0;
+      // secant steps: the first shift assumes only the factor lines move; the
+      // measured response then sets the slope (burden lines ride on wages, MROUNDs
+      // and the Jan/Dec edge rules make it non-linear) — lands in 2–3 passes
+      let prevCur: number | null = null, prevDelta = 0;
+      for (let pass = 0; pass < 10; pass++) {
+        const cur = catOf(lines, members);
+        if (Math.abs(target - cur) <= Math.max(1, Math.abs(target) * 0.0005)) break;
+        const adj = lines.filter(adjustable);
+        const pctOf = (l: BudgetLine): number => (l.driver as any)?.pct || 0;
+        const effBase = adj.reduce((a, l) => a + sum(l.months) / (1 + pctOf(l)), 0);
+        if (!effBase) break;
+        const slope = prevCur != null && prevDelta && (cur - prevCur) / prevDelta > effBase * 0.2 ? (cur - prevCur) / prevDelta : effBase;
+        const delta = (target - cur) / slope;
+        prevCur = cur; prevDelta = delta;
+        shiftTotal += delta;
+        const gg = { ...((inputs.baseline && inputs.baseline.glGrowth) || {}) };
+        for (const l of adj) gg[l.gl_code] = Math.max(-0.95, Math.round((pctOf(l) + delta) * 1e6) / 1e6);
+        inputs.baseline = { ...(inputs.baseline || ({} as any)), glGrowth: gg };
+        lines = buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lines).lines;
+      }
+      how = `growth factors shifted ${(shiftTotal * 100).toFixed(2)} pts`;
+    }
+  }
+  await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(inputs)]);
+  await saveLines(id, lines);
+  logChange(user, 'tie growth target', { id, pcode: key, pct, target, how });
   res.json(budgetView((await loadBudget(id))!));
 }));
 

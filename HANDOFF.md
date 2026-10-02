@@ -275,6 +275,16 @@ shown, not auto-applied (fee % stays an input).
   templates rows expose `py_stmt_id`/`cy_budget_stmt_id`/`actual_period`/
   `budget_period`). The statement pickers live under a collapsed "separate Monarch
   export" link; **no comp set for annual** (the property is its own comp).
+- **2027 reality (Troy, same day): the Yardi template does NOT pull for '27 yet**, so
+  the dialog is statement-first: *Trailing-12 actuals by GL* (Yardi 12 Month
+  Statement export, Nov–Oct) is the lead picker, *Current-year budget* (12 Month
+  Budget export) optional, the template optional underneath (its two statements
+  are not offered twice). Budget year defaults to the statement's last year + 1.
+  Statement-only generation verified on grks: GPR off the October actual (rent roll
+  when linked), vacancy at the October %, mgmt fee at the T12 ratio, foundation
+  rules unchanged (6604 9,800 / 6702 2,092), debt = last actual month flat (or
+  loan × rate from Assumptions), corp rates on. A statement upload titled
+  "Name (code)" creates the property if the chart doesn't know it.
 - **Every picker has an ⬆ upload** (`dlgUpload` in app.js): template / statement →
   `parse-many` + `apply` mapped to the guessed property (creates it if unknown);
   rent roll → saves every property the chart recognises, selects the current one;
@@ -292,6 +302,41 @@ shown, not auto-applied (fee % stays an input).
   overrides audit, columns, side panel, zero-rows / %-dist toggles. Legend lists
   only the fills the open budget uses. Generic `popMenu()` (rowmenu look, closes on
   outside click / Escape; `data-keep` keeps the menu open for inline controls).
+
+## 2026-10-02 — Growth targets replace the UW tie-out (annual); payroll flat + ratio; LTL flat
+
+- **Troy: "nothing is going to be derived to an underwriting. Growth targets will
+  be set for all subtotals. A Tie should adjust those growth %'s to be in line."**
+  Annual tie card (`tieGrowthHtml` in app.js) = per subtotal: reference (T12 or CY
+  budget) · budget · Δ% (growth of the SIGNED reference, so a contra line
+  shrinking reads negative) · Target % box · tie. Targets persist in
+  `inputs.growthTargets` (pcode, 'opex', 'noi'); "tie all" applies them in order
+  (categories → opex → noi). `POST /budgets/:id/tie-growth {pcode, pct}`:
+  • expense / other-income categories, 'opex', 'noi': uniform shift of the
+    trailing-12 × factor lines' growth (`baseline.glGrowth[gl]`), secant passes
+    (burden rides on wages, MROUNDs) → lands within 0.05%;
+  • GPR ('1'): solves the uniform monthly % (`gpr.growthPct`) by bisection;
+  • concessions / rental loss ('2','3'): scales every % driver
+    (`pctGpr[gl]`, `vacancyPct`, flat lines' factor) by k = target/current;
+  • 'loss' (LTL) refused — it is its own model (Assumptions);
+  • mgmt fee ('7') refused — follows income;
+  • a subtotal with no factor lines left (all overridden) → proportional rebalance.
+  Typed-$ EGI/NOI targets (`refSource='target'`) dropped from the annual UI.
+- **Payroll** (Troy: "all over the place"; "ratio should be based on prior-year %
+  of wages; if I change wages it should change as well"): wages FLAT by month —
+  model annual (March step) when a model is linked, else own T12 ÷ 12 × (1 +
+  raise); every other payroll GL = prior-year ratio to wages × budgeted wages,
+  flat (`burdenRatio`), recomputed on every regen — a hand-typed wage line feeds
+  in through `overriddenWages`. Verified: typing 6402 +20% moved 6418 with it.
+- **Loss to lease**: `ltl.mode = 'flat'` — hold the start (typed $/mo, else the
+  rent roll gap, else the last actual month), no burnoff; deepens with GPR only
+  when "follows GPR" is on. Assumptions → Method → "Flat — hold it, no burnoff".
+- **Contra income = TRAILING-12 ratio × GPR** (Troy: "use T12 ratio"): every cat-2
+  concession line (but 5022 recapture) and cat-3 line (5032/33/34/40 + any other
+  with history) is `pctGpr` at its T12 ratio to T12 GPR; the vacancy % default is
+  the T12 ratio too (the template's October % and the October-flat rule are gone
+  for these). 5035/5036 keep their own T12 ratios. At 0% GPR growth the defaults
+  reproduce T12 by category (grks: concessions / rental loss Δ ≈ 0%).
 
 ## Known gaps / next steps
 

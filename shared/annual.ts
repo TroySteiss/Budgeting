@@ -319,7 +319,15 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   /* ---- loss to lease ---- */
   const ltl = inputs.ltl || ({} as BudgetInputs['ltl']);
   const followGpr = ltl.followGpr !== false;
-  if (ltl.mode === 'ramp') {
+  if (ltl.mode === 'flat') {
+    // Troy: hold the loss to lease — no burnoff. Start = typed $/mo, else the
+    // rent roll's current gap, else the last actual month; market growth
+    // still deepens it when "follows GPR" is on
+    const L0 = ltl.startMonthly ? -Math.abs(ltl.startMonthly)
+      : src.leases && src.leases.length ? (ltlMonths(src.leases, inputs.year, startMonth, { ...ltl, renewalPct: 1, burnoffRenew: 0, burnoffNew: 0 })[0] || lastOf('5003'))
+      : lastOf('5003');
+    mk('5003', gpr.map((v, i) => r2(Math.min(0, L0 - (followGpr ? v - gpr[0] : 0)))) as Months, { method: 'ltl' });
+  } else if (ltl.mode === 'ramp') {
     const out = zero12();
     for (let i = 0; i < 12; i++) {
       const t = (ltl.rampMonths || 12) > 1 ? Math.min(1, i / ((ltl.rampMonths || 12) - 1)) : 1;
@@ -354,24 +362,16 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   /* ---- vacancy: % of GPR (default the last actual month's %) ---- */
   mk('5031', gpr.map((v, i) => -r2((inputs.vacancyPct?.[i] || 0) * v)), { method: 'vacancy' });
 
-  /* ---- concessions & other rental loss ---- */
-  const ratioLast = (gl: string) => (lastGpr ? lastOf(gl) / lastGpr : 0);
-  // 5019 PEP grows with GPR: last-month ratio × GPR
-  for (const gl of ['5019']) {
-    const a = coaByCode.get(gl);
-    if (!a) continue;
-    const pct = inputs.pctGpr?.[gl] ?? ratioLast(gl);
-    if (pct) mk(gl, gpr.map((v) => r2(pct * v)), { method: 'pctGpr', pct: Math.round(pct * 100000) / 100000, of: 'gpr', basis: 'last' });
-  }
-  // the "October actual" concession lines (flat) + summer storage (PY months)
+  /* ---- concessions & other rental loss: TRAILING-12 ratio to GPR × GPR (Troy:
+     "use T12 ratio" — the October ratio made a light month set the year) ---- */
+  const ratioT12 = (gl: string) => (baseGpr ? baseTotal(gl) / baseGpr : 0);
+  const pctGprLine = (a: CoaAccount): void => {
+    const pct = inputs.pctGpr?.[a.code] ?? ratioT12(a.code);
+    if (pct) mk(a.code, gpr.map((v) => r2(pct * v)), { method: 'pctGpr', pct: Math.round(pct * 1000000) / 1000000, of: 'gpr', basis: 't12' });
+  };
   for (const a of detail) {
     if (a.pcode !== '2' || isSet(a.code) || a.code === '5022') continue;
-    if (inputs.pctGpr?.[a.code] != null) {
-      const pct = inputs.pctGpr[a.code];
-      mk(a.code, gpr.map((v) => r2(pct * v)), { method: 'pctGpr', pct, of: 'gpr', basis: 'last' });
-      continue;
-    }
-    baseline(a, LAST_MONTH_FLAT_GLS.has(a.code) ? 'last' : 'actual', 0);
+    pctGprLine(a);
   }
   // 5022 concession recapture = T12 recapture ratio × the other concessions, each month
   if (coaByCode.has('5022')) {
@@ -389,8 +389,8 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   for (let i = 0; i < 12; i++) for (const gl of ['4994', '4995', '4996', '5003']) netGpr[i] = r2(netGpr[i] + (lines.get(gl)?.months[i] || 0));
   const concM = zero12();
   for (const a of detail) if (a.pcode === '2') a.code && lines.get(a.code)?.months.forEach((v, i) => { concM[i] = r2(concM[i] + v); });
-  // 5032/5033/5034/5040: last actual month flat
-  for (const gl of ['5032', '5033', '5034', '5040']) { const a = coaByCode.get(gl); if (a && !isSet(gl)) baseline(a, 'last', 0); }
+  // 5032/5033/5034/5040: T12 ratio to GPR × GPR
+  for (const gl of ['5032', '5033', '5034', '5040']) { const a = coaByCode.get(gl); if (a && !isSet(gl)) pctGprLine(a); }
   // 5035 current delinquency: T12 ratio to (GPR..5035) × net rental income so far
   {
     const a = coaByCode.get('5035');
@@ -416,8 +416,8 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       if (pct) mk('5036', netGpr.map((v) => r2(pct * v)), { method: 'pctGpr', pct: Math.round(pct * 100000) / 100000, of: 'netgpr', basis: 't12' });
     }
   }
-  // any other cat-3 GL with history: PY actual
-  for (const a of detail) if (a.pcode === '3' && !isSet(a.code)) baseline(a);
+  // any other cat-3 GL with history: T12 ratio to GPR × GPR
+  for (const a of detail) if (a.pcode === '3' && !isSet(a.code)) pctGprLine(a);
 
   /* ---- rent-roll charges (pet, garage, storage, utility billing…) × 12 (Troy) ---- */
   const chargeGls = src.charges ? chargeGlMonthly(src.charges) : {};
@@ -469,33 +469,38 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   }
   for (const gl of TEMPLATE_ZERO_GLS) if (coaByCode.has(gl) && !isSet(gl)) mk(gl, zero12(), { method: 'zero' });
 
-  /* ---- payroll: model wages (March raise) + burden at the property's own
-     benefit/wage ratios; no model → own history ---- */
-  const wages = src.payrollWages;
-  if (wages && Object.values(wages).some((v) => v)) {
-    const raise = 1 + (inputs.payrollRaisePct ?? 0.035);
-    const iMarch = (3 - startMonth + 12) % 12;
-    let wagesTotal = 0;
+  /* ---- payroll (Troy): wages FLAT by month — the payroll model's annual (March
+     raise step) when a model is linked, else own trailing-12 × (1 + raise);
+     every other payroll line = its PRIOR-YEAR % of wages × the budgeted wages,
+     flat — so a change to wages (model, raise, or a hand-typed wage line)
+     moves taxes / benefits / bonus / OT with it ---- */
+  const wages = src.payrollWages;      // model wages, with hand-overridden wage lines folded in (overriddenWages)
+  const raise = 1 + (inputs.payrollRaisePct ?? 0.035);
+  const iMarch = (3 - startMonth + 12) % 12;
+  let wagesTotal = 0;
+  if (wages) {
     for (const [gl, annual] of Object.entries(wages)) {
       if (!annual || !coaByCode.has(gl)) continue;
-      const own = base[gl];
-      const shape = own && own.some((v) => v > 0) ? (own.map((v) => Math.max(0, v)) as Months) : CURVES.flat;
-      const months = spreadMonthly(r2(annual), rotate12(shape, startMonth)).map((v, i) => (i >= iMarch ? r2(v * raise) : v)) as Months;
+      const months = spreadMonthly(r2(annual), CURVES.flat).map((v, i) => (i >= iMarch ? r2(v * raise) : v)) as Months;
       wagesTotal = r2(wagesTotal + sum(months));
       mk(gl, months, { method: 'payrollModel' } as any);
     }
-    const baseWages = WAGE_GLS.reduce((a, g) => a + Math.abs(baseTotal(g)), 0);
-    for (const a of detail) {
-      if (a.pcode !== '10' || WAGE_GLS.includes(a.code) || isSet(a.code)) continue;
-      const own = baseTotal(a.code);
-      if (!own) continue;
-      if (baseWages > 0 && wagesTotal > 0) {
-        const ratio = own / baseWages;
-        const cal = base[a.code]!;
-        mk(a.code, spreadMonthly(r2(ratio * wagesTotal), rotate12(cal.map((v) => Math.max(0, v)) as Months, startMonth)),
-          { method: 'burdenRatio', ratio: Math.round(ratio * 100000) / 100000 } as any);
-      } else baseline(a);
-    }
+  }
+  for (const gl of WAGE_GLS) {
+    // wage GLs the model doesn't carry: own trailing-12 ÷ 12 flat × (1 + raise)
+    const a = coaByCode.get(gl);
+    if (!a || isSet(gl)) continue;
+    if (baseline(a, 'flat', bl.glGrowth?.[gl] ?? (raise - 1))) wagesTotal = r2(wagesTotal + sum(lines.get(gl)!.months));
+  }
+  const baseWages = WAGE_GLS.reduce((a, g) => a + Math.abs(baseTotal(g)), 0);
+  for (const a of detail) {
+    if (a.pcode !== '10' || WAGE_GLS.includes(a.code) || isSet(a.code)) continue;
+    const own = baseTotal(a.code);
+    if (!own) continue;
+    if (baseWages > 0 && wagesTotal > 0) {
+      const ratio = own / baseWages;
+      mk(a.code, spreadMonthly(r2(ratio * wagesTotal), CURVES.flat), { method: 'burdenRatio', ratio: Math.round(ratio * 100000) / 100000 } as any);
+    } else baseline(a, 'flat', bl.glGrowth?.[a.code] ?? (raise - 1));
   }
 
   /* ---- everything else with history: PY same month × factor (template default) ---- */
@@ -503,6 +508,9 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     if (isSet(a.code) || BASELINE_SKIP_SECTIONS.has(a.section)) continue;
     if (a.code === '6112' || a.code === '7300') continue;
     if (a.pcode === '1' && a.code !== '4994') { baseline(a, 'last', 0); continue; }
+    // payroll (no model): trailing-12 ÷ 12 flat × (1 + raise) — never the lumpy
+    // same-month history (a row's shape menu can still switch it back)
+    if (a.pcode === '10') { baseline(a, 'flat', bl.glGrowth?.[a.code] ?? inputs.payrollRaisePct ?? 0.035); continue; }
     baseline(a);
   }
 
@@ -548,9 +556,8 @@ export function defaultAnnualInputs(year: number, units: number, actual: Record<
   const ratio = (v: number, lo = 0, hi = 1) => (gpr ? Math.min(hi, Math.max(lo, Math.abs(v) / gpr)) : 0);
   const income = ['1', 'loss', '2', '3', '4', '5'].reduce((a, p) => r2(a + catTot(p)), 0);
   const mgmt = tot('6112');
-  // vacancy %: the template's "October vacancy %" (last actual month), T12 fallback
-  const vacLast = lastOf('4994') ? Math.min(0.5, Math.abs(lastOf('5031')) / lastOf('4994')) : 0;
-  const vac = tpl?.vacancyPct != null ? Math.abs(tpl.vacancyPct) : vacLast || (gpr ? ratio(tot('5031'), 0, 0.5) : 0.05);
+  // vacancy %: the TRAILING-12 ratio (Troy — not the template's October %)
+  const vac = gpr ? ratio(tot('5031'), 0, 0.5) : 0.05;
   return {
     mode: 'annual',
     year, units: units || tpl?.units || 0, capital: tpl?.capital || 0, loan: 0, rate: 0, startMonth: 1,
