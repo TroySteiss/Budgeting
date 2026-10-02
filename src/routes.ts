@@ -4,7 +4,7 @@ import { query, tx } from './db.js';
 import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
-  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, stmtLastMonth, stmtAnnualized,
+  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, trailing12, annualizedFromCal,
   refFromCalendar, refColumn, type TemplateData, type StmtData, type AnnualSources,
 } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
@@ -77,6 +77,12 @@ router.get('/state', h(async (_req, res) => {
   const refIds = [...new Set((budgets.rows as any[]).filter((b) => b.budget_type === 'annual').flatMap((b) => [b.py_stmt_id, b.cy_budget_stmt_id]).filter(Boolean))];
   const stmtById = new Map<number, any>();
   if (refIds.length) for (const r of (await query('select id, data from stmt_snapshots where id = any($1)', [refIds])).rows) stmtById.set(r.id, r.data);
+  // every actual statement per property — the trailing-12 window is composed across them
+  const actualsByProp = new Map<string, any[]>();
+  if (refIds.length) for (const r of (await query(`select id, property_code, data from stmt_snapshots where kind='actual' order by created_at desc`)).rows) {
+    if (!actualsByProp.has(r.property_code)) actualsByProp.set(r.property_code, []);
+    actualsByProp.get(r.property_code)!.push(r);
+  }
   const [stmts, templates] = await Promise.all([
     query('select id, property_code, upload_id, kind, label, period, book, created_at from stmt_snapshots order by created_at desc'),
     // each template carries the two statements parsed out of its PriorFinancials (same upload)
@@ -96,7 +102,11 @@ router.get('/state', h(async (_req, res) => {
     if (b.budget_type === 'annual') {
       const useBudget = b.inputs?.refSource === 'budget';
       const sd = stmtById.get(useBudget ? b.cy_budget_stmt_id : b.py_stmt_id) || stmtById.get(b.py_stmt_id);
-      uw = sd ? refFromCalendar(coa, stmtCalendar(sd), Number(b.units) || 0) : null;
+      if (sd && !(useBudget && stmtById.has(b.cy_budget_stmt_id))) {
+        const own = actualsByProp.get(b.property_code) || [];
+        const t12 = trailing12([sd, ...own.filter((r) => r.id !== b.py_stmt_id).map((r) => r.data)]);
+        uw = t12 ? refFromCalendar(coa, t12.cal, Number(b.units) || 0) : null;
+      } else uw = sd ? refFromCalendar(coa, stmtCalendar(sd), Number(b.units) || 0) : null;
       refLabel = sd ? (useBudget && stmtById.has(b.cy_budget_stmt_id) ? 'CY budget' : 'T12') : '—';
     }
     const ovF = ls.filter((l: any) => l.override && l.driver?.method && l.driver.method !== 'manual' && l.driver.method !== 'setTotal' && l.driver.method !== 'zero').length;
@@ -377,7 +387,7 @@ interface LoadedBudget {
   /* ---- annual (non-acquisition) mode ---- */
   annual: boolean;
   stmtActual: StmtData | null; stmtBudget: StmtData | null; template: TemplateData | null;
-  actualCal: Record<string, Months> | null; budgetCal: Record<string, Months> | null; lastMonth: number;
+  actualCal: Record<string, Months> | null; budgetCal: Record<string, Months> | null; lastMonth: number; t12Missing: string[];
   /** the tie-out reference (trailing-12 / CY budget / typed targets) — the annual budget's "UW" */
   ref: UwSnapshotData | null; refLabel: string;
   refs: RefCol[];
@@ -470,6 +480,7 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
   let stmtActual: StmtData | null = null, stmtBudget: StmtData | null = null, template: TemplateData | null = null;
   let actualCal: Record<string, Months> | null = null, budgetCal: Record<string, Months> | null = null;
   let lastMonth = 10, ref: UwSnapshotData | null = null, refLabel = 'UW';
+  let t12Missing: string[] = [];
   const refs: RefCol[] = [];
   if (annual) {
     const stmtRows = await query('select id, kind, period, data from stmt_snapshots where id = any($1)', [[budget.py_stmt_id, budget.cy_budget_stmt_id].filter(Boolean)]);
@@ -477,13 +488,18 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
     const sb = stmtRows.rows.find((r: any) => r.id === budget.cy_budget_stmt_id);
     stmtActual = sa?.data || null; stmtBudget = sb?.data || null;
     if (budget.template_id) template = (await query('select data from template_snapshots where id=$1', [budget.template_id])).rows[0]?.data || null;
-    actualCal = stmtActual ? stmtCalendar(stmtActual) : null;
+    // the trailing-12 window is composed across every actual statement on file
+    // for the property (the linked one wins): a Jan–Dec export in November
+    // carries empty Nov–Dec, and those come from last year's statement
+    const t12 = stmtActual ? await composeT12(budget.property_code, budget.py_stmt_id, stmtActual) : null;
+    actualCal = t12?.cal || null;
+    t12Missing = t12?.missing || [];
     budgetCal = stmtBudget ? stmtCalendar(stmtBudget) : null;
-    lastMonth = stmtActual ? stmtLastMonth(stmtActual) : (template?.lastActual?.month || 10);
+    lastMonth = t12 ? t12.lastMonth : (template?.lastActual?.month || 10);
     const units = Number(budget.inputs?.units) || 0;
-    if (actualCal) refs.push({ key: 'actual', label: 'T12 actuals', period: sa?.period || '', ...refColumn(actualCal) });
+    if (actualCal && t12) refs.push({ key: 'actual', label: 'T12 actuals', period: t12.period || sa?.period || '', ...refColumn(actualCal) });
     if (budgetCal) refs.push({ key: 'budget', label: `${sb?.period?.match(/\d{4}/)?.[0] || 'CY'} budget`, period: sb?.period || '', ...refColumn(budgetCal) });
-    if (stmtActual) { const a4 = stmtAnnualized(stmtActual, 4); if (Object.keys(a4).length) refs.push({ key: 'ann4', label: '4 mo annualized', period: '', ...refColumn(a4) }); }
+    if (actualCal && t12) { const a4 = annualizedFromCal(actualCal, t12.lastMonth, 4); if (Object.keys(a4).length) refs.push({ key: 'ann4', label: '4 mo annualized', period: '', ...refColumn(a4) }); }
     const src = budget.inputs?.refSource || 'actual';
     if (src === 'budget' && budgetCal) { ref = refFromCalendar(coa, budgetCal, units, 'CY budget'); refLabel = refs.find((r) => r.key === 'budget')?.label || 'CY budget'; }
     else if (actualCal) {
@@ -505,7 +521,7 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
     }
   }
   return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, sellerUtil, charges, sellerRows, savePoints,
-           annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, ref, refLabel, refs };
+           annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, ref, refLabel, refs };
 }
 
 async function saveLines(budgetId: number, lines: BudgetLine[]): Promise<void> {
@@ -566,6 +582,7 @@ function budgetView(lb: LoadedBudget) {
       softwareFixedMo: lb.template.softwareFixedMo,
     } : null,
     lastMonth: lb.annual ? lb.lastMonth : null,
+    t12Missing: lb.annual ? lb.t12Missing : [],
     compWeights: lb.comps?.byGl || null,
     compUnits: lb.comps?.units || null,
     compShapes: lb.comps?.glShapes || null,
@@ -750,6 +767,12 @@ function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLin
   return { lines };
 }
 
+/** The property's trailing-12 window across all of its actual statements, the linked one first. */
+async function composeT12(propertyCode: string, preferredId: number | null, preferred: StmtData) {
+  const others = (await query(`select id, data from stmt_snapshots where property_code=$1 and kind='actual' and id <> coalesce($2, -1) order by created_at desc`, [propertyCode, preferredId])).rows;
+  return trailing12([preferred, ...others.map((r: any) => r.data as StmtData)]);
+}
+
 /** The actuals + budget statements parsed out of a Yardi template's PriorFinancials (same upload). */
 async function stmtsForTemplate(templateId: number): Promise<{ pyStmtId: number | null; cyBudgetStmtId: number | null }> {
   const t = (await query('select upload_id, property_code from template_snapshots where id=$1', [templateId])).rows[0];
@@ -790,8 +813,8 @@ router.post('/budgets', h(async (req, res) => {
     const coa = await loadCoa();
     const sa = pyStmtId ? (await query('select data from stmt_snapshots where id=$1', [pyStmtId])).rows[0]?.data as StmtData | undefined : undefined;
     const tpl = templateId ? (await query('select data from template_snapshots where id=$1', [templateId])).rows[0]?.data as TemplateData | undefined : undefined;
-    const actualCal = sa ? stmtCalendar(sa) : null;
-    inputs = defaultAnnualInputs(Number(year), Number(prop.units) || tpl?.units || 0, actualCal, rent, coa, tpl || null, sa ? stmtLastMonth(sa) : tpl?.lastActual?.month);
+    const t12 = sa ? await composeT12(propertyCode, Number(pyStmtId), sa) : null;
+    inputs = defaultAnnualInputs(Number(year), Number(prop.units) || tpl?.units || 0, t12?.cal || null, rent, coa, tpl || null, t12 ? t12.lastMonth : tpl?.lastActual?.month);
   } else inputs = uw
     ? { ...defaultInputs(Number(year), uw, rent), units: uw.units || prop.units }
     : {

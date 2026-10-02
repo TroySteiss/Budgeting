@@ -58,12 +58,77 @@ export function stmtCalendar(stmt: StmtData | null | undefined): Record<string, 
     year+month. Defaults to October — the template's cut-off. */
 export function stmtLastMonth(stmt: StmtData | null | undefined): number {
   if (!stmt?.monthCal?.length) return 10;
+  // a calendar-year export (Jan–Dec 2026) carries EMPTY future columns —
+  // the last actual month is the last column with anything posted
+  const hasData = (i: number) => (stmt.rows || []).some((r) => Number(r.months?.[i]) || 0);
   let best = -1, bestCal = 10;
   stmt.monthCal.forEach((m, i) => {
+    if (!hasData(i)) return;
     const key = (stmt.monthYear?.[i] || 0) * 12 + m;
     if (key > best) { best = key; bestCal = m; }
   });
   return bestCal;
+}
+
+/** The TRAILING TWELVE posted months across every actual statement on file for
+    a property. A calendar-year 12 Month Statement exported in November has
+    Jan–Oct posted and Nov–Dec empty: the last posted month sets the window
+    (Nov last year … Oct this year) and the two prior-year months come from
+    whichever other statement covers them (last year's export, the template's
+    PriorFinancials). `missing` lists window months no statement covers — those
+    stay zero and the UI says what to upload. The preferred statement wins
+    where two cover the same month. */
+export interface Trailing12 { cal: Record<string, Months>; lastMonth: number; lastYear: number; period: string; missing: string[] }
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+export function trailing12(stmts: (StmtData | null | undefined)[]): Trailing12 | null {
+  const list = stmts.filter((s): s is StmtData => !!s?.rows?.length && !!s.monthCal?.length);
+  if (!list.length) return null;
+  // (year*12+month) → gl → value, first statement in the list wins
+  const cell = new Map<number, Map<string, number>>();
+  const covered = new Set<number>();
+  let last = -1;
+  list.forEach((s) => {
+    s.monthCal.forEach((m, i) => {
+      const y = s.monthYear?.[i];
+      if (!y) return;                       // undated columns can't be placed in a window
+      const key = y * 12 + (m - 1);
+      const any = s.rows.some((r) => Number(r.months?.[i]) || 0);
+      if (!any) return;                    // an empty future column is not data
+      covered.add(key);
+      if (key > last) last = key;
+      if (!cell.has(key)) cell.set(key, new Map());
+      const col = cell.get(key)!;
+      for (const r of s.rows) { const gl = String(r.gl); if (!col.has(gl)) col.set(gl, Number(r.months?.[i]) || 0); }
+    });
+  });
+  if (last < 0) {
+    // no dated columns at all: fall back to the preferred statement's own calendar
+    const s = list[0];
+    return { cal: stmtCalendar(s), lastMonth: stmtLastMonth(s), lastYear: 0, period: '', missing: [] };
+  }
+  const cal: Record<string, Months> = {};
+  const missing: string[] = [];
+  for (let k = last - 11; k <= last; k++) {
+    const m = ((k % 12) + 12) % 12, y = Math.floor(k / 12);
+    const col = cell.get(k);
+    if (!col) { missing.push(`${MON[m]} ${y}`); continue; }
+    for (const [gl, v] of col) { if (!cal[gl]) cal[gl] = zero12(); cal[gl][m] = r2(cal[gl][m] + v); }
+  }
+  for (const gl of Object.keys(cal)) if (!cal[gl].some((v) => v)) delete cal[gl];
+  const first = last - 11;
+  const period = `${MON[((first % 12) + 12) % 12]} ${Math.floor(first / 12)}-${MON[last % 12]} ${Math.floor(last / 12)}`;
+  return { cal, lastMonth: (last % 12) + 1, lastYear: Math.floor(last / 12), period, missing };
+}
+
+/** "N months annualized" off a trailing-12 calendar: the last n months ending at lastMonth × 12/n. */
+export function annualizedFromCal(cal: Record<string, Months>, lastMonth: number, n = 4): Record<string, number> {
+  const out: Record<string, number> = {};
+  const idx = Array.from({ length: n }, (_, j) => (((lastMonth - 1 - j) % 12) + 12) % 12);
+  for (const [gl, m] of Object.entries(cal)) {
+    const v = idx.reduce((a, i) => a + (m[i] || 0), 0) * (12 / n);
+    if (v) out[gl] = r2(v);
+  }
+  return out;
 }
 
 /** "N months annualized": the last `n` statement columns × (12/n), per GL. */

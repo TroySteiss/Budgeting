@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, stmtLastMonth, stmtAnnualized,
+  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
   refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, type TemplateData, type AnnualSources,
 } from '../shared/annual.js';
 import { sum, zero12, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
@@ -209,6 +209,26 @@ describe('stmt helpers', () => {
   it('stmtLastMonth = latest column by date; stmtAnnualized = last n × 12/n', () => {
     expect(stmtLastMonth(stmt)).toBe(10);
     expect(stmtAnnualized(stmt, 4)['6604']).toBe((9 + 10 + 11 + 12) * 3);
+  });
+  // Troy: "the model is trying to pull months that do not exist, instead of pulling last months of '25"
+  const cy2026 = { monthCal: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], monthYear: Array(12).fill(2026), rows: [{ gl: '6604', name: 'E', months: [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 0, 0], total: 1055 }] };
+  const cy2025 = { monthCal: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], monthYear: Array(12).fill(2025), rows: [{ gl: '6604', name: 'E', months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], total: 78 }] };
+  it('a calendar-year export with empty Nov–Dec: last actual month is October, not December', () => {
+    expect(stmtLastMonth(cy2026)).toBe(10);
+  });
+  it('trailing12 composes Nov–Oct across statements and names what is missing', () => {
+    const alone = trailing12([cy2026])!;
+    expect(alone.lastMonth).toBe(10); expect(alone.period).toBe('Nov 2025-Oct 2026');
+    expect(alone.missing).toEqual(['Nov 2025', 'Dec 2025']);
+    expect(alone.cal['6604'][10]).toBe(0);                        // nothing covers Nov 2025 → zero, flagged
+    const both = trailing12([cy2026, cy2025])!;
+    expect(both.missing).toEqual([]);
+    expect(both.cal['6604'][10]).toBe(11); expect(both.cal['6604'][11]).toBe(12);   // Nov/Dec 2025 from last year's export
+    expect(both.cal['6604'][0]).toBe(101); expect(both.cal['6604'][9]).toBe(110);   // Jan–Oct 2026 from this year's
+    expect(annualizedFromCal(both.cal, both.lastMonth, 4)['6604']).toBe((107 + 108 + 109 + 110) * 3);
+    // the template's own Nov–Oct statement composes to itself
+    const tpl = trailing12([stmt])!;
+    expect(tpl.period).toBe('Nov 2024-Oct 2025'); expect(tpl.missing).toEqual([]); expect(tpl.cal['6604'][10]).toBe(1);
   });
 });
 

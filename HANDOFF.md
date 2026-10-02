@@ -356,6 +356,21 @@ shown, not auto-applied (fee % stays an input).
   months (T12 or CY budget, `refMonthly` in budgetView) are drawn dashed on the
   same scale, so a shift is visible against last year.
 
+## 2026-10-02 — trailing-12 window composed across statements (Troy: "pulling months that do not exist")
+
+- A calendar-year 12 Month Statement exported in November has Jan–Oct posted
+  and EMPTY Nov–Dec. `stmtLastMonth` picked the last column by date (December →
+  zero "October actuals"), and the calendar laid the empty months on Nov/Dec →
+  every same-month line was ZERO in Nov/Dec (the dashed T12 on the trend chart
+  dropped to 0). Fix: `stmtLastMonth` = last column WITH data; new
+  `trailing12(stmts)` (annual.ts) composes the 12 months ending there across
+  every actual statement on file for the property (linked one wins) — Nov–Dec
+  come from last year's export or the template's PriorFinancials — and lists
+  `missing` months nothing covers. `composeT12()` in routes feeds loadBudget,
+  POST /budgets defaults and the dashboard; the T12 period label is the composed
+  window; the editor header shows "⚠ T12 missing Nov 2025, Dec 2025" with what
+  to upload. `annualizedFromCal` replaces `stmtAnnualized` for the 4-mo column.
+
 ## Known gaps / next steps
 
 - **Unit-level rent roll support LANDED (2026-08-21 PM):** the parser now reads
