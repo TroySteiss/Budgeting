@@ -1244,10 +1244,11 @@ function trendSeriesSel() {
 }
 function trendSvg(bv) {
   const mo = (bv.kpis && bv.kpis.monthly) || {};
+  const ref = bv.refMonthly || null;
   const ALL = [
-    { name: 'Income', vals: mo.income || [], color: 'var(--good)' },
-    { name: 'Expense', vals: mo.expense || [], color: 'var(--bad)' },
-    { name: 'NOI', vals: mo.noi || [], color: 'var(--accent)' },
+    { name: 'Income', vals: mo.income || [], ref: ref && ref.income, color: 'var(--good)' },
+    { name: 'Expense', vals: mo.expense || [], ref: ref && ref.expense, color: 'var(--bad)' },
+    { name: 'NOI', vals: mo.noi || [], ref: ref && ref.noi, color: 'var(--accent)' },
   ].filter((s) => s.vals.length === 12);
   if (!ALL.length) return '<p class="muted">No data.</p>';
   const sel = trendSeriesSel();
@@ -1256,27 +1257,24 @@ function trendSvg(bv) {
   const W = 396, H = 150, padL = 44, padR = 8, padT = 10, padB = 20;
   let body = '';
   if (series.length) {
-    const all = series.flatMap((s) => s.vals);
-    let min = Math.min(...all), max = Math.max(...all);
-    // guard the tight scale: when the series is basically flat (tied NOI),
-    // don't zoom into penny-level tie/rounding drift — that drew a huge fake
-    // spike on the last month and made real edits look like nothing changed
-    const mag = Math.max(Math.abs(min), Math.abs(max), 1);
-    if (max - min < mag * 0.01) {
-      const mid = (min + max) / 2;
-      min = mid - mag * 0.01;
-      max = mid + mag * 0.01;
-    }
-    const span = max - min || Math.abs(max) || 1;
-    min -= span * 0.08; max += span * 0.08;             // tight scale + padding
+    // the axis always includes zero: a budget whose months all move together
+    // (flat payroll, a growth tie) must visibly move, not be re-zoomed into
+    // the same picture. The reference months (dashed) sit on the same scale.
+    const all = series.flatMap((s) => [...s.vals, ...((s.ref && s.ref.length === 12) ? s.ref : [])]);
+    let min = Math.min(0, ...all), max = Math.max(0, ...all);
+    if (max - min < 1) max = min + 1;
+    const span = max - min;
+    max += span * 0.08; if (min < 0) min -= span * 0.08;
     const x = (i) => padL + (i * (W - padL - padR)) / 11;
     const y = (v) => padT + (H - padT - padB) * (1 - (v - min) / (max - min));
+    const poly = (vals, color, dashed) => `<polyline fill="none" stroke="${color}" stroke-width="${dashed ? 1.2 : 2}" ${dashed ? 'stroke-dasharray="3 3" opacity=".6"' : ''} points="${vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}"/>`;
     const lines = series.map((s) =>
-      `<polyline fill="none" stroke="${s.color}" stroke-width="2" points="${s.vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}"/>` +
-      s.vals.map((v, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.4" fill="${s.color}"><title>${s.name} ${labels[i]}: ${money(v)}</title></circle>`).join('')
+      (s.ref && s.ref.length === 12 ? poly(s.ref, s.color, true) + s.ref.map((v, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="1.6" fill="${s.color}" opacity=".6"><title>${s.name} ${ref.label} ${labels[i]}: ${money(v)}</title></circle>`).join('') : '') +
+      poly(s.vals, s.color, false) +
+      s.vals.map((v, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.4" fill="${s.color}"><title>${s.name} ${labels[i]}: ${money(v)}${s.ref && s.ref.length === 12 ? ` (${ref.label} ${money(s.ref[i])}, Δ ${money(v - s.ref[i])})` : ''}</title></circle>`).join('')
     ).join('');
     const fmtAxis = (v) => Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : Math.abs(v) >= 1000 ? Math.round(v / 1000) + 'k' : Math.round(v);
-    const gridY = [min + span * 0.08, (min + max) / 2, max - span * 0.08];
+    const gridY = [0, (min + max) / 2, max - span * 0.08].filter((v, i, a) => a.indexOf(v) === i);
     const axis = gridY.map((v) =>
       `<line x1="${padL}" y1="${y(v)}" x2="${W - padR}" y2="${y(v)}" stroke="var(--line)" stroke-dasharray="2 4"/>` +
       `<text x="${padL - 4}" y="${y(v) + 3}" font-size="9" fill="var(--dim)" text-anchor="end">${fmtAxis(v)}</text>`).join('');
@@ -1287,7 +1285,8 @@ function trendSvg(bv) {
   }
   const legend = ALL.map((s) => `
     <button class="trend-chip ${sel.has(s.name) ? 'on' : ''}" data-trend="${s.name}" style="--c:${s.color}">
-      <span style="display:inline-block;width:10px;height:3px;background:${s.color};vertical-align:3px;margin-right:4px"></span>${s.name}</button>`).join('');
+      <span style="display:inline-block;width:10px;height:3px;background:${s.color};vertical-align:3px;margin-right:4px"></span>${s.name}</button>`).join('')
+    + (ref ? `<span class="muted" style="font-size:10.5px">dashed = ${esc(ref.label)} by month</span>` : '');
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%; display:block">${body}</svg><div style="margin-top:5px">${legend}</div>`;
 }
 

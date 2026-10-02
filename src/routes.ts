@@ -14,7 +14,7 @@ import {
   CoaAccount, BudgetLine, BudgetInputs, UwSnapshotData, CompWeights, Months,
   generateLines, regenerate, rebalanceCategory, defaultInputs, computeTieout, PCODES,
   kpis, categoryTotals, t12CategoryShapes, tieNoiToUw, tieIncomeToUw, DEFAULT_NOI_FLEX,
-  calendarSlice, monthLabels, applyRounding, zero12, r2, sum, CURVES, WAGE_GLS, type Lease, type SellerUtilRow,
+  calendarSlice, monthLabels, applyRounding, zero12, r2, sum, rotate12, CURVES, WAGE_GLS, type Lease, type SellerUtilRow,
   actualizeFromComparison, applyActuals, injectPreStartActuals, ownershipIndexOf, actualKey, parseActualKey, type ActualizedMonth,
   calYearOf, calMonthOf,
 } from '../shared/domain.js';
@@ -544,6 +544,14 @@ function budgetView(lb: LoadedBudget) {
     tieout: computeTieout(lines, lb.coaMap, refOf(lb)),
     monthLabels: monthLabels(lb.budget.year, start),
     kpis: kpis(monthsMap, Number(lb.budget.inputs?.capital) || 0),
+    // annual: the reference's own months (T12 actuals or CY budget) for the trend chart
+    refMonthly: (() => {
+      if (!lb.annual) return null;
+      const cal = lb.budget.inputs?.refSource === 'budget' ? lb.budgetCal : lb.actualCal;
+      if (!cal) return null;
+      const k = kpis(new Map(Object.entries(cal).map(([gl, m]) => [gl, rotate12(m, start)])), 0);
+      return { label: lb.budget.inputs?.refSource === 'budget' ? 'CY budget' : 'T12', ...k.monthly };
+    })(),
     categoryTotals: categoryTotals(lines, lb.coaMap),
     // the tie-out reference: UW book (acquisition) or trailing-12 / CY budget / targets (annual)
     uw: refOf(lb),
@@ -765,10 +773,15 @@ router.post('/budgets', h(async (req, res) => {
 
   let uw: UwSnapshotData | null = null;
   if (!annual && uwSnapshotId) uw = ((await query('select data from uw_snapshots where id=$1', [uwSnapshotId])).rows[0]?.data as UwSnapshotData) || null;
-  let rent: { marketMonthly: number; inPlaceMonthly: number } | null = null;
+  let rent: { marketMonthly: number; inPlaceMonthly: number; gapMonthly?: number } | null = null;
   if (rentSnapshotId) {
     const r = (await query('select data from rent_snapshots where id=$1', [rentSnapshotId])).rows[0];
-    if (r) rent = { marketMonthly: Number(r.data.marketMonthly) || 0, inPlaceMonthly: Number(r.data.inPlaceMonthly) || 0 };
+    if (r) {
+      rent = { marketMonthly: Number(r.data.marketMonthly) || 0, inPlaceMonthly: Number(r.data.inPlaceMonthly) || 0 };
+      // unit-level roll: the loss to lease is the occupied units' market − rent
+      const ls: any[] = Array.isArray(r.data.leases) ? r.data.leases : [];
+      if (ls.length) rent.gapMonthly = r2(ls.reduce((a, l) => a + (Number(l.m) || 0) - (Number(l.r) || 0), 0));
+    }
   }
 
   let inputs: BudgetInputs;

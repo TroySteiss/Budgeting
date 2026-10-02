@@ -32,7 +32,7 @@
 import {
   type CoaAccount, type BudgetLine, type BudgetInputs, type Months, type Driver, type UwSnapshotData,
   type Lease, type CompWeights, type BaselineShape,
-  zero12, r2, sum, rollup, spreadMonthly, rotate12, CURVES, WAGE_GLS, ltlMonths, chargeGlMonthly,
+  zero12, r2, sum, rollup, spreadMonthly, rotate12, CURVES, WAGE_GLS, ltlMonths, ltlModel, chargeGlMonthly,
   mergeFresh, overriddenWages, calMonthOf, calYearOf, daysInMonth,
 } from './domain.js';
 
@@ -323,10 +323,11 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     // Troy: hold the loss to lease — no burnoff. Start = typed $/mo, else the
     // rent roll's current gap, else the last actual month; market growth
     // still deepens it when "follows GPR" is on
-    const L0 = ltl.startMonthly ? -Math.abs(ltl.startMonthly)
-      : src.leases && src.leases.length ? (ltlMonths(src.leases, inputs.year, startMonth, { ...ltl, renewalPct: 1, burnoffRenew: 0, burnoffNew: 0 })[0] || lastOf('5003'))
-      : lastOf('5003');
-    mk('5003', gpr.map((v, i) => r2(Math.min(0, L0 - (followGpr ? v - gpr[0] : 0)))) as Months, { method: 'ltl' });
+    const model = src.leases && src.leases.length ? ltlModel(src.leases, inputs.year, startMonth, { ...ltl, renewalPct: 1, burnoffRenew: 0, burnoffNew: 0 }) : null;
+    const L0 = ltl.startMonthly ? -Math.abs(ltl.startMonthly) : (model && model.months[0]) || lastOf('5003');
+    // market growth deepens the gap on the occupied units' market (all units when the roll is summary-only)
+    const deepen = (i: number) => (!followGpr || !gpr[0] ? 0 : model ? (gpr[i] / gpr[0] - 1) * model.occupiedMarket : gpr[i] - gpr[0]);
+    mk('5003', gpr.map((v, i) => r2(Math.min(0, L0 - deepen(i)))) as Months, { method: 'ltl' });
   } else if (ltl.mode === 'ramp') {
     const out = zero12();
     for (let i = 0; i < 12; i++) {
@@ -336,8 +337,10 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     mk('5003', out, { method: 'ltl' });
   } else if (src.leases && src.leases.length) {
     // Troy: per-lease burnoff at each turnover; market growth deepens the gap
-    const m = ltlMonths(src.leases, inputs.year, startMonth, ltl);
-    mk('5003', m.map((v, i) => r2(v - (followGpr ? gpr[i] - gpr[0] : 0))), { method: 'ltl' });
+    // only on the leases that have not reset yet (a renewed / turned unit is
+    // already at the new market), on their own market rent — not the whole GPR
+    const model = ltlModel(src.leases, inputs.year, startMonth, ltl);
+    mk('5003', model.months.map((v, i) => r2(Math.min(0, v - (followGpr && gpr[0] ? (gpr[i] / gpr[0] - 1) * model.openMarket[i] : 0)))) as Months, { method: 'ltl' });
   } else if (lastGpr || ltl.startMonthly) {
     // template: last actual month's LTL, deepened by the market-rent change,
     // burned off by that month's expirations × renewal % × burnoff shares
@@ -545,7 +548,7 @@ export function regenerateAnnual(existing: BudgetLine[], coaList: CoaAccount[], 
     template is linked (renewal %, burnoffs, GPR % changes, vacancy %, Q4 fee
     %, units, capital), the property's trailing-12 ratios otherwise, and the
     rent roll driving GPR when one is linked. Nothing ties. */
-export function defaultAnnualInputs(year: number, units: number, actual: Record<string, Months> | null, rent: { marketMonthly: number; inPlaceMonthly: number } | null, coaList: CoaAccount[], tpl?: TemplateData | null, lastMonth?: number): BudgetInputs {
+export function defaultAnnualInputs(year: number, units: number, actual: Record<string, Months> | null, rent: { marketMonthly: number; inPlaceMonthly: number; gapMonthly?: number } | null, coaList: CoaAccount[], tpl?: TemplateData | null, lastMonth?: number): BudgetInputs {
   const cal = actual || {};
   const last = (lastMonth || tpl?.lastActual.month || 10) - 1;
   const tot = (gl: string) => sum(cal[gl] || zero12());
@@ -565,7 +568,9 @@ export function defaultAnnualInputs(year: number, units: number, actual: Record<
     gpr: { baseMonthly: rent ? rent.marketMonthly : 0, growthPct: (tpl?.gprPct && tpl.gprPct.some((v) => v) ? tpl.gprPct : zero12()) as Months },
     ltl: {
       mode: 'leases', renewalPct: tpl?.renewalPct ?? 0.65, burnoffRenew: tpl?.burnoffRenew ?? 0.75, burnoffNew: tpl?.burnoffNew ?? 1, followGpr: true,
-      startMonthly: rent ? -Math.max(0, r2(rent.marketMonthly - rent.inPlaceMonthly)) : 0,
+      // the loss to lease is on OCCUPIED units (market − rent per lease); market −
+      // in-place over the whole roll would count the vacant units' market too
+      startMonthly: rent ? -Math.max(0, r2(rent.gapMonthly ?? (rent.marketMonthly - rent.inPlaceMonthly))) : 0,
       targetPct: ratio(tot('5003'), 0, 0.3), rampMonths: 12,
     },
     vacancyPct: Array(12).fill(Math.round(vac * 10000) / 10000) as Months,

@@ -333,12 +333,25 @@ export function ltlMonths(
   leases: Lease[], year: number, startMonth: number,
   opts: { renewalPct?: number; burnoffRenew?: number; burnoffNew?: number } = {}
 ): Months {
+  return ltlModel(leases, year, startMonth, opts).months;
+}
+
+/** The per-lease model behind ltlMonths, plus `openMarket[m]`: the market rent
+    of the leases that have NOT yet reset (expired) by month m — the base that
+    market-rent growth deepens the loss on (a unit that just renewed or turned
+    is already at the new market). Leases already expired or month-to-month at
+    the start are spread round-robin over the 12 months (largest gap first)
+    instead of all resetting in month 0. */
+export function ltlModel(
+  leases: Lease[], year: number, startMonth: number,
+  opts: { renewalPct?: number; burnoffRenew?: number; burnoffNew?: number } = {}
+): { months: Months; openMarket: Months; occupiedMarket: number } {
   const renewalPct = opts.renewalPct ?? 0.7;
   const keepRenew = 1 - (opts.burnoffRenew ?? 0.5);
   const keepNew = 1 - (opts.burnoffNew ?? 1);
   const startAbs = year * 12 + (startMonth - 1);
   const items = leases.map((l) => {
-    let expM = 0; // no/invalid end date = MTM → turns over in month 0
+    let expM = -1; // -1 = no/invalid end date or already expired → month-to-month
     if (l.e) {
       // parse the year-month directly — Date('YYYY-MM-DD') is UTC while the
       // getters are local, which shifts month-firsts back a month
@@ -351,12 +364,17 @@ export function ltlMonths(
       }
       if (!isNaN(y)) {
         const idx = y * 12 + mo - startAbs;
-        expM = idx < 0 ? 0 : idx > 11 ? 99 : idx;
+        expM = idx < 0 ? -1 : idx > 11 ? 99 : idx;
       }
     }
-    return { ltl: r2((l.m || 0) - (l.r || 0)), expM };  // positive = loss to lease
+    return { m: l.m || 0, ltl: r2((l.m || 0) - (l.r || 0)), expM };  // positive = loss to lease
   });
+  // month-to-month / already-expired: one twelfth of them resets each month
+  const mtm = items.filter((it) => it.expM < 0).sort((a, b) => b.ltl - a.ltl);
+  mtm.forEach((it, i) => { it.expM = i % 12; });
+  const occupiedMarket = r2(items.reduce((a, it) => a + it.m, 0));
   const out = zero12();
+  const open = zero12();
   for (let m = 0; m < 12; m++) {
     const expiring = items.filter((it) => it.expM === m);
     if (expiring.length) {
@@ -366,8 +384,9 @@ export function ltlMonths(
       expiring.forEach((it, i) => { it.ltl = r2(it.ltl * (i < nRenew ? keepRenew : keepNew)); });
     }
     out[m] = r2(-items.reduce((a, it) => a + it.ltl, 0)) || 0;   // normalize -0
+    open[m] = r2(items.reduce((a, it) => a + (it.expM > m ? it.m : 0), 0));
   }
-  return out;
+  return { months: out, openMarket: open, occupiedMarket };
 }
 
 /** Slice the ownership-year plan into one CALENDAR year's Jan..Dec amounts.

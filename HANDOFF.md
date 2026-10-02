@@ -338,6 +338,24 @@ shown, not auto-applied (fee % stays an input).
   for these). 5035/5036 keep their own T12 ratios. At 0% GPR growth the defaults
   reproduce T12 by category (grks: concessions / rental loss Δ ≈ 0%).
 
+## 2026-10-02 PM — loss to lease (per-lease) fixed; trend chart
+
+- **Loss to lease per lease (`ltlModel` in domain.ts, wraps `ltlMonths`)** — Troy:
+  "still very incorrect". Three defects fixed: (1) the default start gap was
+  rent-roll market (ALL units) − in-place → counted the vacant units' market
+  (clnd −42.5k vs the real occupied gap −28.5k); now Σ(market − rent) over the
+  leases (`rent.gapMonthly` on POST /budgets). (2) Leases already expired or
+  month-to-month ALL reset in January (clnd: 69 of 330 for a 2027 budget); now
+  they reset one twelfth a month, largest gap first. (3) "Follows GPR" deepened
+  the loss by the whole GPR change on every unit; now only on the leases not yet
+  reset, on their own market rent (`openMarket[m]`). Flat mode deepens on the
+  occupied market. clnd 2027 (template + roll): −28.5k Jan → −6k Dec, Σ ≈ T12.
+- **Monthly trend chart** — Troy: "not updating". It was: the autoscale re-zoomed
+  to the data, so a budget whose months all moved together drew the identical
+  line with new axis labels. Axis now always includes 0, and the reference's own
+  months (T12 or CY budget, `refMonthly` in budgetView) are drawn dashed on the
+  same scale, so a shift is visible against last year.
+
 ## Known gaps / next steps
 
 - **Unit-level rent roll support LANDED (2026-08-21 PM):** the parser now reads

@@ -455,10 +455,12 @@ describe('ltlMonths — per-lease burnoff at turnover', () => {
     expect(out[11]).toBe(-225);
   });
 
-  it('missing/expired lease ends turn over in month 0', () => {
+  it('missing/expired lease ends are month-to-month: they reset one twelfth a month, not all in month 0', () => {
     const out = ltlMonths([{ m: 1000, r: 900, e: null }, { m: 1000, r: 900, e: '2026-01-01' }], 2026, 9,
       { renewalPct: 0, burnoffRenew: 0.5, burnoffNew: 1 });
-    expect(out[0]).toBe(0);   // both turn over immediately, burn 100%
+    expect(out[0]).toBe(-100);   // the first MTM lease resets in month 0, the second in month 1
+    expect(out[1]).toBe(0);
+    expect(out[11]).toBe(0);
   });
 
   it('renewal rate 100% keeps half of everything at expiry', () => {

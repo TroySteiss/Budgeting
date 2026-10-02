@@ -132,6 +132,24 @@ describe('generateAnnualLines — template rules on own history', () => {
     expect(sum(L(withModel, '6402').months)).toBeGreaterThan(30000);   // March raise
     expect(sum(L(withModel, '6418').months)).toBeCloseTo(0.1 * sum(L(withModel, '6402').months), 0);
   });
+  it('loss to lease per lease: expired / MTM leases spread over the year, growth deepens only un-reset leases', () => {
+    // 24 leases: 12 already expired (MTM), 12 expiring one per month; gap $100 each, market $1,000
+    const leases = [
+      ...Array.from({ length: 12 }, () => ({ m: 1000, r: 900, e: '2025-06-01' })),
+      ...Array.from({ length: 12 }, (_, i) => ({ m: 1000, r: 900, e: `2026-${String(i + 1).padStart(2, '0')}-01` })),
+    ];
+    const noGrow = { ...inputs, ltl: { ...inputs.ltl, mode: 'leases' as const, renewalPct: 0, burnoffNew: 1, followGpr: false } };
+    const l = L(generateAnnualLines(coaList, noGrow, { ...src, leases }), '5003');
+    // January: 2 leases reset (1 MTM + 1 expiring) → 22 × 100 left; December → 0
+    expect(l.months[0]).toBe(-2200);
+    expect(l.months[11]).toBe(0);
+    for (let i = 1; i < 12; i++) expect(l.months[i]).toBe(l.months[i - 1] + 200);
+    // with 12% GPR growth in month 2 and "follows GPR": the deepening is 12% of the
+    // OPEN leases' market (20 × 1,000 = 20,000 → 2,400), not 12% of the whole GPR
+    const grow = { ...noGrow, ltl: { ...noGrow.ltl, followGpr: true }, gpr: { ...inputs.gpr, growthPct: [0, 0.12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] as Months } };
+    const l2 = L(generateAnnualLines(coaList, grow, { ...src, leases }), '5003');
+    expect(l2.months[1]).toBeCloseTo(-2000 - 2400, 0);
+  });
   it('loss to lease: flat mode holds the last actual month with no burnoff (deepens only with GPR when asked)', () => {
     const flatIn = { ...inputs, ltl: { ...inputs.ltl, mode: 'flat' as const, followGpr: false } };
     const l = L(generateAnnualLines(coaList, flatIn, src), '5003');
