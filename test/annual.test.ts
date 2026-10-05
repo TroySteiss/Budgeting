@@ -230,6 +230,25 @@ describe('stmt helpers', () => {
     const tpl = trailing12([stmt])!;
     expect(tpl.period).toBe('Nov 2024-Oct 2025'); expect(tpl.missing).toEqual([]); expect(tpl.cal['6604'][10]).toBe(1);
   });
+  // Troy (ECND): the statement is Oct 2025–Sep 2026 but the property was taken
+  // over in December — Oct/Nov 2025 have no rent and must not feed "same month"
+  it('trailing12 treats months with no GPR as pre-acquisition: filled with the live-month average, labelled', () => {
+    const ecnd = {
+      monthCal: [10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8, 9], monthYear: [2025, 2025, 2025, 2026, 2026, 2026, 2026, 2026, 2026, 2026, 2026, 2026],
+      rows: [
+        { gl: '4994', name: 'GPR', months: [0, 0, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000], total: 10000 },
+        { gl: '6604', name: 'Electric', months: [0, 500000, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100], total: 501000 },   // Nov: a closing entry, not operations
+      ],
+    };
+    const t = trailing12([ecnd])!;
+    expect(t.dead).toEqual(['Oct 2025', 'Nov 2025']);
+    expect(t.liveMonths).toBe(10);
+    expect(t.period).toBe('Oct 2025-Sep 2026 · 10 mo annualized');
+    expect(t.cal['4994'][9]).toBe(1000); expect(t.cal['4994'][10]).toBe(1000);           // Oct/Nov = live average
+    expect(t.cal['6604'][10]).toBe(100);                                                 // the closing entry is gone
+    expect(sum(t.cal['6604'])).toBe(1200);                                               // 10 live months annualized
+    expect(sum(t.cal['4994'])).toBe(12000);
+  });
 });
 
 describe('parseYardiBudgetTemplate — clnd 2026 template (real export)', () => {

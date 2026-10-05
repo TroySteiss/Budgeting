@@ -78,7 +78,16 @@ export function stmtLastMonth(stmt: StmtData | null | undefined): number {
     PriorFinancials). `missing` lists window months no statement covers — those
     stay zero and the UI says what to upload. The preferred statement wins
     where two cover the same month. */
-export interface Trailing12 { cal: Record<string, Months>; lastMonth: number; lastYear: number; period: string; missing: string[] }
+export interface Trailing12 {
+  cal: Record<string, Months>; lastMonth: number; lastYear: number; period: string;
+  /** window months no statement covers (left zero) */
+  missing: string[];
+  /** window months with NO rent (pre-acquisition / not yet operating) — filled
+      with each GL's average over the live months, so the T12 is annualized */
+  dead: string[];
+  /** months with operations in the window (12 when nothing is dead) */
+  liveMonths: number;
+}
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 export function trailing12(stmts: (StmtData | null | undefined)[]): Trailing12 | null {
   const list = stmts.filter((s): s is StmtData => !!s?.rows?.length && !!s.monthCal?.length);
@@ -88,12 +97,19 @@ export function trailing12(stmts: (StmtData | null | undefined)[]): Trailing12 |
   const covered = new Set<number>();
   let last = -1;
   list.forEach((s) => {
+    // a statement covers every column up to its LAST POSTED one; empty columns
+    // after that are the future (a Jan–Dec export pulled in November), empty
+    // columns before it are covered months with nothing posted (pre-acquisition)
+    let sLast = -1;
+    s.monthCal.forEach((m, i) => {
+      const y = s.monthYear?.[i];
+      if (y && s.rows.some((r) => Number(r.months?.[i]) || 0)) sLast = Math.max(sLast, y * 12 + (m - 1));
+    });
     s.monthCal.forEach((m, i) => {
       const y = s.monthYear?.[i];
       if (!y) return;                       // undated columns can't be placed in a window
       const key = y * 12 + (m - 1);
-      const any = s.rows.some((r) => Number(r.months?.[i]) || 0);
-      if (!any) return;                    // an empty future column is not data
+      if (key > sLast) return;             // an empty future column is not data
       covered.add(key);
       if (key > last) last = key;
       if (!cell.has(key)) cell.set(key, new Map());
@@ -104,7 +120,7 @@ export function trailing12(stmts: (StmtData | null | undefined)[]): Trailing12 |
   if (last < 0) {
     // no dated columns at all: fall back to the preferred statement's own calendar
     const s = list[0];
-    return { cal: stmtCalendar(s), lastMonth: stmtLastMonth(s), lastYear: 0, period: '', missing: [] };
+    return annualizeDead({ cal: stmtCalendar(s), lastMonth: stmtLastMonth(s), lastYear: 0, period: '', missing: [], dead: [], liveMonths: 12 }, 0);
   }
   const cal: Record<string, Months> = {};
   const missing: string[] = [];
@@ -117,7 +133,36 @@ export function trailing12(stmts: (StmtData | null | undefined)[]): Trailing12 |
   for (const gl of Object.keys(cal)) if (!cal[gl].some((v) => v)) delete cal[gl];
   const first = last - 11;
   const period = `${MON[((first % 12) + 12) % 12]} ${Math.floor(first / 12)}-${MON[last % 12]} ${Math.floor(last / 12)}`;
-  return { cal, lastMonth: (last % 12) + 1, lastYear: Math.floor(last / 12), period, missing };
+  return annualizeDead({ cal, lastMonth: (last % 12) + 1, lastYear: Math.floor(last / 12), period, missing, dead: [], liveMonths: 12 }, first);
+}
+
+/** Troy (ECND, taken over Dec 2025): a window month with NO gross potential
+    rent is a month the property was not operating — "same month last year"
+    must not pull it. Each GL's dead months are filled with its average over the
+    live months (so T12 totals are the live months annualized) and the months
+    are named for the UI. Months nothing covers (`missing`) are left alone. */
+function annualizeDead(t: Trailing12, firstKey: number): Trailing12 {
+  const gpr = t.cal['4994'];
+  if (!gpr || !gpr.some((v) => v)) return t;
+  const missingIdx = new Set(t.missing.map((s) => MON.indexOf(s.slice(0, 3))));
+  const deadIdx: number[] = [];
+  for (let m = 0; m < 12; m++) if (!gpr[m] && !missingIdx.has(m)) deadIdx.push(m);
+  if (!deadIdx.length) return t;
+  const live = 12 - deadIdx.length - missingIdx.size;
+  if (live <= 0) return t;
+  for (const gl of Object.keys(t.cal)) {
+    const row = t.cal[gl];
+    const liveSum = row.reduce((a, v, m) => (deadIdx.includes(m) || missingIdx.has(m) ? a : a + v), 0);
+    const avg = r2(liveSum / live);
+    for (const m of deadIdx) row[m] = avg;
+  }
+  // name the dead months with their year inside the window
+  const dead = deadIdx.map((m) => {
+    let y = Math.floor(firstKey / 12);
+    if (firstKey > 0) { for (let k = firstKey; k < firstKey + 12; k++) if (((k % 12) + 12) % 12 === m) { y = Math.floor(k / 12); break; } }
+    return y ? `${MON[m]} ${y}` : MON[m];
+  });
+  return { ...t, dead, liveMonths: live, period: `${t.period} · ${live} mo annualized` };
 }
 
 /** "N months annualized" off a trailing-12 calendar: the last n months ending at lastMonth × 12/n. */

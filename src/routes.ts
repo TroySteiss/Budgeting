@@ -387,7 +387,7 @@ interface LoadedBudget {
   /* ---- annual (non-acquisition) mode ---- */
   annual: boolean;
   stmtActual: StmtData | null; stmtBudget: StmtData | null; template: TemplateData | null;
-  actualCal: Record<string, Months> | null; budgetCal: Record<string, Months> | null; lastMonth: number; t12Missing: string[];
+  actualCal: Record<string, Months> | null; budgetCal: Record<string, Months> | null; lastMonth: number; t12Missing: string[]; t12Dead: string[]; t12Live: number;
   /** the tie-out reference (trailing-12 / CY budget / typed targets) — the annual budget's "UW" */
   ref: UwSnapshotData | null; refLabel: string;
   refs: RefCol[];
@@ -480,7 +480,7 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
   let stmtActual: StmtData | null = null, stmtBudget: StmtData | null = null, template: TemplateData | null = null;
   let actualCal: Record<string, Months> | null = null, budgetCal: Record<string, Months> | null = null;
   let lastMonth = 10, ref: UwSnapshotData | null = null, refLabel = 'UW';
-  let t12Missing: string[] = [];
+  let t12Missing: string[] = [], t12Dead: string[] = [], t12Live = 12;
   const refs: RefCol[] = [];
   if (annual) {
     const stmtRows = await query('select id, kind, period, data from stmt_snapshots where id = any($1)', [[budget.py_stmt_id, budget.cy_budget_stmt_id].filter(Boolean)]);
@@ -494,16 +494,19 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
     const t12 = stmtActual ? await composeT12(budget.property_code, budget.py_stmt_id, stmtActual) : null;
     actualCal = t12?.cal || null;
     t12Missing = t12?.missing || [];
+    t12Dead = t12?.dead || [];
+    t12Live = t12?.liveMonths || 12;
     budgetCal = stmtBudget ? stmtCalendar(stmtBudget) : null;
     lastMonth = t12 ? t12.lastMonth : (template?.lastActual?.month || 10);
     const units = Number(budget.inputs?.units) || 0;
-    if (actualCal && t12) refs.push({ key: 'actual', label: 'T12 actuals', period: t12.period || sa?.period || '', ...refColumn(actualCal) });
+    const t12Label = t12 && t12.dead.length ? `T12 actuals (${t12.liveMonths} mo annualized)` : 'T12 actuals';
+    if (actualCal && t12) refs.push({ key: 'actual', label: t12Label, period: t12.period || sa?.period || '', ...refColumn(actualCal) });
     if (budgetCal) refs.push({ key: 'budget', label: `${sb?.period?.match(/\d{4}/)?.[0] || 'CY'} budget`, period: sb?.period || '', ...refColumn(budgetCal) });
     if (actualCal && t12) { const a4 = annualizedFromCal(actualCal, t12.lastMonth, 4); if (Object.keys(a4).length) refs.push({ key: 'ann4', label: '4 mo annualized', period: '', ...refColumn(a4) }); }
     const src = budget.inputs?.refSource || 'actual';
     if (src === 'budget' && budgetCal) { ref = refFromCalendar(coa, budgetCal, units, 'CY budget'); refLabel = refs.find((r) => r.key === 'budget')?.label || 'CY budget'; }
     else if (actualCal) {
-      ref = refFromCalendar(coa, actualCal, units, 'T12 actuals'); refLabel = 'T12 actuals';
+      ref = refFromCalendar(coa, actualCal, units, t12Label); refLabel = t12Label;
       if (src === 'target' && budget.inputs?.targets) {
         const t = budget.inputs.targets;
         if (t.egi != null) ref.egi = r2(Number(t.egi));
@@ -521,7 +524,7 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
     }
   }
   return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, sellerUtil, charges, sellerRows, savePoints,
-           annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, ref, refLabel, refs };
+           annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, ref, refLabel, refs };
 }
 
 async function saveLines(budgetId: number, lines: BudgetLine[]): Promise<void> {
@@ -583,6 +586,8 @@ function budgetView(lb: LoadedBudget) {
     } : null,
     lastMonth: lb.annual ? lb.lastMonth : null,
     t12Missing: lb.annual ? lb.t12Missing : [],
+    t12Dead: lb.annual ? lb.t12Dead : [],
+    t12Live: lb.annual ? lb.t12Live : 12,
     compWeights: lb.comps?.byGl || null,
     compUnits: lb.comps?.units || null,
     compShapes: lb.comps?.glShapes || null,

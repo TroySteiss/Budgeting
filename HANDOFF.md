@@ -370,6 +370,15 @@ shown, not auto-applied (fee % stays an input).
   POST /budgets defaults and the dashboard; the T12 period label is the composed
   window; the editor header shows "⚠ T12 missing Nov 2025, Dec 2025" with what
   to upload. `annualizedFromCal` replaces `stmtAnnualized` for the 4-mo column.
+- **Pre-acquisition months (ECND, taken over Dec 2025):** the real culprit on prod.
+  The statement WAS Oct 2025–Sep 2026, but Oct/Nov 2025 have no GPR (not yet
+  operating; Nov carries closing entries) → "same month last year" pulled zeros
+  / junk for Oct–Nov. `trailing12` now marks window months with no GPR as `dead`,
+  fills every GL's dead months with its average over the live months (T12 = live
+  months annualized, closing entries drop out) and labels the period
+  "… · 10 mo annualized"; header badge "10 mo annualized · Oct 2025, Nov 2025
+  pre-acquisition". A statement covers every column up to its last posted one
+  (empty earlier columns = covered but dead; empty later columns = the future).
 
 ## Known gaps / next steps
 
