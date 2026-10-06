@@ -97,8 +97,10 @@ table.list tr.click:hover { background: var(--hover); }
 .editor { display: grid; grid-template-columns: minmax(0, 1fr) 430px; gap: 16px; align-items: start; }
 .editor.noside { grid-template-columns: minmax(0, 1fr); }
 .editor.noside .side { display: none; }
-.editor .side { position: sticky; top: 60px; max-height: calc(100vh - 76px); overflow: auto; }
-@media (max-width: 1250px) { .editor { grid-template-columns: 1fr; } .editor .side { position: static; max-height: none; } }
+.editor .side { position: sticky; top: 60px; max-height: calc(100vh - 76px); overflow-y: auto; overflow-x: hidden; min-width: 0; }
+.editor .side .card { min-width: 0; overflow: hidden; }
+@media (max-width: 1250px) { .editor { grid-template-columns: minmax(0, 1fr); } .editor .side { position: static; max-height: none; } }
+.editor > div { min-width: 0; }
 
 /* ---------- driver legend ---------- */
 .legend { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; font-size: 11px; color: var(--dim); margin: 0 0 8px; }
@@ -179,8 +181,9 @@ tr.badbills .warnflag { color: var(--bad); font-weight: 700; }
 .tie th { text-align: right; font-size: 10.5px; color: var(--dim); text-transform: uppercase; padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .tie th:first-child { text-align: left; }
 .tie td { padding: 4px 6px; border-bottom: 1px solid var(--gridline); text-align: right; white-space: nowrap; }
-.tie td:first-child { text-align: left; overflow: hidden; text-overflow: ellipsis; max-width: 130px; }
-.tie td:last-child { text-align: right; min-width: 74px; }
+.tie td:first-child { text-align: left; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+.tie td:last-child { text-align: right; min-width: 34px; }
+.tie input[data-gt] { width: 44px; }
 .tie tr.big td { font-weight: 700; background: var(--total-bg); }
 .tie tr.sub td { font-weight: 650; background: var(--soft2); border-top: 1px solid var(--line); font-style: italic; }
 .tie .rb { background: none; border: 1px solid var(--line); border-radius: 5px; font-size: 10.5px; padding: 1px 6px; color: var(--accent); margin-left: 3px; }
@@ -222,3 +225,7 @@ th.actcol { color: var(--drv-act-ink); }
 .drop:hover, .drop.over { border-color: var(--accent); background: var(--hover); }
 .drop .link { color: var(--accent); text-decoration: underline; }
 .rowmenu select { border: 1px solid var(--line); border-radius: 5px; padding: 2px 4px; background: var(--input); color: var(--ink); }
+
+/* editor title: badges on their own line under the h2 */
+.meta { display: flex; flex-wrap: wrap; gap: 4px 0; margin-top: 3px; }
+.meta .badge { margin-left: 0; margin-right: 6px; }

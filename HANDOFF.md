@@ -380,6 +380,19 @@ shown, not auto-applied (fee % stays an input).
   pre-acquisition". A statement covers every column up to its last posted one
   (empty earlier columns = covered but dead; empty later columns = the future).
 
+## 2026-10-06 — editor layout fixes (Troy: "super misformatted")
+
+- The tie card's reference header became "T12 ACTUALS (10 MO ANNUALIZED)" → wider
+  than the 430px side panel → the panel scrolled sideways and clipped. Header is
+  now the short "T12" / "CY bud" (full label in the tooltip); `.side` is
+  `overflow-x: hidden`, cards `min-width: 0`. Title badges (T12 window,
+  annualized, template, actuals) moved from inside the h2 to a `.meta` line under
+  it so the five-button toolbar stays on one row.
+- Pre-existing: below 1250px the editor stacks to one column that was `1fr`
+  (= minmax(auto,1fr)) → the 1,557px grid table widened the whole page. Now
+  `minmax(0,1fr)` + `.editor > div { min-width: 0 }` → the grid scrolls inside
+  `.gridwrap`, the page never scrolls sideways.
+
 ## Known gaps / next steps
 
 - **Unit-level rent roll support LANDED (2026-08-21 PM):** the parser now reads
