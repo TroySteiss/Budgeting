@@ -3,6 +3,7 @@
 import * as XLSX from 'xlsx';
 import type { UwSnapshotData } from '../shared/domain.js';
 import type { TemplateData } from '../shared/annual.js';
+import { POSITION_GL, isRmPosition, type StaffingPerson } from '../shared/payroll.js';
 
 type Grid = any[][];
 
@@ -583,16 +584,9 @@ export function parseReviewDraft(buf: Buffer): { code: string | null; year: numb
 
 /* ========================= ND PAYROLL MODEL ========================= */
 
-/* Position → Monarch wage GL. Anything unrecognized lands in 6404 and is
-   reported in unmappedPositions so the mapping can be extended.
-   NOTHING maps to 6405 landscaping (Troy 2026-08-21): housekeepers and
-   grounds crews are MAINTENANCE wages — landscaping is contracted work,
-   not payroll. */
-const POSITION_GL: [RegExp, string][] = [
-  [/regional|lms|arm|bookkeep|office|leasing|apm|\bpm\b|manager|market/i, '6402'],
-  [/rover/i, '6407'],
-  [/supervisor|tech|housekeep|maint|janitor|porter|ground|landscap/i, '6404'],
-];
+/* Position → Monarch wage GL lives in shared/payroll.ts (one source for the
+   aggregate model, the staffing report and the raise tool). Anything
+   unrecognized lands in 6404 and is reported in unmappedPositions. */
 
 export interface PayrollModelParsed {
   label: string;
@@ -642,6 +636,116 @@ export function parsePayrollModel(buf: Buffer): PayrollModelParsed {
   }
   if (!employeeRows) throw new Error('Payroll model: no roster rows parsed');
   return { label: s(g[0]?.[0]) || sheet.name, properties: agg, unmappedPositions: [...unmapped], employeeRows };
+}
+
+/* ========================= STAFFING REPORT ========================= */
+
+/* The HRIS roster export ("Dictionary of Employees" columns): one row per
+   employee with position, pay method, PAY RATE, monthly benefits and property;
+   an optional allocation sheet ("Allocated Employee Data": one row per
+   property split). PER-SEAT RATES ARE KEPT (Troy sign-off 2026-10-28, for the
+   pay-rates tab only) — storage is staffing_snapshots, served only through the
+   payroll routes, which gate on the payroll password and mask RM pay. */
+
+const normHdr = (v: any): string => low(v).replace(/[^a-z]/g, '');
+const EXCEL_EPOCH = Date.UTC(1899, 11, 30);
+const excelDate = (v: any): string | null => {
+  if (typeof v === 'number' && v > 20000 && v < 80000) return new Date(EXCEL_EPOCH + v * 86400000).toISOString().slice(0, 10);
+  const d = new Date(s(v));
+  return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+};
+
+export interface StaffingParsed {
+  label: string;
+  people: StaffingPerson[];
+  totalRows: number;
+  allocatedWithoutSplit: string[];   // flagged 'Allocated' but no split rows found — fell back to their home property
+  skippedNoProperty: number;
+}
+
+function headerMap(g: Grid, wanted: string[], scanRows = 6): { row: number; cols: Record<string, number> } | null {
+  for (let r = 0; r < Math.min(g.length, scanRows); r++) {
+    const cols: Record<string, number> = {};
+    (g[r] || []).forEach((v, c) => { const k = normHdr(v); if (k && !(k in cols)) cols[k] = c; });
+    if (wanted.every((w) => w in cols)) return { row: r, cols };
+  }
+  return null;
+}
+
+export function parseStaffingReport(buf: Buffer): StaffingParsed {
+  const all = grids(buf);
+  let roster: { name: string; hm: { row: number; cols: Record<string, number> }; g: Grid } | null = null;
+  let alloc: { hm: { row: number; cols: Record<string, number> }; g: Grid } | null = null;
+  for (const { name, g } of all) {
+    if (!roster) {
+      const hm = headerMap(g, ['employeename', 'payrate', 'propertycode']);
+      if (hm) { roster = { name, hm, g }; continue; }
+    }
+    if (!alloc) {
+      const hm = headerMap(g, ['employeename', 'split', 'propertycode']);
+      if (hm && !headerMap(g, ['payrate'])) alloc = { hm, g };
+    }
+  }
+  if (!roster) throw new Error('Staffing report: no sheet with EmployeeName / PayRate / PropertyCode headers found');
+
+  // allocation splits keyed by prism id AND by normalized name (either may match)
+  const splits = new Map<string, { code: string; pct: number }[]>();
+  if (alloc) {
+    const c = alloc.hm.cols;
+    for (let r = alloc.hm.row + 1; r < alloc.g.length; r++) {
+      const row = alloc.g[r] || [];
+      const code = low(row[c.propertycode]);
+      let pct = num(row[c.split]);
+      if (!code || !pct) continue;
+      if (pct > 1) pct = pct / 100;
+      const keys = [s(row[c.prismid]), normHdr(row[c.employeename])].filter(Boolean);
+      for (const k of keys) {
+        if (!splits.has(k)) splits.set(k, []);
+        splits.get(k)!.push({ code, pct });
+      }
+    }
+  }
+
+  const c = roster.hm.cols;
+  const col = (row: any[], key: string) => (key in c ? row[c[key]] : null);
+  const people: StaffingPerson[] = [];
+  const allocatedWithoutSplit: string[] = [];
+  let totalRows = 0, skippedNoProperty = 0;
+  const seen = new Set<string>();
+  for (let r = roster.hm.row + 1; r < roster.g.length; r++) {
+    const row = roster.g[r] || [];
+    const name = s(col(row, 'employeename'));
+    if (!name) continue;
+    totalRows++;
+    const key = s(col(row, 'prismid')) || s(col(row, 'employeenumber')) || normHdr(name);
+    if (seen.has(key)) continue;   // the roster lists each employee once; extra sections re-list names
+    const position = s(col(row, 'jobtitle')) || s(col(row, 'positiondescription'));
+    const home = low(col(row, 'propertycode'));
+    const unallocFlag = s(col(row, 'propertyifunallocated'));
+    let allocations: { code: string; pct: number }[];
+    if (/^allocated$/i.test(unallocFlag)) {
+      const sp = splits.get(key) || splits.get(normHdr(name)) || [];
+      if (sp.length) allocations = sp;
+      else { allocations = home ? [{ code: home, pct: 1 }] : []; allocatedWithoutSplit.push(name); }
+    } else {
+      allocations = home ? [{ code: home, pct: 1 }] : [];
+    }
+    if (!allocations.length) { skippedNoProperty++; continue; }
+    seen.add(key);
+    people.push({
+      key, name, position,
+      payMethod: /^sal/i.test(s(col(row, 'paymethod'))) ? 'Salary' : 'Hourly',
+      payRate: num(col(row, 'payrate')),
+      monthlyBenefits: num(col(row, 'monthlybenefits')),
+      startDate: excelDate(col(row, 'employerstartdate')),
+      status: s(col(row, 'employeestatus')) || 'FULL',
+      oldPay: num(col(row, 'oldpay')) || null,
+      allocations,
+      rm: isRmPosition(position),
+    });
+  }
+  if (!people.length) throw new Error('Staffing report: no roster rows parsed');
+  return { label: roster.name, people, totalRows, allocatedWithoutSplit, skippedNoProperty };
 }
 
 /* ========================= SELLER T12 STATEMENT ========================= */
@@ -1191,12 +1295,18 @@ export function budgetCsvBlockText(b: BudgetCsvParsed): string {
 /** Guess which upload a workbook is from its sheet names / title cells so the
     Data page can take any file without asking what it is first. Returns null
     when nothing recognisable is found (the user then picks the kind). */
-export type UploadKind = 'uw_book' | 'rent_roll' | 'comparison' | 'seller_t12' | 'payroll' | 'yardi_template' | 'statement';
+export type UploadKind = 'uw_book' | 'rent_roll' | 'comparison' | 'seller_t12' | 'payroll' | 'yardi_template' | 'statement' | 'staffing';
 export function detectUploadKind(buf: Buffer): UploadKind | null {
   const wb = XLSX.read(buf, { type: 'buffer', sheetRows: 150 });
   const names = wb.SheetNames;
   if (names.some((n) => /^budget worksheet$/i.test(n)) && names.some((n) => /priorfinancials/i.test(n))) return 'yardi_template';
   if (names.some((n) => /^wages$/i.test(n))) return 'payroll';
+  // HRIS roster export (staffing report): EmployeeName + PayRate + PropertyCode headers
+  for (const n of names.slice(0, 4)) {
+    const g = XLSX.utils.sheet_to_json<any[]>(wb.Sheets[n], { header: 1, raw: true, defval: null }) as any[][];
+    const hdr = g.slice(0, 6).map((r) => (r || []).map((v) => (v == null ? '' : String(v).toLowerCase().replace(/[^a-z]/g, ''))));
+    if (hdr.some((r) => r.includes('employeename') && r.includes('payrate') && r.includes('propertycode'))) return 'staffing';
+  }
   const first = XLSX.utils.sheet_to_json<any[]>(wb.Sheets[names[0]], { header: 1, raw: true, defval: null }) as any[][];
   const head = first.slice(0, 8).map((r) => (r || []).map((v) => (v == null ? '' : String(v))).join(' ')).join('\n');
   if (/rent roll/i.test(head)) return 'rent_roll';

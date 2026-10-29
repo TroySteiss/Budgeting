@@ -16,6 +16,8 @@ const S = {
   showDist: localStorage.getItem('bt-dist') === '1',
   pendingRow: null,                      // in-progress row edit buffer {gl, months, dirty}
   gridScroll: null,
+  // pay-rates tab: its own gate + working set (st = /payroll/state, cycle = /payroll/cycles/:id)
+  pay: { st: null, cycle: null, cycleId: null, region: '', iterId: null, compare: true, loading: false, err: '', msg: '', newCycle: false },
 };
 
 function applyTheme() {
@@ -118,6 +120,7 @@ const money = (v, dp = 0) => v == null ? '' : Number(v).toLocaleString('en-US', 
 const money2 = (v) => money(v, 2);
 const pctf = (v) => v == null ? '' : (v * 100).toFixed(1) + '%';
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtd = (d) => (d ? new Date(d).toLocaleDateString() : '');
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const sumM = (m) => (m || []).reduce((a, b) => a + (Number(b) || 0), 0);
 
@@ -156,6 +159,7 @@ function render() {
         <button data-v="dash" class="${S.view === 'dash' ? 'on' : ''}">Budgets</button>
         ${S.view === 'editor' && S.bv ? `<span class="crumb">›</span><button data-v="editor" class="on">${esc(S.bv.budget.property_code)} ${S.bv.budget.year}</button>` : ''}
         <button data-v="uploads" class="${S.view === 'uploads' ? 'on' : ''}">Data</button>
+        <button data-v="payroll" class="${S.view === 'payroll' ? 'on' : ''}">Payroll</button>
         <button data-v="settings" class="${S.view === 'settings' ? 'on' : ''}">Settings</button>
       </nav>
       <span class="spacer"></span>
@@ -171,6 +175,7 @@ function render() {
   if (S.view === 'dash') renderDash(main);
   else if (S.view === 'uploads') renderUploads(main);
   else if (S.view === 'editor') renderEditor(main);
+  else if (S.view === 'payroll') renderPayroll(main);
   else if (S.view === 'settings') renderSettings(main);
 }
 
@@ -2785,6 +2790,350 @@ async function openPayrollEditor(id) {
 }
 
 /* ---------------- settings ---------------- */
+/* ---------------- payroll (pay rates) ----------------
+   Its own gate (payroll password) on top of the app login. Mirrors
+   shared/payroll.ts math; RM pay is masked SERVER-side — this view only
+   renders what the API already decided the viewer may see. Iteration chains
+   are per REGION (property market). */
+const payMo = (method, rate, pct) => Math.round((method === 'Hourly' ? (rate * 2080) / 12 : rate / 12) * pct * 100) / 100;
+const payBurden = (position) => (7.65 + 1.0 + (/regional|lms|arm|bookkeep|office|leasing|apm|\bpm\b|manager|market/i.test(position) ? 0.8 : 4.0)) / 100;
+const payRateStr = (method, rate) => method === 'Hourly' ? `$${Number(rate).toFixed(2)}/hr` : `$${money(rate)}/yr`;
+const paySigned = (v) => `${v < 0 ? '−' : '+'}$${money(Math.abs(v))}`;
+const PAY_STATUSES = [['not_started', 'Not started'], ['in_progress', 'In progress'], ['submitted', 'Submitted'], ['approved', 'Approved']];
+
+async function loadPayState() {
+  S.pay.loading = true; render();
+  try {
+    S.pay.st = await GET('/payroll/state');
+    if (S.pay.st.unlocked) {
+      if (!S.pay.cycleId && S.pay.st.cycles.length) S.pay.cycleId = S.pay.st.cycles[0].id;
+      if (S.pay.cycleId) await loadPayCycle(S.pay.cycleId);
+    }
+  } catch (e) { S.pay.err = e.message; }
+  S.pay.loading = false; render();
+}
+async function loadPayCycle(id) {
+  S.pay.cycleId = id; S.pay.err = '';
+  try {
+    S.pay.cycle = await GET(`/payroll/cycles/${id}`);
+    if (!S.pay.cycle.regions.includes(S.pay.region)) S.pay.region = S.pay.cycle.regions[0] || '';
+    S.pay.iterId = null;   // re-defaults to the region's latest
+  } catch (e) { S.pay.cycle = null; S.pay.err = e.message; }
+}
+const payIters = () => (S.pay.cycle ? S.pay.cycle.iterations.filter((i) => i.region === S.pay.region) : []);
+function payIter() {
+  const its = payIters();
+  return its.find((i) => i.id === S.pay.iterId) || its[its.length - 1] || null;
+}
+
+function renderPayroll(el) {
+  const P = S.pay;
+  if (!P.st && !P.loading) { loadPayState(); return; }
+  if (P.loading && !P.st) { el.innerHTML = '<div class="card"><p class="muted">Loading…</p></div>'; return; }
+  if (!P.st.unlocked) {
+    el.innerHTML = `<div class="card login">
+      <h2>Payroll — pay rates</h2>
+      <p class="muted" style="font-size:12.5px">This area holds individual pay and sits behind its own password, separate from the app sign-in.</p>
+      <div class="fld"><label>Payroll password</label><input id="pp" type="password"></div>
+      <div class="err" id="pperr">${esc(P.err || '')}</div>
+      <button class="btn" id="ppgo">Unlock</button>
+    </div>`;
+    const go = async () => {
+      try { await POST('/payroll/unlock', { password: el.querySelector('#pp').value }); P.err = ''; P.st = null; render(); }
+      catch (e) { el.querySelector('#pperr').textContent = e.message; }
+    };
+    el.querySelector('#ppgo').addEventListener('click', go);
+    el.querySelector('#pp').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+    return;
+  }
+  const st = P.st;
+  const c = P.cycle;
+  el.innerHTML = `
+    ${payHeaderHtml(st)}
+    ${P.err ? `<div class="card"><div class="err">${esc(P.err)}</div></div>` : ''}
+    ${c ? payCycleHtml(c) : (st.cycles.length ? '' : '<div class="card"><p class="muted">No raise cycles yet — an admin creates one from a staffing report above.</p></div>')}
+    ${st.isAdmin ? payAdminHtml(st) : ''}`;
+  wirePayHeader(el, st);
+  if (c) wirePayCycle(el, c);
+  if (st.isAdmin) wirePayAdmin(el, st);
+}
+
+function payHeaderHtml(st) {
+  const P = S.pay;
+  return `<div class="card">
+    <div class="row" style="align-items:center; gap:10px; flex-wrap:wrap">
+      <h2 style="margin:0">Pay rates</h2>
+      <span class="paylock" title="This area has its own password; Regional-Manager pay is visible only to the RM-pay allowlist">🔒 payroll area</span>
+      ${st.canRmPay ? '<span class="paylock">RM pay visible</span>' : '<span class="paylock" title="Regional-Manager rows show with pay masked">RM pay hidden</span>'}
+      <span class="spacer"></span>
+      ${st.cycles.length ? `<label class="muted" style="font-size:12px">Cycle</label>
+      <select id="pay-cycle">${st.cycles.map((x) => `<option value="${x.id}" ${x.id === P.cycleId ? 'selected' : ''}>${esc(x.label)} · eff. ${esc(x.effective)}</option>`).join('')}</select>` : ''}
+      ${st.isAdmin ? `<button class="btn sub" id="pay-newcycle">＋ New cycle</button>` : ''}
+    </div>
+    ${P.newCycle && st.isAdmin ? `<div class="row" style="margin-top:10px; gap:10px; flex-wrap:wrap; align-items:flex-end">
+      <div class="fld"><label>Label</label><input id="nc-label" placeholder="FY27 raises" style="min-width:180px"></div>
+      <div class="fld"><label>Effective (YYYY-MM)</label><input id="nc-eff" value="${new Date().getFullYear() + 1}-01" style="width:110px"></div>
+      <div class="fld"><label>Staffing report</label><select id="nc-snap">${st.snapshots.map((s) => `<option value="${s.id}">${esc(s.label)} · ${s.people} people · ${fmtd(s.created_at)}</option>`).join('')}</select></div>
+      <button class="btn" id="nc-go" ${st.snapshots.length ? '' : 'disabled title="Load a staffing report first"'}>Create</button>
+      <button class="btn sub" id="nc-x">Cancel</button>
+    </div>` : ''}
+    ${P.msg ? `<div class="ok">${esc(P.msg)}</div>` : ''}
+  </div>`;
+}
+function wirePayHeader(el, st) {
+  const sel = el.querySelector('#pay-cycle');
+  if (sel) sel.addEventListener('change', async () => { await loadPayCycle(Number(sel.value)); render(); });
+  const nb = el.querySelector('#pay-newcycle');
+  if (nb) nb.addEventListener('click', () => { S.pay.newCycle = !S.pay.newCycle; render(); });
+  const go = el.querySelector('#nc-go');
+  if (go) go.addEventListener('click', async () => {
+    try {
+      const r = await POST('/payroll/cycles', {
+        label: el.querySelector('#nc-label').value, effective: el.querySelector('#nc-eff').value.trim(),
+        staffingSnapshotId: Number(el.querySelector('#nc-snap').value),
+      });
+      S.pay.newCycle = false; S.pay.msg = `Cycle created (regions: ${r.regions.join(', ')})`; S.pay.st = null; S.pay.cycleId = r.cycle.id; render();
+    } catch (e) { S.pay.err = e.message; render(); }
+  });
+  const nx = el.querySelector('#nc-x');
+  if (nx) nx.addEventListener('click', () => { S.pay.newCycle = false; render(); });
+}
+
+/* one property's computed grid rows + totals under the CURRENT iteration */
+function payPropCalc(c, code, iter, prior) {
+  const entries = iter ? iter.entries : {};
+  const rows = [];
+  let curMo = 0, newMo = 0, dYrB = 0;
+  for (const p of c.people) {
+    const a = (p.allocations || []).find((x) => x.code === code);
+    if (!a) continue;
+    const e = entries[p.key];
+    const pct = e ? Number(e.pct) : 0;
+    const priorPct = prior && prior.entries[p.key] ? Number(prior.entries[p.key].pct) : (prior ? 0 : null);
+    if (p.payHidden) { rows.push({ p, a, pct, hidden: true, by: e ? e.by : '' }); continue; }
+    const cur = payMo(p.payMethod, p.payRate, a.pct);
+    const nxt = payMo(p.payMethod, p.payRate * (1 + pct / 100), a.pct);
+    curMo += cur; newMo += nxt;
+    dYrB += (nxt - cur) * 12 * (1 + payBurden(p.position));
+    rows.push({ p, a, pct, cur, nxt, dMo: nxt - cur, dYrB: (nxt - cur) * 12 * (1 + payBurden(p.position)), by: e ? e.by : '', at: e ? e.at : '', priorPct, hidden: false });
+  }
+  const hid = iter && iter.hidden && iter.hidden[code] ? iter.hidden[code] : null;
+  if (hid) { curMo += hid.curMo; newMo += hid.newMo; dYrB += (hid.newMo - hid.curMo) * 12 * (1 + 0.0945); }
+  rows.sort((x, y) => (x.p.position || '').localeCompare(y.p.position || '') || (x.p.name || '').localeCompare(y.p.name || ''));
+  return { rows, curMo, newMo, dYrB, pct: curMo ? (newMo - curMo) / curMo : 0 };
+}
+
+/* budgeted rental-income growth for the guardrail, from /state's dash block */
+function payIncomeGrowth(code, year) {
+  const b = (S.state?.budgets || []).find((x) => x.property_code === code && x.year === year);
+  if (!b || !b.dash || b.dash.egiVar == null || !b.dash.income) return null;
+  const ref = b.dash.income - b.dash.egiVar;
+  return ref > 0 ? b.dash.income / ref - 1 : null;
+}
+
+function payCycleHtml(c) {
+  const P = S.pay;
+  const its = payIters();
+  const iter = payIter();
+  const prior = iter ? its.find((i) => i.num === iter.num - 1) : null;
+  const year = Number(String(c.cycle.effective).slice(0, 4));
+  const props = c.properties.filter((p) => (String(p.market || '').trim() || 'Other') === P.region);
+  const locked = !iter || !!iter.finalizedAt;
+  const calc = Object.fromEntries(props.map((p) => [p.code, payPropCalc(c, p.code, iter, P.compare ? prior : null)]));
+  const totCur = props.reduce((a, p) => a + calc[p.code].curMo, 0);
+  const totNew = props.reduce((a, p) => a + calc[p.code].newMo, 0);
+  const totDyr = props.reduce((a, p) => a + calc[p.code].dYrB, 0);
+  const totPct = totCur ? (totNew - totCur) / totCur : 0;
+  // three tiers, mockup semantics: red = beats the property's budgeted income
+  // growth, amber = above the 3–4% guidance, green = within it
+  const payTier = (pct, growth) => (growth != null && pct > growth + 0.0001) ? 'bad' : pct > 0.0401 ? 'warn' : 'good';
+  const TIER_LABEL = { bad: 'exceeds income growth', warn: 'above 4% guidance', good: 'within guidance' };
+  for (const p of props) calc[p.code].tier = payTier(calc[p.code].pct, payIncomeGrowth(p.code, year));
+  const cardHtml = (title, pct, cur, nxt, dyr, growth, units) => `
+    <div class="paycard ${payTier(pct, growth)}">
+      <div class="pc-top"><span>${esc(title)}</span><span class="pc-badge">${TIER_LABEL[payTier(pct, growth)]}</span></div>
+      <div class="pc-big">${(pct * 100 >= 0 ? '+' : '')}${(pct * 100).toFixed(1)}%</div>
+      <div class="muted">${paySigned(dyr)}/yr burdened · wages $${money(cur)} → $${money(nxt)}/mo</div>
+      <div class="muted">${growth != null ? `rental income growth +${(growth * 100).toFixed(1)}%` : `no ${year} budget linked`}${units ? ` · wages $${money((nxt * 12) / units)}/unit/yr` : ''}</div>
+    </div>`;
+  return `<div class="card">
+    <div class="row" style="align-items:center; gap:8px; flex-wrap:wrap">
+      ${c.regions.map((r) => `<button class="paypill payreg ${r === P.region ? 'on' : ''}" data-reg="${esc(r)}">${esc(r)}</button>`).join('')}
+      <span class="spacer"></span>
+      ${its.map((i) => `<button class="paypill payit ${iter && i.id === iter.id ? 'on' : ''}" data-it="${i.id}">Iteration ${i.num}${i.finalizedAt ? ' ✓' : ''}</button>`).join('')}
+      ${prior ? `<label class="muted" style="font-size:12px"><input type="checkbox" id="pay-cmp" ${P.compare ? 'checked' : ''}> changes vs #${prior.num}</label>` : ''}
+    </div>
+    ${iter ? `<p class="muted" style="font-size:12px; margin:8px 0 0">
+      Iteration ${iter.num} · started by ${esc(iter.createdBy)} ${fmtd(iter.createdAt)}${iter.basedOn ? ` · based on #${iter.num - 1}` : ''}
+      ${iter.finalizedAt ? ` · <b>finalized by ${esc(iter.finalizedBy)} ${fmtd(iter.finalizedAt)}</b> — read-only` : ' · draft'}
+      · raises effective ${esc(c.cycle.effective)} · burden est. FICA+SUTA+WC
+    </p>` : ''}
+    <div class="paycards">
+      ${cardHtml(`${P.region} · ${props.length} properties`, totPct, totCur, totNew, totDyr, null, props.reduce((a, p) => a + (p.units || 0), 0))}
+      ${props.map((p) => cardHtml(p.code.toUpperCase(), calc[p.code].pct, calc[p.code].curMo, calc[p.code].newMo, calc[p.code].dYrB, payIncomeGrowth(p.code, year), p.units)).join('')}
+    </div>
+    ${c.viewer.isAdmin && iter ? `<div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap">
+      ${!iter.finalizedAt ? `<button class="btn paygold" id="pay-final">Finalize iteration ${iter.num} (${esc(P.region)})</button>` : ''}
+      ${iter.finalizedAt && iter.id === its[its.length - 1].id ? `<button class="btn paygreen" id="pay-next">Start iteration ${iter.num + 1} from #${iter.num}</button>` : ''}
+      ${iter.finalizedAt ? `<button class="btn sub" id="pay-apply" title="Write each property's wage GLs (annual $, raise prorated from the effective month) into its ${year} budget's inputs and regenerate — taxes, benefits and bonuses follow the engine">Apply to ${year} budgets</button>` : ''}
+    </div>` : ''}
+  </div>
+  ${props.map((p) => payPropHtml(c, p, calc[p.code], iter, locked)).join('')}`;
+}
+
+function payPropHtml(c, prop, pc, iter, locked) {
+  const stat = iter && iter.propStatus && iter.propStatus[prop.code];
+  const canEdit = !locked;
+  const tierVar = { good: 'var(--pay-good)', warn: 'var(--pay-warn)', bad: 'var(--pay-bad)' }[pc.tier || 'good'];
+  return `<div class="card paysec">
+    <div class="payhead">
+      <b>${esc(prop.name || prop.code)}</b><span class="muted">${prop.code.toUpperCase()} · ${prop.units || '?'} units</span>
+      <select class="pay-stat" data-code="${prop.code}" ${canEdit ? '' : 'disabled'}>
+        ${PAY_STATUSES.map(([v, l]) => `<option value="${v}" ${stat && stat.status === v ? 'selected' : ''}>${l}</option>`).join('')}
+      </select>
+      ${stat ? `<span class="muted" style="font-size:11.5px">${esc(stat.by)} · ${fmtd(stat.at)}</span>` : ''}
+      <span class="spacer"></span>
+      ${canEdit ? `<span class="muted" style="font-size:12px">Set all:</span>
+        <button class="paypill sm pay-setall" data-code="${prop.code}" data-v="3">3%</button>
+        <button class="paypill sm pay-setall" data-code="${prop.code}" data-v="4">4%</button>
+        <button class="paypill sm pay-setall" data-code="${prop.code}" data-v="0">0%</button>` : ''}
+    </div>
+    <div class="paytblwrap"><table class="paytbl">
+      <tr><th>Position</th><th>Employee</th><th>Type</th><th class="num">Alloc</th><th class="num">Current</th><th class="num">Raise %</th><th class="num">New rate</th><th class="num">Δ wages/mo</th><th class="num">Δ burdened/yr</th><th>By</th></tr>
+      ${pc.rows.map((r) => payRowHtml(r, iter, canEdit)).join('')}
+      <tr class="paysub"><td colspan="4">Property total${pc.rows.some((r) => r.hidden) ? ' (incl. masked rows)' : ''}</td>
+        <td class="num">$${money(pc.curMo)}/mo</td>
+        <td class="num" style="color:${tierVar}">${(pc.pct * 100 >= 0 ? '+' : '')}${(pc.pct * 100).toFixed(1)}%</td>
+        <td class="num">$${money(pc.newMo)}/mo</td>
+        <td class="num">${paySigned(pc.newMo - pc.curMo)}</td>
+        <td class="num">${paySigned(pc.dYrB)}</td><td></td></tr>
+    </table></div>
+  </div>`;
+}
+function payRowHtml(r, iter, canEdit) {
+  const p = r.p;
+  const split = (p.allocations || []).length > 1 ? `<div class="muted" style="font-size:11px">⇄ also ${p.allocations.filter((a) => a.code !== r.a.code).map((a) => `${a.code.toUpperCase()} ${Math.round(a.pct * 100)}%`).join(' · ')}</div>` : '';
+  const meta = [p.startDate ? `hired ${String(p.startDate).slice(0, 4)}` : '', p.oldPay ? `prior ${payRateStr(p.payMethod, p.oldPay)}` : '', p.status !== 'FULL' ? p.status : ''].filter(Boolean).join(' · ');
+  if (r.hidden) {
+    return `<tr><td><b>${esc(p.position)}</b>${split}</td><td>${esc(p.name)}</td><td class="muted">${p.payMethod}</td>
+      <td class="num muted">${Math.round(r.a.pct * 100)}%</td>
+      <td class="num muted">•••</td>
+      <td class="num"><span class="muted" style="font-size:11px" title="Regional-Manager pay — RM-pay allowlist only">🔒 TS/RC only</span></td>
+      <td class="num muted">•••</td><td class="num muted">•••</td><td class="num muted">•••</td>
+      <td class="muted" style="font-size:11.5px">${esc(r.by || '')}</td></tr>`;
+  }
+  const was = r.priorPct != null && Math.abs(r.pct - r.priorPct) > 0.001 ? `<div class="paywas">was ${r.priorPct}%</div>` : '';
+  return `<tr><td><b>${esc(p.position)}</b>${split}</td>
+    <td>${esc(p.name)}${meta ? `<div class="muted" style="font-size:11px">${esc(meta)}</div>` : ''}</td>
+    <td class="muted">${p.payMethod}</td>
+    <td class="num muted">${Math.round(r.a.pct * 100)}%</td>
+    <td class="num">${payRateStr(p.payMethod, p.payRate)}</td>
+    <td class="num"><input class="payin" data-key="${esc(p.key)}" value="${r.pct}" inputmode="decimal" ${canEdit ? '' : 'disabled'} aria-label="Raise % for ${esc(p.name)}">${was}</td>
+    <td class="num"><b>${payRateStr(p.payMethod, p.payRate * (1 + r.pct / 100))}</b></td>
+    <td class="num">${paySigned(r.dMo)}</td>
+    <td class="num">${paySigned(r.dYrB)}</td>
+    <td class="muted" style="font-size:11.5px; white-space:nowrap">${r.by ? `${esc(r.by)} · ${fmtd(r.at)}` : ''}</td></tr>`;
+}
+
+function wirePayCycle(el, c) {
+  const P = S.pay;
+  el.querySelectorAll('.payreg').forEach((b) => b.addEventListener('click', () => { P.region = b.dataset.reg; P.iterId = null; render(); }));
+  el.querySelectorAll('.payit').forEach((b) => b.addEventListener('click', () => { P.iterId = Number(b.dataset.it); render(); }));
+  const cmp = el.querySelector('#pay-cmp');
+  if (cmp) cmp.addEventListener('change', () => { P.compare = cmp.checked; render(); });
+  const iter = payIter();
+  const saveEntry = async (key, pct) => {
+    const r = await PUT(`/payroll/iterations/${iter.id}/entries`, { key, pct });
+    iter.entries[key] = { pct, by: r.by, at: r.at };
+  };
+  el.querySelectorAll('.payin').forEach((inp) => inp.addEventListener('change', async () => {
+    const pct = parseFloat(inp.value);
+    if (!Number.isFinite(pct)) { inp.value = (iter.entries[inp.dataset.key] || { pct: 0 }).pct; return; }
+    try { await saveEntry(inp.dataset.key, pct); render(); }
+    catch (e) { P.err = e.message; render(); }
+  }));
+  el.querySelectorAll('.pay-setall').forEach((b) => b.addEventListener('click', async () => {
+    const v = Number(b.dataset.v);
+    const keys = c.people
+      .filter((p) => !p.payHidden && !(p.rm && !c.viewer.canRmPay) && (p.allocations || []).some((a) => a.code === b.dataset.code))
+      .map((p) => p.key);
+    try { for (const k of keys) await saveEntry(k, v); render(); }
+    catch (e) { P.err = e.message; render(); }
+  }));
+  el.querySelectorAll('.pay-stat').forEach((sel) => sel.addEventListener('change', async () => {
+    try {
+      const r = await PUT(`/payroll/iterations/${iter.id}/status`, { property: sel.dataset.code, status: sel.value });
+      iter.propStatus = r.propStatus; render();
+    } catch (e) { P.err = e.message; render(); }
+  }));
+  const fin = el.querySelector('#pay-final');
+  if (fin) fin.addEventListener('click', async () => {
+    if (!confirm(`Finalize ${P.region} iteration ${iter.num}? Every raise entry locks; the next iteration starts from this one.`)) return;
+    try { const r = await POST(`/payroll/iterations/${iter.id}/finalize`, {}); iter.finalizedBy = r.finalized_by; iter.finalizedAt = r.finalized_at; render(); }
+    catch (e) { P.err = e.message; render(); }
+  });
+  const nxt = el.querySelector('#pay-next');
+  if (nxt) nxt.addEventListener('click', async () => {
+    try { await POST(`/payroll/cycles/${c.cycle.id}/regions/${encodeURIComponent(P.region)}/iterations`, {}); await loadPayCycle(c.cycle.id); render(); }
+    catch (e) { P.err = e.message; render(); }
+  });
+  const ap = el.querySelector('#pay-apply');
+  if (ap) ap.addEventListener('click', async () => {
+    try {
+      const r = await POST(`/payroll/iterations/${iter.id}/apply`, {});
+      P.msg = `Applied to ${r.applied.length} budget(s): ${r.applied.map((a) => a.code.toUpperCase()).join(', ') || '—'}`
+        + (r.skipped.length ? ` · skipped ${r.skipped.map((s) => `${s.code.toUpperCase()} (${s.reason})`).join(', ')}` : '');
+      await refreshState(); render();
+    } catch (e) { P.err = e.message; render(); }
+  });
+}
+
+/* admin: staffing report upload + RM site scoping */
+function payAdminHtml(st) {
+  return `<div class="card">
+    <h2>Staffing reports <span class="badge">admin</span></h2>
+    <p class="muted" style="font-size:12px">The HRIS roster export (employee, position, pay method, pay rate, benefits, property, allocation splits). It is parsed and stored in one step behind this gate — individual pay never crosses the Data page.</p>
+    <div class="row" style="align-items:center; gap:8px">
+      <input type="file" id="pay-file" accept=".xlsx,.xls,.xlsb,.xlsm">
+      <button class="btn" id="pay-upload">Load staffing report</button>
+    </div>
+    ${st.snapshots.length ? `<table class="list" style="margin-top:10px"><tr><th>Report</th><th>People</th><th>Loaded</th><th></th></tr>
+      ${st.snapshots.map((s) => `<tr><td>${esc(s.label)}</td><td>${s.people}</td><td>${fmtd(s.created_at)} · ${esc(s.uploaded_by || '')}</td>
+        <td><button class="rb pay-delsnap" data-id="${s.id}" title="Delete (refused while a cycle uses it)">✕</button></td></tr>`).join('')}</table>` : ''}
+    <h2 style="margin-top:18px">Regional managers & sites <span class="badge">admin</span></h2>
+    <p class="muted" style="font-size:12px">A non-admin sees only the properties listed on their row (comma-separated codes). Users appear after their first sign-in. RM pay stays masked for everyone outside RM_PAY_USERS regardless of sites.</p>
+    <table class="list"><tr><th>User</th><th>Sites</th><th></th></tr>
+      ${(st.users || []).map((u) => `<tr><td>${esc(u.display || u.key)}</td>
+        <td><input class="pay-sites" data-key="${esc(u.key)}" value="${esc((u.sites || []).join(', '))}" placeholder="spnd, wynd, clnd" style="min-width:220px"></td>
+        <td><button class="rb pay-savesites" data-key="${esc(u.key)}">Save</button></td></tr>`).join('')}
+    </table>
+  </div>`;
+}
+function wirePayAdmin(el, st) {
+  const up = el.querySelector('#pay-upload');
+  if (up) up.addEventListener('click', async () => {
+    const f = el.querySelector('#pay-file').files[0];
+    if (!f) { S.pay.err = 'Pick a staffing report file first'; render(); return; }
+    const fd = new FormData(); fd.append('file', f);
+    try {
+      const r = await api('/payroll/staffing', { method: 'POST', body: fd });
+      S.pay.msg = `Loaded ${r.people} people across ${Object.keys(r.perProperty).length} properties (${r.skippedOffPortfolio} off-portfolio rows skipped)`
+        + (r.allocatedWithoutSplit.length ? ` · no split rows for: ${r.allocatedWithoutSplit.slice(0, 5).join(', ')}${r.allocatedWithoutSplit.length > 5 ? '…' : ''}` : '');
+      S.pay.st = null; render();
+    } catch (e) { S.pay.err = e.message; render(); }
+  });
+  el.querySelectorAll('.pay-delsnap').forEach((b) => b.addEventListener('click', async () => {
+    try { await DEL(`/payroll/staffing/${b.dataset.id}`); S.pay.st = null; render(); }
+    catch (e) { S.pay.err = e.message; render(); }
+  }));
+  el.querySelectorAll('.pay-savesites').forEach((b) => b.addEventListener('click', async () => {
+    const inp = el.querySelector(`.pay-sites[data-key="${b.dataset.key}"]`);
+    const sites = inp.value.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+    try { await PUT(`/payroll/users/${encodeURIComponent(b.dataset.key)}/sites`, { sites }); S.pay.msg = 'Sites saved'; S.pay.st = null; render(); }
+    catch (e) { S.pay.err = e.message; render(); }
+  }));
+}
+
 function renderSettings(el) {
   const st = S.state;
   const pf = new Map(st.portfolios.map((p) => [p.id, p.name]));

@@ -24,12 +24,18 @@ export function sessionMiddleware() {
 }
 
 declare module 'express-session' {
-  interface SessionData { authed?: boolean; username?: string; }
+  interface SessionData { authed?: boolean; username?: string; payrollAuthed?: boolean; }
 }
 
 export const normUser = (u: any): string => String(u || '').toLowerCase().replace(/[^a-z]/g, '');
 const ADMIN_USERS = new Set((process.env.ADMIN_USERS || 'Troy Steiss').split(',').map(normUser).filter(Boolean));
 export const isAdminUser = (u?: string): boolean => !!u && ADMIN_USERS.has(normUser(u));
+
+/* Who may see Regional-Manager pay (Troy, 2026-10-28: Troy Steiss and Riley
+   Combs ONLY, independent of the admin tier). Everyone else gets RM rows with
+   every pay figure masked server-side. */
+const RM_PAY_USERS = new Set((process.env.RM_PAY_USERS || 'Troy Steiss,Riley Combs').split(',').map(normUser).filter(Boolean));
+export const canSeeRmPay = (u?: string): boolean => !!u && RM_PAY_USERS.has(normUser(u));
 
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (req.session && req.session.authed && req.session.username) return next();

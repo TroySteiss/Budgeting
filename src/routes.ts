@@ -165,6 +165,11 @@ router.post('/uploads/parse', upload.single('file'), h(async (req, res) => {
     const coa = await loadCoa();
     return res.json({ kind, files: [parseAnnualFile(kind, req.file.originalname, buf, coa)] });
   }
+  if (kind === 'staffing') {
+    // individual pay never flows through the Data page — the Payroll tab's own
+    // gated endpoint parses AND stores in one step (no roster in any response)
+    return res.status(400).json({ error: 'This is a staffing report (individual pay) — load it from the Payroll tab, which sits behind the payroll sign-in.' });
+  }
   res.status(400).json({ error: `Unknown upload kind "${kind}"` });
 }));
 
@@ -397,7 +402,7 @@ interface LoadedBudget {
     statement for annual budgets. */
 const refOf = (lb: LoadedBudget): UwSnapshotData | null => (lb.annual ? lb.ref : lb.uw);
 
-async function loadBudget(id: number): Promise<LoadedBudget | null> {
+export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   const budget = (await query('select * from budgets where id=$1', [id])).rows[0];
   if (!budget) return null;
   const [lineRows, coa] = await Promise.all([
@@ -527,7 +532,7 @@ async function loadBudget(id: number): Promise<LoadedBudget | null> {
            annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, ref, refLabel, refs };
 }
 
-async function saveLines(budgetId: number, lines: BudgetLine[]): Promise<void> {
+export async function saveLines(budgetId: number, lines: BudgetLine[]): Promise<void> {
   await tx(async (c) => {
     await c.query('delete from budget_lines where budget_id=$1', [budgetId]);
     for (const l of lines) {
@@ -748,7 +753,7 @@ function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[], inputs?: Bu
 
 /** Full generation pipeline: ownership-year plan (UW Year 1) → income tie
     (LTL) → NOI tie (flex). The whole 12-month window ties to UW Y1 in full. */
-function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLine[]): { lines: BudgetLine[] } {
+export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLine[]): { lines: BudgetLine[] } {
   const wages = effectiveWages(lb.payrollWages, inputs.wages);
   let lines: BudgetLine[];
   if (lb.annual) {

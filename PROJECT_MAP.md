@@ -2,7 +2,8 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-09-10 — actualized months (partial-month rule; section above Exports). Earlier: 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
+> Last updated: 2026-10-29 — Pay-rates tab (raise cycles; own section near the end).
+> Earlier: 2026-09-10 — actualized months (partial-month rule; section above Exports); 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
 > w/ per-unit basis + ND payroll model).
 
 ## What this is
@@ -328,10 +329,57 @@ row that still carries dollars ("inactive — recalc to zero" badge) — stale v
 totals invisibly. The overrides-audit "All" button skips zeroed lines (releasing one would let
 the engine refill it); zeroed rows are labeled in the dialog.
 
+## Pay-rates tab — raise cycles (2026-10-29, Troy)
+
+RMs enter raise %'s per employee-seat off the webpage; approved numbers flow into the
+budgets' wage GLs. Modeled on the per-property sheets of the Payroll Budget Workbook.
+
+- **Per-seat pay IS stored** (Troy sign-off 2026-10-28 — supersedes the aggregate-only rule
+  FOR THIS AREA ONLY; the old `payroll` upload stays aggregate). Tables (008):
+  `staffing_snapshots` (roster: key/name/position/payMethod/payRate/benefits/allocations),
+  `raise_cycles` (label, `effective` 'YYYY-MM', snapshot), `raise_iterations`
+  (**per REGION** = `properties.market`, Troy 2026-10-29 — each region drafts/finalizes/
+  starts its next iteration independently; unique (cycle, region, num); `prop_status` jsonb),
+  `raise_entries` (iteration × person → pct, stamped `updated_by/at`). `app_users.sites`
+  jsonb scopes non-admins to their properties (admin-set in the tab).
+- **Access, three layers** (`src/payroll.ts`, mounted at `/api/payroll` ahead of the main
+  router): app login → **payroll password** (`PAYROLL_PASSWORD` env; session
+  `payrollAuthed`) → **RM-pay masking**: seats in Regional positions (`isRmPosition`) are
+  stripped of every pay figure server-side for anyone outside `RM_PAY_USERS` (env, default
+  Troy Steiss + Riley Combs — auth.ts `canSeeRmPay`); masked viewers get per-property
+  `hidden` aggregates per iteration so totals still reconcile. Note a lone RM allocation at
+  one property is arithmetically recoverable from the subtotal — accepted (Troy saw the
+  mockup note).
+- **Staffing report** (HRIS roster export, "Dictionary of Employees" columns + optional
+  "Allocated Employee Data" split sheet): `parseStaffingReport` (importers.ts) +
+  `detectUploadKind` 'staffing'. It is parsed AND stored in ONE call —
+  `POST /payroll/staffing` (admin, behind the gate) — so no API response ever carries the
+  roster back out; the generic Data-page parse 400s and points at the Payroll tab.
+  Off-portfolio rows are dropped at store time.
+- **Math** in `shared/payroll.ts` (pure, test/payroll.test.ts, synthetic fixtures ONLY):
+  `POSITION_GL` (moved from importers — one source), `seatMonthly` (2080 hrs/yr),
+  `raisedMonthCount` (proration from the effective month), `annualWagesByGl` → the
+  `inputs.wages` map, `maskPeople`, `hiddenAggregates`, `marginalBurdenPct` (grid's
+  burdened-Δ ESTIMATE — FICA+SUTA+WC; real taxes stay with the engine).
+- **Lifecycle**: iteration 1 per region at cycle create → entries upsert (finalized ⇒ 409;
+  RM seats allowlist-only; non-admins only at their sites) → finalize (admin, stamps) →
+  next iteration copies entries and is compared against its base in the UI ("was X%").
+  **Apply** (admin, finalized): per property, `annualWagesByGl` → merge into that year's
+  budget `inputs.wages` → regenerate (burden ratios/bonuses follow the engine). Targets the
+  latest budget of `cycle.effective`'s year per property.
+- **Client**: `renderPayroll` + `pay*` helpers in app.js (mirrors shared/payroll math —
+  keep in step), region chips → iteration tabs → guardrail cards (3–4% guidance, vs the
+  property's budgeted income growth derived client-side from `/state` dash
+  `income/(income−egiVar)`) → per-property grids. Payroll styles at the end of styles.css.
+- Remember `src/payroll.ts` + `shared/payroll.ts` in the esbuild entry list (done).
+
 ## Gotchas / policy
 
-- **Never ingest individual employee compensation** (the FHND workbook's Payroll sheet is
-  restricted data under org policy). Payroll is budgeted at property level (category 10 total).
+- **Never ingest individual employee compensation** through the GENERAL upload paths (the
+  FHND workbook's Payroll sheet, the Yardi template's "Paste Payroll Here"). The old
+  `payroll` upload budgets category 10 at property level (aggregates only). The ONE
+  exception is the gated pay-rates tab above — per-seat rates, stored deliberately,
+  behind its own password, with RM pay masked outside RM_PAY_USERS.
 - UW quirks: bad debt lives inside pcode 3; turnover recovery income is pcode 5; mgmt fee is
   3% of EGI Y1 but 4% Y2+; portfolio sheets are flagged `isPortfolio` and normally not mapped.
 - The Yardi *Budget Worksheet* export has NO monthly actuals (annual prior-year budget only) —

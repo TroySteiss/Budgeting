@@ -4,11 +4,13 @@ import { runMigrations } from './migrate.js';
 import { seedIfEmpty } from './seed-if-empty.js';
 import { sessionMiddleware } from './auth.js';
 import { router, apiErrors } from './routes.js';
+import { payrollRouter } from './payroll.js';
 
 const app = express();
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '25mb' }));
 app.use(sessionMiddleware());
+app.use('/api/payroll', payrollRouter);   // its own gate (payroll password) on top of the app login
 app.use('/api', router);
 app.use('/api', apiErrors);
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
