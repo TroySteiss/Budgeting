@@ -109,6 +109,32 @@ describe('staffing report parser (synthetic workbook)', () => {
   it('detects the kind', () => {
     expect(detectUploadKind(buf)).toBe('staffing');
   });
+  it('parses the ND payroll Splits/Wages grid (the "Ongoing" workbook shape)', () => {
+    const splits = [
+      [null, 'Unit count', null, null, null, 341, 196, 276],
+      [null, 'Jan - Dec 2026 Budgets'],
+      [],
+      [null, null, null, null, 'MIMG', 'CLND', 'SPND', 'WYND', 'Hourly', 'Annual', 'Check'],
+      [null, 'Minot Support Staff', 'Regional', 'Robin Sample', 5000, 20000, 15000, 10000, 45, 50000, 0],
+      [null, null, 'Leasing', 'Lee Demo', null, 37440, null, null, 18, 37440, 0],
+      [null, null, 'Maintenance', 'Max Mock', null, null, 22880, 22880, 22, 45760, 0],
+      [null, null, 'Count', 'Check row', null, 1, 1, 1],
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(splits), 'Splits');
+    const p = parseStaffingReport(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer);
+    expect(p.people).toHaveLength(3);
+    const robin = p.people.find((x) => x.name === 'Robin Sample')!;
+    expect(robin.rm).toBe(true);
+    expect(robin.payMethod).toBe('Hourly');
+    expect(robin.payRate).toBe(45);
+    // allocation %s = per-property $ share of the row total (MIMG included in the base)
+    expect(robin.allocations).toEqual([{ code: 'clnd', pct: 0.4 }, { code: 'spnd', pct: 0.3 }, { code: 'wynd', pct: 0.2 }]);
+    const lee = p.people.find((x) => x.name === 'Lee Demo')!;
+    expect(lee.allocations).toEqual([{ code: 'clnd', pct: 1 }]);
+    expect(p.people.some((x) => /check/i.test(x.name))).toBe(false);
+    expect(p.label).toContain('Splits');
+  });
   it('parses roster, splits, RM flag, dates, pay methods', () => {
     const p = parseStaffingReport(buf);
     expect(p.people).toHaveLength(4);

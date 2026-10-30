@@ -1,4 +1,4 @@
-﻿/* Pay-rates tab â€” raise cycles behind their own gate.
+﻿/* Pay-rates tab — raise cycles behind their own gate.
    Everything here sits behind (1) the normal app login AND (2) the payroll
    password (PAYROLL_PASSWORD env), because staffing snapshots carry per-seat
    pay (Troy sign-off 2026-10-28). Regional-Manager pay is additionally masked
@@ -11,7 +11,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import multer from 'multer';
 import { query } from './db.js';
 import { requireAuth, requireAdmin, isAdminUser, canSeeRmPay, normUser } from './auth.js';
-import { parseStaffingReport } from './importers.js';
+import { parseStaffingReport, parsePayrollModel } from './importers.js';
 import { loadBudget, buildLines, saveLines } from './routes.js';
 import { maskPeople, hiddenAggregates, annualWagesByGl, type StaffingPerson, type RaiseMap } from '../shared/payroll.js';
 
@@ -41,7 +41,7 @@ function requirePayroll(req: Request, res: Response, next: NextFunction) {
 }
 
 /* GET /state answers BEFORE the gate so the client knows whether to show the
-   unlock card â€” it carries nothing but the locked flag until unlocked. */
+   unlock card — it carries nothing but the locked flag until unlocked. */
 payrollRouter.get('/state', h(async (req, res) => {
   if (!req.session?.payrollAuthed) return res.json({ unlocked: false });
   const user = req.session.username || '';
@@ -69,7 +69,7 @@ payrollRouter.use(requirePayroll);
 
 /* ---------------- staffing report (admin) ----------------
    Parses AND stores in ONE step: the roster never rides a parse/apply round
-   trip, so no response ever carries rates back out â€” only counts do. */
+   trip, so no response ever carries rates back out — only counts do. */
 payrollRouter.post('/staffing', requireAdmin, upload.single('file'), h(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
   const parsed = parseStaffingReport(req.file.buffer);
@@ -80,7 +80,7 @@ payrollRouter.post('/staffing', requireAdmin, upload.single('file'), h(async (re
     const allocations = p.allocations.filter((a) => known.has(a.code));
     if (allocations.length) people.push({ ...p, allocations });
   }
-  if (!people.length) return res.status(422).json({ error: 'No roster rows map to this toolâ€™s properties' });
+  if (!people.length) return res.status(422).json({ error: 'No roster rows map to this tool’s properties' });
   const user = req.session.username || '';
   const label = String(req.body?.name || '').trim() || parsed.label || req.file.originalname;
   // uploads row carries COUNTS only; the roster lives in staffing_snapshots
@@ -94,11 +94,23 @@ payrollRouter.post('/staffing', requireAdmin, upload.single('file'), h(async (re
     'insert into staffing_snapshots(upload_id, label, data) values($1,$2,$3) returning id',
     [uploadId, label, JSON.stringify({ people })]
   )).rows[0];
-  logChange(user, 'upload staffing report', { filename: req.file.originalname, staffingSnapshotId: row.id, people: people.length });
+  // the same workbook usually carries the wage-aggregate model (Wages sheet) —
+  // one drop refreshes BOTH, so nobody uploads the same file twice (Troy
+  // 2026-10-30). Budgets keep whichever model they already point at.
+  let payrollModelId: number | null = null;
+  try {
+    const pm = parsePayrollModel(req.file.buffer);
+    payrollModelId = (await query(
+      'insert into payroll_models(upload_id, label, data) values($1,$2,$3) returning id',
+      [uploadId, label, JSON.stringify({ properties: pm.properties, unmappedPositions: pm.unmappedPositions, employeeRows: pm.employeeRows })]
+    )).rows[0].id;
+  } catch { /* no Wages-style sheet in this file — staffing only */ }
+  logChange(user, 'upload staffing report', { filename: req.file.originalname, staffingSnapshotId: row.id, people: people.length, payrollModelId });
   res.json({
     ok: true, id: row.id, label, people: people.length, totalRows: parsed.totalRows,
     perProperty, skippedOffPortfolio: parsed.people.length - people.length,
     allocatedWithoutSplit: parsed.allocatedWithoutSplit, skippedNoProperty: parsed.skippedNoProperty,
+    payrollModelId,
   });
 }));
 
@@ -150,7 +162,7 @@ payrollRouter.get('/cycles/:id', h(async (req, res) => {
   const siteSet = new Set(sites);
   const touched = new Set(people.flatMap((p) => p.allocations.map((a) => a.code)));
   const visibleProps = props.filter((p) => touched.has(p.code) && siteSet.has(p.code));
-  if (!visibleProps.length) return res.status(403).json({ error: admin ? 'No properties in this cycle' : 'No properties assigned to you â€” an admin sets your sites in the Payroll tab' });
+  if (!visibleProps.length) return res.status(403).json({ error: admin ? 'No properties in this cycle' : 'No properties assigned to you — an admin sets your sites in the Payroll tab' });
   const visCodes = new Set(visibleProps.map((p) => p.code));
   const regions = [...new Set(visibleProps.map(regionOf))].sort();
 
@@ -198,7 +210,7 @@ async function loadIteration(id: number): Promise<any | null> {
 payrollRouter.put('/iterations/:id/entries', h(async (req, res) => {
   const it = await loadIteration(Number(req.params.id));
   if (!it) return res.status(404).json({ error: 'No such iteration' });
-  if (it.finalized_at) return res.status(409).json({ error: `Iteration ${it.num} is finalized â€” start the next iteration to make changes` });
+  if (it.finalized_at) return res.status(409).json({ error: `Iteration ${it.num} is finalized — start the next iteration to make changes` });
   const user = req.session.username || '';
   const admin = isAdminUser(user);
   const key = String(req.body?.key || '');
@@ -206,7 +218,7 @@ payrollRouter.put('/iterations/:id/entries', h(async (req, res) => {
   if (!Number.isFinite(pct) || pct < -50 || pct > 100) return res.status(400).json({ error: 'Raise % must be a number between -50 and 100' });
   const people = await loadSnapshotPeople(it.staffing_snapshot_id);
   const person = people.find((p) => p.key === key);
-  if (!person) return res.status(404).json({ error: 'No such person in this cycleâ€™s staffing snapshot' });
+  if (!person) return res.status(404).json({ error: 'No such person in this cycle’s staffing snapshot' });
   if (person.rm && !canSeeRmPay(user)) return res.status(403).json({ error: 'Regional-Manager raises are limited to the RM-pay allowlist' });
   if (!admin) {
     const sites = ((await query('select sites from app_users where key=$1', [normUser(user)])).rows[0]?.sites as string[]) || [];
@@ -224,7 +236,7 @@ payrollRouter.put('/iterations/:id/entries', h(async (req, res) => {
 payrollRouter.put('/iterations/:id/status', h(async (req, res) => {
   const it = await loadIteration(Number(req.params.id));
   if (!it) return res.status(404).json({ error: 'No such iteration' });
-  if (it.finalized_at) return res.status(409).json({ error: 'Finalized â€” statuses are frozen' });
+  if (it.finalized_at) return res.status(409).json({ error: 'Finalized — statuses are frozen' });
   const user = req.session.username || '';
   const admin = isAdminUser(user);
   const code = String(req.body?.property || '');
@@ -274,7 +286,7 @@ payrollRouter.post('/cycles/:id/regions/:region/iterations', requireAdmin, h(asy
 
 /* ---------------- apply to budgets (admin) ----------------
    Writes each property's wage GLs (annual $, raise prorated from the
-   effective month) into its budget's inputs.wages and regenerates â€” taxes,
+   effective month) into its budget's inputs.wages and regenerates — taxes,
    benefits and bonuses follow the engine's own drivers from there. */
 payrollRouter.post('/iterations/:id/apply', requireAdmin, h(async (req, res) => {
   const it = await loadIteration(Number(req.params.id));

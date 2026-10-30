@@ -350,12 +350,18 @@ budgets' wage GLs. Modeled on the per-property sheets of the Payroll Budget Work
   `hidden` aggregates per iteration so totals still reconcile. Note a lone RM allocation at
   one property is arithmetically recoverable from the subtotal — accepted (Troy saw the
   mockup note).
-- **Staffing report** (HRIS roster export, "Dictionary of Employees" columns + optional
-  "Allocated Employee Data" split sheet): `parseStaffingReport` (importers.ts) +
-  `detectUploadKind` 'staffing'. It is parsed AND stored in ONE call —
-  `POST /payroll/staffing` (admin, behind the gate) — so no API response ever carries the
-  roster back out; the generic Data-page parse 400s and points at the Payroll tab.
-  Off-portfolio rows are dropped at store time.
+- **Staffing data** — `parseStaffingReport` (importers.ts) reads TWO shapes: the HRIS
+  roster export ("Dictionary of Employees" columns + optional "Allocated Employee Data"
+  split sheet, .xlsb payroll budget workbook included), and **THE staffing report (Troy
+  2026-10-30): "North Dakota Payroll - Ongoing.xlsx"** — the Splits/Wages grid (rows =
+  position | name, columns = MIMG + per-property allocated annual $, Hourly/Annual rate
+  cols; allocation % = each property's $ share; Splits sheet preferred as current-year).
+  Parsed AND stored in ONE call — `POST /payroll/staffing` (admin, behind the gate) — so
+  no API response ever carries the roster back out; the same drop also refreshes the
+  wage-aggregate `payroll_models` row when the file carries a Wages-style sheet, so the
+  one workbook is never uploaded twice. The generic Data-page parse 400s 'staffing' and
+  points at the Payroll tab. Off-portfolio rows are dropped at store time; coverage is
+  ALL tracked properties, comps included (the Minot sites are budgeted for payroll).
 - **Math** in `shared/payroll.ts` (pure, test/payroll.test.ts, synthetic fixtures ONLY):
   `POSITION_GL` (moved from importers — one source), `seatMonthly` (2080 hrs/yr),
   `raisedMonthCount` (proration from the effective month), `annualWagesByGl` → the
@@ -371,6 +377,11 @@ budgets' wage GLs. Modeled on the per-property sheets of the Payroll Budget Work
   keep in step), region chips → iteration tabs → guardrail cards (3–4% guidance, vs the
   property's budgeted income growth derived client-side from `/state` dash
   `income/(income−egiVar)`) → per-property grids. Payroll styles at the end of styles.css.
+- **The WHOLE app wears the Monarch skin** (Troy 2026-10-30 — he wants nothing of the old
+  chrome): `body.monarch` in index.html rescopes the theme vars app-wide (cream page, Lato
+  + Aleo from Google Fonts, deep-green topbar with gold rule/active nav, blue headings;
+  green-tinted dark palette). The old `:root` palette survives only as the fallback under
+  the overrides — don't restyle against it.
 - Remember `src/payroll.ts` + `shared/payroll.ts` in the esbuild entry list (done).
 
 ## Gotchas / policy

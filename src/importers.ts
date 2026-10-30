@@ -672,8 +672,23 @@ function headerMap(g: Grid, wanted: string[], scanRows = 6): { row: number; cols
   return null;
 }
 
+/** The staffing data comes in TWO shapes — try both:
+    1. HRIS roster export ("Dictionary of Employees" columns, one row per
+       employee, optional allocation sheet) — the payroll budget workbook.
+    2. The ND payroll workbook ("North Dakota Payroll - Ongoing"): Splits /
+       Wages grid — rows = position | name, columns = per-property allocated
+       annual $, plus an Hourly rate and Annual total column. This is the file
+       Troy calls THE staffing report (2026-10-30). */
 export function parseStaffingReport(buf: Buffer): StaffingParsed {
   const all = grids(buf);
+  const dict = parseDictionaryRoster(all);
+  if (dict) return dict;
+  const grid = parseSplitsGrid(all);
+  if (grid) return grid;
+  throw new Error('Staffing: no roster recognized — need EmployeeName/PayRate/PropertyCode columns, or the ND payroll Splits/Wages grid');
+}
+
+function parseDictionaryRoster(all: { name: string; g: Grid }[]): StaffingParsed | null {
   let roster: { name: string; hm: { row: number; cols: Record<string, number> }; g: Grid } | null = null;
   let alloc: { hm: { row: number; cols: Record<string, number> }; g: Grid } | null = null;
   for (const { name, g } of all) {
@@ -686,7 +701,7 @@ export function parseStaffingReport(buf: Buffer): StaffingParsed {
       if (hm && !headerMap(g, ['payrate'])) alloc = { hm, g };
     }
   }
-  if (!roster) throw new Error('Staffing report: no sheet with EmployeeName / PayRate / PropertyCode headers found');
+  if (!roster) return null;
 
   // allocation splits keyed by prism id AND by normalized name (either may match)
   const splits = new Map<string, { code: string; pct: number }[]>();
@@ -746,6 +761,78 @@ export function parseStaffingReport(buf: Buffer): StaffingParsed {
   }
   if (!people.length) throw new Error('Staffing report: no roster rows parsed');
   return { label: roster.name, people, totalRows, allocatedWithoutSplit, skippedNoProperty };
+}
+
+/** ND payroll workbook grid: header row carries MIMG + >=8 property codes plus
+    Hourly / Annual columns; the two columns left of the first money column are
+    position | name. Allocation %s derive from each row's per-property $ share.
+    The CURRENT-year "Splits" sheet is preferred over the prior-year "Wages". */
+function parseSplitsGrid(all: { name: string; g: Grid }[]): StaffingParsed | null {
+  const order = [...all].sort((a, b) => {
+    const rank = (n: string) => (/split/i.test(n) ? 0 : /wages/i.test(n) ? 1 : 2);
+    return rank(a.name) - rank(b.name);
+  });
+  for (const { name, g } of order) {
+    let header = -1;
+    let codeCols: { c: number; code: string }[] = [];
+    let mimgCol = -1, hourlyCol = -1, annualCol = -1;
+    for (let r = 0; r < Math.min(g.length, 12); r++) {
+      const found: { c: number; code: string }[] = [];
+      let mimg = -1, hr = -1, an = -1;
+      for (let c = 0; c < (g[r] || []).length; c++) {
+        const v = s(g[r]?.[c]);
+        if (/^[A-Z]{4,6}$/.test(v) && !['MIMG', 'TOTAL', 'CHECK'].includes(v)) found.push({ c, code: v.toLowerCase() });
+        else if (v === 'MIMG') mimg = c;
+        else if (/^hourly$/i.test(v)) hr = c;
+        else if (/^annual$/i.test(v)) an = c;
+      }
+      // a real grid has a few property-code columns AND at least one of the
+      // rate/share markers (Hourly / Annual / MIMG) — the markers keep other
+      // money grids (comp sets, statements) from matching
+      if (found.length >= 3 && (hr >= 0 || an >= 0 || mimg >= 0)) { header = r; codeCols = found; mimgCol = mimg; hourlyCol = hr; annualCol = an; break; }
+    }
+    if (header < 0) continue;
+    const moneyStart = Math.min(mimgCol >= 0 ? mimgCol : Infinity, codeCols[0].c);
+    const nameCol = moneyStart - 1;
+    const posCol = moneyStart - 2;
+    if (posCol < 0) continue;
+    const people: StaffingPerson[] = [];
+    const seen = new Map<string, number>();
+    let totalRows = 0;
+    for (let r = header + 1; r < g.length; r++) {
+      const row = g[r] || [];
+      const personName = s(row[nameCol]);
+      const position = s(row[posCol]);
+      if (!personName || !position) continue;
+      if (/count|check|total|average/i.test(position) || /count|check|total|average/i.test(personName)) continue;
+      const amounts = codeCols.map(({ c, code }) => ({ code, amt: num(row[c]) }));
+      const mimgAmt = mimgCol >= 0 ? num(row[mimgCol]) : 0;
+      const sumAll = amounts.reduce((a, x) => a + x.amt, 0) + mimgAmt;
+      if (sumAll <= 0) continue;
+      totalRows++;
+      const hourly = hourlyCol >= 0 ? num(row[hourlyCol]) : 0;
+      const annual = (annualCol >= 0 ? num(row[annualCol]) : 0) || sumAll;
+      let key = normHdr(personName);
+      const n = (seen.get(key) || 0) + 1;
+      seen.set(key, n);
+      if (n > 1) key = `${key}-${n}`;   // two people sharing a name stay distinct rows
+      people.push({
+        key, name: personName, position,
+        payMethod: hourly > 0 ? 'Hourly' : 'Salary',
+        payRate: hourly > 0 ? hourly : annual,
+        monthlyBenefits: 0,
+        startDate: null,
+        status: 'FULL',
+        oldPay: null,
+        allocations: amounts.filter((x) => x.amt > 0).map((x) => ({ code: x.code, pct: Math.round((x.amt / sumAll) * 10000) / 10000 })),
+        rm: isRmPosition(position),
+      });
+    }
+    if (!people.length) continue;
+    const period = [0, 1, 2].map((r) => s(g[r]?.[0]) + ' ' + s(g[r]?.[1])).find((t) => /budget/i.test(t)) || '';
+    return { label: `${name}${period ? ` — ${period.trim()}` : ''}`, people, totalRows, allocatedWithoutSplit: [], skippedNoProperty: 0 };
+  }
+  return null;
 }
 
 /* ========================= SELLER T12 STATEMENT ========================= */
