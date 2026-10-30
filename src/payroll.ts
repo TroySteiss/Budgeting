@@ -13,7 +13,8 @@ import { query } from './db.js';
 import { requireAuth, requireAdmin, isAdminUser, canSeeRmPay, normUser } from './auth.js';
 import { parseStaffingReport, parsePayrollModel } from './importers.js';
 import { loadBudget, buildLines, saveLines } from './routes.js';
-import { maskPeople, hiddenAggregates, annualWagesByGl, type StaffingPerson, type RaiseMap } from '../shared/payroll.js';
+import { maskPeople, hiddenAggregates, annualWagesByGl, seatMonthly, type StaffingPerson, type RaiseMap } from '../shared/payroll.js';
+import { buildRaiseWorkbook, parseRaiseImport, type RaiseExportRow } from './payroll-xlsx.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 export const payrollRouter = Router();
@@ -251,6 +252,120 @@ payrollRouter.put('/iterations/:id/status', h(async (req, res) => {
   await query('update raise_iterations set prop_status=$2 where id=$1', [it.id, JSON.stringify(ps)]);
   logChange(user, 'raise property status', { iterationId: it.id, property: code, status });
   res.json({ ok: true, propStatus: ps });
+}));
+
+/* ---------------- Excel round trip ---------------- */
+const initialsOf = (u: string): string => u.split(/\s+/).map((w) => w[0] || '').join('').toUpperCase().slice(0, 3);
+const mmddyyyy = (): string => { const d = new Date(); return `${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}${d.getFullYear()}`; };
+
+/** The iteration's working set, scoped + masked exactly like GET /cycles/:id. */
+async function scopedIterView(req: Request, iterId: number): Promise<{ error: string; code: number } | {
+  it: any; cycle: any; user: string; admin: boolean; rmPay: boolean;
+  visCodes: Set<string>; people: (StaffingPerson & { payHidden?: boolean })[]; rawPeople: StaffingPerson[];
+  entries: Record<string, { pct: number; by: string; at: string }>;
+}> {
+  const it = await loadIteration(iterId);
+  if (!it) return { error: 'No such iteration', code: 404 };
+  const cycle = (await query('select * from raise_cycles where id=$1', [it.cycle_id])).rows[0];
+  const user = req.session.username || '';
+  const admin = isAdminUser(user);
+  const people = await loadSnapshotPeople(it.staffing_snapshot_id);
+  const props = (await query('select code, market from properties')).rows as any[];
+  const sites: string[] = admin ? props.map((p) => p.code)
+    : (((await query('select sites from app_users where key=$1', [normUser(user)])).rows[0]?.sites as string[]) || []);
+  const siteSet = new Set(sites);
+  const visCodes = new Set(props
+    .filter((p) => regionOf(p) === it.region && siteSet.has(p.code) && people.some((x) => x.allocations.some((a) => a.code === p.code)))
+    .map((p) => p.code));
+  if (!visCodes.size) return { error: 'No properties assigned to you in this region', code: 403 };
+  const entries: Record<string, { pct: number; by: string; at: string }> = {};
+  for (const e of (await query('select person_key, raise_pct, updated_by, updated_at from raise_entries where iteration_id=$1', [it.id])).rows) {
+    entries[e.person_key] = { pct: Number(e.raise_pct), by: e.updated_by, at: String(e.updated_at) };
+  }
+  const rawPeople = people.filter((p) => p.allocations.some((a) => visCodes.has(a.code)));
+  return { it, cycle, user, admin, rmPay: canSeeRmPay(user), visCodes, people: maskPeople(rawPeople, canSeeRmPay(user)), rawPeople, entries };
+}
+
+payrollRouter.get('/iterations/:id/export.xlsx', h(async (req, res) => {
+  const v = await scopedIterView(req, Number(req.params.id));
+  if ('error' in v) return res.status(v.code).json({ error: v.error });
+  const rows: RaiseExportRow[] = [];
+  const allocations: any[] = [];
+  for (const p of v.people) {
+    const regA = p.allocations.filter((a) => v.visCodes.has(a.code));
+    if (!regA.length) continue;
+    const prim = [...regA].sort((a, b) => b.pct - a.pct)[0];
+    const others = p.allocations.filter((a) => a.code !== prim.code);
+    const e = v.entries[p.key];
+    const masked = !!p.payHidden;
+    rows.push({
+      key: p.key, name: p.name, position: p.position,
+      primCode: prim.code, primPct: prim.pct,
+      splitNote: others.length ? `also ${others.map((x) => `${x.code.toUpperCase()} ${Math.round(x.pct * 100)}%`).join(' · ')}` : '',
+      payMethod: p.payMethod,
+      payRate: masked ? null : p.payRate,
+      regionMoCur: masked ? null : regA.reduce((s, a) => s + seatMonthly(p.payMethod, p.payRate, a.pct), 0),
+      raisePct: e ? e.pct : 0, by: e ? e.by : '', at: e ? e.at : '', rm: !!p.rm,
+    });
+    for (const a of regA) {
+      allocations.push({
+        key: p.key, name: p.name, position: p.position, payMethod: p.payMethod,
+        payRate: masked ? null : p.payRate, monthlyBenefits: masked ? null : p.monthlyBenefits,
+        status: p.status, startDate: p.startDate, code: a.code, pct: a.pct,
+      });
+    }
+  }
+  rows.sort((x, y) => x.primCode.localeCompare(y.primCode) || x.position.localeCompare(y.position) || x.name.localeCompare(y.name));
+  let hidden: { curMo: number; newMo: number } | null = null;
+  if (!v.rmPay) {
+    const raises: RaiseMap = {};
+    for (const [k, e] of Object.entries(v.entries)) raises[k] = e.pct;
+    const agg = hiddenAggregates(v.rawPeople, raises, [...v.visCodes]);
+    hidden = Object.values(agg).reduce((s, x) => ({ curMo: s.curMo + x.curMo, newMo: s.newMo + x.newMo }), { curMo: 0, newMo: 0 });
+    if (!hidden.curMo) hidden = null;
+  }
+  const buf = await buildRaiseWorkbook({
+    cycleLabel: v.cycle.label, effective: v.cycle.effective, region: v.it.region, iterNum: v.it.num,
+    finalized: v.it.finalized_at ? { by: v.it.finalized_by, at: String(v.it.finalized_at) } : null,
+    exportedBy: v.user, rows, hidden, allocations,
+  });
+  logChange(v.user, 'export raise workbook', { iterationId: v.it.id, region: v.it.region, rows: rows.length });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${v.it.region} Raises Iteration ${v.it.num} ${initialsOf(v.user)} ${mmddyyyy()}.xlsx"`);
+  res.send(buf);
+}));
+
+/** Edited Raise %s come back by person Key; same checks as single entries. */
+payrollRouter.post('/iterations/:id/import', upload.single('file'), h(async (req, res) => {
+  const it = await loadIteration(Number(req.params.id));
+  if (!it) return res.status(404).json({ error: 'No such iteration' });
+  if (it.finalized_at) return res.status(409).json({ error: `Iteration ${it.num} is finalized — start the next iteration, then import into it` });
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+  const user = req.session.username || '';
+  const admin = isAdminUser(user);
+  const sites: string[] = admin ? [] : (((await query('select sites from app_users where key=$1', [normUser(user)])).rows[0]?.sites as string[]) || []);
+  const people = await loadSnapshotPeople(it.staffing_snapshot_id);
+  const byKey = new Map(people.map((p) => [p.key, p]));
+  const pairs = parseRaiseImport(req.file.buffer);
+  let applied = 0, unchanged = 0;
+  const skipped: { name: string; reason: string }[] = [];
+  for (const { key, pct } of pairs) {
+    const person = byKey.get(key);
+    if (!person) { skipped.push({ name: key, reason: 'unknown key' }); continue; }
+    if (pct < -50 || pct > 100) { skipped.push({ name: person.name, reason: 'raise % out of range' }); continue; }
+    if (person.rm && !canSeeRmPay(user)) { skipped.push({ name: person.name, reason: 'RM pay — allowlist only' }); continue; }
+    if (!admin && !person.allocations.some((a) => sites.includes(a.code))) { skipped.push({ name: person.name, reason: 'not one of your properties' }); continue; }
+    const cur = (await query('select raise_pct from raise_entries where iteration_id=$1 and person_key=$2', [it.id, key])).rows[0];
+    if (cur && Math.abs(Number(cur.raise_pct) - pct) < 0.0001) { unchanged++; continue; }   // untouched rows keep their original author
+    await query(
+      `insert into raise_entries(iteration_id, person_key, raise_pct, updated_by, updated_at) values($1,$2,$3,$4,now())
+       on conflict (iteration_id, person_key) do update set raise_pct=excluded.raise_pct, updated_by=excluded.updated_by, updated_at=now()`,
+      [it.id, key, pct, user]
+    );
+    applied++;
+  }
+  logChange(user, 'import raise workbook', { iterationId: it.id, region: it.region, applied, unchanged, skipped: skipped.length });
+  res.json({ ok: true, applied, unchanged, skipped });
 }));
 
 /* ---------------- iteration lifecycle (admin) ---------------- */

@@ -7,6 +7,7 @@ import {
   positionGl, isRmPosition, marginalBurdenPct, type StaffingPerson,
 } from '../shared/payroll.js';
 import { parseStaffingReport, detectUploadKind } from '../src/importers.js';
+import { buildRaiseWorkbook, parseRaiseImport, type RaiseExportRow } from '../src/payroll-xlsx.js';
 
 const person = (over: Partial<StaffingPerson>): StaffingPerson => ({
   key: 'x1', name: 'A. Example', position: 'Maintenance Tech I', payMethod: 'Hourly',
@@ -79,6 +80,39 @@ describe('RM masking', () => {
     expect(agg.spnd.curMo).toBeCloseTo(seatMonthly('Salary', 90000, 0.1), 2);
     expect(agg.spnd.newMo).toBeCloseTo(seatMonthly('Salary', 90000 * 1.05, 0.1), 2);
     expect(agg.wynd.curMo).toBe(agg.spnd.curMo);
+  });
+});
+
+describe('excel round trip (synthetic)', () => {
+  const row = (over: Partial<RaiseExportRow>): RaiseExportRow => ({
+    key: 'k1', name: 'A. Example', position: 'Maintenance Tech I', primCode: 'cwnd', primPct: 1,
+    splitNote: '', payMethod: 'Hourly', payRate: 20, regionMoCur: 3466.67, raisePct: 3,
+    by: 'TS', at: '2026-10-30', rm: false, ...over,
+  });
+  it('export → import returns every unmasked row with its raise %', async () => {
+    const buf = await buildRaiseWorkbook({
+      cycleLabel: 'FY27 raises', effective: '2027-01', region: 'Bismarck ND', iterNum: 2,
+      finalized: null, exportedBy: 'Troy Steiss',
+      rows: [
+        row({ key: 'k1', raisePct: 3 }),
+        row({ key: 'k2', name: 'B. Sample', position: 'Leasing', primCode: 'lhnd', raisePct: 4.5, splitNote: 'also CWND 40%' }),
+        row({ key: 'rm1', name: 'R. Masked', position: 'Regional', payRate: null, regionMoCur: null, rm: true, raisePct: 0 }),
+      ],
+      hidden: { curMo: 900, newMo: 927 },
+      allocations: [
+        { key: 'k1', name: 'A. Example', position: 'Maintenance Tech I', payMethod: 'Hourly', payRate: 20, monthlyBenefits: 400, status: 'FULL', startDate: '2021-01-01', code: 'cwnd', pct: 1 },
+      ],
+    });
+    const pairs = parseRaiseImport(buf);
+    const byKey = Object.fromEntries(pairs.map((p) => [p.key, p.pct]));
+    expect(byKey.k1).toBe(3);
+    expect(byKey.k2).toBe(4.5);
+    expect('rm1' in byKey).toBe(false);   // masked row exports no editable raise value... unless typed in
+  });
+  it('rejects a workbook without Key/Raise % columns', () => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Name', 'Amount'], ['x', 1]]), 'Sheet1');
+    expect(() => parseRaiseImport(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer)).toThrow(/Key/);
   });
 });
 

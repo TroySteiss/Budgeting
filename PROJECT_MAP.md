@@ -377,6 +377,13 @@ budgets' wage GLs. Modeled on the per-property sheets of the Payroll Budget Work
   keep in step), region chips → iteration tabs → guardrail cards (3–4% guidance, vs the
   property's budgeted income growth derived client-side from `/state` dash
   `income/(income−egiVar)`) → per-property grids. Payroll styles at the end of styles.css.
+- **Excel round trip** (`src/payroll-xlsx.ts`): `GET /payroll/iterations/:id/export.xlsx`
+  — the region-iteration as a workbook (Raises sheet mirrors the tab: person-once, grouped
+  by primary site, LIVE formulas for new rate / Δs / totals + a Raw Data allocation sheet;
+  viewer-scoped and RM-masked like the API, masked slices as one aggregate row).
+  `POST /payroll/iterations/:id/import` reads Raise % by person Key back in (same checks as
+  typed entries: finalized 409, RM allowlist, site scoping; untouched rows keep their
+  original author). ⬇ Excel / ⬆ Import raises buttons on the region table header.
 - **The WHOLE app wears the Monarch skin** (Troy 2026-10-30 — he wants nothing of the old
   chrome): `body.monarch` in index.html rescopes the theme vars app-wide (cream page, Lato
   + Aleo from Google Fonts, deep-green topbar with gold rule/active nav, blue headings;

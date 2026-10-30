@@ -3038,7 +3038,10 @@ function payRegionTableHtml(c, props, iter, prior, locked, tot) {
     <div class="payhead">
       <b>${esc(P.region)}</b><span class="muted">${rows.length} people · each listed once, under their primary site · ⇄ marks a split (hover for the full allocation)</span>
       <span class="spacer"></span>
-      ${!locked ? `<span class="muted" style="font-size:12px">Set all:</span>
+      ${iter ? `<a class="paypill sm" href="/api/payroll/iterations/${iter.id}/export.xlsx" title="Excel workbook of this iteration — live formulas, Raw Data sheet, importable back">⬇ Excel</a>` : ''}
+      ${!locked ? `<button class="paypill sm" id="pay-ximp" title="Load raise %s from an edited export (matches rows by the Key column)">⬆ Import raises</button>
+        <input type="file" id="pay-ximp-file" accept=".xlsx,.xlsm" style="display:none">
+        <span class="muted" style="font-size:12px">Set all:</span>
         <button class="paypill sm pay-setall" data-v="3">3%</button>
         <button class="paypill sm pay-setall" data-v="4">4%</button>
         <button class="paypill sm pay-setall" data-v="0">0%</button>` : ''}
@@ -3111,6 +3114,22 @@ function wirePayCycle(el, c) {
       iter.propStatus = r.propStatus; render();
     } catch (e) { P.err = e.message; render(); }
   }));
+  const ximp = el.querySelector('#pay-ximp');
+  if (ximp) {
+    const file = el.querySelector('#pay-ximp-file');
+    ximp.addEventListener('click', () => file.click());
+    file.addEventListener('change', async () => {
+      const f = file.files[0];
+      if (!f) return;
+      const fd = new FormData(); fd.append('file', f);
+      try {
+        const r = await api(`/payroll/iterations/${iter.id}/import`, { method: 'POST', body: fd });
+        P.msg = `Imported ${r.applied} raise(s)${r.unchanged ? ` · ${r.unchanged} unchanged` : ''}`
+          + (r.skipped.length ? ` · skipped ${r.skipped.length}: ${r.skipped.slice(0, 4).map((s) => `${s.name} (${s.reason})`).join(', ')}${r.skipped.length > 4 ? '…' : ''}` : '');
+        await loadPayCycle(c.cycle.id); render();
+      } catch (e) { P.err = e.message; render(); }
+    });
+  }
   const fin = el.querySelector('#pay-final');
   if (fin) fin.addEventListener('click', async () => {
     if (!confirm(`Finalize ${P.region} iteration ${iter.num}? Every raise entry locks; the next iteration starts from this one.`)) return;
