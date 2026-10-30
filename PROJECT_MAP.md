@@ -376,7 +376,13 @@ budgets' wage GLs. Modeled on the per-property sheets of the Payroll Budget Work
 - **Client**: `renderPayroll` + `pay*` helpers in app.js (mirrors shared/payroll math —
   keep in step), region chips → iteration tabs → guardrail cards (3–4% guidance, vs the
   property's budgeted income growth derived client-side from `/state` dash
-  `income/(income−egiVar)`) → per-property grids. Payroll styles at the end of styles.css.
+  `income/(income−egiVar)`) → ONE region table, **each person exactly once** (Troy
+  2026-10-30 — pooled staff were repeating under every property), **grouped by the payroll
+  workbook's own sections in its own row order** (`StaffingPerson.group`/`ord`, captured by
+  parseSplitsGrid from the label column; primary-site fallback when a roster has no
+  sections). Snapshots predating group/ord: re-drop the workbook and use the cycle's
+  "↻ Use latest staffing" repoint (PUT /payroll/cycles/:id — entries key by person, raises
+  carry over). Payroll styles at the end of styles.css.
 - **Excel round trip** (`src/payroll-xlsx.ts`): `GET /payroll/iterations/:id/export.xlsx`
   — the region-iteration as a workbook (Raises sheet mirrors the tab: person-once, grouped
   by primary site, LIVE formulas for new rate / Δs / totals + a Raw Data allocation sheet;
