@@ -15,6 +15,11 @@ export interface StaffingPerson {
   oldPay: number | null;             // prior rate when the report carries one
   allocations: SeatAllocation[];
   rm: boolean;                       // Regional-Manager position → pay masked outside RM_PAY_USERS
+  /** The payroll workbook's own section label ("Minot Support Staff",
+      "Bismarck 4", …) and row order — the tab and the Excel export group
+      people exactly where the workbook puts them (Troy 2026-10-30). */
+  group?: string | null;
+  ord?: number;
 }
 
 /* Position → Monarch wage GL. Anything unrecognized lands in 6404.

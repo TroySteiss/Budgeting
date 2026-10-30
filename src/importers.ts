@@ -757,6 +757,7 @@ function parseDictionaryRoster(all: { name: string; g: Grid }[]): StaffingParsed
       oldPay: num(col(row, 'oldpay')) || null,
       allocations,
       rm: isRmPosition(position),
+      group: null, ord: r,
     });
   }
   if (!people.length) throw new Error('Staffing report: no roster rows parsed');
@@ -799,8 +800,14 @@ function parseSplitsGrid(all: { name: string; g: Grid }[]): StaffingParsed | nul
     const people: StaffingPerson[] = [];
     const seen = new Map<string, number>();
     let totalRows = 0;
+    // the column left of Position carries the workbook's section labels
+    // ("Minot Support Staff", "Bismarck 4", …) on each section's first row
+    const groupCol = posCol - 1;
+    let group: string | null = null;
     for (let r = header + 1; r < g.length; r++) {
       const row = g[r] || [];
+      const label = groupCol >= 0 ? s(row[groupCol]) : '';
+      if (label && !/count|check|total|average/i.test(label)) group = label;
       const personName = s(row[nameCol]);
       const position = s(row[posCol]);
       if (!personName || !position) continue;
@@ -826,6 +833,7 @@ function parseSplitsGrid(all: { name: string; g: Grid }[]): StaffingParsed | nul
         oldPay: null,
         allocations: amounts.filter((x) => x.amt > 0).map((x) => ({ code: x.code, pct: Math.round((x.amt / sumAll) * 10000) / 10000 })),
         rm: isRmPosition(position),
+        group, ord: r,
       });
     }
     if (!people.length) continue;

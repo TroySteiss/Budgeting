@@ -14,6 +14,7 @@ export interface RaiseExportRow {
   key: string;
   name: string;
   position: string;
+  groupLabel: string;        // the workbook's section ("Bismarck 4", …) — rows arrive sorted by it
   primCode: string;          // primary site (largest allocation in the region)
   primPct: number;           // 0..1
   splitNote: string;         // '' or the other sites
@@ -77,12 +78,12 @@ export async function buildRaiseWorkbook(a: RaiseExportArgs): Promise<Buffer> {
   let r = 6;
   const dataRows: number[] = [];
   let totH = 0, totL = 0, totM = 0;
-  let lastPrim = '';
+  let lastGroup = '';
   for (const row of a.rows) {
-    if (row.primCode !== lastPrim) {
-      lastPrim = row.primCode;
+    if (row.groupLabel !== lastGroup) {
+      lastGroup = row.groupLabel;
       const g = ws.getRow(r);
-      g.getCell(2).value = row.primCode.toUpperCase();
+      g.getCell(2).value = row.groupLabel;
       g.getCell(2).font = { bold: true, size: 9 };
       for (let c = 1; c <= 14; c++) g.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRP } };
       r++;

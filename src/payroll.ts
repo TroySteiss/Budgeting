@@ -143,6 +143,19 @@ payrollRouter.post('/cycles', requireAdmin, h(async (req, res) => {
   res.json({ ok: true, cycle, regions });
 }));
 
+/** Repoint a cycle at a newer staffing snapshot (after re-dropping the
+    workbook). Entries key by person, so raises carry over; people who left
+    the roster simply stop rendering. */
+payrollRouter.put('/cycles/:id', requireAdmin, h(async (req, res) => {
+  const id = Number(req.params.id);
+  const snapId = Number(req.body?.staffingSnapshotId);
+  const people = await loadSnapshotPeople(snapId);
+  if (!people.length) return res.status(400).json({ error: 'No such staffing snapshot' });
+  await query('update raise_cycles set staffing_snapshot_id=$2 where id=$1', [id, snapId]);
+  logChange(req.session.username || '', 'repoint raise cycle staffing', { cycleId: id, staffingSnapshotId: snapId });
+  res.json({ ok: true });
+}));
+
 payrollRouter.delete('/cycles/:id', requireAdmin, h(async (req, res) => {
   await query('delete from raise_cycles where id=$1', [Number(req.params.id)]);
   logChange(req.session.username || '', 'delete raise cycle', { cycleId: Number(req.params.id) });
@@ -300,13 +313,14 @@ payrollRouter.get('/iterations/:id/export.xlsx', h(async (req, res) => {
     const masked = !!p.payHidden;
     rows.push({
       key: p.key, name: p.name, position: p.position,
+      groupLabel: '', _group: p.group || null, _ord: p.ord ?? 0,
       primCode: prim.code, primPct: prim.pct,
       splitNote: others.length ? `also ${others.map((x) => `${x.code.toUpperCase()} ${Math.round(x.pct * 100)}%`).join(' · ')}` : '',
       payMethod: p.payMethod,
       payRate: masked ? null : p.payRate,
       regionMoCur: masked ? null : regA.reduce((s, a) => s + seatMonthly(p.payMethod, p.payRate, a.pct), 0),
       raisePct: e ? e.pct : 0, by: e ? e.by : '', at: e ? e.at : '', rm: !!p.rm,
-    });
+    } as RaiseExportRow & { _group: string | null; _ord: number });
     for (const a of regA) {
       allocations.push({
         key: p.key, name: p.name, position: p.position, payMethod: p.payMethod,
@@ -315,7 +329,21 @@ payrollRouter.get('/iterations/:id/export.xlsx', h(async (req, res) => {
       });
     }
   }
-  rows.sort((x, y) => x.primCode.localeCompare(y.primCode) || x.position.localeCompare(y.position) || x.name.localeCompare(y.name));
+  // same grouping as the tab: the workbook's own sections and row order when
+  // present (Troy 2026-10-30), else primary site
+  const xr = rows as (RaiseExportRow & { _group: string | null; _ord: number })[];
+  const useGroups = xr.some((x) => x._group);
+  if (useGroups) {
+    const minOrd = new Map<string, number>();
+    for (const x of xr) {
+      x.groupLabel = x._group || 'Other';
+      if (!minOrd.has(x.groupLabel) || x._ord < minOrd.get(x.groupLabel)!) minOrd.set(x.groupLabel, x._ord);
+    }
+    xr.sort((a, b) => (minOrd.get(a.groupLabel)! - minOrd.get(b.groupLabel)!) || (a._ord - b._ord));
+  } else {
+    for (const x of xr) x.groupLabel = x.primCode.toUpperCase();
+    xr.sort((a, b) => a.primCode.localeCompare(b.primCode) || a.position.localeCompare(b.position) || a.name.localeCompare(b.name));
+  }
   let hidden: { curMo: number; newMo: number } | null = null;
   if (!v.rmPay) {
     const raises: RaiseMap = {};

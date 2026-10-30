@@ -2870,6 +2870,8 @@ function payHeaderHtml(st) {
       <span class="spacer"></span>
       ${st.cycles.length ? `<label class="muted" style="font-size:12px">Cycle</label>
       <select id="pay-cycle">${st.cycles.map((x) => `<option value="${x.id}" ${x.id === P.cycleId ? 'selected' : ''}>${esc(x.label)} · eff. ${esc(x.effective)}</option>`).join('')}</select>` : ''}
+      ${st.isAdmin && P.cycleId && st.snapshots.length && (st.cycles.find((x) => x.id === P.cycleId) || {}).staffing_snapshot_id !== st.snapshots[0].id
+        ? `<button class="btn sub" id="pay-relink-snap" title="Point this cycle at the newest staffing report — raises carry over (rows match by person)">↻ Use latest staffing</button>` : ''}
       ${st.isAdmin ? `<button class="btn sub" id="pay-newcycle">＋ New cycle</button>` : ''}
     </div>
     ${P.newCycle && st.isAdmin ? `<div class="row" style="margin-top:10px; gap:10px; flex-wrap:wrap; align-items:flex-end">
@@ -2887,6 +2889,13 @@ function wirePayHeader(el, st) {
   if (sel) sel.addEventListener('change', async () => { await loadPayCycle(Number(sel.value)); render(); });
   const nb = el.querySelector('#pay-newcycle');
   if (nb) nb.addEventListener('click', () => { S.pay.newCycle = !S.pay.newCycle; render(); });
+  const rl = el.querySelector('#pay-relink-snap');
+  if (rl) rl.addEventListener('click', async () => {
+    try {
+      await PUT(`/payroll/cycles/${S.pay.cycleId}`, { staffingSnapshotId: st.snapshots[0].id });
+      S.pay.msg = 'Cycle now reads the latest staffing report'; S.pay.st = null; render();
+    } catch (e) { S.pay.err = e.message; render(); }
+  });
   const go = el.querySelector('#nc-go');
   if (go) go.addEventListener('click', async () => {
     try {
@@ -2945,7 +2954,21 @@ function payPersonRows(c, visCodes, iter, prior) {
     }
     rows.push(row);
   }
-  rows.sort((x, y) => x.prim.code.localeCompare(y.prim.code) || (x.p.position || '').localeCompare(y.p.position || '') || (x.p.name || '').localeCompare(y.p.name || ''));
+  // group exactly like the payroll workbook when its section labels exist
+  // (Minot Support Staff / Bismarck 4 / …, in the workbook's own row order);
+  // fall back to primary-site grouping for rosters without sections
+  const useGroups = rows.some((r) => r.p.group);
+  for (const r of rows) {
+    r.gkey = useGroups ? (r.p.group || 'Other') : r.prim.code;
+    r.glabel = useGroups ? (r.p.group || 'Other') : '';
+  }
+  if (useGroups) {
+    const minOrd = {};
+    for (const r of rows) { const o = r.p.ord ?? 0; if (!(r.gkey in minOrd) || o < minOrd[r.gkey]) minOrd[r.gkey] = o; }
+    rows.sort((x, y) => (minOrd[x.gkey] - minOrd[y.gkey]) || ((x.p.ord ?? 0) - (y.p.ord ?? 0)));
+  } else {
+    rows.sort((x, y) => x.prim.code.localeCompare(y.prim.code) || (x.p.position || '').localeCompare(y.p.position || '') || (x.p.name || '').localeCompare(y.p.name || ''));
+  }
   return rows;
 }
 
@@ -3025,18 +3048,19 @@ function payRegionTableHtml(c, props, iter, prior, locked, tot) {
   const nameOf = new Map(props.map((p) => [p.code, p.name || p.code]));
   const rows = payPersonRows(c, visCodes, iter, P.compare ? prior : null);
   const body = [];
-  let lastPrim = null;
+  let lastKey = null;
   for (const r of rows) {
-    if (r.prim.code !== lastPrim) {
-      lastPrim = r.prim.code;
-      const n = rows.filter((x) => x.prim.code === lastPrim).length;
-      body.push(`<tr class="paygrp"><td colspan="10">${lastPrim.toUpperCase()} — ${esc(nameOf.get(lastPrim) || '')} · based here: ${n}</td></tr>`);
+    if (r.gkey !== lastKey) {
+      lastKey = r.gkey;
+      const n = rows.filter((x) => x.gkey === lastKey).length;
+      const label = r.glabel ? esc(r.glabel) : `${lastKey.toUpperCase()} — ${esc(nameOf.get(lastKey) || '')}`;
+      body.push(`<tr class="paygrp"><td colspan="10">${label} · ${n}</td></tr>`);
     }
     body.push(payRowHtml(r, !locked));
   }
   return `<div class="card paysec">
     <div class="payhead">
-      <b>${esc(P.region)}</b><span class="muted">${rows.length} people · each listed once, under their primary site · ⇄ marks a split (hover for the full allocation)</span>
+      <b>${esc(P.region)}</b><span class="muted">${rows.length} people · each listed once · sections match the payroll workbook · ⇄ marks a split (hover for the full allocation)</span>
       <span class="spacer"></span>
       ${iter ? `<a class="paypill sm" href="/api/payroll/iterations/${iter.id}/export.xlsx" title="Excel workbook of this iteration — live formulas, Raw Data sheet, importable back">⬇ Excel</a>` : ''}
       ${!locked ? `<button class="paypill sm" id="pay-ximp" title="Load raise %s from an edited export (matches rows by the Key column)">⬆ Import raises</button>

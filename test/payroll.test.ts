@@ -85,7 +85,7 @@ describe('RM masking', () => {
 
 describe('excel round trip (synthetic)', () => {
   const row = (over: Partial<RaiseExportRow>): RaiseExportRow => ({
-    key: 'k1', name: 'A. Example', position: 'Maintenance Tech I', primCode: 'cwnd', primPct: 1,
+    key: 'k1', name: 'A. Example', position: 'Maintenance Tech I', groupLabel: 'Bismarck 4', primCode: 'cwnd', primPct: 1,
     splitNote: '', payMethod: 'Hourly', payRate: 20, regionMoCur: 3466.67, raisePct: 3,
     by: 'TS', at: '2026-10-30', rm: false, ...over,
   });
@@ -159,6 +159,10 @@ describe('staffing report parser (synthetic workbook)', () => {
     const p = parseStaffingReport(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer);
     expect(p.people).toHaveLength(3);
     const robin = p.people.find((x) => x.name === 'Robin Sample')!;
+    // workbook sections carry through: the tab and the export group by these
+    expect(robin.group).toBe('Minot Support Staff');
+    expect(p.people.find((x) => x.name === 'Max Mock')!.group).toBe('Minot Support Staff');
+    expect((robin.ord ?? 99) < (p.people.find((x) => x.name === 'Max Mock')!.ord ?? 0)).toBe(true);
     expect(robin.rm).toBe(true);
     expect(robin.payMethod).toBe('Hourly');
     expect(robin.payRate).toBe(45);
