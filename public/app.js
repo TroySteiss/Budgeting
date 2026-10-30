@@ -2901,28 +2901,52 @@ function wirePayHeader(el, st) {
   if (nx) nx.addEventListener('click', () => { S.pay.newCycle = false; render(); });
 }
 
-/* one property's computed grid rows + totals under the CURRENT iteration */
-function payPropCalc(c, code, iter, prior) {
+/* one property's wage totals under the CURRENT iteration (guardrail cards —
+   the ROW list is person-level, see payPersonRows) */
+function payPropCalc(c, code, iter) {
   const entries = iter ? iter.entries : {};
-  const rows = [];
   let curMo = 0, newMo = 0, dYrB = 0;
   for (const p of c.people) {
     const a = (p.allocations || []).find((x) => x.code === code);
-    if (!a) continue;
-    const e = entries[p.key];
-    const pct = e ? Number(e.pct) : 0;
-    const priorPct = prior && prior.entries[p.key] ? Number(prior.entries[p.key].pct) : (prior ? 0 : null);
-    if (p.payHidden) { rows.push({ p, a, pct, hidden: true, by: e ? e.by : '' }); continue; }
+    if (!a || p.payHidden) continue;
+    const pct = entries[p.key] ? Number(entries[p.key].pct) : 0;
     const cur = payMo(p.payMethod, p.payRate, a.pct);
     const nxt = payMo(p.payMethod, p.payRate * (1 + pct / 100), a.pct);
     curMo += cur; newMo += nxt;
     dYrB += (nxt - cur) * 12 * (1 + payBurden(p.position));
-    rows.push({ p, a, pct, cur, nxt, dMo: nxt - cur, dYrB: (nxt - cur) * 12 * (1 + payBurden(p.position)), by: e ? e.by : '', at: e ? e.at : '', priorPct, hidden: false });
   }
   const hid = iter && iter.hidden && iter.hidden[code] ? iter.hidden[code] : null;
   if (hid) { curMo += hid.curMo; newMo += hid.newMo; dYrB += (hid.newMo - hid.curMo) * 12 * (1 + 0.0945); }
-  rows.sort((x, y) => (x.p.position || '').localeCompare(y.p.position || '') || (x.p.name || '').localeCompare(y.p.name || ''));
-  return { rows, curMo, newMo, dYrB, pct: curMo ? (newMo - curMo) / curMo : 0 };
+  return { curMo, newMo, dYrB, pct: curMo ? (newMo - curMo) / curMo : 0 };
+}
+
+/* EACH PERSON ONCE per region (Troy 2026-10-30 — pooled staff were repeating
+   under every property). Rows group under the person's PRIMARY site (largest
+   allocation in this region); the rest of their split is a ⇄ tooltip. Δ money
+   is the person's change across all their sites in this region. */
+function payPersonRows(c, visCodes, iter, prior) {
+  const entries = iter ? iter.entries : {};
+  const rows = [];
+  for (const p of c.people) {
+    const regA = (p.allocations || []).filter((a) => visCodes.has(a.code));
+    if (!regA.length) continue;
+    const prim = [...regA].sort((a, b) => b.pct - a.pct)[0];
+    const e = entries[p.key];
+    const pct = e ? Number(e.pct) : 0;
+    const priorPct = prior ? (prior.entries[p.key] ? Number(prior.entries[p.key].pct) : 0) : null;
+    const others = (p.allocations || []).filter((a) => a.code !== prim.code);
+    const splitTip = others.length ? `also ${others.map((x) => `${x.code.toUpperCase()} ${Math.round(x.pct * 100)}%`).join(' · ')}` : '';
+    const row = { p, pct, prim, splitN: others.length, splitTip, by: e ? e.by : '', at: e ? e.at : '', priorPct, hidden: !!p.payHidden };
+    if (!p.payHidden) {
+      let cur = 0, nxt = 0;
+      for (const a of regA) { cur += payMo(p.payMethod, p.payRate, a.pct); nxt += payMo(p.payMethod, p.payRate * (1 + pct / 100), a.pct); }
+      row.dMo = nxt - cur;
+      row.dYrB = (nxt - cur) * 12 * (1 + payBurden(p.position));
+    }
+    rows.push(row);
+  }
+  rows.sort((x, y) => x.prim.code.localeCompare(y.prim.code) || (x.p.position || '').localeCompare(y.p.position || '') || (x.p.name || '').localeCompare(y.p.name || ''));
+  return rows;
 }
 
 /* budgeted rental-income growth for the guardrail, from /state's dash block */
@@ -2941,7 +2965,7 @@ function payCycleHtml(c) {
   const year = Number(String(c.cycle.effective).slice(0, 4));
   const props = c.properties.filter((p) => (String(p.market || '').trim() || 'Other') === P.region);
   const locked = !iter || !!iter.finalizedAt;
-  const calc = Object.fromEntries(props.map((p) => [p.code, payPropCalc(c, p.code, iter, P.compare ? prior : null)]));
+  const calc = Object.fromEntries(props.map((p) => [p.code, payPropCalc(c, p.code, iter)]));
   const totCur = props.reduce((a, p) => a + calc[p.code].curMo, 0);
   const totNew = props.reduce((a, p) => a + calc[p.code].newMo, 0);
   const totDyr = props.reduce((a, p) => a + calc[p.code].dYrB, 0);
@@ -2951,12 +2975,22 @@ function payCycleHtml(c) {
   const payTier = (pct, growth) => (growth != null && pct > growth + 0.0001) ? 'bad' : pct > 0.0401 ? 'warn' : 'good';
   const TIER_LABEL = { bad: 'exceeds income growth', warn: 'above 4% guidance', good: 'within guidance' };
   for (const p of props) calc[p.code].tier = payTier(calc[p.code].pct, payIncomeGrowth(p.code, year));
-  const cardHtml = (title, pct, cur, nxt, dyr, growth, units) => `
+  const statusHtml = (code) => {
+    const stat = iter && iter.propStatus && iter.propStatus[code];
+    return `<div style="display:flex; align-items:center; gap:6px; margin-top:4px">
+      <select class="pay-stat" data-code="${code}" ${locked ? 'disabled' : ''}>
+        ${PAY_STATUSES.map(([v, l]) => `<option value="${v}" ${stat && stat.status === v ? 'selected' : ''}>${l}</option>`).join('')}
+      </select>
+      ${stat ? `<span class="muted" style="font-size:11px">${esc(stat.by)} · ${fmtd(stat.at)}</span>` : ''}
+    </div>`;
+  };
+  const cardHtml = (title, pct, cur, nxt, dyr, growth, units, status) => `
     <div class="paycard ${payTier(pct, growth)}">
       <div class="pc-top"><span>${esc(title)}</span><span class="pc-badge">${TIER_LABEL[payTier(pct, growth)]}</span></div>
       <div class="pc-big">${(pct * 100 >= 0 ? '+' : '')}${(pct * 100).toFixed(1)}%</div>
       <div class="muted">${paySigned(dyr)}/yr burdened · wages $${money(cur)} → $${money(nxt)}/mo</div>
       <div class="muted">${growth != null ? `rental income growth +${(growth * 100).toFixed(1)}%` : `no ${year} budget linked`}${units ? ` · wages $${money((nxt * 12) / units)}/unit/yr` : ''}</div>
+      ${status || ''}
     </div>`;
   return `<div class="card">
     <div class="row" style="align-items:center; gap:8px; flex-wrap:wrap">
@@ -2971,8 +3005,8 @@ function payCycleHtml(c) {
       · raises effective ${esc(c.cycle.effective)} · burden est. FICA+SUTA+WC
     </p>` : ''}
     <div class="paycards">
-      ${cardHtml(`${P.region} · ${props.length} properties`, totPct, totCur, totNew, totDyr, null, props.reduce((a, p) => a + (p.units || 0), 0))}
-      ${props.map((p) => cardHtml(p.code.toUpperCase(), calc[p.code].pct, calc[p.code].curMo, calc[p.code].newMo, calc[p.code].dYrB, payIncomeGrowth(p.code, year), p.units)).join('')}
+      ${cardHtml(`${P.region} · ${props.length} properties`, totPct, totCur, totNew, totDyr, null, props.reduce((a, p) => a + (p.units || 0), 0), '')}
+      ${props.map((p) => cardHtml(p.code.toUpperCase(), calc[p.code].pct, calc[p.code].curMo, calc[p.code].newMo, calc[p.code].dYrB, payIncomeGrowth(p.code, year), p.units, statusHtml(p.code))).join('')}
     </div>
     ${c.viewer.isAdmin && iter ? `<div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap">
       ${!iter.finalizedAt ? `<button class="btn paygold" id="pay-final">Finalize iteration ${iter.num} (${esc(P.region)})</button>` : ''}
@@ -2980,55 +3014,63 @@ function payCycleHtml(c) {
       ${iter.finalizedAt ? `<button class="btn sub" id="pay-apply" title="Write each property's wage GLs (annual $, raise prorated from the effective month) into its ${year} budget's inputs and regenerate — taxes, benefits and bonuses follow the engine">Apply to ${year} budgets</button>` : ''}
     </div>` : ''}
   </div>
-  ${props.map((p) => payPropHtml(c, p, calc[p.code], iter, locked)).join('')}`;
+  ${payRegionTableHtml(c, props, iter, prior, locked, { totCur, totNew, totPct, totDyr })}`;
 }
 
-function payPropHtml(c, prop, pc, iter, locked) {
-  const stat = iter && iter.propStatus && iter.propStatus[prop.code];
-  const canEdit = !locked;
-  const tierVar = { good: 'var(--pay-good)', warn: 'var(--pay-warn)', bad: 'var(--pay-bad)' }[pc.tier || 'good'];
+/* ONE table per region: every person exactly once, grouped under their
+   primary site. Pool staff used to repeat under every property they touch. */
+function payRegionTableHtml(c, props, iter, prior, locked, tot) {
+  const P = S.pay;
+  const visCodes = new Set(props.map((p) => p.code));
+  const nameOf = new Map(props.map((p) => [p.code, p.name || p.code]));
+  const rows = payPersonRows(c, visCodes, iter, P.compare ? prior : null);
+  const body = [];
+  let lastPrim = null;
+  for (const r of rows) {
+    if (r.prim.code !== lastPrim) {
+      lastPrim = r.prim.code;
+      const n = rows.filter((x) => x.prim.code === lastPrim).length;
+      body.push(`<tr class="paygrp"><td colspan="10">${lastPrim.toUpperCase()} — ${esc(nameOf.get(lastPrim) || '')} · based here: ${n}</td></tr>`);
+    }
+    body.push(payRowHtml(r, !locked));
+  }
   return `<div class="card paysec">
     <div class="payhead">
-      <b>${esc(prop.name || prop.code)}</b><span class="muted">${prop.code.toUpperCase()} · ${prop.units || '?'} units</span>
-      <select class="pay-stat" data-code="${prop.code}" ${canEdit ? '' : 'disabled'}>
-        ${PAY_STATUSES.map(([v, l]) => `<option value="${v}" ${stat && stat.status === v ? 'selected' : ''}>${l}</option>`).join('')}
-      </select>
-      ${stat ? `<span class="muted" style="font-size:11.5px">${esc(stat.by)} · ${fmtd(stat.at)}</span>` : ''}
+      <b>${esc(P.region)}</b><span class="muted">${rows.length} people · each listed once, under their primary site · ⇄ marks a split (hover for the full allocation)</span>
       <span class="spacer"></span>
-      ${canEdit ? `<span class="muted" style="font-size:12px">Set all:</span>
-        <button class="paypill sm pay-setall" data-code="${prop.code}" data-v="3">3%</button>
-        <button class="paypill sm pay-setall" data-code="${prop.code}" data-v="4">4%</button>
-        <button class="paypill sm pay-setall" data-code="${prop.code}" data-v="0">0%</button>` : ''}
+      ${!locked ? `<span class="muted" style="font-size:12px">Set all:</span>
+        <button class="paypill sm pay-setall" data-v="3">3%</button>
+        <button class="paypill sm pay-setall" data-v="4">4%</button>
+        <button class="paypill sm pay-setall" data-v="0">0%</button>` : ''}
     </div>
     <div class="paytblwrap"><table class="paytbl">
-      <tr><th>Position</th><th>Employee</th><th>Type</th><th class="num">Alloc</th><th class="num">Current</th><th class="num">Raise %</th><th class="num">New rate</th><th class="num">Δ wages/mo</th><th class="num">Δ burdened/yr</th><th>By</th></tr>
-      ${pc.rows.map((r) => payRowHtml(r, iter, canEdit)).join('')}
-      <tr class="paysub"><td colspan="4">Property total${pc.rows.some((r) => r.hidden) ? ' (incl. masked rows)' : ''}</td>
-        <td class="num">$${money(pc.curMo)}/mo</td>
-        <td class="num" style="color:${tierVar}">${(pc.pct * 100 >= 0 ? '+' : '')}${(pc.pct * 100).toFixed(1)}%</td>
-        <td class="num">$${money(pc.newMo)}/mo</td>
-        <td class="num">${paySigned(pc.newMo - pc.curMo)}</td>
-        <td class="num">${paySigned(pc.dYrB)}</td><td></td></tr>
+      <tr><th>Position</th><th>Employee</th><th>Based at</th><th>Type</th><th class="num">Current</th><th class="num">Raise %</th><th class="num">New rate</th><th class="num">Δ wages/mo</th><th class="num">Δ burdened/yr</th><th>By</th></tr>
+      ${body.join('')}
+      <tr class="paysub"><td colspan="4">${esc(P.region)} total (all allocations${rows.some((r) => r.hidden) ? ', masked rows included' : ''})</td>
+        <td class="num">$${money(tot.totCur)}/mo</td>
+        <td class="num">${(tot.totPct * 100 >= 0 ? '+' : '')}${(tot.totPct * 100).toFixed(1)}%</td>
+        <td class="num">$${money(tot.totNew)}/mo</td>
+        <td class="num">${paySigned(tot.totNew - tot.totCur)}</td>
+        <td class="num">${paySigned(tot.totDyr)}</td><td></td></tr>
     </table></div>
   </div>`;
 }
-function payRowHtml(r, iter, canEdit) {
+function payRowHtml(r, canEdit) {
   const p = r.p;
-  const split = (p.allocations || []).length > 1 ? `<div class="muted" style="font-size:11px">⇄ also ${p.allocations.filter((a) => a.code !== r.a.code).map((a) => `${a.code.toUpperCase()} ${Math.round(a.pct * 100)}%`).join(' · ')}</div>` : '';
+  const based = `${r.prim.code.toUpperCase()} ${Math.round(r.prim.pct * 100)}%${r.splitN ? ` <span class="muted" title="${esc(r.splitTip)}" style="cursor:help">⇄ +${r.splitN}</span>` : ''}`;
   const meta = [p.startDate ? `hired ${String(p.startDate).slice(0, 4)}` : '', p.oldPay ? `prior ${payRateStr(p.payMethod, p.oldPay)}` : '', p.status !== 'FULL' ? p.status : ''].filter(Boolean).join(' · ');
   if (r.hidden) {
-    return `<tr><td><b>${esc(p.position)}</b>${split}</td><td>${esc(p.name)}</td><td class="muted">${p.payMethod}</td>
-      <td class="num muted">${Math.round(r.a.pct * 100)}%</td>
+    return `<tr><td><b>${esc(p.position)}</b></td><td>${esc(p.name)}</td><td class="muted">${based}</td><td class="muted">${p.payMethod}</td>
       <td class="num muted">•••</td>
       <td class="num"><span class="muted" style="font-size:11px" title="Regional-Manager pay — RM-pay allowlist only">🔒 TS/RC only</span></td>
       <td class="num muted">•••</td><td class="num muted">•••</td><td class="num muted">•••</td>
       <td class="muted" style="font-size:11.5px">${esc(r.by || '')}</td></tr>`;
   }
-  const was = r.priorPct != null && Math.abs(r.pct - r.priorPct) > 0.001 ? `<div class="paywas">was ${r.priorPct}%</div>` : '';
-  return `<tr><td><b>${esc(p.position)}</b>${split}</td>
-    <td>${esc(p.name)}${meta ? `<div class="muted" style="font-size:11px">${esc(meta)}</div>` : ''}</td>
+  const was = r.priorPct != null && Math.abs(r.pct - r.priorPct) > 0.001 ? ` <span class="paywas">was ${r.priorPct}%</span>` : '';
+  return `<tr><td><b>${esc(p.position)}</b></td>
+    <td>${esc(p.name)}${meta ? ` <span class="muted" style="font-size:11px">· ${esc(meta)}</span>` : ''}</td>
+    <td class="muted">${based}</td>
     <td class="muted">${p.payMethod}</td>
-    <td class="num muted">${Math.round(r.a.pct * 100)}%</td>
     <td class="num">${payRateStr(p.payMethod, p.payRate)}</td>
     <td class="num"><input class="payin" data-key="${esc(p.key)}" value="${r.pct}" inputmode="decimal" ${canEdit ? '' : 'disabled'} aria-label="Raise % for ${esc(p.name)}">${was}</td>
     <td class="num"><b>${payRateStr(p.payMethod, p.payRate * (1 + r.pct / 100))}</b></td>
@@ -3056,8 +3098,9 @@ function wirePayCycle(el, c) {
   }));
   el.querySelectorAll('.pay-setall').forEach((b) => b.addEventListener('click', async () => {
     const v = Number(b.dataset.v);
+    const codes = new Set(c.properties.filter((p) => (String(p.market || '').trim() || 'Other') === P.region).map((p) => p.code));
     const keys = c.people
-      .filter((p) => !p.payHidden && !(p.rm && !c.viewer.canRmPay) && (p.allocations || []).some((a) => a.code === b.dataset.code))
+      .filter((p) => !p.payHidden && !(p.rm && !c.viewer.canRmPay) && (p.allocations || []).some((a) => codes.has(a.code)))
       .map((p) => p.key);
     try { for (const k of keys) await saveEntry(k, v); render(); }
     catch (e) { P.err = e.message; render(); }

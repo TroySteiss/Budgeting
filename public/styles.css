@@ -316,3 +316,9 @@ body.monarch .card h2 { color: #00496f; font-size: 19px; letter-spacing: -.01em;
 body.monarch .btn { border-radius: 6px; font-weight: 700; }
 body.monarch select, body.monarch input { font-family: inherit; }
 body.monarch .wrap { max-width: 1340px; }
+
+/* denser payroll grid + primary-site group rows (one row per person) */
+.paytbl td { padding: 5px 10px; }
+.paytbl th { padding: 7px 10px; }
+.paytbl tr.paygrp td { background: var(--soft2); color: var(--dim); font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 5px 10px; border-bottom: 1px solid var(--line); }
+.paywas { font-size: 10.5px; color: var(--pay-gold-ink); font-weight: 700; white-space: nowrap; }
