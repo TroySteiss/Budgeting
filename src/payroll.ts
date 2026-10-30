@@ -13,7 +13,7 @@ import { query } from './db.js';
 import { requireAuth, requireAdmin, isAdminUser, canSeeRmPay, normUser } from './auth.js';
 import { parseStaffingReport, parsePayrollModel } from './importers.js';
 import { loadBudget, buildLines, saveLines } from './routes.js';
-import { maskPeople, hiddenAggregates, annualWagesByGl, seatMonthly, type StaffingPerson, type RaiseMap } from '../shared/payroll.js';
+import { maskPeople, hiddenAggregates, annualWagesByGl, seatMonthly, homeRegionsOf, type StaffingPerson, type RaiseMap } from '../shared/payroll.js';
 import { buildRaiseWorkbook, parseRaiseImport, type RaiseExportRow } from './payroll-xlsx.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -122,6 +122,30 @@ async function loadSnapshotPeople(snapshotId: number): Promise<StaffingPerson[]>
 }
 const regionOf = (p: { market?: string }): string => String(p.market || '').trim() || 'Other';
 
+/** code → region lookup over EVERY property (home regions must be stable,
+    never viewer-scoped). */
+async function marketOfCode(): Promise<(code: string) => string | null> {
+  const m = new Map((await query('select code, market from properties')).rows.map((p: any) => [p.code, regionOf(p)]));
+  return (code: string) => m.get(code) || null;
+}
+
+/** Each region's LATEST iteration of a cycle, with its raise entries — what a
+    foreign-home person's raise reads as from any other region's view. */
+async function latestIterByRegion(cycleId: number): Promise<Map<string, { id: number; num: number; finalized: boolean; entries: Record<string, number> }>> {
+  const iters = (await query('select id, region, num, finalized_at from raise_iterations where cycle_id=$1 order by region, num', [cycleId])).rows as any[];
+  const latest = new Map<string, { id: number; num: number; finalized: boolean; entries: Record<string, number> }>();
+  for (const it of iters) latest.set(it.region, { id: it.id, num: it.num, finalized: !!it.finalized_at, entries: {} });
+  const ids = [...latest.values()].map((x) => x.id);
+  if (ids.length) {
+    const byId = new Map([...latest.values()].map((x) => [x.id, x]));
+    for (const e of (await query('select iteration_id, person_key, raise_pct from raise_entries where iteration_id = any($1)', [ids])).rows) {
+      const t = byId.get(e.iteration_id);
+      if (t) t.entries[e.person_key] = Number(e.raise_pct);
+    }
+  }
+  return latest;
+}
+
 payrollRouter.post('/cycles', requireAdmin, h(async (req, res) => {
   const { label, effective, staffingSnapshotId } = req.body || {};
   if (!/^\d{4}-\d{2}$/.test(String(effective || ''))) return res.status(400).json({ error: 'Effective month must be YYYY-MM' });
@@ -180,8 +204,10 @@ payrollRouter.get('/cycles/:id', h(async (req, res) => {
   const visCodes = new Set(visibleProps.map((p) => p.code));
   const regions = [...new Set(visibleProps.map(regionOf))].sort();
 
+  // iterations load for EVERY region: home regions outside the viewer's scope
+  // still feed foreign raises, but only visible regions are exposed
   const iterations = (await query(
-    'select * from raise_iterations where cycle_id=$1 and region = any($2) order by region, num', [cycle.id, regions]
+    'select * from raise_iterations where cycle_id=$1 order by region, num', [cycle.id]
   )).rows as any[];
   const entries = (await query(
     'select iteration_id, person_key, raise_pct, updated_by, updated_at from raise_entries where iteration_id = any($1)',
@@ -193,15 +219,35 @@ payrollRouter.get('/cycles/:id', h(async (req, res) => {
     byIter.get(e.iteration_id)![e.person_key] = { pct: Number(e.raise_pct), by: e.updated_by, at: e.updated_at };
   }
   const visPeople = people.filter((p) => p.allocations.some((a) => visCodes.has(a.code)));
-  const out = iterations.map((it) => {
+  // each person lives in ONE home region; another region's view reads their
+  // raise from the home region's LATEST iteration (foreignRaises, read-only)
+  const marketOf = await marketOfCode();
+  const homes = homeRegionsOf(people, marketOf);
+  const latestByRegion = new Map<string, any>();
+  for (const it of iterations) {
+    const cur = latestByRegion.get(it.region);
+    if (!cur || it.num > cur.num) latestByRegion.set(it.region, it);
+  }
+  const homePct = (key: string): number => {
+    const home = homes.get(key);
+    const it = home ? latestByRegion.get(home) : null;
+    const e = it ? (byIter.get(it.id) || {})[key] : null;
+    return e ? e.pct : 0;
+  };
+  const out = iterations.filter((it) => regions.includes(it.region)).map((it) => {
     const em = byIter.get(it.id) || {};
     const raises: RaiseMap = {};
-    for (const [k, v] of Object.entries(em)) raises[k] = v.pct;
+    const foreignRaises: RaiseMap = {};
+    for (const p of visPeople) {
+      if (!p.allocations.some((a) => marketOf(a.code) === it.region)) continue;
+      if (homes.get(p.key) === it.region) raises[p.key] = em[p.key] ? em[p.key].pct : 0;
+      else { foreignRaises[p.key] = homePct(p.key); raises[p.key] = foreignRaises[p.key]; }
+    }
     return {
       id: it.id, region: it.region, num: it.num, basedOn: it.based_on,
       createdBy: it.created_by, createdAt: it.created_at,
       finalizedBy: it.finalized_by, finalizedAt: it.finalized_at,
-      propStatus: it.prop_status || {}, entries: em,
+      propStatus: it.prop_status || {}, entries: em, foreignRaises,
       // masked viewers get RM wages only as per-property aggregates, so their
       // totals reconcile without any per-seat figure
       hidden: rmPay ? null : hiddenAggregates(visPeople, raises, [...visCodes]),
@@ -210,7 +256,7 @@ payrollRouter.get('/cycles/:id', h(async (req, res) => {
   res.json({
     cycle, regions,
     properties: visibleProps,
-    people: maskPeople(visPeople, rmPay),
+    people: maskPeople(visPeople, rmPay).map((p) => ({ ...p, homeRegion: homes.get(p.key) || null })),
     iterations: out,
     viewer: { username: user, isAdmin: admin, canRmPay: rmPay },
   });
@@ -234,6 +280,9 @@ payrollRouter.put('/iterations/:id/entries', h(async (req, res) => {
   const person = people.find((p) => p.key === key);
   if (!person) return res.status(404).json({ error: 'No such person in this cycle’s staffing snapshot' });
   if (person.rm && !canSeeRmPay(user)) return res.status(403).json({ error: 'Regional-Manager raises are limited to the RM-pay allowlist' });
+  // one entry per person, held by their HOME region's chain (Troy 2026-10-30)
+  const home = homeRegionsOf(people, await marketOfCode()).get(key);
+  if (home && home !== it.region) return res.status(409).json({ error: `${person.name} belongs to ${home} — their raise is entered there` });
   if (!admin) {
     const sites = ((await query('select sites from app_users where key=$1', [normUser(user)])).rows[0]?.sites as string[]) || [];
     if (!person.allocations.some((a) => sites.includes(a.code))) return res.status(403).json({ error: 'This employee is not at one of your properties' });
@@ -302,9 +351,17 @@ async function scopedIterView(req: Request, iterId: number): Promise<{ error: st
 payrollRouter.get('/iterations/:id/export.xlsx', h(async (req, res) => {
   const v = await scopedIterView(req, Number(req.params.id));
   if ('error' in v) return res.status(v.code).json({ error: v.error });
+  // files travel: RM pay is masked on EVERY export, allowlist or not (Troy
+  // 2026-10-30) — and each person exports only in their HOME region.
+  // Homes come from the FULL roster: a region-scoped subset skews the section
+  // vote and briefly exported the LMS in two regions.
+  const marketOf = await marketOfCode();
+  const homes = homeRegionsOf(await loadSnapshotPeople(v.it.staffing_snapshot_id), marketOf);
+  const latest = await latestIterByRegion(v.it.cycle_id);
   const rows: RaiseExportRow[] = [];
   const allocations: any[] = [];
-  for (const p of v.people) {
+  for (const p of maskPeople(v.rawPeople, false)) {
+    if (homes.get(p.key) !== v.it.region) continue;
     const regA = p.allocations.filter((a) => v.visCodes.has(a.code));
     if (!regA.length) continue;
     const prim = [...regA].sort((a, b) => b.pct - a.pct)[0];
@@ -344,14 +401,18 @@ payrollRouter.get('/iterations/:id/export.xlsx', h(async (req, res) => {
     for (const x of xr) x.groupLabel = x.primCode.toUpperCase();
     xr.sort((a, b) => a.primCode.localeCompare(b.primCode) || a.position.localeCompare(b.position) || a.name.localeCompare(b.name));
   }
-  let hidden: { curMo: number; newMo: number } | null = null;
-  if (!v.rmPay) {
-    const raises: RaiseMap = {};
-    for (const [k, e] of Object.entries(v.entries)) raises[k] = e.pct;
-    const agg = hiddenAggregates(v.rawPeople, raises, [...v.visCodes]);
-    hidden = Object.values(agg).reduce((s, x) => ({ curMo: s.curMo + x.curMo, newMo: s.newMo + x.newMo }), { curMo: 0, newMo: 0 });
-    if (!hidden.curMo) hidden = null;
+  // always include the masked-RM aggregate so the sheet's totals reconcile;
+  // a foreign-home person's raise reads from their home region's latest chain
+  const raises: RaiseMap = {};
+  for (const p of v.rawPeople) {
+    const home = homes.get(p.key);
+    if (home === v.it.region) raises[p.key] = v.entries[p.key] ? v.entries[p.key].pct : 0;
+    else raises[p.key] = (home && latest.get(home)?.entries[p.key]) || 0;
   }
+  const agg = hiddenAggregates(v.rawPeople, raises, [...v.visCodes]);
+  let hidden: { curMo: number; newMo: number } | null =
+    Object.values(agg).reduce((s, x) => ({ curMo: s.curMo + x.curMo, newMo: s.newMo + x.newMo }), { curMo: 0, newMo: 0 });
+  if (!hidden.curMo) hidden = null;
   const buf = await buildRaiseWorkbook({
     cycleLabel: v.cycle.label, effective: v.cycle.effective, region: v.it.region, iterNum: v.it.num,
     finalized: v.it.finalized_at ? { by: v.it.finalized_by, at: String(v.it.finalized_at) } : null,
@@ -374,6 +435,7 @@ payrollRouter.post('/iterations/:id/import', upload.single('file'), h(async (req
   const sites: string[] = admin ? [] : (((await query('select sites from app_users where key=$1', [normUser(user)])).rows[0]?.sites as string[]) || []);
   const people = await loadSnapshotPeople(it.staffing_snapshot_id);
   const byKey = new Map(people.map((p) => [p.key, p]));
+  const homes = homeRegionsOf(people, await marketOfCode());
   const pairs = parseRaiseImport(req.file.buffer);
   let applied = 0, unchanged = 0;
   const skipped: { name: string; reason: string }[] = [];
@@ -381,7 +443,8 @@ payrollRouter.post('/iterations/:id/import', upload.single('file'), h(async (req
     const person = byKey.get(key);
     if (!person) { skipped.push({ name: key, reason: 'unknown key' }); continue; }
     if (pct < -50 || pct > 100) { skipped.push({ name: person.name, reason: 'raise % out of range' }); continue; }
-    if (person.rm && !canSeeRmPay(user)) { skipped.push({ name: person.name, reason: 'RM pay — allowlist only' }); continue; }
+    if (person.rm) { skipped.push({ name: person.name, reason: 'RM raises are entered in the app only' }); continue; }
+    if (homes.get(key) && homes.get(key) !== it.region) { skipped.push({ name: person.name, reason: `belongs to ${homes.get(key)}` }); continue; }
     if (!admin && !person.allocations.some((a) => sites.includes(a.code))) { skipped.push({ name: person.name, reason: 'not one of your properties' }); continue; }
     const cur = (await query('select raise_pct from raise_entries where iteration_id=$1 and person_key=$2', [it.id, key])).rows[0];
     if (cur && Math.abs(Number(cur.raise_pct) - pct) < 0.0001) { unchanged++; continue; }   // untouched rows keep their original author
@@ -393,6 +456,117 @@ payrollRouter.post('/iterations/:id/import', upload.single('file'), h(async (req
     applied++;
   }
   logChange(user, 'import raise workbook', { iterationId: it.id, region: it.region, applied, unchanged, skipped: skipped.length });
+  res.json({ ok: true, applied, unchanged, skipped });
+}));
+
+/* ---- whole-cycle round trip (the "All regions" view): each person once, in
+   their home region, raise read from that region's LATEST iteration ---- */
+payrollRouter.get('/cycles/:id/export.xlsx', h(async (req, res) => {
+  const cycle = (await query('select * from raise_cycles where id=$1', [Number(req.params.id)])).rows[0];
+  if (!cycle) return res.status(404).json({ error: 'No such cycle' });
+  const user = req.session.username || '';
+  const admin = isAdminUser(user);
+  const people = await loadSnapshotPeople(cycle.staffing_snapshot_id);
+  const props = (await query('select code, market from properties')).rows as any[];
+  const sites: string[] = admin ? props.map((p: any) => p.code)
+    : (((await query('select sites from app_users where key=$1', [normUser(user)])).rows[0]?.sites as string[]) || []);
+  const siteSet = new Set(sites);
+  const visCodes = new Set<string>(props.filter((p: any) => siteSet.has(p.code) && people.some((x) => x.allocations.some((a) => a.code === p.code))).map((p: any) => p.code));
+  if (!visCodes.size) return res.status(403).json({ error: 'No properties assigned to you' });
+  const marketOf = await marketOfCode();
+  const regions = new Set([...visCodes].map((c) => marketOf(c)).filter(Boolean) as string[]);
+  const homes = homeRegionsOf(people, marketOf);
+  const latest = await latestIterByRegion(cycle.id);
+  const rows: RaiseExportRow[] = [];
+  const allocations: any[] = [];
+  for (const p of maskPeople(people, false)) {   // RM pay masked on EVERY export
+    const home = homes.get(p.key);
+    if (!home || !regions.has(home)) continue;
+    const regA = p.allocations.filter((a) => visCodes.has(a.code));
+    if (!regA.length) continue;
+    const prim = [...regA].sort((a, b) => b.pct - a.pct)[0];
+    const others = p.allocations.filter((a) => a.code !== prim.code);
+    const masked = !!(p as any).payHidden;
+    rows.push({
+      key: p.key, name: p.name, position: p.position,
+      groupLabel: '', _group: p.group || null, _ord: p.ord ?? 0,
+      primCode: prim.code, primPct: prim.pct,
+      splitNote: others.length ? `also ${others.map((x) => `${x.code.toUpperCase()} ${Math.round(x.pct * 100)}%`).join(' · ')}` : '',
+      payMethod: p.payMethod,
+      payRate: masked ? null : p.payRate,
+      regionMoCur: masked ? null : regA.reduce((s, a) => s + seatMonthly(p.payMethod, p.payRate, a.pct), 0),
+      raisePct: latest.get(home)?.entries[p.key] || 0, by: '', at: '', rm: !!p.rm,
+    } as RaiseExportRow & { _group: string | null; _ord: number });
+    for (const a of regA) {
+      allocations.push({
+        key: p.key, name: p.name, position: p.position, payMethod: p.payMethod,
+        payRate: masked ? null : p.payRate, monthlyBenefits: masked ? null : p.monthlyBenefits,
+        status: p.status, startDate: p.startDate, code: a.code, pct: a.pct,
+      });
+    }
+  }
+  const xr = rows as (RaiseExportRow & { _group: string | null; _ord: number })[];
+  if (xr.some((x) => x._group)) {
+    const minOrd = new Map<string, number>();
+    for (const x of xr) {
+      x.groupLabel = x._group || 'Other';
+      if (!minOrd.has(x.groupLabel) || x._ord < minOrd.get(x.groupLabel)!) minOrd.set(x.groupLabel, x._ord);
+    }
+    xr.sort((a, b) => (minOrd.get(a.groupLabel)! - minOrd.get(b.groupLabel)!) || (a._ord - b._ord));
+  } else {
+    for (const x of xr) x.groupLabel = x.primCode.toUpperCase();
+    xr.sort((a, b) => a.primCode.localeCompare(b.primCode) || a.position.localeCompare(b.position) || a.name.localeCompare(b.name));
+  }
+  const raises: RaiseMap = {};
+  for (const p of people) { const home = homes.get(p.key); raises[p.key] = (home && latest.get(home)?.entries[p.key]) || 0; }
+  const agg = hiddenAggregates(people, raises, [...visCodes]);
+  let hidden: { curMo: number; newMo: number } | null =
+    Object.values(agg).reduce((s, x) => ({ curMo: s.curMo + x.curMo, newMo: s.newMo + x.newMo }), { curMo: 0, newMo: 0 });
+  if (!hidden.curMo) hidden = null;
+  const buf = await buildRaiseWorkbook({
+    cycleLabel: cycle.label, effective: cycle.effective, region: 'All regions', iterNum: 0,
+    titleOverride: `${cycle.label} — All regions (each region's latest iteration)`,
+    finalized: null, exportedBy: user, rows, hidden, allocations,
+  });
+  logChange(user, 'export raise workbook (all regions)', { cycleId: cycle.id, rows: rows.length });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${cycle.label} Raises ALL ${initialsOf(user)} ${mmddyyyy()}.xlsx"`);
+  res.send(buf);
+}));
+
+payrollRouter.post('/cycles/:id/import', upload.single('file'), h(async (req, res) => {
+  const cycle = (await query('select * from raise_cycles where id=$1', [Number(req.params.id)])).rows[0];
+  if (!cycle) return res.status(404).json({ error: 'No such cycle' });
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+  const user = req.session.username || '';
+  const admin = isAdminUser(user);
+  const sites: string[] = admin ? [] : (((await query('select sites from app_users where key=$1', [normUser(user)])).rows[0]?.sites as string[]) || []);
+  const people = await loadSnapshotPeople(cycle.staffing_snapshot_id);
+  const byKey = new Map(people.map((p) => [p.key, p]));
+  const homes = homeRegionsOf(people, await marketOfCode());
+  const latest = await latestIterByRegion(cycle.id);
+  const pairs = parseRaiseImport(req.file.buffer);
+  let applied = 0, unchanged = 0;
+  const skipped: { name: string; reason: string }[] = [];
+  for (const { key, pct } of pairs) {
+    const person = byKey.get(key);
+    if (!person) { skipped.push({ name: key, reason: 'unknown key' }); continue; }
+    if (pct < -50 || pct > 100) { skipped.push({ name: person.name, reason: 'raise % out of range' }); continue; }
+    if (person.rm) { skipped.push({ name: person.name, reason: 'RM raises are entered in the app only' }); continue; }
+    const home = homes.get(key);
+    const target = home ? latest.get(home) : null;
+    if (!target) { skipped.push({ name: person.name, reason: 'no iteration chain for their region' }); continue; }
+    if (target.finalized) { skipped.push({ name: person.name, reason: `${home} iteration ${target.num} is finalized` }); continue; }
+    if (!admin && !person.allocations.some((a) => sites.includes(a.code))) { skipped.push({ name: person.name, reason: 'not one of your properties' }); continue; }
+    if (key in target.entries && Math.abs(target.entries[key] - pct) < 0.0001) { unchanged++; continue; }
+    await query(
+      `insert into raise_entries(iteration_id, person_key, raise_pct, updated_by, updated_at) values($1,$2,$3,$4,now())
+       on conflict (iteration_id, person_key) do update set raise_pct=excluded.raise_pct, updated_by=excluded.updated_by, updated_at=now()`,
+      [target.id, key, pct, user]
+    );
+    applied++;
+  }
+  logChange(user, 'import raise workbook (all regions)', { cycleId: cycle.id, applied, unchanged, skipped: skipped.length });
   res.json({ ok: true, applied, unchanged, skipped });
 }));
 
@@ -438,9 +612,18 @@ payrollRouter.post('/iterations/:id/apply', requireAdmin, h(async (req, res) => 
   const effYear = Number(String(it.effective).slice(0, 4));
   const year = Number(req.body?.year) || effYear;
   const people = await loadSnapshotPeople(it.staffing_snapshot_id);
-  const raises: RaiseMap = {};
+  // home people take THIS iteration's entries; a foreign-home person's raise
+  // comes from their own region's latest chain (one raise per person, ever)
+  const homesA = homeRegionsOf(people, await marketOfCode());
+  const latestA = await latestIterByRegion(it.cycle_id);
+  const thisEntries: RaiseMap = {};
   for (const e of (await query('select person_key, raise_pct from raise_entries where iteration_id=$1', [it.id])).rows) {
-    raises[e.person_key] = Number(e.raise_pct);
+    thisEntries[e.person_key] = Number(e.raise_pct);
+  }
+  const raises: RaiseMap = {};
+  for (const p of people) {
+    const home = homesA.get(p.key);
+    raises[p.key] = home === it.region ? (thisEntries[p.key] ?? 0) : ((home && latestA.get(home)?.entries[p.key]) || 0);
   }
   const props = (await query(`select code, market from properties`)).rows as any[];
   const codes = props.filter((p) => regionOf(p) === it.region).map((p) => p.code);

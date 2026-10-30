@@ -89,6 +89,42 @@ export function marginalBurdenPct(position: string): number {
   return (BURDEN_EST.ficaPct + BURDEN_EST.sutaPct + wc) / 100;
 }
 
+/** Each person belongs to exactly ONE home region (Troy 2026-10-30 — a
+    cross-region LMS was showing in four region views with four divergent
+    entries). The home region is where their workbook SECTION's members hold
+    the most allocation (so "Minot Support Staff" people are Minot even when
+    their own split leans elsewhere); people without a section vote with their
+    own allocations alone. */
+export function homeRegionsOf(people: StaffingPerson[], regionOfCode: (code: string) => string | null): Map<string, string> {
+  const argmax = (sums: Record<string, number>): string | null => {
+    let best: string | null = null;
+    for (const [r, v] of Object.entries(sums)) if (best == null || v > sums[best]) best = r;
+    return best;
+  };
+  const groupSums = new Map<string, Record<string, number>>();
+  const personSums = new Map<string, Record<string, number>>();
+  for (const p of people) {
+    const sums: Record<string, number> = {};
+    for (const a of p.allocations || []) {
+      const r = regionOfCode(a.code);
+      if (r) sums[r] = (sums[r] || 0) + a.pct;
+    }
+    personSums.set(p.key, sums);
+    if (p.group) {
+      const g = groupSums.get(p.group) || {};
+      for (const [r, v] of Object.entries(sums)) g[r] = (g[r] || 0) + v;
+      groupSums.set(p.group, g);
+    }
+  }
+  const out = new Map<string, string>();
+  for (const p of people) {
+    const viaGroup = p.group ? argmax(groupSums.get(p.group) || {}) : null;
+    const home = viaGroup || argmax(personSums.get(p.key) || {});
+    if (home) out.set(p.key, home);
+  }
+  return out;
+}
+
 /** Viewer-safe copy of the roster: RM seats keep name/position/allocations so
     rows and counts stay explainable, but every pay figure is stripped. */
 export function maskPeople(people: StaffingPerson[], canSeeRmPay: boolean): (StaffingPerson & { payHidden?: boolean })[] {

@@ -383,13 +383,29 @@ budgets' wage GLs. Modeled on the per-property sheets of the Payroll Budget Work
   sections). Snapshots predating group/ord: re-drop the workbook and use the cycle's
   "↻ Use latest staffing" repoint (PUT /payroll/cycles/:id — entries key by person, raises
   carry over). Payroll styles at the end of styles.css.
+- **HOME REGIONS (Troy 2026-10-30 — "Shayne should only be on one of the regions")**:
+  `homeRegionsOf` (shared/payroll.ts, unit-tested) gives each person ONE region — their
+  workbook SECTION's members vote with their allocations (so Minot Support Staff stay
+  Minot even when their own split leans elsewhere); sectionless people vote alone.
+  ALWAYS compute homes from the FULL roster — a region-scoped subset skews the vote (a
+  real bug: the LMS exported in two regions). A person renders/edits ONLY in their home
+  region's chain (entries PUT and imports 409/skip elsewhere); other regions read their
+  raise via each iteration's `foreignRaises` (pct only — no pay data crosses scopes) so
+  property cards and apply stay whole. Apply merges: home people from the applied
+  iteration, foreign-home from their own region's latest chain.
+- **"All regions" view** (region chip `*`): everyone once, workbook sections, each row
+  editing its own home-region latest iteration (per-row lock when that region is
+  finalized); no finalize/apply/status there. Cycle-wide Excel:
+  `GET/POST /payroll/cycles/:id/export.xlsx|import` (each region's latest iteration;
+  import routes each row to its home chain).
 - **Excel round trip** (`src/payroll-xlsx.ts`): `GET /payroll/iterations/:id/export.xlsx`
-  — the region-iteration as a workbook (Raises sheet mirrors the tab: person-once, grouped
-  by primary site, LIVE formulas for new rate / Δs / totals + a Raw Data allocation sheet;
-  viewer-scoped and RM-masked like the API, masked slices as one aggregate row).
-  `POST /payroll/iterations/:id/import` reads Raise % by person Key back in (same checks as
-  typed entries: finalized 409, RM allowlist, site scoping; untouched rows keep their
-  original author). ⬇ Excel / ⬆ Import raises buttons on the region table header.
+  — the region-iteration as a workbook (Raises sheet mirrors the tab: person-once in home
+  region, workbook sections, LIVE formulas for new rate / Δs / totals + a Raw Data
+  allocation sheet). **RM pay is masked on EVERY export and RM rows are refused on EVERY
+  import, allowlist or not (Troy 2026-10-30) — files travel**; masked slices appear as one
+  aggregate row so totals reconcile. `POST /payroll/iterations/:id/import` reads Raise %
+  by person Key back in (finalized 409, home-region check, site scoping; untouched rows
+  keep their original author). ⬇ Excel / ⬆ Import raises buttons on the table header.
 - **The WHOLE app wears the Monarch skin** (Troy 2026-10-30 — he wants nothing of the old
   chrome): `body.monarch` in index.html rescopes the theme vars app-wide (cream page, Lato
   + Aleo from Google Fonts, deep-green topbar with gold rule/active nav, blue headings;

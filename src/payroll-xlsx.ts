@@ -32,6 +32,7 @@ export interface RaiseExportArgs {
   effective: string;
   region: string;
   iterNum: number;
+  titleOverride?: string;    // the all-regions export names itself
   finalized: { by: string; at: string } | null;
   exportedBy: string;
   rows: RaiseExportRow[];    // sorted: primary site, position, name
@@ -64,7 +65,7 @@ export async function buildRaiseWorkbook(a: RaiseExportArgs): Promise<Buffer> {
     { header: '', width: 13 },  // M Δ burdened/yr
     { header: '', width: 22 },  // N last edit
   ];
-  ws.getCell('A1').value = `${a.cycleLabel} — ${a.region} — Iteration ${a.iterNum}`;
+  ws.getCell('A1').value = a.titleOverride || `${a.cycleLabel} — ${a.region} — Iteration ${a.iterNum}`;
   ws.getCell('A1').font = { bold: true, size: 13 };
   ws.getCell('A2').value = `Raises effective ${a.effective} · ${a.finalized ? `FINALIZED by ${a.finalized.by} ${a.finalized.at.slice(0, 10)} (read-only)` : 'draft'} · exported by ${a.exportedBy} ${new Date().toISOString().slice(0, 10)}`;
   ws.getCell('A2').font = { size: 9, color: { argb: 'FF696A6A' } };

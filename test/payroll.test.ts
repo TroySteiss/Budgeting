@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import * as XLSX from 'xlsx';
 import {
   seatMonthly, raisedMonthCount, annualWagesByGl, maskPeople, hiddenAggregates,
-  positionGl, isRmPosition, marginalBurdenPct, type StaffingPerson,
+  positionGl, isRmPosition, marginalBurdenPct, homeRegionsOf, type StaffingPerson,
 } from '../shared/payroll.js';
 import { parseStaffingReport, detectUploadKind } from '../src/importers.js';
 import { buildRaiseWorkbook, parseRaiseImport, type RaiseExportRow } from '../src/payroll-xlsx.js';
@@ -57,6 +57,27 @@ describe('pay math', () => {
     expect(isRmPosition('Property Manager II')).toBe(false);
     expect(positionGl('Underwater Basket Weaver').mapped).toBe(false);
     expect(marginalBurdenPct('Leasing Consultant')).toBeLessThan(marginalBurdenPct('Maintenance Tech I'));
+  });
+});
+
+describe('home regions (one person, one region)', () => {
+  const REGION: Record<string, string> = { clnd: 'Minot', spnd: 'Minot', wynd: 'Minot', bcnd: 'Williston', ecnd: 'Williston', cwnd: 'Bismarck' };
+  const regionOf = (c: string) => REGION[c] || null;
+  it('a sectioned person follows their SECTION’s region, even when their own split leans elsewhere', () => {
+    const people = [
+      // the LMS: personally weighted to Williston, but their section is Minot staff
+      person({ key: 'lms', position: 'LMS', group: 'Minot Support Staff', allocations: [{ code: 'bcnd', pct: 0.3 }, { code: 'ecnd', pct: 0.25 }, { code: 'clnd', pct: 0.2 }, { code: 'spnd', pct: 0.15 }, { code: 'cwnd', pct: 0.1 }] }),
+      // the section's other members anchor the group's vote in Minot
+      person({ key: 'm1', group: 'Minot Support Staff', allocations: [{ code: 'clnd', pct: 0.6 }, { code: 'wynd', pct: 0.4 }] }),
+      person({ key: 'm2', group: 'Minot Support Staff', allocations: [{ code: 'spnd', pct: 1 }] }),
+      person({ key: 'm3', group: 'Minot Support Staff', allocations: [{ code: 'wynd', pct: 1 }] }),
+      // no section → personal allocations decide
+      person({ key: 'solo', group: null, allocations: [{ code: 'bcnd', pct: 0.7 }, { code: 'cwnd', pct: 0.3 }] }),
+    ];
+    const homes = homeRegionsOf(people, regionOf);
+    expect(homes.get('lms')).toBe('Minot');
+    expect(homes.get('m2')).toBe('Minot');
+    expect(homes.get('solo')).toBe('Williston');
   });
 });
 

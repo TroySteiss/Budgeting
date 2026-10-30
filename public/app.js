@@ -2910,42 +2910,62 @@ function wirePayHeader(el, st) {
   if (nx) nx.addEventListener('click', () => { S.pay.newCycle = false; render(); });
 }
 
-/* one property's wage totals under the CURRENT iteration (guardrail cards —
-   the ROW list is person-level, see payPersonRows) */
-function payPropCalc(c, code, iter) {
-  const entries = iter ? iter.entries : {};
+/* one property's wage totals (guardrail cards). `raises` = person key → pct,
+   already merged across regions; `hid` = the masked-RM aggregate for the code. */
+function payPropCalc(c, code, raises, hid) {
   let curMo = 0, newMo = 0, dYrB = 0;
   for (const p of c.people) {
     const a = (p.allocations || []).find((x) => x.code === code);
     if (!a || p.payHidden) continue;
-    const pct = entries[p.key] ? Number(entries[p.key].pct) : 0;
+    const pct = raises[p.key] || 0;
     const cur = payMo(p.payMethod, p.payRate, a.pct);
     const nxt = payMo(p.payMethod, p.payRate * (1 + pct / 100), a.pct);
     curMo += cur; newMo += nxt;
     dYrB += (nxt - cur) * 12 * (1 + payBurden(p.position));
   }
-  const hid = iter && iter.hidden && iter.hidden[code] ? iter.hidden[code] : null;
   if (hid) { curMo += hid.curMo; newMo += hid.newMo; dYrB += (hid.newMo - hid.curMo) * 12 * (1 + 0.0945); }
   return { curMo, newMo, dYrB, pct: curMo ? (newMo - curMo) / curMo : 0 };
 }
 
-/* EACH PERSON ONCE per region (Troy 2026-10-30 — pooled staff were repeating
-   under every property). Rows group under the person's PRIMARY site (largest
-   allocation in this region); the rest of their split is a ⇄ tooltip. Δ money
-   is the person's change across all their sites in this region. */
-function payPersonRows(c, visCodes, iter, prior) {
-  const entries = iter ? iter.entries : {};
+/* every person's CURRENT raise = their home region's latest iteration */
+function payMergedRaises(c) {
+  const latest = {};
+  for (const i of c.iterations) { const cur = latest[i.region]; if (!cur || i.num > cur.num) latest[i.region] = i; }
+  const out = {};
+  for (const p of c.people) {
+    const it = latest[p.homeRegion];
+    if (!it) continue;
+    const e = it.entries[p.key];
+    out[p.key] = { pct: e ? Number(e.pct) : 0, by: e ? e.by : '', at: e ? e.at : '', iterId: it.id, locked: !!it.finalizedAt };
+  }
+  return out;
+}
+
+/* EACH PERSON ONCE, in their HOME region only (Troy 2026-10-30 — a
+   cross-region LMS was repeating in four region views). region '*' = the
+   All-regions view: everyone, edits routed to each person's home chain. */
+function payPersonRows(c, visCodes, iter, prior, merged, region) {
+  const all = region === '*';
   const rows = [];
   for (const p of c.people) {
-    const regA = (p.allocations || []).filter((a) => visCodes.has(a.code));
+    if (all ? !p.homeRegion : p.homeRegion !== region) continue;
+    const inVis = (p.allocations || []).filter((a) => visCodes.has(a.code));
+    const regA = inVis.length ? inVis : (p.allocations || []);
     if (!regA.length) continue;
     const prim = [...regA].sort((a, b) => b.pct - a.pct)[0];
-    const e = entries[p.key];
-    const pct = e ? Number(e.pct) : 0;
-    const priorPct = prior ? (prior.entries[p.key] ? Number(prior.entries[p.key].pct) : 0) : null;
+    let pct, by, at, iterId, locked;
+    if (all) {
+      const m = merged[p.key] || { pct: 0, by: '', at: '', iterId: null, locked: true };
+      pct = m.pct; by = m.by; at = m.at; iterId = m.iterId; locked = m.locked;
+    } else {
+      const e = iter ? iter.entries[p.key] : null;
+      pct = e ? Number(e.pct) : 0; by = e ? e.by : ''; at = e ? e.at : '';
+      iterId = iter ? iter.id : null; locked = !iter || !!iter.finalizedAt;
+    }
+    const priorPct = (!all && prior) ? (prior.entries[p.key] ? Number(prior.entries[p.key].pct) : 0) : null;
     const others = (p.allocations || []).filter((a) => a.code !== prim.code);
     const splitTip = others.length ? `also ${others.map((x) => `${x.code.toUpperCase()} ${Math.round(x.pct * 100)}%`).join(' · ')}` : '';
-    const row = { p, pct, prim, splitN: others.length, splitTip, by: e ? e.by : '', at: e ? e.at : '', priorPct, hidden: !!p.payHidden };
+    const row = { p, pct, prim, splitN: others.length, splitTip, by, at, iterId, locked, priorPct, hidden: !!p.payHidden };
     if (!p.payHidden) {
       let cur = 0, nxt = 0;
       for (const a of regA) { cur += payMo(p.payMethod, p.payRate, a.pct); nxt += payMo(p.payMethod, p.payRate * (1 + pct / 100), a.pct); }
@@ -2982,13 +3002,31 @@ function payIncomeGrowth(code, year) {
 
 function payCycleHtml(c) {
   const P = S.pay;
-  const its = payIters();
-  const iter = payIter();
+  const all = P.region === '*';
+  const its = all ? [] : payIters();
+  const iter = all ? null : payIter();
   const prior = iter ? its.find((i) => i.num === iter.num - 1) : null;
   const year = Number(String(c.cycle.effective).slice(0, 4));
-  const props = c.properties.filter((p) => (String(p.market || '').trim() || 'Other') === P.region);
-  const locked = !iter || !!iter.finalizedAt;
-  const calc = Object.fromEntries(props.map((p) => [p.code, payPropCalc(c, p.code, iter)]));
+  const props = all ? c.properties : c.properties.filter((p) => (String(p.market || '').trim() || 'Other') === P.region);
+  const locked = all ? false : (!iter || !!iter.finalizedAt);   // the All view locks per row
+  const merged = payMergedRaises(c);
+  // card math: every allocated person counts — home people from the selected
+  // iteration, foreign-home people from their own region's latest chain
+  const raises = {};
+  const hiddenByCode = {};
+  if (all) {
+    for (const [k, m] of Object.entries(merged)) raises[k] = m.pct;
+    const latest = {};
+    for (const i of c.iterations) { const cur = latest[i.region]; if (!cur || i.num > cur.num) latest[i.region] = i; }
+    for (const i of Object.values(latest)) Object.assign(hiddenByCode, i.hidden || {});
+  } else if (iter) {
+    for (const p of c.people) {
+      if (p.homeRegion === P.region) raises[p.key] = iter.entries[p.key] ? Number(iter.entries[p.key].pct) : 0;
+      else if (iter.foreignRaises && p.key in iter.foreignRaises) raises[p.key] = Number(iter.foreignRaises[p.key]);
+    }
+    Object.assign(hiddenByCode, iter.hidden || {});
+  }
+  const calc = Object.fromEntries(props.map((p) => [p.code, payPropCalc(c, p.code, raises, hiddenByCode[p.code])]));
   const totCur = props.reduce((a, p) => a + calc[p.code].curMo, 0);
   const totNew = props.reduce((a, p) => a + calc[p.code].newMo, 0);
   const totDyr = props.reduce((a, p) => a + calc[p.code].dYrB, 0);
@@ -2999,6 +3037,7 @@ function payCycleHtml(c) {
   const TIER_LABEL = { bad: 'exceeds income growth', warn: 'above 4% guidance', good: 'within guidance' };
   for (const p of props) calc[p.code].tier = payTier(calc[p.code].pct, payIncomeGrowth(p.code, year));
   const statusHtml = (code) => {
+    if (all) return '';   // statuses live on each region's own chain
     const stat = iter && iter.propStatus && iter.propStatus[code];
     return `<div style="display:flex; align-items:center; gap:6px; margin-top:4px">
       <select class="pay-stat" data-code="${code}" ${locked ? 'disabled' : ''}>
@@ -3017,18 +3056,22 @@ function payCycleHtml(c) {
     </div>`;
   return `<div class="card">
     <div class="row" style="align-items:center; gap:8px; flex-wrap:wrap">
-      ${c.regions.map((r) => `<button class="paypill payreg ${r === P.region ? 'on' : ''}" data-reg="${esc(r)}">${esc(r)}</button>`).join('')}
+      ${c.regions.map((r) => `<button class="paypill payreg ${!all && r === P.region ? 'on' : ''}" data-reg="${esc(r)}">${esc(r)}</button>`).join('')}
+      <button class="paypill payreg ${all ? 'on' : ''}" data-reg="*" title="Everyone, once — edits land on each person's home-region chain">All regions</button>
       <span class="spacer"></span>
       ${its.map((i) => `<button class="paypill payit ${iter && i.id === iter.id ? 'on' : ''}" data-it="${i.id}">Iteration ${i.num}${i.finalizedAt ? ' ✓' : ''}</button>`).join('')}
       ${prior ? `<label class="muted" style="font-size:12px"><input type="checkbox" id="pay-cmp" ${P.compare ? 'checked' : ''}> changes vs #${prior.num}</label>` : ''}
     </div>
+    ${all ? `<p class="muted" style="font-size:12px; margin:8px 0 0">
+      Every region at its latest iteration · each person once, in their home region · edits save to that region's chain (a ✓-finalized region is read-only here) · raises effective ${esc(c.cycle.effective)}
+    </p>` : ''}
     ${iter ? `<p class="muted" style="font-size:12px; margin:8px 0 0">
       Iteration ${iter.num} · started by ${esc(iter.createdBy)} ${fmtd(iter.createdAt)}${iter.basedOn ? ` · based on #${iter.num - 1}` : ''}
       ${iter.finalizedAt ? ` · <b>finalized by ${esc(iter.finalizedBy)} ${fmtd(iter.finalizedAt)}</b> — read-only` : ' · draft'}
       · raises effective ${esc(c.cycle.effective)} · burden est. FICA+SUTA+WC
     </p>` : ''}
     <div class="paycards">
-      ${cardHtml(`${P.region} · ${props.length} properties`, totPct, totCur, totNew, totDyr, null, props.reduce((a, p) => a + (p.units || 0), 0), '')}
+      ${cardHtml(`${all ? 'All regions' : P.region} · ${props.length} properties`, totPct, totCur, totNew, totDyr, null, props.reduce((a, p) => a + (p.units || 0), 0), '')}
       ${props.map((p) => cardHtml(p.code.toUpperCase(), calc[p.code].pct, calc[p.code].curMo, calc[p.code].newMo, calc[p.code].dYrB, payIncomeGrowth(p.code, year), p.units, statusHtml(p.code))).join('')}
     </div>
     ${c.viewer.isAdmin && iter ? `<div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap">
@@ -3037,16 +3080,17 @@ function payCycleHtml(c) {
       ${iter.finalizedAt ? `<button class="btn sub" id="pay-apply" title="Write each property's wage GLs (annual $, raise prorated from the effective month) into its ${year} budget's inputs and regenerate — taxes, benefits and bonuses follow the engine">Apply to ${year} budgets</button>` : ''}
     </div>` : ''}
   </div>
-  ${payRegionTableHtml(c, props, iter, prior, locked, { totCur, totNew, totPct, totDyr })}`;
+  ${payRegionTableHtml(c, props, iter, prior, locked, { totCur, totNew, totPct, totDyr }, merged)}`;
 }
 
-/* ONE table per region: every person exactly once, grouped under their
-   primary site. Pool staff used to repeat under every property they touch. */
-function payRegionTableHtml(c, props, iter, prior, locked, tot) {
+/* ONE table: every person exactly once, in their home region, grouped by the
+   payroll workbook's sections. Region '*' covers everyone at once. */
+function payRegionTableHtml(c, props, iter, prior, locked, tot, merged) {
   const P = S.pay;
+  const all = P.region === '*';
   const visCodes = new Set(props.map((p) => p.code));
   const nameOf = new Map(props.map((p) => [p.code, p.name || p.code]));
-  const rows = payPersonRows(c, visCodes, iter, P.compare ? prior : null);
+  const rows = payPersonRows(c, visCodes, iter, P.compare ? prior : null, merged, P.region);
   const body = [];
   let lastKey = null;
   for (const r of rows) {
@@ -3056,14 +3100,15 @@ function payRegionTableHtml(c, props, iter, prior, locked, tot) {
       const label = r.glabel ? esc(r.glabel) : `${lastKey.toUpperCase()} — ${esc(nameOf.get(lastKey) || '')}`;
       body.push(`<tr class="paygrp"><td colspan="10">${label} · ${n}</td></tr>`);
     }
-    body.push(payRowHtml(r, !locked));
+    body.push(payRowHtml(r));
   }
+  const xUrl = all ? `/api/payroll/cycles/${c.cycle.id}/export.xlsx` : (iter ? `/api/payroll/iterations/${iter.id}/export.xlsx` : '');
   return `<div class="card paysec">
     <div class="payhead">
-      <b>${esc(P.region)}</b><span class="muted">${rows.length} people · each listed once · sections match the payroll workbook · ⇄ marks a split (hover for the full allocation)</span>
+      <b>${all ? 'All regions' : esc(P.region)}</b><span class="muted">${rows.length} people · each listed once, in their home region · sections match the payroll workbook · ⇄ marks a split (hover for the full allocation)</span>
       <span class="spacer"></span>
-      ${iter ? `<a class="paypill sm" href="/api/payroll/iterations/${iter.id}/export.xlsx" title="Excel workbook of this iteration — live formulas, Raw Data sheet, importable back">⬇ Excel</a>` : ''}
-      ${!locked ? `<button class="paypill sm" id="pay-ximp" title="Load raise %s from an edited export (matches rows by the Key column)">⬆ Import raises</button>
+      ${xUrl ? `<a class="paypill sm" href="${xUrl}" title="Excel workbook — live formulas, Raw Data sheet, importable back. RM pay is always masked in files.">⬇ Excel</a>` : ''}
+      ${(all || !locked) ? `<button class="paypill sm" id="pay-ximp" title="Load raise %s from an edited export (matches rows by the Key column; each lands on that person's home-region chain)">⬆ Import raises</button>
         <input type="file" id="pay-ximp-file" accept=".xlsx,.xlsm" style="display:none">
         <span class="muted" style="font-size:12px">Set all:</span>
         <button class="paypill sm pay-setall" data-v="3">3%</button>
@@ -3073,7 +3118,7 @@ function payRegionTableHtml(c, props, iter, prior, locked, tot) {
     <div class="paytblwrap"><table class="paytbl">
       <tr><th>Position</th><th>Employee</th><th>Based at</th><th>Type</th><th class="num">Current</th><th class="num">Raise %</th><th class="num">New rate</th><th class="num">Δ wages/mo</th><th class="num">Δ burdened/yr</th><th>By</th></tr>
       ${body.join('')}
-      <tr class="paysub"><td colspan="4">${esc(P.region)} total (all allocations${rows.some((r) => r.hidden) ? ', masked rows included' : ''})</td>
+      <tr class="paysub"><td colspan="4">${all ? 'All regions' : esc(P.region)} total (all allocations${rows.some((r) => r.hidden) ? ', masked rows included' : ''})</td>
         <td class="num">$${money(tot.totCur)}/mo</td>
         <td class="num">${(tot.totPct * 100 >= 0 ? '+' : '')}${(tot.totPct * 100).toFixed(1)}%</td>
         <td class="num">$${money(tot.totNew)}/mo</td>
@@ -3082,8 +3127,9 @@ function payRegionTableHtml(c, props, iter, prior, locked, tot) {
     </table></div>
   </div>`;
 }
-function payRowHtml(r, canEdit) {
+function payRowHtml(r) {
   const p = r.p;
+  const canEdit = !r.locked && r.iterId != null;
   const based = `${r.prim.code.toUpperCase()} ${Math.round(r.prim.pct * 100)}%${r.splitN ? ` <span class="muted" title="${esc(r.splitTip)}" style="cursor:help">⇄ +${r.splitN}</span>` : ''}`;
   const meta = [p.startDate ? `hired ${String(p.startDate).slice(0, 4)}` : '', p.oldPay ? `prior ${payRateStr(p.payMethod, p.oldPay)}` : '', p.status !== 'FULL' ? p.status : ''].filter(Boolean).join(' · ');
   if (r.hidden) {
@@ -3099,7 +3145,7 @@ function payRowHtml(r, canEdit) {
     <td class="muted">${based}</td>
     <td class="muted">${p.payMethod}</td>
     <td class="num">${payRateStr(p.payMethod, p.payRate)}</td>
-    <td class="num"><input class="payin" data-key="${esc(p.key)}" value="${r.pct}" inputmode="decimal" ${canEdit ? '' : 'disabled'} aria-label="Raise % for ${esc(p.name)}">${was}</td>
+    <td class="num"><input class="payin" data-key="${esc(p.key)}" data-iter="${r.iterId ?? ''}" value="${r.pct}" inputmode="decimal" ${canEdit ? '' : 'disabled'} ${!canEdit && r.locked ? 'title="This region’s iteration is finalized"' : ''} aria-label="Raise % for ${esc(p.name)}">${was}</td>
     <td class="num"><b>${payRateStr(p.payMethod, p.payRate * (1 + r.pct / 100))}</b></td>
     <td class="num">${paySigned(r.dMo)}</td>
     <td class="num">${paySigned(r.dYrB)}</td>
@@ -3112,25 +3158,37 @@ function wirePayCycle(el, c) {
   el.querySelectorAll('.payit').forEach((b) => b.addEventListener('click', () => { P.iterId = Number(b.dataset.it); render(); }));
   const cmp = el.querySelector('#pay-cmp');
   if (cmp) cmp.addEventListener('change', () => { P.compare = cmp.checked; render(); });
-  const iter = payIter();
-  const saveEntry = async (key, pct) => {
-    const r = await PUT(`/payroll/iterations/${iter.id}/entries`, { key, pct });
-    iter.entries[key] = { pct, by: r.by, at: r.at };
+  const all = P.region === '*';
+  const iter = all ? null : payIter();
+  // every save names its iteration: the selected one in a region view, each
+  // person's home-region latest in the All view (the input carries it)
+  const saveEntry = async (iterId, key, pct) => {
+    const r = await PUT(`/payroll/iterations/${iterId}/entries`, { key, pct });
+    const it2 = c.iterations.find((i) => i.id === iterId);
+    if (it2) it2.entries[key] = { pct, by: r.by, at: r.at };
   };
   el.querySelectorAll('.payin').forEach((inp) => inp.addEventListener('change', async () => {
+    const iterId = Number(inp.dataset.iter);
     const pct = parseFloat(inp.value);
-    if (!Number.isFinite(pct)) { inp.value = (iter.entries[inp.dataset.key] || { pct: 0 }).pct; return; }
-    try { await saveEntry(inp.dataset.key, pct); render(); }
+    if (!Number.isFinite(pct)) {
+      const it2 = c.iterations.find((i) => i.id === iterId);
+      inp.value = (it2 && it2.entries[inp.dataset.key] ? it2.entries[inp.dataset.key].pct : 0);
+      return;
+    }
+    try { await saveEntry(iterId, inp.dataset.key, pct); render(); }
     catch (e) { P.err = e.message; render(); }
   }));
   el.querySelectorAll('.pay-setall').forEach((b) => b.addEventListener('click', async () => {
     const v = Number(b.dataset.v);
-    const codes = new Set(c.properties.filter((p) => (String(p.market || '').trim() || 'Other') === P.region).map((p) => p.code));
-    const keys = c.people
-      .filter((p) => !p.payHidden && !(p.rm && !c.viewer.canRmPay) && (p.allocations || []).some((a) => codes.has(a.code)))
-      .map((p) => p.key);
-    try { for (const k of keys) await saveEntry(k, v); render(); }
-    catch (e) { P.err = e.message; render(); }
+    const props = all ? c.properties : c.properties.filter((p) => (String(p.market || '').trim() || 'Other') === P.region);
+    const rows = payPersonRows(c, new Set(props.map((p) => p.code)), iter, null, payMergedRaises(c), P.region);
+    try {
+      for (const r of rows) {
+        if (r.hidden || r.locked || r.iterId == null || (r.p.rm && !c.viewer.canRmPay)) continue;
+        await saveEntry(r.iterId, r.p.key, v);
+      }
+      render();
+    } catch (e) { P.err = e.message; render(); }
   }));
   el.querySelectorAll('.pay-stat').forEach((sel) => sel.addEventListener('change', async () => {
     try {
@@ -3147,7 +3205,7 @@ function wirePayCycle(el, c) {
       if (!f) return;
       const fd = new FormData(); fd.append('file', f);
       try {
-        const r = await api(`/payroll/iterations/${iter.id}/import`, { method: 'POST', body: fd });
+        const r = await api(all ? `/payroll/cycles/${c.cycle.id}/import` : `/payroll/iterations/${iter.id}/import`, { method: 'POST', body: fd });
         P.msg = `Imported ${r.applied} raise(s)${r.unchanged ? ` · ${r.unchanged} unchanged` : ''}`
           + (r.skipped.length ? ` · skipped ${r.skipped.length}: ${r.skipped.slice(0, 4).map((s) => `${s.name} (${s.reason})`).join(', ')}${r.skipped.length > 4 ? '…' : ''}` : '');
         await loadPayCycle(c.cycle.id); render();
