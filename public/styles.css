@@ -285,3 +285,34 @@ th.actcol { color: var(--drv-act-ink); }
 /* lifecycle buttons: gold = the one finalize CTA, green = start next */
 .btn.paygold { background: var(--pay-gold); color: #1d2421; }
 .btn.paygreen { background: #50645e; color: #fff; }
+
+/* ---------- the Payroll tab wears the FULL Monarch skin (body.payview) ----------
+   Cream page, Lato type, deep-green topbar, gold active nav, blue headings —
+   the approved mockup, not the tool chrome. Scoped so every other tab is
+   untouched. Dark mode keeps a green-tinted dark palette. */
+body.payview {
+  --bg: #faf8f4; --panel: #ffffff; --line: #e2dfda; --ink: #1d2421; --dim: #696a6a;
+  --accent: #50645e; --accent-ink: #ffffff;
+  --soft: #eef1f0; --soft2: #f7f6f4; --hover: #eef1f0; --input: #ffffff;
+  --head: #374440; --head-ink: #ffffff; --head-dim: #d6dedb;
+  --btn-sub-bg: #ffffff; --badge-bg: #eef1f0; --gridline: #e2dfda;
+  font-family: "Lato", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 14px;
+}
+[data-theme="dark"] body.payview {
+  --bg: #141a17; --panel: #1b2420; --line: #2c3a34; --ink: #e3e9e6; --dim: #93a39c;
+  --accent: #7da195; --accent-ink: #10201b;
+  --soft: #20302b; --soft2: #1d2824; --hover: #223029; --input: #141b18;
+  --head: #222b27; --head-ink: #e3e9e6; --head-dim: #a9c3ba;
+  --btn-sub-bg: #1b2420; --badge-bg: #20302b; --gridline: #2c3a34;
+}
+body.payview .topbar { border-bottom: 2px solid #d59038; }
+body.payview .topbar .brand { font-family: "Aleo", Georgia, "Times New Roman", serif; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+body.payview .topbar nav button.on { background: #d59038; color: #1d2421; }
+body.payview .topbar .who button, body.payview .topbar .theme { border-color: #50645e; }
+body.payview .card { border-radius: 14px; box-shadow: 0 1px 3px rgba(42, 51, 47, .08), 0 1px 2px rgba(42, 51, 47, .05); }
+body.payview .card h2 { color: #00496f; font-size: 19px; letter-spacing: -.01em; }
+[data-theme="dark"] body.payview .card h2 { color: #7db3d6; }
+body.payview .btn { border-radius: 6px; font-weight: 700; }
+body.payview select, body.payview input { font-family: inherit; }
+body.payview .wrap { max-width: 1340px; }

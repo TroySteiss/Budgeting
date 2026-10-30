@@ -151,6 +151,9 @@ function render() {
   const gw = document.querySelector('.gridwrap');
   if (gw) S.gridScroll = { top: gw.scrollTop, left: gw.scrollLeft };
   const app = document.getElementById('app');
+  // the Payroll tab wears the full Monarch skin (Troy 2026-10-29: "I want
+  // nothing to do with the old UI" there) — body.payview rescopes the theme
+  document.body.classList.toggle('payview', S.view === 'payroll' && !!(S.auth && S.auth.authed));
   if (!S.auth || !S.auth.authed) { app.innerHTML = loginView(); wireLogin(); return; }
   app.innerHTML = `
     <div class="topbar">
@@ -3091,8 +3094,8 @@ function wirePayCycle(el, c) {
 /* admin: staffing report upload + RM site scoping */
 function payAdminHtml(st) {
   return `<div class="card">
-    <h2>Staffing reports <span class="badge">admin</span></h2>
-    <p class="muted" style="font-size:12px">The HRIS roster export (employee, position, pay method, pay rate, benefits, property, allocation splits). It is parsed and stored in one step behind this gate — individual pay never crosses the Data page.</p>
+    <h2>Staffing data <span class="badge">admin</span></h2>
+    <p class="muted" style="font-size:12px">Drop the <b>payroll budget workbook you already have</b> (Seth's "Payroll Budget Workbook …xlsb") — its Dictionary of Employees + allocation sheets are found automatically. Any HRIS roster export with the same columns works too. Parsed and stored in one step behind this gate; properties the tool doesn't track are dropped.</p>
     <div class="row" style="align-items:center; gap:8px">
       <input type="file" id="pay-file" accept=".xlsx,.xls,.xlsb,.xlsm">
       <button class="btn" id="pay-upload">Load staffing report</button>

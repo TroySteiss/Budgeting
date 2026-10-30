@@ -1,4 +1,4 @@
-/* Pay-rates tab — raise cycles behind their own gate.
+﻿/* Pay-rates tab â€” raise cycles behind their own gate.
    Everything here sits behind (1) the normal app login AND (2) the payroll
    password (PAYROLL_PASSWORD env), because staffing snapshots carry per-seat
    pay (Troy sign-off 2026-10-28). Regional-Manager pay is additionally masked
@@ -41,7 +41,7 @@ function requirePayroll(req: Request, res: Response, next: NextFunction) {
 }
 
 /* GET /state answers BEFORE the gate so the client knows whether to show the
-   unlock card — it carries nothing but the locked flag until unlocked. */
+   unlock card â€” it carries nothing but the locked flag until unlocked. */
 payrollRouter.get('/state', h(async (req, res) => {
   if (!req.session?.payrollAuthed) return res.json({ unlocked: false });
   const user = req.session.username || '';
@@ -54,7 +54,7 @@ payrollRouter.get('/state', h(async (req, res) => {
     query(`select c.id, c.label, c.effective, c.staffing_snapshot_id, c.created_by, c.created_at, s.label as snapshot_label
              from raise_cycles c left join staffing_snapshots s on s.id=c.staffing_snapshot_id
             order by c.created_at desc`),
-    query(`select code, name, units, market from properties where role='subject' order by code`),
+    query(`select code, name, units, market from properties order by code`),
     query('select sites from app_users where key=$1', [normUser(user)]),
   ]);
   const sites: string[] = admin ? [] : ((me.rows[0]?.sites as string[]) || []);
@@ -69,18 +69,18 @@ payrollRouter.use(requirePayroll);
 
 /* ---------------- staffing report (admin) ----------------
    Parses AND stores in ONE step: the roster never rides a parse/apply round
-   trip, so no response ever carries rates back out — only counts do. */
+   trip, so no response ever carries rates back out â€” only counts do. */
 payrollRouter.post('/staffing', requireAdmin, upload.single('file'), h(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
   const parsed = parseStaffingReport(req.file.buffer);
-  const known = new Set((await query(`select code from properties where role='subject'`)).rows.map((r: any) => r.code));
+  const known = new Set((await query(`select code from properties`)).rows.map((r: any) => r.code));
   // keep only people with an allocation at a property this tool budgets
   const people: StaffingPerson[] = [];
   for (const p of parsed.people) {
     const allocations = p.allocations.filter((a) => known.has(a.code));
     if (allocations.length) people.push({ ...p, allocations });
   }
-  if (!people.length) return res.status(422).json({ error: 'No roster rows map to this tool’s properties' });
+  if (!people.length) return res.status(422).json({ error: 'No roster rows map to this toolâ€™s properties' });
   const user = req.session.username || '';
   const label = String(req.body?.name || '').trim() || parsed.label || req.file.originalname;
   // uploads row carries COUNTS only; the roster lives in staffing_snapshots
@@ -120,7 +120,7 @@ payrollRouter.post('/cycles', requireAdmin, h(async (req, res) => {
     [String(label || '').trim() || `Raises eff. ${effective}`, effective, Number(staffingSnapshotId), user]
   )).rows[0];
   // iteration #1 for every region the snapshot touches
-  const props = (await query(`select code, market from properties where role='subject'`)).rows;
+  const props = (await query(`select code, market from properties`)).rows;
   const marketByCode = new Map(props.map((p: any) => [p.code, regionOf(p)]));
   const regions = [...new Set(people.flatMap((p) => p.allocations.map((a) => marketByCode.get(a.code))).filter(Boolean))] as string[];
   for (const region of regions) {
@@ -144,13 +144,13 @@ payrollRouter.get('/cycles/:id', h(async (req, res) => {
   const admin = isAdminUser(user);
   const rmPay = canSeeRmPay(user);
   const people = await loadSnapshotPeople(cycle.staffing_snapshot_id);
-  const props = (await query(`select code, name, units, market from properties where role='subject' order by code`)).rows as any[];
+  const props = (await query(`select code, name, units, market from properties order by code`)).rows as any[];
   const sites: string[] = admin ? props.map((p) => p.code)
     : (((await query('select sites from app_users where key=$1', [normUser(user)])).rows[0]?.sites as string[]) || []);
   const siteSet = new Set(sites);
   const touched = new Set(people.flatMap((p) => p.allocations.map((a) => a.code)));
   const visibleProps = props.filter((p) => touched.has(p.code) && siteSet.has(p.code));
-  if (!visibleProps.length) return res.status(403).json({ error: admin ? 'No properties in this cycle' : 'No properties assigned to you — an admin sets your sites in the Payroll tab' });
+  if (!visibleProps.length) return res.status(403).json({ error: admin ? 'No properties in this cycle' : 'No properties assigned to you â€” an admin sets your sites in the Payroll tab' });
   const visCodes = new Set(visibleProps.map((p) => p.code));
   const regions = [...new Set(visibleProps.map(regionOf))].sort();
 
@@ -198,7 +198,7 @@ async function loadIteration(id: number): Promise<any | null> {
 payrollRouter.put('/iterations/:id/entries', h(async (req, res) => {
   const it = await loadIteration(Number(req.params.id));
   if (!it) return res.status(404).json({ error: 'No such iteration' });
-  if (it.finalized_at) return res.status(409).json({ error: `Iteration ${it.num} is finalized — start the next iteration to make changes` });
+  if (it.finalized_at) return res.status(409).json({ error: `Iteration ${it.num} is finalized â€” start the next iteration to make changes` });
   const user = req.session.username || '';
   const admin = isAdminUser(user);
   const key = String(req.body?.key || '');
@@ -206,7 +206,7 @@ payrollRouter.put('/iterations/:id/entries', h(async (req, res) => {
   if (!Number.isFinite(pct) || pct < -50 || pct > 100) return res.status(400).json({ error: 'Raise % must be a number between -50 and 100' });
   const people = await loadSnapshotPeople(it.staffing_snapshot_id);
   const person = people.find((p) => p.key === key);
-  if (!person) return res.status(404).json({ error: 'No such person in this cycle’s staffing snapshot' });
+  if (!person) return res.status(404).json({ error: 'No such person in this cycleâ€™s staffing snapshot' });
   if (person.rm && !canSeeRmPay(user)) return res.status(403).json({ error: 'Regional-Manager raises are limited to the RM-pay allowlist' });
   if (!admin) {
     const sites = ((await query('select sites from app_users where key=$1', [normUser(user)])).rows[0]?.sites as string[]) || [];
@@ -224,7 +224,7 @@ payrollRouter.put('/iterations/:id/entries', h(async (req, res) => {
 payrollRouter.put('/iterations/:id/status', h(async (req, res) => {
   const it = await loadIteration(Number(req.params.id));
   if (!it) return res.status(404).json({ error: 'No such iteration' });
-  if (it.finalized_at) return res.status(409).json({ error: 'Finalized — statuses are frozen' });
+  if (it.finalized_at) return res.status(409).json({ error: 'Finalized â€” statuses are frozen' });
   const user = req.session.username || '';
   const admin = isAdminUser(user);
   const code = String(req.body?.property || '');
@@ -274,7 +274,7 @@ payrollRouter.post('/cycles/:id/regions/:region/iterations', requireAdmin, h(asy
 
 /* ---------------- apply to budgets (admin) ----------------
    Writes each property's wage GLs (annual $, raise prorated from the
-   effective month) into its budget's inputs.wages and regenerates — taxes,
+   effective month) into its budget's inputs.wages and regenerates â€” taxes,
    benefits and bonuses follow the engine's own drivers from there. */
 payrollRouter.post('/iterations/:id/apply', requireAdmin, h(async (req, res) => {
   const it = await loadIteration(Number(req.params.id));
@@ -287,7 +287,7 @@ payrollRouter.post('/iterations/:id/apply', requireAdmin, h(async (req, res) => 
   for (const e of (await query('select person_key, raise_pct from raise_entries where iteration_id=$1', [it.id])).rows) {
     raises[e.person_key] = Number(e.raise_pct);
   }
-  const props = (await query(`select code, market from properties where role='subject'`)).rows as any[];
+  const props = (await query(`select code, market from properties`)).rows as any[];
   const codes = props.filter((p) => regionOf(p) === it.region).map((p) => p.code);
   const applied: any[] = [];
   const skipped: any[] = [];
