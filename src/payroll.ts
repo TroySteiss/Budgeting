@@ -13,7 +13,7 @@ import { query } from './db.js';
 import { requireAuth, requireAdmin, isAdminUser, canSeeRmPay, normUser } from './auth.js';
 import { parseStaffingReport, parsePayrollModel, parsePayrollDetail } from './importers.js';
 import { loadBudget, buildLines, saveLines } from './routes.js';
-import { maskPeople, hiddenAggregates, annualWagesByGl, seatMonthly, homeRegionsOf, applyStaffingDetail, normalizePayBasis, type StaffingPerson, type RaiseMap, type DetailPerson } from '../shared/payroll.js';
+import { maskPeople, hiddenAggregates, annualWagesByGl, seatMonthly, homeRegionsOf, applyStaffingDetail, normalizePayBasis, normalizeRmCorporateShare, type StaffingPerson, type RaiseMap, type DetailPerson } from '../shared/payroll.js';
 import { buildRaiseWorkbook, parseRaiseImport, type RaiseExportRow, type RaiseSheetSpec } from './payroll-xlsx.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -112,7 +112,8 @@ payrollRouter.post('/staffing', requireAdmin, upload.array('files', 4), h(async 
   } else {
     return res.status(422).json({ error: problems.join(' · ') || 'No recognizable staffing files' });
   }
-  normalizePayBasis(people);   // the title rule holds whatever the source said
+  normalizePayBasis(people);           // the title rule holds whatever the source said
+  normalizeRmCorporateShare(people);   // MI carries 30% of every RM — properties get 70%
   const enrich = details.length ? applyStaffingDetail(people, details) : { matched: 0, flippedToSalary: 0 };
   const salaried = people.filter((p) => p.payMethod === 'Salary').length;
   // uploads row carries COUNTS only; the roster lives in staffing_snapshots
@@ -154,9 +155,11 @@ payrollRouter.post('/staffing', requireAdmin, upload.array('files', 4), h(async 
 async function loadSnapshotPeople(snapshotId: number): Promise<StaffingPerson[]> {
   const r = (await query('select data from staffing_snapshots where id=$1', [snapshotId])).rows[0];
   const people = ((r?.data?.people as StaffingPerson[]) || []).map((p) => ({ ...p }));
-  // enforce the title rule on READ (all PMs are Salary — Troy 2026-11-02), so
-  // rule fixes reach snapshots that are already loaded without any re-upload
+  // enforce the rules on READ (all PMs are Salary; MI covers 30% of every
+  // RM's pay — Troy 2026-11-02), so rule fixes reach snapshots that are
+  // already loaded without any re-upload
   normalizePayBasis(people);
+  normalizeRmCorporateShare(people);
   return people;
 }
 const regionOf = (p: { market?: string }): string => String(p.market || '').trim() || 'Other';
@@ -412,7 +415,10 @@ async function assembleRaiseExport(cycle: any, user: string, wantRegions: string
       key: p.key, name: p.name, position: p.position, region: home,
       groupLabel: '', _g: p.group || null, _o: p.ord ?? 0,
       primCode: prim.code, primPct: prim.pct,
-      splitNote: others.length ? `also ${others.map((x) => `${x.code.toUpperCase()} ${Math.round(x.pct * 100)}%`).join(' · ')}` : '',
+      splitNote: [
+        others.length ? `also ${others.map((x) => `${x.code.toUpperCase()} ${Math.round(x.pct * 100)}%`).join(' · ')}` : '',
+        p.rm ? 'MIMG corporate 30%' : '',
+      ].filter(Boolean).join(' · '),
       payMethod: p.payMethod,
       payRate: masked ? null : p.payRate,
       regionMoCur: masked ? null : regA.reduce((s, a) => s + seatMonthly(p.payMethod, p.payRate, a.pct), 0),

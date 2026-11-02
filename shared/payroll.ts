@@ -42,6 +42,24 @@ export interface DetailPerson {
     accrual note), so a salaried annual = one check × 26. */
 export const PAY_PERIODS_PER_YEAR = 26;
 
+/** MI (corporate) covers 30% of every Regional Manager's pay (Troy
+    2026-11-02): an RM's property allocations are rescaled to total exactly
+    70%, keeping the mix — the corporate share is never budgeted at the
+    properties. Applied on READ like the other rules, so no re-upload. */
+export const RM_CORPORATE_SHARE = 0.30;
+export function normalizeRmCorporateShare(people: StaffingPerson[]): number {
+  const target = 1 - RM_CORPORATE_SHARE;
+  let changed = 0;
+  for (const p of people) {
+    if (!p.rm || !p.allocations || !p.allocations.length) continue;
+    const s = p.allocations.reduce((a, x) => a + x.pct, 0);
+    if (!(s > 0) || Math.abs(s - target) < 0.001) continue;
+    for (const a of p.allocations) a.pct = Math.round((a.pct / s) * target * 10000) / 10000;
+    changed++;
+  }
+  return changed;
+}
+
 const nameTokens = (n: string): string[] => String(n || '').toLowerCase().replace(/\(.*?\)/g, '').replace(/[^a-z ]/g, '').split(/\s+/).filter(Boolean);
 /** "Don Butterfield" ↔ "Donald Butterfield", middle names ignored: first
     tokens prefix-match either way, last tokens equal. */

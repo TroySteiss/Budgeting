@@ -2970,7 +2970,10 @@ function payPersonRows(c, visCodes, iter, prior, merged, region) {
     }
     const priorPct = (!all && prior) ? (prior.entries[p.key] ? Number(prior.entries[p.key].pct) : 0) : null;
     const others = (p.allocations || []).filter((a) => a.code !== prim.code);
-    const splitTip = others.length ? `also ${others.map((x) => `${x.code.toUpperCase()} ${Math.round(x.pct * 100)}%`).join(' · ')}` : '';
+    const splitTip = [
+      others.length ? `also ${others.map((x) => `${x.code.toUpperCase()} ${Math.round(x.pct * 100)}%`).join(' · ')}` : '',
+      p.rm ? 'MIMG corporate 30%' : '',   // MI covers 30% of every RM's pay
+    ].filter(Boolean).join(' · ');
     const row = { p, pct, prim, splitN: others.length, splitTip, by, at, iterId, locked, priorPct, hidden: !!p.payHidden };
     if (!p.payHidden) {
       const nr = payNewRate(p.payMethod, p.payRate, pct);
@@ -3141,7 +3144,7 @@ function payRegionTableHtml(c, props, iter, prior, locked, tot, merged) {
 function payRowHtml(r) {
   const p = r.p;
   const canEdit = !r.locked && r.iterId != null;
-  const based = `${r.prim.code.toUpperCase()} ${Math.round(r.prim.pct * 100)}%${r.splitN ? ` <span class="muted" title="${esc(r.splitTip)}" style="cursor:help">⇄ +${r.splitN}</span>` : ''}`;
+  const based = `${r.prim.code.toUpperCase()} ${Math.round(r.prim.pct * 100)}%${r.splitTip ? ` <span class="muted" title="${esc(r.splitTip)}" style="cursor:help">⇄${r.splitN ? ` +${r.splitN}` : ''}</span>` : ''}`;
   const meta = [p.startDate ? `hired ${String(p.startDate).slice(0, 4)}` : '', p.oldPay ? `prior ${payRateStr(p.payMethod, p.oldPay)}` : '', p.status !== 'FULL' ? p.status : ''].filter(Boolean).join(' · ');
   if (r.hidden) {
     return `<tr><td><b>${esc(p.position)}</b></td><td>${esc(p.name)}</td><td class="muted">${based}</td><td class="muted">${p.payMethod}</td>

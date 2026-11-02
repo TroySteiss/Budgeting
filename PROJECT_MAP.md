@@ -371,6 +371,10 @@ budgets' wage GLs. Modeled on the per-property sheets of the Payroll Budget Work
   re-drop the reports for every fix. Hourly↔Salary conversions ×/÷2080 (= the workbook's
   ×40×52). payMethod Salary stores the ANNUAL as the rate; salaries keep the exact raise %
   (no 25¢ MROUND — that's hourly only).
+- **RM corporate share** (Troy 2026-11-02): MI (corporate) covers 30% of every Regional
+  Manager's pay — `normalizeRmCorporateShare` (RM_CORPORATE_SHARE = 0.30) rescales an RM's
+  property allocations to total exactly 70%, mix preserved, applied on READ beside
+  normalizePayBasis (no re-upload). The ⇄ tooltip on RM rows notes "MIMG corporate 30%".
 - **Payroll detail report** ("_PayrollReports_Detail_…", one row per PROPERTY SLICE of
   each check — a person's true check gross is the SUM across properties at one check
   date): dropped WITH the ND workbook or later on its own. `parsePayrollDetail` takes each

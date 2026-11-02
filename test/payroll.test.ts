@@ -4,7 +4,8 @@ import { describe, it, expect } from 'vitest';
 import * as XLSX from 'xlsx';
 import {
   seatMonthly, raisedMonthCount, annualWagesByGl, maskPeople, hiddenAggregates,
-  positionGl, isRmPosition, isSalariedPosition, normalizePayBasis, marginalBurdenPct, homeRegionsOf, newRate, adjustedPct,
+  positionGl, isRmPosition, isSalariedPosition, normalizePayBasis, normalizeRmCorporateShare,
+  marginalBurdenPct, homeRegionsOf, newRate, adjustedPct,
   sameName, applyStaffingDetail, type StaffingPerson,
 } from '../shared/payroll.js';
 import { parseStaffingReport, parsePayrollDetail, detectUploadKind } from '../src/importers.js';
@@ -83,6 +84,21 @@ describe('salaried-vs-hourly by TITLE (all PMs are Salary — Troy 2026-11-02 fi
     for (const t of ['Asst Property Manager', 'APM', 'Leasing Consultant Agent', 'Maintenance Supervisor I', 'Maintenance Tech II', 'Housekeeper', 'Maint Rover I', 'Bookkeeper']) {
       expect(isSalariedPosition(t), t).toBe(false);
     }
+  });
+  it('normalizeRmCorporateShare: MI carries 30% of every RM — property allocations rescale to 70%', () => {
+    const people = [
+      person({ key: 'rm1', position: 'Regional Property Mgr I', payMethod: 'Salary', payRate: 92000, rm: true, allocations: [{ code: 'cwnd', pct: 0.5 }, { code: 'drnd', pct: 0.5 }] }),
+      person({ key: 'rm2', position: 'Regional Property Mgr I', payMethod: 'Salary', payRate: 90000, rm: true, allocations: [{ code: 'clnd', pct: 0.42 }, { code: 'wynd', pct: 0.28 }] }),
+      person({ key: 'tech', position: 'Maintenance Tech I', allocations: [{ code: 'cwnd', pct: 1 }] }),
+    ];
+    expect(normalizeRmCorporateShare(people)).toBe(1);   // rm2 is at 70% already
+    // rm1's full split rescales to 70% keeping the 50/50 mix
+    expect(people[0].allocations).toEqual([{ code: 'cwnd', pct: 0.35 }, { code: 'drnd', pct: 0.35 }]);
+    // rm2 was at 70% already — the 0.42/0.28 mix is kept exactly
+    expect(people[1].allocations[0].pct).toBeCloseTo(0.42, 4);
+    // non-RMs are untouched
+    expect(people[2].allocations[0].pct).toBe(1);
+    expect(normalizeRmCorporateShare(people)).toBe(0);   // idempotent
   });
   it('normalizePayBasis fixes an ALREADY-LOADED snapshot on read — no re-upload', () => {
     const people = [
