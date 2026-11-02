@@ -47,6 +47,20 @@ export function seatMonthly(payMethod: string, rate: number, allocPct: number): 
   return r2(mo * allocPct);
 }
 
+/** A raised HOURLY rate lands on the nearest 25¢ (Troy 2026-11-02 — a 3%
+    raise MROUNDs, and the adjusted % reflects it). Salaries keep the exact %. */
+export const RATE_MROUND = 0.25;
+export function newRate(payMethod: string, rate: number, raisePct: number): number {
+  const raw = rate * (1 + (Number(raisePct) || 0) / 100);
+  if (payMethod !== 'Hourly') return r2(raw);
+  return Math.round(Math.round(raw / RATE_MROUND) * RATE_MROUND * 100) / 100;
+}
+/** The effective raise AFTER rounding — what the budget actually pays. */
+export function adjustedPct(payMethod: string, rate: number, raisePct: number): number {
+  if (!rate) return 0;
+  return newRate(payMethod, rate, raisePct) / rate - 1;
+}
+
 export type RaiseMap = Record<string, number>;   // person key -> raise %
 
 /** Months (0-based index within calendar year `year`) the raise is live. */
@@ -72,7 +86,7 @@ export function annualWagesByGl(people: StaffingPerson[], code: string, raises: 
     const { gl, mapped } = positionGl(p.position);
     if (!mapped) unmapped.add(p.position);
     const cur = seatMonthly(p.payMethod, p.payRate, alloc.pct);
-    const next = seatMonthly(p.payMethod, p.payRate * (1 + (Number(raises[p.key]) || 0) / 100), alloc.pct);
+    const next = seatMonthly(p.payMethod, newRate(p.payMethod, p.payRate, Number(raises[p.key]) || 0), alloc.pct);
     wages[gl] = r2((wages[gl] || 0) + cur * (12 - liveMonths) + next * liveMonths);
   }
   for (const gl of Object.keys(wages)) wages[gl] = r2(wages[gl]);
@@ -144,7 +158,7 @@ export function hiddenAggregates(people: StaffingPerson[], raises: RaiseMap, cod
     for (const a of p.allocations || []) {
       if (!(a.code in out)) continue;
       out[a.code].curMo = r2(out[a.code].curMo + seatMonthly(p.payMethod, p.payRate, a.pct));
-      out[a.code].newMo = r2(out[a.code].newMo + seatMonthly(p.payMethod, p.payRate * (1 + (Number(raises[p.key]) || 0) / 100), a.pct));
+      out[a.code].newMo = r2(out[a.code].newMo + seatMonthly(p.payMethod, newRate(p.payMethod, p.payRate, Number(raises[p.key]) || 0), a.pct));
     }
   }
   return out;

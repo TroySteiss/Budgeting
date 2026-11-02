@@ -2798,6 +2798,12 @@ async function openPayrollEditor(id) {
    renders what the API already decided the viewer may see. Iteration chains
    are per REGION (property market). */
 const payMo = (method, rate, pct) => Math.round((method === 'Hourly' ? (rate * 2080) / 12 : rate / 12) * pct * 100) / 100;
+/* mirrors shared/payroll newRate: a raised HOURLY rate lands on the nearest
+   25¢ (Troy 2026-11-02); the adjusted % is what the budget actually pays */
+const payNewRate = (method, rate, pct) => method === 'Hourly'
+  ? Math.round(Math.round((rate * (1 + pct / 100)) / 0.25) * 0.25 * 100) / 100
+  : Math.round(rate * (1 + pct / 100) * 100) / 100;
+const payAdjPct = (method, rate, pct) => (rate ? payNewRate(method, rate, pct) / rate - 1 : 0);
 const payBurden = (position) => (7.65 + 1.0 + (/regional|lms|arm|bookkeep|office|leasing|apm|\bpm\b|manager|market/i.test(position) ? 0.8 : 4.0)) / 100;
 const payRateStr = (method, rate) => method === 'Hourly' ? `$${Number(rate).toFixed(2)}/hr` : `$${money(rate)}/yr`;
 const paySigned = (v) => `${v < 0 ? '−' : '+'}$${money(Math.abs(v))}`;
@@ -2919,7 +2925,7 @@ function payPropCalc(c, code, raises, hid) {
     if (!a || p.payHidden) continue;
     const pct = raises[p.key] || 0;
     const cur = payMo(p.payMethod, p.payRate, a.pct);
-    const nxt = payMo(p.payMethod, p.payRate * (1 + pct / 100), a.pct);
+    const nxt = payMo(p.payMethod, payNewRate(p.payMethod, p.payRate, pct), a.pct);
     curMo += cur; newMo += nxt;
     dYrB += (nxt - cur) * 12 * (1 + payBurden(p.position));
   }
@@ -2967,8 +2973,12 @@ function payPersonRows(c, visCodes, iter, prior, merged, region) {
     const splitTip = others.length ? `also ${others.map((x) => `${x.code.toUpperCase()} ${Math.round(x.pct * 100)}%`).join(' · ')}` : '';
     const row = { p, pct, prim, splitN: others.length, splitTip, by, at, iterId, locked, priorPct, hidden: !!p.payHidden };
     if (!p.payHidden) {
+      const nr = payNewRate(p.payMethod, p.payRate, pct);
       let cur = 0, nxt = 0;
-      for (const a of regA) { cur += payMo(p.payMethod, p.payRate, a.pct); nxt += payMo(p.payMethod, p.payRate * (1 + pct / 100), a.pct); }
+      for (const a of regA) { cur += payMo(p.payMethod, p.payRate, a.pct); nxt += payMo(p.payMethod, nr, a.pct); }
+      row.newRate = nr;
+      row.adj = payAdjPct(p.payMethod, p.payRate, pct);
+      row.curMo = cur;
       row.dMo = nxt - cur;
       row.dYrB = (nxt - cur) * 12 * (1 + payBurden(p.position));
     }
@@ -3050,7 +3060,7 @@ function payCycleHtml(c) {
     <div class="paycard ${payTier(pct, growth)}">
       <div class="pc-top"><span>${esc(title)}</span><span class="pc-badge">${TIER_LABEL[payTier(pct, growth)]}</span></div>
       <div class="pc-big">${(pct * 100 >= 0 ? '+' : '')}${(pct * 100).toFixed(1)}%</div>
-      <div class="muted">${paySigned(dyr)}/yr burdened · wages $${money(cur)} → $${money(nxt)}/mo</div>
+      <div class="muted">${paySigned(dyr)}/yr burdened · wages $${money(cur)} → $${money(nxt)}/mo · $${money(cur * 12)} → $${money(nxt * 12)}/yr</div>
       <div class="muted">${growth != null ? `rental income growth +${(growth * 100).toFixed(1)}%` : `no ${year} budget linked`}${units ? ` · wages $${money((nxt * 12) / units)}/unit/yr` : ''}</div>
       ${status || ''}
     </div>`;
@@ -3098,7 +3108,7 @@ function payRegionTableHtml(c, props, iter, prior, locked, tot, merged) {
       lastKey = r.gkey;
       const n = rows.filter((x) => x.gkey === lastKey).length;
       const label = r.glabel ? esc(r.glabel) : `${lastKey.toUpperCase()} — ${esc(nameOf.get(lastKey) || '')}`;
-      body.push(`<tr class="paygrp"><td colspan="10">${label} · ${n}</td></tr>`);
+      body.push(`<tr class="paygrp"><td colspan="11">${label} · ${n}</td></tr>`);
     }
     body.push(payRowHtml(r));
   }
@@ -3116,12 +3126,13 @@ function payRegionTableHtml(c, props, iter, prior, locked, tot, merged) {
         <button class="paypill sm pay-setall" data-v="0">0%</button>` : ''}
     </div>
     <div class="paytblwrap"><table class="paytbl">
-      <tr><th>Position</th><th>Employee</th><th>Based at</th><th>Type</th><th class="num">Current</th><th class="num">Raise %</th><th class="num">New rate</th><th class="num">Δ wages/mo</th><th class="num">Δ burdened/yr</th><th>By</th></tr>
+      <tr><th>Position</th><th>Employee</th><th>Based at</th><th>Type</th><th class="num">Current</th><th class="num">Raise %</th><th class="num" title="Hourly rates round to the nearest 25¢">New rate</th><th class="num" title="The raise actually paid after 25¢ rounding">Adj %</th><th class="num">Δ wages/mo</th><th class="num">Δ burdened/yr</th><th>By</th></tr>
       ${body.join('')}
-      <tr class="paysub"><td colspan="4">${all ? 'All regions' : esc(P.region)} total (all allocations${rows.some((r) => r.hidden) ? ', masked rows included' : ''})</td>
+      <tr class="paysub"><td colspan="4">${all ? 'All regions' : esc(P.region)} total (all allocations${rows.some((r) => r.hidden) ? ', masked rows included' : ''}) · annual $${money(tot.totCur * 12)} → $${money(tot.totNew * 12)}</td>
         <td class="num">$${money(tot.totCur)}/mo</td>
-        <td class="num">${(tot.totPct * 100 >= 0 ? '+' : '')}${(tot.totPct * 100).toFixed(1)}%</td>
+        <td class="num muted" style="font-size:11px">wtd avg →</td>
         <td class="num">$${money(tot.totNew)}/mo</td>
+        <td class="num">${(tot.totPct * 100 >= 0 ? '+' : '')}${(tot.totPct * 100).toFixed(2)}%</td>
         <td class="num">${paySigned(tot.totNew - tot.totCur)}</td>
         <td class="num">${paySigned(tot.totDyr)}</td><td></td></tr>
     </table></div>
@@ -3136,7 +3147,7 @@ function payRowHtml(r) {
     return `<tr><td><b>${esc(p.position)}</b></td><td>${esc(p.name)}</td><td class="muted">${based}</td><td class="muted">${p.payMethod}</td>
       <td class="num muted">•••</td>
       <td class="num"><span class="muted" style="font-size:11px" title="Regional-Manager pay — RM-pay allowlist only">🔒 TS/RC only</span></td>
-      <td class="num muted">•••</td><td class="num muted">•••</td><td class="num muted">•••</td>
+      <td class="num muted">•••</td><td class="num muted">•••</td><td class="num muted">•••</td><td class="num muted">•••</td>
       <td class="muted" style="font-size:11.5px">${esc(r.by || '')}</td></tr>`;
   }
   const was = r.priorPct != null && Math.abs(r.pct - r.priorPct) > 0.001 ? ` <span class="paywas">was ${r.priorPct}%</span>` : '';
@@ -3146,7 +3157,8 @@ function payRowHtml(r) {
     <td class="muted">${p.payMethod}</td>
     <td class="num">${payRateStr(p.payMethod, p.payRate)}</td>
     <td class="num"><input class="payin" data-key="${esc(p.key)}" data-iter="${r.iterId ?? ''}" value="${r.pct}" inputmode="decimal" ${canEdit ? '' : 'disabled'} ${!canEdit && r.locked ? 'title="This region’s iteration is finalized"' : ''} aria-label="Raise % for ${esc(p.name)}">${was}</td>
-    <td class="num"><b>${payRateStr(p.payMethod, p.payRate * (1 + r.pct / 100))}</b></td>
+    <td class="num"><b>${payRateStr(p.payMethod, r.newRate)}</b></td>
+    <td class="num muted">${(r.adj * 100).toFixed(2)}%</td>
     <td class="num">${paySigned(r.dMo)}</td>
     <td class="num">${paySigned(r.dYrB)}</td>
     <td class="muted" style="font-size:11.5px; white-space:nowrap">${r.by ? `${esc(r.by)} · ${fmtd(r.at)}` : ''}</td></tr>`;

@@ -398,14 +398,21 @@ budgets' wage GLs. Modeled on the per-property sheets of the Payroll Budget Work
   finalized); no finalize/apply/status there. Cycle-wide Excel:
   `GET/POST /payroll/cycles/:id/export.xlsx|import` (each region's latest iteration;
   import routes each row to its home chain).
-- **Excel round trip** (`src/payroll-xlsx.ts`): `GET /payroll/iterations/:id/export.xlsx`
-  — the region-iteration as a workbook (Raises sheet mirrors the tab: person-once in home
-  region, workbook sections, LIVE formulas for new rate / Δs / totals + a Raw Data
-  allocation sheet). **RM pay is masked on EVERY export and RM rows are refused on EVERY
-  import, allowlist or not (Troy 2026-10-30) — files travel**; masked slices appear as one
-  aggregate row so totals reconcile. `POST /payroll/iterations/:id/import` reads Raise %
-  by person Key back in (finalized 409, home-region check, site scoping; untouched rows
-  keep their original author). ⬇ Excel / ⬆ Import raises buttons on the table header.
+- **Excel round trip** (`src/payroll-xlsx.ts`, layout = Troy's own draft 2026-11-02):
+  workbook = **Combined first** (its Raise % cells are `='<RM sheet>'!J<row>` cross-refs),
+  then **one sheet per RM** — the Regional with the biggest allocation in each region;
+  regions sharing an RM share a sheet named by their FIRST NAME (Holly / Brittanee / Gail),
+  ordered like the source workbook — then Raw Data. Columns A–K match his draft (Raise %
+  stays the J input, green); added: **L Adj %** (the raise actually paid), M Δ wages/mo,
+  N Δ burdened/yr, **O Annual wages / P New annual**. **Hourly new rates MROUND to 25¢**
+  (`newRate`/`adjustedPct` in shared/payroll — the APP's math too: grid, cards,
+  annualWagesByGl, hidden aggregates). J4 = **weighted-average increase** (Σ Δ wages ÷ Σ
+  wages; every totals row shows it in the Adj % column), per-REGION totals rows + grand
+  total, every formula carries a cached result. `assembleRaiseExport` (payroll.ts) feeds
+  both export routes. **RM pay is masked on EVERY export and RM rows refused on EVERY
+  import, allowlist or not — files travel**; masked slices ride as per-region aggregate
+  rows. Import reads Key + Raise % from EVERY sheet, typed values beating Combined's
+  cached formulas; "no entry yet" counts as 0% so re-imports don't restamp authors.
 - **The WHOLE app wears the Monarch skin** (Troy 2026-10-30 — he wants nothing of the old
   chrome): `body.monarch` in index.html rescopes the theme vars app-wide (cream page, Lato
   + Aleo from Google Fonts, deep-green topbar with gold rule/active nav, blue headings;

@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import * as XLSX from 'xlsx';
 import {
   seatMonthly, raisedMonthCount, annualWagesByGl, maskPeople, hiddenAggregates,
-  positionGl, isRmPosition, marginalBurdenPct, homeRegionsOf, type StaffingPerson,
+  positionGl, isRmPosition, marginalBurdenPct, homeRegionsOf, newRate, adjustedPct, type StaffingPerson,
 } from '../shared/payroll.js';
 import { parseStaffingReport, detectUploadKind } from '../src/importers.js';
 import { buildRaiseWorkbook, parseRaiseImport, type RaiseExportRow } from '../src/payroll-xlsx.js';
@@ -29,17 +29,26 @@ describe('pay math', () => {
     expect(raisedMonthCount('2028-01', 2027)).toBe(0);   // not yet
     expect(raisedMonthCount('garbage', 2027)).toBe(12);  // unparseable = fully live
   });
-  it('annualWagesByGl: GL mapping + proration + allocation share', () => {
+  it('newRate / adjustedPct: hourly raises land on the nearest 25¢ (Troy 2026-11-02)', () => {
+    expect(newRate('Hourly', 18, 3)).toBe(18.5);        // 18.54 → 18.50
+    expect(newRate('Hourly', 20, 3)).toBe(20.5);        // 20.60 → 20.50
+    expect(newRate('Hourly', 22, 3)).toBe(22.75)        // 22.66 → 22.75
+    expect(newRate('Hourly', 24, 0)).toBe(24);          // no raise, no drift
+    expect(newRate('Salary', 61000, 3)).toBe(62830);    // salaries keep the exact %
+    expect(adjustedPct('Hourly', 20, 3)).toBeCloseTo(0.025, 6);   // 20 → 20.50 pays 2.50%
+    expect(adjustedPct('Salary', 61000, 3)).toBeCloseTo(0.03, 6);
+  });
+  it('annualWagesByGl: GL mapping + proration + allocation share + 25¢ rounding', () => {
     const people = [
       person({ key: 'a', position: 'Leasing Consultant', payMethod: 'Hourly', payRate: 18 }),        // 6402
       person({ key: 'b', position: 'Maintenance Tech I', payMethod: 'Hourly', payRate: 20 }),        // 6404
       person({ key: 'c', position: 'Maint Rover I', payMethod: 'Hourly', payRate: 24, allocations: [{ code: 'spnd', pct: 0.4 }, { code: 'wynd', pct: 0.6 }] }), // 6407
     ];
-    // 4% raises effective Apr 2027 → 3 months old rate, 9 months new
+    // 4% raises effective Apr 2027 → 3 months old rate, 9 months new (MROUNDed)
     const { wages } = annualWagesByGl(people, 'spnd', { a: 4, b: 4, c: 4 }, '2027-04', 2027);
     const annual = (rate: number, alloc: number) => {
       const cur = seatMonthly('Hourly', rate, alloc);
-      const nxt = seatMonthly('Hourly', rate * 1.04, alloc);
+      const nxt = seatMonthly('Hourly', newRate('Hourly', rate, 4), alloc);
       return cur * 3 + nxt * 9;
     };
     expect(wages['6402']).toBeCloseTo(annual(18, 1), 1);
@@ -106,29 +115,45 @@ describe('RM masking', () => {
 
 describe('excel round trip (synthetic)', () => {
   const row = (over: Partial<RaiseExportRow>): RaiseExportRow => ({
-    key: 'k1', name: 'A. Example', position: 'Maintenance Tech I', groupLabel: 'Bismarck 4', primCode: 'cwnd', primPct: 1,
+    key: 'k1', name: 'A. Example', position: 'Maintenance Tech I', region: 'Bismarck ND', groupLabel: 'Bismarck 4', primCode: 'cwnd', primPct: 1,
     splitNote: '', payMethod: 'Hourly', payRate: 20, regionMoCur: 3466.67, raisePct: 3,
     by: 'TS', at: '2026-10-30', rm: false, ...over,
   });
-  it('export → import returns every unmasked row with its raise %', async () => {
+  it('export → import returns every unmasked row with its raise % (Combined refs the RM sheet)', async () => {
     const buf = await buildRaiseWorkbook({
-      cycleLabel: 'FY27 raises', effective: '2027-01', region: 'Bismarck ND', iterNum: 2,
-      finalized: null, exportedBy: 'Troy Steiss',
+      cycleLabel: 'FY27 raises', effective: '2027-01',
+      title: 'FY27 raises — All regions', exportedBy: 'Troy Steiss',
+      sheets: [{ name: 'Gail', regions: ['Bismarck ND', 'Jamestown ND'] }],
       rows: [
         row({ key: 'k1', raisePct: 3 }),
         row({ key: 'k2', name: 'B. Sample', position: 'Leasing', primCode: 'lhnd', raisePct: 4.5, splitNote: 'also CWND 40%' }),
+        row({ key: 'k3', name: 'C. East', position: 'Tech', region: 'Jamestown ND', groupLabel: 'Jamestown 2', primCode: 'drnd', raisePct: 2 }),
         row({ key: 'rm1', name: 'R. Masked', position: 'Regional', payRate: null, regionMoCur: null, rm: true, raisePct: 0 }),
       ],
-      hidden: { curMo: 900, newMo: 927 },
+      hiddenByRegion: { 'Bismarck ND': { curMo: 900, newMo: 927 } },
+      combined: true,
       allocations: [
         { key: 'k1', name: 'A. Example', position: 'Maintenance Tech I', payMethod: 'Hourly', payRate: 20, monthlyBenefits: 400, status: 'FULL', startDate: '2021-01-01', code: 'cwnd', pct: 1 },
       ],
     });
+    const wb = XLSX.read(buf, { type: 'buffer' });
+    expect(wb.SheetNames).toEqual(['Combined', 'Gail', 'Raw Data']);
     const pairs = parseRaiseImport(buf);
     const byKey = Object.fromEntries(pairs.map((p) => [p.key, p.pct]));
     expect(byKey.k1).toBe(3);
     expect(byKey.k2).toBe(4.5);
+    expect(byKey.k3).toBe(2);
     expect('rm1' in byKey).toBe(false);   // masked row exports no editable raise value... unless typed in
+    // the typed value on an RM sheet beats the Combined formula's cached copy
+    const gail = wb.Sheets['Gail'];
+    const range = XLSX.utils.decode_range(gail['!ref']!);
+    for (let r = range.s.r; r <= range.e.r; r++) {
+      const kc = gail[XLSX.utils.encode_cell({ r, c: 0 })];
+      if (kc && kc.v === 'k1') { gail[XLSX.utils.encode_cell({ r, c: 9 })] = { t: 'n', v: 5.5 }; break; }
+    }
+    const edited = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+    const byKey2 = Object.fromEntries(parseRaiseImport(edited).map((p) => [p.key, p.pct]));
+    expect(byKey2.k1).toBe(5.5);
   });
   it('rejects a workbook without Key/Raise % columns', () => {
     const wb = XLSX.utils.book_new();

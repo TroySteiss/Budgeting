@@ -1,151 +1,222 @@
-/* Excel round trip for the pay-rates tab.
-   EXPORT: one region-iteration as a workbook — a Raises sheet that mirrors the
-   tab (each person once, grouped by primary site, live formulas for new rate /
-   deltas / totals — org rule: show the work) plus a Raw Data sheet with every
-   seat-allocation. The caller passes rows ALREADY viewer-scoped and RM-masked;
-   nothing here widens access.
-   IMPORT: reads Raise % by person Key back out of any sheet with those two
-   columns, so an RM can fill the exported file and load it back. */
+/* Excel round trip for the pay-rates tab — formatted to match Troy's own
+   draft workbook (2026-11-02): ONE SHEET PER RM (named by first name, holding
+   the region(s) that RM covers), a Combined sheet whose Raise % cells
+   reference the RM sheets, and Raw Data. Raise % is the only input (green);
+   New rate MROUNDs hourly rates to 25¢, Adj % shows the effective raise after
+   rounding, Δs and annual wages are live formulas, and every totals row uses
+   the WEIGHTED-average increase (Δ wages ÷ wages — weights fall out of the
+   algebra). RM pay is masked in every file; masked slices ride as per-region
+   aggregate rows so the totals reconcile. */
 import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
-import { marginalBurdenPct } from '../shared/payroll.js';
+import { marginalBurdenPct, newRate, adjustedPct, RATE_MROUND } from '../shared/payroll.js';
 
 export interface RaiseExportRow {
   key: string;
   name: string;
   position: string;
-  groupLabel: string;        // the workbook's section ("Bismarck 4", …) — rows arrive sorted by it
-  primCode: string;          // primary site (largest allocation in the region)
-  primPct: number;           // 0..1
-  splitNote: string;         // '' or the other sites
+  region: string;            // home region — decides the sheet + regional totals
+  groupLabel: string;        // the workbook's section ("Bismarck 4", …)
+  primCode: string;
+  primPct: number;
+  splitNote: string;
   payMethod: string;         // Hourly | Salary
   payRate: number | null;    // null = masked RM seat
-  regionMoCur: number | null;// monthly wages across the region at the current rate
+  regionMoCur: number | null;
   raisePct: number;
   by: string;
   at: string;
   rm: boolean;
 }
 
+export interface RaiseSheetSpec { name: string; regions: string[] }
+
 export interface RaiseExportArgs {
   cycleLabel: string;
   effective: string;
-  region: string;
-  iterNum: number;
-  titleOverride?: string;    // the all-regions export names itself
-  finalized: { by: string; at: string } | null;
+  title: string;
   exportedBy: string;
-  rows: RaiseExportRow[];    // sorted: primary site, position, name
-  hidden: { curMo: number; newMo: number } | null;  // masked-RM region aggregate (masked viewers)
+  sheets: RaiseSheetSpec[];                                   // per-RM sheets, in order
+  rows: RaiseExportRow[];                                     // ALL rows, pre-sorted (region block → section → ord)
+  hiddenByRegion: Record<string, { curMo: number; newMo: number }>;
+  combined: boolean;                                          // add the Combined sheet
   allocations: { key: string; name: string; position: string; payMethod: string; payRate: number | null; monthlyBenefits: number | null; status: string; startDate: string | null; code: string; pct: number }[];
 }
 
+/* Columns — A..K match Troy's draft exactly (Raise % stays the J input);
+   L.. are the additions he asked for. */
+const COLS = ['Key', 'Position', 'Employee', 'Based at', 'Also allocated', 'Type', 'Current rate', 'Wages/mo (region)', 'Burden est.', 'Raise %', 'New rate', 'Adj %', 'Δ wages/mo', 'Δ burdened/yr', 'Annual wages', 'New annual', 'Last edit'];
+const C = { key: 1, pos: 2, emp: 3, based: 4, also: 5, type: 6, rate: 7, mo: 8, burden: 9, raise: 10, newRate: 11, adj: 12, dMo: 13, dYr: 14, annual: 15, newAnnual: 16, edit: 17 };
+const L = (c: number): string => String.fromCharCode(64 + c);   // 1..17 → A..Q
 const CUR2 = '"$"#,##0.00_);[Red]("$"#,##0.00)';
 const CUR0 = '"$"#,##0_);[Red]("$"#,##0)';
-const INPUT = 'FFE2EFDA';   // the budget workbook's light-green input fill
+const PCT2 = '0.00%';
+const INPUT = 'FFE2EFDA';
 const GRP = 'FFF2F2F2';
+const SUBT = 'FFEEF1F0';
 const TOT = 'FFE3EBF7';
+
+interface Placed { sheet: string; row: number }
 
 export async function buildRaiseWorkbook(a: RaiseExportArgs): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet('Raises', { views: [{ state: 'frozen', ySplit: 5 }], properties: { tabColor: { argb: 'FF50645E' } } });
-  ws.columns = [
-    { header: '', width: 14 },  // A key
-    { header: '', width: 24 },  // B position
-    { header: '', width: 22 },  // C employee
-    { header: '', width: 16 },  // D based at
-    { header: '', width: 30 },  // E split
-    { header: '', width: 8 },   // F type
-    { header: '', width: 12 },  // G current rate
-    { header: '', width: 13 },  // H wages/mo (region)
-    { header: '', width: 9 },   // I burden %
-    { header: '', width: 9 },   // J RAISE %
-    { header: '', width: 12 },  // K new rate
-    { header: '', width: 12 },  // L Δ wages/mo
-    { header: '', width: 13 },  // M Δ burdened/yr
-    { header: '', width: 22 },  // N last edit
-  ];
-  ws.getCell('A1').value = a.titleOverride || `${a.cycleLabel} — ${a.region} — Iteration ${a.iterNum}`;
-  ws.getCell('A1').font = { bold: true, size: 13 };
-  ws.getCell('A2').value = `Raises effective ${a.effective} · ${a.finalized ? `FINALIZED by ${a.finalized.by} ${a.finalized.at.slice(0, 10)} (read-only)` : 'draft'} · exported by ${a.exportedBy} ${new Date().toISOString().slice(0, 10)}`;
-  ws.getCell('A2').font = { size: 9, color: { argb: 'FF696A6A' } };
-  ws.getCell('A3').value = 'Type raise %s into the green column, save, and import the file back on the Payroll tab. Keep column A (Key) — it is how rows match. New rate / deltas / totals are live formulas.';
-  ws.getCell('A3').font = { size: 9, italic: true, color: { argb: 'FF696A6A' } };
+  const placed = new Map<string, Placed>();   // key → its input cell's home (for Combined cross-refs)
 
-  const head = ['Key', 'Position', 'Employee', 'Based at', 'Also allocated', 'Type', 'Current rate', 'Wages/mo (region)', 'Burden est.', 'Raise %', 'New rate', 'Δ wages/mo', 'Δ burdened/yr', 'Last edit'];
-  const hr = ws.getRow(5);
-  head.forEach((t, i) => { const c = hr.getCell(i + 1); c.value = t; c.font = { bold: true, size: 9 }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRP } }; });
+  const headerArea = (ws: ExcelJS.Worksheet) => {
+    ws.columns = [{ width: 14 }, { width: 24 }, { width: 22 }, { width: 16 }, { width: 30 }, { width: 8 }, { width: 12 }, { width: 13 }, { width: 9 }, { width: 9 }, { width: 12 }, { width: 9 }, { width: 12 }, { width: 13 }, { width: 13 }, { width: 13 }, { width: 22 }];
+    ws.getCell('B1').value = a.title;
+    ws.getCell('B1').font = { bold: true, size: 13 };
+    ws.getCell('B2').value = `Raises effective ${a.effective} · exported by ${a.exportedBy} ${new Date().toISOString().slice(0, 10)}`;
+    ws.getCell('B2').font = { size: 9, color: { argb: 'FF696A6A' } };
+    ws.getCell('B3').value = `Type raise %s into the green column and import the file back on the Payroll tab (keep column A). Hourly new rates round to the nearest $${RATE_MROUND.toFixed(2)}; Adj % is the raise actually paid after rounding.`;
+    ws.getCell('B3').font = { size: 9, italic: true, color: { argb: 'FF696A6A' } };
+    const hr = ws.getRow(5);
+    COLS.forEach((t, i) => { const c = hr.getCell(i + 1); c.value = t; c.font = { bold: true, size: 9 }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRP } }; });
+    ws.views = [{ state: 'frozen', ySplit: 5 }];
+  };
 
-  let r = 6;
-  const dataRows: number[] = [];
-  let totH = 0, totL = 0, totM = 0;
-  let lastGroup = '';
-  for (const row of a.rows) {
-    if (row.groupLabel !== lastGroup) {
-      lastGroup = row.groupLabel;
-      const g = ws.getRow(r);
-      g.getCell(2).value = row.groupLabel;
-      g.getCell(2).font = { bold: true, size: 9 };
-      for (let c = 1; c <= 14; c++) g.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRP } };
-      r++;
-    }
+  /* One data row. `raiseCell` = value (RM sheets) or a cross-sheet formula
+     (Combined). Returns true when the row carries money (joins the SUMs). */
+  const dataRow = (ws: ExcelJS.Worksheet, r: number, row: RaiseExportRow, raiseRef: string | null): boolean => {
     const x = ws.getRow(r);
-    x.getCell(1).value = row.key;
-    x.getCell(1).font = { size: 8, color: { argb: 'FFA8A39B' } };
-    x.getCell(2).value = row.position;
-    x.getCell(3).value = row.name;
-    x.getCell(4).value = `${row.primCode.toUpperCase()} ${Math.round(row.primPct * 100)}%`;
-    x.getCell(5).value = row.splitNote;
-    x.getCell(5).font = { size: 8, color: { argb: 'FF696A6A' } };
-    x.getCell(6).value = row.payMethod;
+    x.getCell(C.key).value = row.key;
+    x.getCell(C.key).font = { size: 8, color: { argb: 'FFA8A39B' } };
+    x.getCell(C.pos).value = row.position;
+    x.getCell(C.emp).value = row.name;
+    x.getCell(C.based).value = `${row.primCode.toUpperCase()} ${Math.round(row.primPct * 100)}%`;
+    x.getCell(C.also).value = row.splitNote;
+    x.getCell(C.also).font = { size: 8, color: { argb: 'FF696A6A' } };
+    x.getCell(C.type).value = row.payMethod;
+    x.getCell(C.edit).value = row.by ? `${row.by} · ${String(row.at).slice(0, 10)}` : '';
+    x.getCell(C.edit).font = { size: 8, color: { argb: 'FF696A6A' } };
     if (row.payRate == null) {
-      x.getCell(7).value = '•••'; x.getCell(8).value = '•••'; x.getCell(11).value = 'TS/RC only';
-      x.getCell(11).font = { size: 8, color: { argb: 'FF696A6A' } };
-    } else {
-      x.getCell(7).value = row.payRate;
-      x.getCell(7).numFmt = row.payMethod === 'Hourly' ? CUR2 : CUR0;
-      x.getCell(8).value = Math.round((row.regionMoCur || 0) * 100) / 100;
-      x.getCell(8).numFmt = CUR0;
-      x.getCell(9).value = marginalBurdenPct(row.position);
-      x.getCell(9).numFmt = '0.0%';
-      x.getCell(10).value = row.raisePct;
-      x.getCell(11).value = { formula: `G${r}*(1+J${r}/100)`, result: row.payRate * (1 + row.raisePct / 100) };
-      x.getCell(11).numFmt = row.payMethod === 'Hourly' ? CUR2 : CUR0;
-      x.getCell(12).value = { formula: `H${r}*J${r}/100`, result: Math.round((row.regionMoCur || 0) * row.raisePct) / 100 };
-      x.getCell(12).numFmt = CUR0;
-      x.getCell(13).value = { formula: `L${r}*12*(1+I${r})`, result: ((row.regionMoCur || 0) * row.raisePct / 100) * 12 * (1 + marginalBurdenPct(row.position)) };
-      x.getCell(13).numFmt = CUR0;
-      totH += row.regionMoCur || 0;
-      totL += (row.regionMoCur || 0) * row.raisePct / 100;
-      totM += ((row.regionMoCur || 0) * row.raisePct / 100) * 12 * (1 + marginalBurdenPct(row.position));
-      dataRows.push(r);
+      x.getCell(C.rate).value = '•••'; x.getCell(C.mo).value = '•••';
+      x.getCell(C.newRate).value = 'TS/RC only';
+      x.getCell(C.newRate).font = { size: 8, color: { argb: 'FF696A6A' } };
+      x.getCell(C.raise).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRP } };
+      return false;
     }
-    x.getCell(10).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: INPUT } };
-    x.getCell(14).value = row.by ? `${row.by} · ${String(row.at).slice(0, 10)}` : '';
-    x.getCell(14).font = { size: 8, color: { argb: 'FF696A6A' } };
-    r++;
-  }
-  if (a.hidden) {
+    const rateFmt = row.payMethod === 'Hourly' ? CUR2 : CUR0;
+    x.getCell(C.rate).value = row.payRate;
+    x.getCell(C.rate).numFmt = rateFmt;
+    x.getCell(C.mo).value = Math.round((row.regionMoCur || 0) * 100) / 100;
+    x.getCell(C.mo).numFmt = CUR0;
+    x.getCell(C.burden).value = marginalBurdenPct(row.position);
+    x.getCell(C.burden).numFmt = '0.0%';
+    if (raiseRef) x.getCell(C.raise).value = { formula: raiseRef, result: row.raisePct };
+    else x.getCell(C.raise).value = row.raisePct;
+    x.getCell(C.raise).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: INPUT } };
+    const nr = newRate(row.payMethod, row.payRate, row.raisePct);
+    const adj = adjustedPct(row.payMethod, row.payRate, row.raisePct);
+    const mo = row.regionMoCur || 0;
+    x.getCell(C.newRate).value = {
+      formula: row.payMethod === 'Hourly' ? `MROUND(${L(C.rate)}${r}*(1+${L(C.raise)}${r}/100),${RATE_MROUND})` : `${L(C.rate)}${r}*(1+${L(C.raise)}${r}/100)`,
+      result: nr,
+    };
+    x.getCell(C.newRate).numFmt = rateFmt;
+    x.getCell(C.adj).value = { formula: `${L(C.newRate)}${r}/${L(C.rate)}${r}-1`, result: adj };
+    x.getCell(C.adj).numFmt = PCT2;
+    x.getCell(C.dMo).value = { formula: `${L(C.mo)}${r}*${L(C.adj)}${r}`, result: Math.round(mo * adj * 100) / 100 };
+    x.getCell(C.dMo).numFmt = CUR0;
+    x.getCell(C.dYr).value = { formula: `${L(C.dMo)}${r}*12*(1+${L(C.burden)}${r})`, result: Math.round(mo * adj * 12 * (1 + marginalBurdenPct(row.position)) * 100) / 100 };
+    x.getCell(C.dYr).numFmt = CUR0;
+    x.getCell(C.annual).value = { formula: `${L(C.mo)}${r}*12`, result: Math.round(mo * 12 * 100) / 100 };
+    x.getCell(C.annual).numFmt = CUR0;
+    x.getCell(C.newAnnual).value = { formula: `${L(C.annual)}${r}+${L(C.dMo)}${r}*12`, result: Math.round((mo * 12 + mo * adj * 12) * 100) / 100 };
+    x.getCell(C.newAnnual).numFmt = CUR0;
+    return true;
+  };
+
+  const maskedAggRow = (ws: ExcelJS.Worksheet, r: number, region: string, hid: { curMo: number; newMo: number }): void => {
     const x = ws.getRow(r);
-    x.getCell(2).value = 'Masked RM allocations (aggregate)';
-    x.getCell(2).font = { italic: true, size: 9 };
-    x.getCell(8).value = a.hidden.curMo; x.getCell(8).numFmt = CUR0;
-    x.getCell(12).value = Math.round((a.hidden.newMo - a.hidden.curMo) * 100) / 100; x.getCell(12).numFmt = CUR0;
-    totH += a.hidden.curMo;
-    totL += a.hidden.newMo - a.hidden.curMo;
-    totM += (a.hidden.newMo - a.hidden.curMo) * 12 * 1.0945;
-    dataRows.push(r);
-    r++;
+    x.getCell(C.pos).value = `${region} — masked RM allocations (aggregate)`;
+    x.getCell(C.pos).font = { italic: true, size: 9 };
+    const d = hid.newMo - hid.curMo;
+    x.getCell(C.mo).value = hid.curMo;
+    x.getCell(C.dMo).value = Math.round(d * 100) / 100;
+    x.getCell(C.dYr).value = Math.round(d * 12 * 1.0945 * 100) / 100;
+    x.getCell(C.annual).value = Math.round(hid.curMo * 12 * 100) / 100;
+    x.getCell(C.newAnnual).value = Math.round(hid.newMo * 12 * 100) / 100;
+    [C.mo, C.dMo, C.dYr, C.annual, C.newAnnual].forEach((c) => { x.getCell(c).numFmt = CUR0; });
+  };
+
+  /* Totals row over an explicit list of money rows; the increase shown is the
+     WEIGHTED average (Σ Δ wages ÷ Σ wages — each person weighted by pay).
+     Every formula carries a cached result so the file previews before Excel
+     recalculates. */
+  const sumCache = (ws: ExcelJS.Worksheet, col: number, rowsList: number[]): number =>
+    Math.round(rowsList.reduce((s, n) => {
+      const v = ws.getRow(n).getCell(col).value as any;
+      return s + (typeof v === 'number' ? v : (v && typeof v.result === 'number' ? v.result : 0));
+    }, 0) * 100) / 100;
+  const totalsRow = (ws: ExcelJS.Worksheet, r: number, label: string, moneyRows: number[], fill: string): void => {
+    const x = ws.getRow(r);
+    x.getCell(C.pos).value = label;
+    x.font = { bold: true };
+    const list = (c: number) => moneyRows.length ? `SUM(${moneyRows.map((n) => `${L(c)}${n}`).join(',')})` : '0';
+    for (const c of [C.mo, C.dMo, C.dYr, C.annual, C.newAnnual]) {
+      x.getCell(c).value = { formula: list(c), result: sumCache(ws, c, moneyRows) };
+      x.getCell(c).numFmt = CUR0;
+    }
+    const moTot = sumCache(ws, C.mo, moneyRows);
+    x.getCell(C.adj).value = { formula: moneyRows.length ? `${L(C.dMo)}${r}/${L(C.mo)}${r}` : '0', result: moTot ? sumCache(ws, C.dMo, moneyRows) / moTot : 0 };
+    x.getCell(C.adj).numFmt = PCT2;
+    x.getCell(C.raise).value = 'wtd avg →';
+    x.getCell(C.raise).font = { bold: false, size: 8, color: { argb: 'FF696A6A' } };
+    for (let c = 1; c <= COLS.length; c++) x.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
+  };
+
+  /* lay one scope (an RM sheet, or Combined) */
+  const laySheet = (ws: ExcelJS.Worksheet, rows: RaiseExportRow[], regions: string[], opts: { crossRef: boolean; grandLabel: string }) => {
+    headerArea(ws);
+    let r = 6;
+    const allMoney: number[] = [];
+    for (const region of regions) {
+      const regionRows = rows.filter((x) => x.region === region);
+      if (!regionRows.length) continue;
+      const regionMoney: number[] = [];
+      let lastGroup = '';
+      for (const row of regionRows) {
+        if (row.groupLabel !== lastGroup) {
+          lastGroup = row.groupLabel;
+          const g = ws.getRow(r);
+          g.getCell(C.pos).value = row.groupLabel;
+          g.getCell(C.pos).font = { bold: true, size: 9 };
+          for (let c = 1; c <= COLS.length; c++) g.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRP } };
+          r++;
+        }
+        const ref = opts.crossRef && placed.has(row.key) ? `'${placed.get(row.key)!.sheet}'!${L(C.raise)}${placed.get(row.key)!.row}` : null;
+        const money = dataRow(ws, r, row, ref);
+        if (!opts.crossRef) placed.set(row.key, { sheet: ws.name, row: r });
+        if (money) regionMoney.push(r);
+        r++;
+      }
+      const hid = a.hiddenByRegion[region];
+      if (hid && hid.curMo) { maskedAggRow(ws, r, region, hid); regionMoney.push(r); r++; }
+      allMoney.push(...regionMoney);
+      // regional totals — on Combined always; on an RM sheet when it spans regions
+      if (opts.crossRef || regions.length > 1) { totalsRow(ws, r, `${region} total`, regionMoney, SUBT); r++; }
+    }
+    totalsRow(ws, r, opts.grandLabel, allMoney, TOT);
+    // the weighted-average header cell above the input column (Troy's J4/K4)
+    const moAll = sumCache(ws, C.mo, allMoney);
+    ws.getCell(`${L(C.raise)}4`).value = { formula: `${L(C.adj)}${r}`, result: moAll ? sumCache(ws, C.dMo, allMoney) / moAll : 0 };
+    ws.getCell(`${L(C.raise)}4`).numFmt = PCT2;
+    ws.getCell(`${L(C.raise)}4`).font = { bold: true };
+    ws.getCell(`${L(C.newRate)}4`).value = 'wtd avg increase';
+    ws.getCell(`${L(C.newRate)}4`).font = { size: 9, color: { argb: 'FF696A6A' } };
+  };
+
+  // Combined sits FIRST like Troy's draft — ExcelJS orders sheets by creation,
+  // so create it up front and fill it once the RM sheets' cells are placed
+  const combinedWs = a.combined ? wb.addWorksheet('Combined', { properties: { tabColor: { argb: 'FFD59038' } } }) : null;
+  for (const spec of a.sheets) {
+    const ws = wb.addWorksheet(spec.name, { properties: { tabColor: { argb: 'FF50645E' } } });
+    laySheet(ws, a.rows.filter((x) => spec.regions.includes(x.region)), spec.regions, { crossRef: false, grandLabel: `${spec.name} total` });
   }
-  const t = ws.getRow(r);
-  t.getCell(2).value = `${a.region} total`;
-  t.font = { bold: true };
-  const sumOf = (col: string) => dataRows.length ? `SUM(${dataRows.map((n) => `${col}${n}`).join(',')})` : '0';
-  t.getCell(8).value = { formula: sumOf('H'), result: Math.round(totH * 100) / 100 };
-  t.getCell(12).value = { formula: sumOf('L'), result: Math.round(totL * 100) / 100 };
-  t.getCell(13).value = { formula: sumOf('M'), result: Math.round(totM * 100) / 100 };
-  [8, 12, 13].forEach((c) => { t.getCell(c).numFmt = CUR0; });
-  for (let c = 1; c <= 14; c++) t.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: TOT } };
+  if (combinedWs) {
+    laySheet(combinedWs, a.rows, a.sheets.flatMap((s) => s.regions), { crossRef: true, grandLabel: 'All regions total' });
+  }
 
   // Raw Data — every seat-allocation (org rule: the work behind the formulas)
   const raw = wb.addWorksheet('Raw Data');
@@ -169,27 +240,46 @@ export async function buildRaiseWorkbook(a: RaiseExportArgs): Promise<Buffer> {
 /* ---------------- import ---------------- */
 const normHdr = (v: any): string => (v == null ? '' : String(v)).toLowerCase().replace(/[^a-z%]/g, '');
 
-/** Pull {key, pct} pairs out of any sheet that has Key and Raise % columns —
-    the exported Raises sheet, or anything hand-built with those two headers.
-    Values only (formulas read as their cached results); blanks are skipped. */
+/** Pull {key, pct} out of EVERY sheet with Key and Raise % columns — the
+    per-RM sheets and Combined both qualify. A typed value beats a formula's
+    cached result (Combined mirrors the RM sheets, so edits made on either
+    side win correctly); blanks and text are skipped. */
 export function parseRaiseImport(buf: Buffer): { key: string; pct: number }[] {
-  const wb = XLSX.read(buf, { type: 'buffer' });
+  const wb = XLSX.read(buf, { type: 'buffer', cellFormula: true });
+  const typed = new Map<string, number>();
+  const cached = new Map<string, number>();
+  let found = false;
   for (const name of wb.SheetNames) {
-    const g = XLSX.utils.sheet_to_json<any[]>(wb.Sheets[name], { header: 1, raw: true, defval: null }) as any[][];
-    for (let r = 0; r < Math.min(g.length, 12); r++) {
-      const hdr = (g[r] || []).map(normHdr);
-      const keyCol = hdr.indexOf('key');
-      const pctCol = hdr.findIndex((h) => h === 'raise%' || h === 'raisepct' || h === 'raisepercent' || h.startsWith('raise%'));
-      if (keyCol < 0 || pctCol < 0) continue;
-      const out: { key: string; pct: number }[] = [];
-      for (let i = r + 1; i < g.length; i++) {
-        const key = g[i]?.[keyCol] == null ? '' : String(g[i][keyCol]).trim();
-        const pct = typeof g[i]?.[pctCol] === 'number' ? g[i][pctCol] : parseFloat(String(g[i]?.[pctCol] ?? ''));
-        if (!key || !Number.isFinite(pct)) continue;
-        out.push({ key, pct });
+    const ws = wb.Sheets[name];
+    if (!ws['!ref']) continue;
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    // locate the header row
+    let hdrRow = -1, keyCol = -1, pctCol = -1;
+    for (let r = range.s.r; r <= Math.min(range.e.r, range.s.r + 11); r++) {
+      let k = -1, p = -1;
+      for (let c = range.s.c; c <= range.e.c; c++) {
+        const cell = ws[XLSX.utils.encode_cell({ r, c })];
+        const h = normHdr(cell ? cell.v : null);
+        if (h === 'key') k = c;
+        if (h === 'raise%' || h === 'raisepct' || h === 'raisepercent') p = c;
       }
-      if (out.length) return out;
+      if (k >= 0 && p >= 0) { hdrRow = r; keyCol = k; pctCol = p; break; }
+    }
+    if (hdrRow < 0) continue;
+    found = true;
+    for (let r = hdrRow + 1; r <= range.e.r; r++) {
+      const kc = ws[XLSX.utils.encode_cell({ r, c: keyCol })];
+      const pc = ws[XLSX.utils.encode_cell({ r, c: pctCol })];
+      const key = kc && kc.v != null ? String(kc.v).trim() : '';
+      const pct = pc && typeof pc.v === 'number' ? pc.v : parseFloat(String(pc && pc.v != null ? pc.v : ''));
+      if (!key || !Number.isFinite(pct)) continue;
+      if (pc && pc.f) { if (!cached.has(key)) cached.set(key, pct); }
+      else typed.set(key, pct);
     }
   }
-  throw new Error('No sheet with "Key" and "Raise %" columns found — import the exported Raises workbook (keep column A)');
+  if (!found) throw new Error('No sheet with "Key" and "Raise %" columns found — import the exported workbook (keep column A)');
+  const out = new Map(cached);
+  for (const [k, v] of typed) out.set(k, v);
+  if (!out.size) throw new Error('No raise rows found under the Key / Raise % headers');
+  return [...out.entries()].map(([key, pct]) => ({ key, pct }));
 }
