@@ -13,7 +13,7 @@ import { query } from './db.js';
 import { requireAuth, requireAdmin, isAdminUser, canSeeRmPay, normUser } from './auth.js';
 import { parseStaffingReport, parsePayrollModel, parsePayrollDetail } from './importers.js';
 import { loadBudget, buildLines, saveLines } from './routes.js';
-import { maskPeople, hiddenAggregates, annualWagesByGl, seatMonthly, homeRegionsOf, applyStaffingDetail, type StaffingPerson, type RaiseMap } from '../shared/payroll.js';
+import { maskPeople, hiddenAggregates, annualWagesByGl, seatMonthly, homeRegionsOf, applyStaffingDetail, type StaffingPerson, type RaiseMap, type DetailPerson } from '../shared/payroll.js';
 import { buildRaiseWorkbook, parseRaiseImport, type RaiseExportRow, type RaiseSheetSpec } from './payroll-xlsx.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -79,7 +79,7 @@ payrollRouter.post('/staffing', requireAdmin, upload.array('files', 4), h(async 
   // roster workbook. Detail alone enriches the LATEST snapshot.
   let parsed: ReturnType<typeof parseStaffingReport> | null = null;
   let rosterBuf: Buffer | null = null;
-  const details: { name: string; title: string; gl: string | null }[] = [];
+  const details: DetailPerson[] = [];
   const problems: string[] = [];
   for (const f of files) {
     try { details.push(...parsePayrollDetail(f.buffer)); continue; } catch { /* not the detail report */ }

@@ -3,7 +3,7 @@
 import * as XLSX from 'xlsx';
 import type { UwSnapshotData } from '../shared/domain.js';
 import type { TemplateData } from '../shared/annual.js';
-import { POSITION_GL, isRmPosition, isSalariedPosition, type StaffingPerson, type DetailPerson } from '../shared/payroll.js';
+import { POSITION_GL, isRmPosition, basisFromChecks, type StaffingPerson, type DetailPerson } from '../shared/payroll.js';
 
 type Grid = any[][];
 
@@ -831,10 +831,10 @@ function parseSplitsGrid(all: { name: string; g: Grid; ws: XLSX.WorkSheet }[]): 
       const hourly = hourlyCol >= 0 ? num(row[hourlyCol]) : 0;
       const annual = (annualCol >= 0 ? num(row[annualCol]) : 0) || sumAll;
       // a FORMULA in the Hourly cell means the typed figure is the salary —
-      // the workbook derives the hourly equivalent (=salary/52/40). Position
-      // convention also decides: PMs / Regionals / LMS are salaried even when
-      // this workbook typed their hourly equivalent (Troy 2026-11-02).
-      const salaried = (hourlyCol >= 0 && cellIsFormula(ws, r, hourlyCol)) || isSalariedPosition(position);
+      // the workbook derives the hourly equivalent (=salary/52/40). Pay basis
+      // is PER PERSON (a title rule mislabeled an hourly PM — Troy
+      // 2026-11-02); the payroll detail report's check history refines this.
+      const salaried = hourlyCol >= 0 && cellIsFormula(ws, r, hourlyCol);
       let key = normHdr(personName);
       const n = (seen.get(key) || 0) + 1;
       seen.set(key, n);
@@ -874,16 +874,36 @@ export function parsePayrollDetail(buf: Buffer): DetailPerson[] {
       for (const k of Object.keys(cols)) delete cols[k];
     }
     if (hdr < 0) continue;
-    const byName = new Map<string, DetailPerson>();
+    // the report splits each CHECK across properties (one row per property
+    // slice) — a person's true check gross is the SUM over properties at one
+    // check date, or the basis reads as "varying" for every pooled employee
+    const byName = new Map<string, { name: string; title: string; gl: string | null; byDate: Map<number, number>; ot: number }>();
     for (let r = hdr + 1; r < g.length; r++) {
       const row = g[r] || [];
       const name = s(row[cols.employeename]);
       if (!name) continue;
-      const title = s(row[cols.jobtitle]);
-      const gl = s(row[cols.bookedtogl]).replace(/\D/g, '') || null;
-      byName.set(normHdr(name), { name, title, gl });
+      const k = normHdr(name);
+      const cur = byName.get(k) || { name, title: '', gl: null, byDate: new Map<number, number>(), ot: 0 };
+      cur.title = s(row[cols.jobtitle]) || cur.title;
+      cur.gl = (s(row[cols.bookedtogl]).replace(/\D/g, '') || cur.gl) as string | null;
+      if ('grosswages' in cols) {
+        const d = 'checkdate' in cols ? num(row[cols.checkdate]) : 0;
+        if (d) cur.byDate.set(d, (cur.byDate.get(d) || 0) + num(row[cols.grosswages]));
+      }
+      if ('overtime' in cols) cur.ot += num(row[cols.overtime]);
+      byName.set(k, cur);
     }
-    if (byName.size) return [...byName.values()];
+    if (byName.size) {
+      return [...byName.values()].map((x): DetailPerson => {
+        const ordered = [...x.byDate.entries()].sort((a, b) => a[0] - b[0]).map(([, gTot]) => Math.round(gTot * 100) / 100);
+        const lastPositive = [...ordered].reverse().find((gTot) => gTot > 0);
+        return {
+          name: x.name, title: x.title, gl: x.gl,
+          basis: basisFromChecks(ordered, x.ot),
+          lastGross: lastPositive ?? null,
+        };
+      });
+    }
   }
   throw new Error('Payroll detail report: no Employee Name / Job Title / Booked To GL header row found');
 }

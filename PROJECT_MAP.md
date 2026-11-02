@@ -362,20 +362,24 @@ budgets' wage GLs. Modeled on the per-property sheets of the Payroll Budget Work
   one workbook is never uploaded twice. The generic Data-page parse 400s 'staffing' and
   points at the Payroll tab. Off-portfolio rows are dropped at store time; coverage is
   ALL tracked properties, comps included (the Minot sites are budgeted for payroll).
-- **Salaried staff** (Troy 2026-11-02): TWO signals — the ND workbook's mechanics (hourly
-  people have a TYPED Hourly cell, Annual = formula ×40×52; salaried people's Hourly cell
-  is the FORMULA =salary/52/40 — `cellIsFormula`, grids() returns the raw sheet too) OR
-  the POSITION convention `isSalariedPosition` (Regionals, PMs — Property/Area/Dual-Site —
-  and the LMS; assistants and site staff are hourly), cross-referenced against the payroll
-  detail report. payMethod Salary stores the ANNUAL as the rate; salaries keep the exact
-  raise % (no 25¢ MROUND — that's hourly only).
-- **Payroll detail report** ("_PayrollReports_Detail_…", one row per check): dropped WITH
-  the ND workbook or later on its own, `parsePayrollDetail` takes each person's canonical
-  Job Title + Booked-To GL (last check wins; NO dollars read) and `applyStaffingDetail`
-  (shared, pure, `sameName` tolerates middle names/short forms/parenthetical notes) folds
-  them onto the roster — titles replace the terse ones, `StaffingPerson.gl` beats the
-  position mapping in annualWagesByGl, and hourly↔salary flips convert the rate (×/÷2080).
-  `POST /payroll/staffing` now takes `files[]` (≤4); detail-only drops enrich the LATEST
+- **Salaried staff — PER PERSON, never per title** (Troy 2026-11-02; a blanket "PMs are
+  salaried" rule mislabeled the hourly Commons & Plaza PM). Two signals: the ND workbook's
+  mechanics (hourly people have a TYPED Hourly cell, Annual = formula ×40×52; salaried
+  people's Hourly cell is the FORMULA =salary/52/40 — `cellIsFormula`, grids() returns the
+  raw sheet too), refined by the detail report's CHECK HISTORY (`basisFromChecks`): any OT
+  ⇒ hourly; the LAST THREE checks on one plateau (<0.5% spread) ⇒ salaried — recent-only,
+  so a mid-year PROMOTION step still reads as salary. payMethod Salary stores the ANNUAL
+  as the rate; salaries keep the exact raise % (no 25¢ MROUND — that's hourly only).
+- **Payroll detail report** ("_PayrollReports_Detail_…", one row per PROPERTY SLICE of
+  each check — a person's true check gross is the SUM across properties at one check
+  date): dropped WITH the ND workbook or later on its own. `parsePayrollDetail` takes each
+  person's canonical Job Title, Booked-To GL, check-history basis and `lastGross`;
+  `applyStaffingDetail` (shared, pure; `sameName` tolerates middle names/short forms/
+  parenthetical notes) folds them on — titles replace the terse ones, `StaffingPerson.gl`
+  beats the position mapping in annualWagesByGl, hourly↔salary flips convert the rate
+  (×/÷2080), and **a salaried person's CURRENT pay = latest check × 26** (bi-weekly;
+  `PAY_PERIODS_PER_YEAR`) so promotions beat the workbook's stale annual.
+  `POST /payroll/staffing` takes `files[]` (≤4); detail-only drops enrich the LATEST
   snapshot into a new one. Unmatched people (OPEN seats, renamed staff) keep workbook data.
 - **Two wage buckets** (Troy 2026-11-02): office → 6402 ADMIN wages, maintenance (rovers,
   housekeepers, grounds included) → 6404 MAINT wages. Nothing maps to 6405 or 6407 any

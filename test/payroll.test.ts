@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import * as XLSX from 'xlsx';
 import {
   seatMonthly, raisedMonthCount, annualWagesByGl, maskPeople, hiddenAggregates,
-  positionGl, isRmPosition, isSalariedPosition, marginalBurdenPct, homeRegionsOf, newRate, adjustedPct,
+  positionGl, isRmPosition, basisFromChecks, marginalBurdenPct, homeRegionsOf, newRate, adjustedPct,
   sameName, applyStaffingDetail, type StaffingPerson,
 } from '../shared/payroll.js';
 import { parseStaffingReport, parsePayrollDetail, detectUploadKind } from '../src/importers.js';
@@ -75,14 +75,19 @@ describe('pay math', () => {
   });
 });
 
-describe('salaried-vs-hourly by position (payroll detail cross-reference)', () => {
-  it('Monarch convention: Regionals / PMs / LMS salaried, assistants and site staff hourly', () => {
-    for (const t of ['Regional Property Mgr I', 'Property Manager II', 'Area Property Manager', 'Dual Site Property Mgr', 'LMS', 'PM', 'Leasing Marketing Spc II']) {
-      expect(isSalariedPosition(t), t).toBe(true);
-    }
-    for (const t of ['Asst Property Manager', 'APM', 'Leasing Consultant Agent', 'Maintenance Supervisor I', 'Maintenance Tech II', 'Housekeeper', 'Maint Rover I', 'Bookkeeper']) {
-      expect(isSalariedPosition(t), t).toBe(false);
-    }
+describe('salaried-vs-hourly per PERSON (payroll detail cross-reference)', () => {
+  it('basisFromChecks: constant gross + no OT = salary; varying gross or any OT = hourly', () => {
+    expect(basisFromChecks([2500, 2500, 2500, 2500], 0)).toBe('Salary');
+    expect(basisFromChecks([2500, 2500.01, 2499.99, 2500], 0)).toBe('Salary');   // penny noise
+    expect(basisFromChecks([2210.4, 1998.7, 2305.1, 2110.9], 0)).toBe('Hourly'); // hours vary
+    expect(basisFromChecks([2500, 2500, 2500, 2500], 86.4)).toBe('Hourly');      // OT = non-exempt
+    expect(basisFromChecks([2500, 2500], 0)).toBe(null);                          // too few checks
+    // an hourly PM whose checks vary never gets a title-based salary label
+    // (the Commons & Plaza PM case, Troy 2026-11-02)
+    expect(basisFromChecks([1980.2, 2104.5, 1890.1, 2010.7, 1999.3], 0)).toBe('Hourly');
+    // a PROMOTION is a step to a new plateau — the recent checks decide, so a
+    // promoted salaried person stays salaried (Troy 2026-11-02)
+    expect(basisFromChecks([2300, 2300, 2300, 2600, 2600, 2600], 0)).toBe('Salary');
   });
   it('sameName tolerates middle names and short forms', () => {
     expect(sameName('Don Butterfield', 'Donald Butterfield')).toBe(true);
@@ -91,40 +96,63 @@ describe('salaried-vs-hourly by position (payroll detail cross-reference)', () =
     expect(sameName('Travis Washburn(Notice)', 'Travis Washburn')).toBe(true);
     expect(sameName('Jane Smith', 'John Smith')).toBe(false);
   });
-  it('applyStaffingDetail: canonical title, booked-to GL, and the salary flip (hourly × 2080)', () => {
+  it('applyStaffingDetail: canonical title, booked-to GL; the CHECK basis decides flips', () => {
     const people = [
       person({ key: 'pm', name: 'Haylee Otto', position: 'PM', payMethod: 'Hourly', payRate: 30 }),
+      person({ key: 'pm2', name: 'Robert Robison', position: 'PM', payMethod: 'Salary', payRate: 52000 }),
       person({ key: 'tech', name: 'Don Butterfield', position: 'Tech', payMethod: 'Hourly', payRate: 24 }),
     ];
     const r = applyStaffingDetail(people, [
-      { name: 'Haylee Otto', title: 'Area Property Manager', gl: '6402' },
-      { name: 'Donald Butterfield', title: 'Maintenance Tech II', gl: '6404' },
+      { name: 'Haylee Otto', title: 'Area Property Manager', gl: '6402', basis: 'Salary', lastGross: 2600 },
+      { name: 'Brittni Robison', title: 'Property Manager I', gl: '6402', basis: 'Hourly', lastGross: 1990.4 },  // hourly PM!
+      { name: 'Donald Butterfield', title: 'Maintenance Tech II', gl: '6404', basis: null, lastGross: 1944.2 },
     ]);
-    expect(r.matched).toBe(2);
-    expect(r.flippedToSalary).toBe(1);
-    expect(people[0].position).toBe('Area Property Manager');
+    expect(r.matched).toBe(2);   // Robert ≠ Brittni — same last name alone is no match
     expect(people[0].payMethod).toBe('Salary');
-    expect(people[0].payRate).toBe(30 * 2080);
+    expect(people[0].payRate).toBe(2600 * 26);    // the LATEST check × 26, not the stale workbook annual
+    expect(people[0].position).toBe('Area Property Manager');
     expect(people[0].gl).toBe('6402');
-    expect(people[1].payMethod).toBe('Hourly');
-    expect(people[1].position).toBe('Maintenance Tech II');
+    expect(people[1].payMethod).toBe('Salary');   // unmatched — untouched
+    expect(people[2].payMethod).toBe('Hourly');   // basis null keeps the workbook answer
+    // the hourly-PM case directly: Salary in the workbook, Hourly checks
+    const pm = [person({ key: 'x', name: 'Brittni Robison', position: 'PM', payMethod: 'Salary', payRate: 52000 })];
+    applyStaffingDetail(pm, [{ name: 'Brittni Robison', title: 'Property Manager I', gl: '6402', basis: 'Hourly', lastGross: 1990.4 }]);
+    expect(pm[0].payMethod).toBe('Hourly');
+    expect(pm[0].payRate).toBe(25);   // 52000 / 2080
+    // a promoted salaried person: salary refreshes to the new check level
+    const promo = [person({ key: 'y', name: 'Ana Teague', position: 'PM', payMethod: 'Salary', payRate: 59800 })];
+    applyStaffingDetail(promo, [{ name: 'Ana Teague', title: 'Property Manager II', gl: '6402', basis: 'Salary', lastGross: 2600 }]);
+    expect(promo[0].payRate).toBe(67600);   // 2600 × 26
   });
-  it('parsePayrollDetail: one row per person (last check wins), title + GL only', () => {
+  it('parsePayrollDetail: one row per person, basis from the check pattern', () => {
     const aoa = [
       ['Payroll Reports pulled via MIMG.us On 10/30/2026'],
       [],
       [],
-      ['Yardi Code', 'Property Name', 'Prism Id', 'Employee Name', 'Job Title', 'Booked To GL', 'Check Date', 'Gross Wages'],
-      ['CWND', 'Cottonwood', 101, 'Haylee Otto', 'Property Manager I', 6402, 45000, 1],
-      ['CWND', 'Cottonwood', 101, 'Haylee Otto', 'Area Property Manager', 6402, 45014, 1],
-      ['CWND', 'Cottonwood', 102, 'Don Butterfield', 'Maintenance Tech II', 6404, 45014, 1],
+      ['Yardi Code', 'Property Name', 'Prism Id', 'Employee Name', 'Job Title', 'Booked To GL', 'Check Date', 'Gross Wages', 'Overtime'],
+      // each check is SPLIT across properties — the person's true gross per
+      // check is the sum of the property slices at one date (1500 + 1000)
+      ['CWND', 'Cottonwood', 101, 'Haylee Otto', 'Property Manager I', 6402, 45000, 1500, 0],
+      ['RRND', 'River Ridge', 101, 'Haylee Otto', 'Property Manager I', 6402, 45000, 1000, 0],
+      ['CWND', 'Cottonwood', 101, 'Haylee Otto', 'Area Property Manager', 6402, 45014, 1500, 0],
+      ['RRND', 'River Ridge', 101, 'Haylee Otto', 'Area Property Manager', 6402, 45014, 1000, 0],
+      ['CWND', 'Cottonwood', 101, 'Haylee Otto', 'Area Property Manager', 6402, 45028, 1500, 0],
+      ['RRND', 'River Ridge', 101, 'Haylee Otto', 'Area Property Manager', 6402, 45028, 1000, 0],
+      ['CWND', 'Cottonwood', 102, 'Don Butterfield', 'Maintenance Tech II', 6404, 45000, 1890.4, 120.5],
+      ['CWND', 'Cottonwood', 102, 'Don Butterfield', 'Maintenance Tech II', 6404, 45014, 2010.9, 0],
+      ['CWND', 'Cottonwood', 102, 'Don Butterfield', 'Maintenance Tech II', 6404, 45028, 1944.2, 0],
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'Report');
     const d = parsePayrollDetail(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer);
     expect(d).toHaveLength(2);
-    expect(d.find((x) => x.name === 'Haylee Otto')!.title).toBe('Area Property Manager');
-    expect(d.find((x) => x.name === 'Don Butterfield')!.gl).toBe('6404');
+    const haylee = d.find((x) => x.name === 'Haylee Otto')!;
+    expect(haylee.title).toBe('Area Property Manager');
+    expect(haylee.basis).toBe('Salary');
+    expect(haylee.lastGross).toBe(2500);   // latest check = the current salary basis
+    const don = d.find((x) => x.name === 'Don Butterfield')!;
+    expect(don.gl).toBe('6404');
+    expect(don.basis).toBe('Hourly');
   });
 });
 
