@@ -3,7 +3,7 @@
 import * as XLSX from 'xlsx';
 import type { UwSnapshotData } from '../shared/domain.js';
 import type { TemplateData } from '../shared/annual.js';
-import { POSITION_GL, isRmPosition, type StaffingPerson } from '../shared/payroll.js';
+import { POSITION_GL, isRmPosition, isSalariedPosition, type StaffingPerson, type DetailPerson } from '../shared/payroll.js';
 
 type Grid = any[][];
 
@@ -831,8 +831,10 @@ function parseSplitsGrid(all: { name: string; g: Grid; ws: XLSX.WorkSheet }[]): 
       const hourly = hourlyCol >= 0 ? num(row[hourlyCol]) : 0;
       const annual = (annualCol >= 0 ? num(row[annualCol]) : 0) || sumAll;
       // a FORMULA in the Hourly cell means the typed figure is the salary —
-      // the workbook derives the hourly equivalent (=salary/52/40)
-      const salaried = hourlyCol >= 0 && cellIsFormula(ws, r, hourlyCol);
+      // the workbook derives the hourly equivalent (=salary/52/40). Position
+      // convention also decides: PMs / Regionals / LMS are salaried even when
+      // this workbook typed their hourly equivalent (Troy 2026-11-02).
+      const salaried = (hourlyCol >= 0 && cellIsFormula(ws, r, hourlyCol)) || isSalariedPosition(position);
       let key = normHdr(personName);
       const n = (seen.get(key) || 0) + 1;
       seen.set(key, n);
@@ -855,6 +857,35 @@ function parseSplitsGrid(all: { name: string; g: Grid; ws: XLSX.WorkSheet }[]): 
     return { label: `${name}${period ? ` — ${period.trim()}` : ''}`, people, totalRows, allocatedWithoutSplit: [], skippedNoProperty: 0 };
   }
   return null;
+}
+
+/** The payroll DETAIL report ("Payroll Reports pulled via MIMG.us"): one row
+    per employee per check — we only take each person's canonical Job Title
+    and the GL their pay actually books to (last row wins; rows repeat per
+    check date). No dollars are read from it. */
+export function parsePayrollDetail(buf: Buffer): DetailPerson[] {
+  const all = grids(buf);
+  for (const { g } of all) {
+    let hdr = -1;
+    const cols: Record<string, number> = {};
+    for (let r = 0; r < Math.min(g.length, 10); r++) {
+      (g[r] || []).forEach((v, c) => { const k = normHdr(v); if (k && !(k in cols)) cols[k] = c; });
+      if ('employeename' in cols && 'jobtitle' in cols && 'bookedtogl' in cols) { hdr = r; break; }
+      for (const k of Object.keys(cols)) delete cols[k];
+    }
+    if (hdr < 0) continue;
+    const byName = new Map<string, DetailPerson>();
+    for (let r = hdr + 1; r < g.length; r++) {
+      const row = g[r] || [];
+      const name = s(row[cols.employeename]);
+      if (!name) continue;
+      const title = s(row[cols.jobtitle]);
+      const gl = s(row[cols.bookedtogl]).replace(/\D/g, '') || null;
+      byName.set(normHdr(name), { name, title, gl });
+    }
+    if (byName.size) return [...byName.values()];
+  }
+  throw new Error('Payroll detail report: no Employee Name / Job Title / Booked To GL header row found');
 }
 
 /* ========================= SELLER T12 STATEMENT ========================= */

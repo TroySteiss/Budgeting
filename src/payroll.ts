@@ -11,9 +11,9 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import multer from 'multer';
 import { query } from './db.js';
 import { requireAuth, requireAdmin, isAdminUser, canSeeRmPay, normUser } from './auth.js';
-import { parseStaffingReport, parsePayrollModel } from './importers.js';
+import { parseStaffingReport, parsePayrollModel, parsePayrollDetail } from './importers.js';
 import { loadBudget, buildLines, saveLines } from './routes.js';
-import { maskPeople, hiddenAggregates, annualWagesByGl, seatMonthly, homeRegionsOf, type StaffingPerson, type RaiseMap } from '../shared/payroll.js';
+import { maskPeople, hiddenAggregates, annualWagesByGl, seatMonthly, homeRegionsOf, applyStaffingDetail, type StaffingPerson, type RaiseMap } from '../shared/payroll.js';
 import { buildRaiseWorkbook, parseRaiseImport, type RaiseExportRow, type RaiseSheetSpec } from './payroll-xlsx.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -71,25 +71,56 @@ payrollRouter.use(requirePayroll);
 /* ---------------- staffing report (admin) ----------------
    Parses AND stores in ONE step: the roster never rides a parse/apply round
    trip, so no response ever carries rates back out — only counts do. */
-payrollRouter.post('/staffing', requireAdmin, upload.single('file'), h(async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
-  const parsed = parseStaffingReport(req.file.buffer);
-  const known = new Set((await query(`select code from properties`)).rows.map((r: any) => r.code));
-  // keep only people with an allocation at a property this tool budgets
-  const people: StaffingPerson[] = [];
-  for (const p of parsed.people) {
-    const allocations = p.allocations.filter((a) => known.has(a.code));
-    if (allocations.length) people.push({ ...p, allocations });
+payrollRouter.post('/staffing', requireAdmin, upload.array('files', 4), h(async (req, res) => {
+  const files = (req.files as Express.Multer.File[]) || [];
+  if (!files.length) return res.status(400).json({ error: 'No file' });
+  // classify each file: the payroll DETAIL report (canonical titles +
+  // booked-to GL → salaried-vs-hourly per position, Troy 2026-11-02) vs the
+  // roster workbook. Detail alone enriches the LATEST snapshot.
+  let parsed: ReturnType<typeof parseStaffingReport> | null = null;
+  let rosterBuf: Buffer | null = null;
+  const details: { name: string; title: string; gl: string | null }[] = [];
+  const problems: string[] = [];
+  for (const f of files) {
+    try { details.push(...parsePayrollDetail(f.buffer)); continue; } catch { /* not the detail report */ }
+    try { if (!parsed) { parsed = parseStaffingReport(f.buffer); rosterBuf = f.buffer; continue; } } catch (e: any) { problems.push(`${f.originalname}: ${e?.message || e}`); }
   }
-  if (!people.length) return res.status(422).json({ error: 'No roster rows map to this tool’s properties' });
   const user = req.session.username || '';
-  const label = String(req.body?.name || '').trim() || parsed.label || req.file.originalname;
+  const known = new Set((await query(`select code from properties`)).rows.map((r: any) => r.code));
+  let people: StaffingPerson[] = [];
+  let totalRows = 0, skippedNoProperty = 0;
+  let allocatedWithoutSplit: string[] = [];
+  let skippedOffPortfolio = 0;
+  let label = String(req.body?.name || '').trim();
+  if (parsed) {
+    for (const p of parsed.people) {
+      const allocations = p.allocations.filter((a) => known.has(a.code));
+      if (allocations.length) people.push({ ...p, allocations });
+    }
+    if (!people.length) return res.status(422).json({ error: 'No roster rows map to this tool’s properties' });
+    totalRows = parsed.totalRows;
+    skippedNoProperty = parsed.skippedNoProperty;
+    allocatedWithoutSplit = parsed.allocatedWithoutSplit;
+    skippedOffPortfolio = parsed.people.length - people.length;
+    label = label || parsed.label || files[0].originalname;
+  } else if (details.length) {
+    const last = (await query('select id, label, data from staffing_snapshots order by created_at desc limit 1')).rows[0];
+    if (!last) return res.status(400).json({ error: 'Load the payroll workbook first — the detail report only cross-references it' });
+    people = ((last.data?.people as StaffingPerson[]) || []).map((p) => ({ ...p }));
+    totalRows = people.length;
+    label = label || `${last.label} + detail`;
+  } else {
+    return res.status(422).json({ error: problems.join(' · ') || 'No recognizable staffing files' });
+  }
+  const enrich = details.length ? applyStaffingDetail(people, details) : { matched: 0, flippedToSalary: 0 };
+  const salaried = people.filter((p) => p.payMethod === 'Salary').length;
   // uploads row carries COUNTS only; the roster lives in staffing_snapshots
   const perProperty: Record<string, number> = {};
   for (const p of people) for (const a of p.allocations) perProperty[a.code] = (perProperty[a.code] || 0) + 1;
+  const filenames = files.map((f) => f.originalname).join(' + ');
   const uploadId = (await query(
     'insert into uploads(kind, filename, uploaded_by, payload) values($1,$2,$3,$4) returning id',
-    ['staffing', req.file.originalname, user, JSON.stringify({ people: people.length, totalRows: parsed.totalRows, perProperty })]
+    ['staffing', filenames, user, JSON.stringify({ people: people.length, totalRows, perProperty, detailMatched: enrich.matched })]
   )).rows[0].id;
   const row = (await query(
     'insert into staffing_snapshots(upload_id, label, data) values($1,$2,$3) returning id',
@@ -99,19 +130,22 @@ payrollRouter.post('/staffing', requireAdmin, upload.single('file'), h(async (re
   // one drop refreshes BOTH, so nobody uploads the same file twice (Troy
   // 2026-10-30). Budgets keep whichever model they already point at.
   let payrollModelId: number | null = null;
-  try {
-    const pm = parsePayrollModel(req.file.buffer);
-    payrollModelId = (await query(
-      'insert into payroll_models(upload_id, label, data) values($1,$2,$3) returning id',
-      [uploadId, label, JSON.stringify({ properties: pm.properties, unmappedPositions: pm.unmappedPositions, employeeRows: pm.employeeRows })]
-    )).rows[0].id;
-  } catch { /* no Wages-style sheet in this file — staffing only */ }
-  logChange(user, 'upload staffing report', { filename: req.file.originalname, staffingSnapshotId: row.id, people: people.length, payrollModelId });
+  if (rosterBuf) {
+    try {
+      const pm = parsePayrollModel(rosterBuf);
+      payrollModelId = (await query(
+        'insert into payroll_models(upload_id, label, data) values($1,$2,$3) returning id',
+        [uploadId, label, JSON.stringify({ properties: pm.properties, unmappedPositions: pm.unmappedPositions, employeeRows: pm.employeeRows })]
+      )).rows[0].id;
+    } catch { /* no Wages-style sheet in this file — staffing only */ }
+  }
+  logChange(user, 'upload staffing report', { filename: filenames, staffingSnapshotId: row.id, people: people.length, payrollModelId, detailMatched: enrich.matched, salaried });
   res.json({
-    ok: true, id: row.id, label, people: people.length, totalRows: parsed.totalRows,
-    perProperty, skippedOffPortfolio: parsed.people.length - people.length,
-    allocatedWithoutSplit: parsed.allocatedWithoutSplit, skippedNoProperty: parsed.skippedNoProperty,
+    ok: true, id: row.id, label, people: people.length, totalRows,
+    perProperty, skippedOffPortfolio,
+    allocatedWithoutSplit, skippedNoProperty,
     payrollModelId,
+    detailMatched: enrich.matched, flippedToSalary: enrich.flippedToSalary, salaried,
   });
 }));
 

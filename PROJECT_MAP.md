@@ -362,11 +362,21 @@ budgets' wage GLs. Modeled on the per-property sheets of the Payroll Budget Work
   one workbook is never uploaded twice. The generic Data-page parse 400s 'staffing' and
   points at the Payroll tab. Off-portfolio rows are dropped at store time; coverage is
   ALL tracked properties, comps included (the Minot sites are budgeted for payroll).
-- **Salaried staff** (Troy 2026-11-02): the ND workbook marks them by MECHANICS — hourly
-  people have a TYPED Hourly cell (Annual = formula ×40×52); salaried people's Hourly cell
-  is a FORMULA (=salary/52/40). `parseSplitsGrid` reads the formula flag (`cellIsFormula`,
-  grids() now returns the raw sheet too) → payMethod Salary with the ANNUAL as the rate.
-  Salaries keep the exact raise % (no 25¢ MROUND — that's hourly only).
+- **Salaried staff** (Troy 2026-11-02): TWO signals — the ND workbook's mechanics (hourly
+  people have a TYPED Hourly cell, Annual = formula ×40×52; salaried people's Hourly cell
+  is the FORMULA =salary/52/40 — `cellIsFormula`, grids() returns the raw sheet too) OR
+  the POSITION convention `isSalariedPosition` (Regionals, PMs — Property/Area/Dual-Site —
+  and the LMS; assistants and site staff are hourly), cross-referenced against the payroll
+  detail report. payMethod Salary stores the ANNUAL as the rate; salaries keep the exact
+  raise % (no 25¢ MROUND — that's hourly only).
+- **Payroll detail report** ("_PayrollReports_Detail_…", one row per check): dropped WITH
+  the ND workbook or later on its own, `parsePayrollDetail` takes each person's canonical
+  Job Title + Booked-To GL (last check wins; NO dollars read) and `applyStaffingDetail`
+  (shared, pure, `sameName` tolerates middle names/short forms/parenthetical notes) folds
+  them onto the roster — titles replace the terse ones, `StaffingPerson.gl` beats the
+  position mapping in annualWagesByGl, and hourly↔salary flips convert the rate (×/÷2080).
+  `POST /payroll/staffing` now takes `files[]` (≤4); detail-only drops enrich the LATEST
+  snapshot into a new one. Unmatched people (OPEN seats, renamed staff) keep workbook data.
 - **Two wage buckets** (Troy 2026-11-02): office → 6402 ADMIN wages, maintenance (rovers,
   housekeepers, grounds included) → 6404 MAINT wages. Nothing maps to 6405 or 6407 any
   more; apply writes a ZEROED base over all four wage GLs so a stale payroll-model 6407

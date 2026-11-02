@@ -3250,10 +3250,10 @@ function wirePayCycle(el, c) {
 function payAdminHtml(st) {
   return `<div class="card">
     <h2>Staffing data <span class="badge">admin</span></h2>
-    <p class="muted" style="font-size:12px">Drop the file you already have — <b>"North Dakota Payroll - Ongoing"</b> (its Splits/Wages grid is read directly: names, positions, rates, property splits) or the payroll budget workbook (Dictionary of Employees). One drop also refreshes the wage-aggregate model, so nothing is uploaded twice. Stored in one step behind this gate; properties the tool doesn't track are dropped.</p>
+    <p class="muted" style="font-size:12px">Drop the files you already have — <b>"North Dakota Payroll - Ongoing"</b> (names, rates, property splits) and, together or later on its own, the <b>payroll detail report</b> ("_PayrollReports_Detail_…"), which cross-references canonical titles, salaried-vs-hourly per position, and each person's booked-to wage GL. One drop also refreshes the wage-aggregate model. Stored in one step behind this gate; properties the tool doesn't track are dropped.</p>
     <div class="row" style="align-items:center; gap:8px">
-      <input type="file" id="pay-file" accept=".xlsx,.xls,.xlsb,.xlsm">
-      <button class="btn" id="pay-upload">Load staffing report</button>
+      <input type="file" id="pay-file" accept=".xlsx,.xls,.xlsb,.xlsm" multiple>
+      <button class="btn" id="pay-upload">Load staffing files</button>
     </div>
     ${st.snapshots.length ? `<table class="list" style="margin-top:10px"><tr><th>Report</th><th>People</th><th>Loaded</th><th></th></tr>
       ${st.snapshots.map((s) => `<tr><td>${esc(s.label)}</td><td>${s.people}</td><td>${fmtd(s.created_at)} · ${esc(s.uploaded_by || '')}</td>
@@ -3270,12 +3270,14 @@ function payAdminHtml(st) {
 function wirePayAdmin(el, st) {
   const up = el.querySelector('#pay-upload');
   if (up) up.addEventListener('click', async () => {
-    const f = el.querySelector('#pay-file').files[0];
-    if (!f) { S.pay.err = 'Pick a staffing report file first'; render(); return; }
-    const fd = new FormData(); fd.append('file', f);
+    const fs = [...el.querySelector('#pay-file').files];
+    if (!fs.length) { S.pay.err = 'Pick the staffing file(s) first'; render(); return; }
+    const fd = new FormData();
+    for (const f of fs) fd.append('files', f);
     try {
       const r = await api('/payroll/staffing', { method: 'POST', body: fd });
-      S.pay.msg = `Loaded ${r.people} people across ${Object.keys(r.perProperty).length} properties (${r.skippedOffPortfolio} off-portfolio rows skipped)`
+      S.pay.msg = `Loaded ${r.people} people across ${Object.keys(r.perProperty).length} properties (${r.salaried} salaried · ${r.skippedOffPortfolio} off-portfolio rows skipped)`
+        + (r.detailMatched ? ` · detail report matched ${r.detailMatched}${r.flippedToSalary ? `, ${r.flippedToSalary} flipped to salary` : ''}` : '')
         + (r.allocatedWithoutSplit.length ? ` · no split rows for: ${r.allocatedWithoutSplit.slice(0, 5).join(', ')}${r.allocatedWithoutSplit.length > 5 ? '…' : ''}` : '');
       S.pay.st = null; render();
     } catch (e) { S.pay.err = e.message; render(); }

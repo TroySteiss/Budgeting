@@ -20,6 +20,43 @@ export interface StaffingPerson {
       people exactly where the workbook puts them (Troy 2026-10-30). */
   group?: string | null;
   ord?: number;
+  /** Explicit wage GL from the payroll detail report's Booked-To-GL column —
+      beats the position mapping when present. */
+  gl?: string | null;
+}
+
+/** One person out of the payroll DETAIL report (canonical title + the GL
+    their pay actually books to). */
+export interface DetailPerson { name: string; title: string; gl: string | null }
+
+const nameTokens = (n: string): string[] => String(n || '').toLowerCase().replace(/\(.*?\)/g, '').replace(/[^a-z ]/g, '').split(/\s+/).filter(Boolean);
+/** "Don Butterfield" ↔ "Donald Butterfield", middle names ignored: first
+    tokens prefix-match either way, last tokens equal. */
+export function sameName(a: string, b: string): boolean {
+  const x = nameTokens(a), y = nameTokens(b);
+  if (!x.length || !y.length) return false;
+  if (x.join('') === y.join('')) return true;
+  const firstOk = x[0] === y[0] || x[0].startsWith(y[0]) || y[0].startsWith(x[0]);
+  return firstOk && x[x.length - 1] === y[y.length - 1];
+}
+
+/** Fold the detail report onto the roster: canonical title, booked-to GL,
+    and the position-convention pay basis. A person flipping Hourly → Salary
+    carries their annualized rate (hourly × 2080). Pure; returns counts. */
+export function applyStaffingDetail(people: StaffingPerson[], details: DetailPerson[]): { matched: number; flippedToSalary: number } {
+  let matched = 0, flipped = 0;
+  for (const p of people) {
+    const d = details.find((x) => sameName(x.name, p.name));
+    if (!d) continue;
+    matched++;
+    if (d.title) p.position = d.title;
+    if (d.gl) p.gl = d.gl;
+    p.rm = isRmPosition(p.position);
+    const shouldSalary = isSalariedPosition(p.position);
+    if (shouldSalary && p.payMethod === 'Hourly') { p.payMethod = 'Salary'; p.payRate = r2(p.payRate * 2080); flipped++; }
+    else if (!shouldSalary && p.payMethod === 'Salary') { p.payMethod = 'Hourly'; p.payRate = r2(p.payRate / 2080); }
+  }
+  return { matched, flippedToSalary: flipped };
 }
 
 /* Position → Monarch wage GL. TWO BUCKETS (Troy 2026-11-02): office staff →
@@ -39,6 +76,15 @@ export function positionGl(position: string): { gl: string; mapped: boolean } {
 
 /** Regional-Manager-level positions: pay masked for everyone outside RM_PAY_USERS. */
 export const isRmPosition = (position: string): boolean => /regional/i.test(String(position || ''));
+
+/** SALARIED positions by Monarch convention (cross-referenced against the
+    payroll detail report, Troy 2026-11-02): Regionals, PMs (Property / Area /
+    Dual-Site), and the LMS. Assistants and everyone on site are hourly. */
+export function isSalariedPosition(position: string): boolean {
+  const t = String(position || '');
+  if (/asst|assistant/i.test(t)) return false;
+  return /regional|\blms\b|leasing marketing|dual ?site|area prop|property m(anage|g)r|property manager|\bpm\b/i.test(t);
+}
 
 const r2 = (n: number): number => Math.round(n * 100) / 100;
 
@@ -84,8 +130,9 @@ export function annualWagesByGl(people: StaffingPerson[], code: string, raises: 
   for (const p of people) {
     const alloc = (p.allocations || []).find((a) => a.code === code);
     if (!alloc || !alloc.pct) continue;
-    const { gl, mapped } = positionGl(p.position);
-    if (!mapped) unmapped.add(p.position);
+    const fromMap = positionGl(p.position);
+    const gl = p.gl || fromMap.gl;   // the detail report's booked-to GL wins
+    if (!p.gl && !fromMap.mapped) unmapped.add(p.position);
     const cur = seatMonthly(p.payMethod, p.payRate, alloc.pct);
     const next = seatMonthly(p.payMethod, newRate(p.payMethod, p.payRate, Number(raises[p.key]) || 0), alloc.pct);
     wages[gl] = r2((wages[gl] || 0) + cur * (12 - liveMonths) + next * liveMonths);

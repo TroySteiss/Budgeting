@@ -4,9 +4,10 @@ import { describe, it, expect } from 'vitest';
 import * as XLSX from 'xlsx';
 import {
   seatMonthly, raisedMonthCount, annualWagesByGl, maskPeople, hiddenAggregates,
-  positionGl, isRmPosition, marginalBurdenPct, homeRegionsOf, newRate, adjustedPct, type StaffingPerson,
+  positionGl, isRmPosition, isSalariedPosition, marginalBurdenPct, homeRegionsOf, newRate, adjustedPct,
+  sameName, applyStaffingDetail, type StaffingPerson,
 } from '../shared/payroll.js';
-import { parseStaffingReport, detectUploadKind } from '../src/importers.js';
+import { parseStaffingReport, parsePayrollDetail, detectUploadKind } from '../src/importers.js';
 import { buildRaiseWorkbook, parseRaiseImport, type RaiseExportRow } from '../src/payroll-xlsx.js';
 
 const person = (over: Partial<StaffingPerson>): StaffingPerson => ({
@@ -71,6 +72,59 @@ describe('pay math', () => {
     expect(isRmPosition('Property Manager II')).toBe(false);
     expect(positionGl('Underwater Basket Weaver').mapped).toBe(false);
     expect(marginalBurdenPct('Leasing Consultant')).toBeLessThan(marginalBurdenPct('Maintenance Tech I'));
+  });
+});
+
+describe('salaried-vs-hourly by position (payroll detail cross-reference)', () => {
+  it('Monarch convention: Regionals / PMs / LMS salaried, assistants and site staff hourly', () => {
+    for (const t of ['Regional Property Mgr I', 'Property Manager II', 'Area Property Manager', 'Dual Site Property Mgr', 'LMS', 'PM', 'Leasing Marketing Spc II']) {
+      expect(isSalariedPosition(t), t).toBe(true);
+    }
+    for (const t of ['Asst Property Manager', 'APM', 'Leasing Consultant Agent', 'Maintenance Supervisor I', 'Maintenance Tech II', 'Housekeeper', 'Maint Rover I', 'Bookkeeper']) {
+      expect(isSalariedPosition(t), t).toBe(false);
+    }
+  });
+  it('sameName tolerates middle names and short forms', () => {
+    expect(sameName('Don Butterfield', 'Donald Butterfield')).toBe(true);
+    expect(sameName('Sierra Brossart', 'Sierra Dawn Brossart')).toBe(true);
+    expect(sameName('Mike McMorris', 'Mike McMorris')).toBe(true);
+    expect(sameName('Travis Washburn(Notice)', 'Travis Washburn')).toBe(true);
+    expect(sameName('Jane Smith', 'John Smith')).toBe(false);
+  });
+  it('applyStaffingDetail: canonical title, booked-to GL, and the salary flip (hourly × 2080)', () => {
+    const people = [
+      person({ key: 'pm', name: 'Haylee Otto', position: 'PM', payMethod: 'Hourly', payRate: 30 }),
+      person({ key: 'tech', name: 'Don Butterfield', position: 'Tech', payMethod: 'Hourly', payRate: 24 }),
+    ];
+    const r = applyStaffingDetail(people, [
+      { name: 'Haylee Otto', title: 'Area Property Manager', gl: '6402' },
+      { name: 'Donald Butterfield', title: 'Maintenance Tech II', gl: '6404' },
+    ]);
+    expect(r.matched).toBe(2);
+    expect(r.flippedToSalary).toBe(1);
+    expect(people[0].position).toBe('Area Property Manager');
+    expect(people[0].payMethod).toBe('Salary');
+    expect(people[0].payRate).toBe(30 * 2080);
+    expect(people[0].gl).toBe('6402');
+    expect(people[1].payMethod).toBe('Hourly');
+    expect(people[1].position).toBe('Maintenance Tech II');
+  });
+  it('parsePayrollDetail: one row per person (last check wins), title + GL only', () => {
+    const aoa = [
+      ['Payroll Reports pulled via MIMG.us On 10/30/2026'],
+      [],
+      [],
+      ['Yardi Code', 'Property Name', 'Prism Id', 'Employee Name', 'Job Title', 'Booked To GL', 'Check Date', 'Gross Wages'],
+      ['CWND', 'Cottonwood', 101, 'Haylee Otto', 'Property Manager I', 6402, 45000, 1],
+      ['CWND', 'Cottonwood', 101, 'Haylee Otto', 'Area Property Manager', 6402, 45014, 1],
+      ['CWND', 'Cottonwood', 102, 'Don Butterfield', 'Maintenance Tech II', 6404, 45014, 1],
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'Report');
+    const d = parsePayrollDetail(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer);
+    expect(d).toHaveLength(2);
+    expect(d.find((x) => x.name === 'Haylee Otto')!.title).toBe('Area Property Manager');
+    expect(d.find((x) => x.name === 'Don Butterfield')!.gl).toBe('6404');
   });
 });
 
