@@ -13,7 +13,7 @@ import { query } from './db.js';
 import { requireAuth, requireAdmin, isAdminUser, canSeeRmPay, normUser } from './auth.js';
 import { parseStaffingReport, parsePayrollModel, parsePayrollDetail } from './importers.js';
 import { loadBudget, buildLines, saveLines } from './routes.js';
-import { maskPeople, hiddenAggregates, annualWagesByGl, seatMonthly, homeRegionsOf, applyStaffingDetail, type StaffingPerson, type RaiseMap, type DetailPerson } from '../shared/payroll.js';
+import { maskPeople, hiddenAggregates, annualWagesByGl, seatMonthly, homeRegionsOf, applyStaffingDetail, normalizePayBasis, type StaffingPerson, type RaiseMap, type DetailPerson } from '../shared/payroll.js';
 import { buildRaiseWorkbook, parseRaiseImport, type RaiseExportRow, type RaiseSheetSpec } from './payroll-xlsx.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -112,6 +112,7 @@ payrollRouter.post('/staffing', requireAdmin, upload.array('files', 4), h(async 
   } else {
     return res.status(422).json({ error: problems.join(' · ') || 'No recognizable staffing files' });
   }
+  normalizePayBasis(people);   // the title rule holds whatever the source said
   const enrich = details.length ? applyStaffingDetail(people, details) : { matched: 0, flippedToSalary: 0 };
   const salaried = people.filter((p) => p.payMethod === 'Salary').length;
   // uploads row carries COUNTS only; the roster lives in staffing_snapshots
@@ -152,7 +153,11 @@ payrollRouter.post('/staffing', requireAdmin, upload.array('files', 4), h(async 
 /* ---------------- cycles ---------------- */
 async function loadSnapshotPeople(snapshotId: number): Promise<StaffingPerson[]> {
   const r = (await query('select data from staffing_snapshots where id=$1', [snapshotId])).rows[0];
-  return (r?.data?.people as StaffingPerson[]) || [];
+  const people = ((r?.data?.people as StaffingPerson[]) || []).map((p) => ({ ...p }));
+  // enforce the title rule on READ (all PMs are Salary — Troy 2026-11-02), so
+  // rule fixes reach snapshots that are already loaded without any re-upload
+  normalizePayBasis(people);
+  return people;
 }
 const regionOf = (p: { market?: string }): string => String(p.market || '').trim() || 'Other';
 

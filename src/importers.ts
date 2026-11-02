@@ -3,7 +3,7 @@
 import * as XLSX from 'xlsx';
 import type { UwSnapshotData } from '../shared/domain.js';
 import type { TemplateData } from '../shared/annual.js';
-import { POSITION_GL, isRmPosition, basisFromChecks, type StaffingPerson, type DetailPerson } from '../shared/payroll.js';
+import { POSITION_GL, isRmPosition, isSalariedPosition, type StaffingPerson, type DetailPerson } from '../shared/payroll.js';
 
 type Grid = any[][];
 
@@ -830,11 +830,10 @@ function parseSplitsGrid(all: { name: string; g: Grid; ws: XLSX.WorkSheet }[]): 
       totalRows++;
       const hourly = hourlyCol >= 0 ? num(row[hourlyCol]) : 0;
       const annual = (annualCol >= 0 ? num(row[annualCol]) : 0) || sumAll;
-      // a FORMULA in the Hourly cell means the typed figure is the salary —
-      // the workbook derives the hourly equivalent (=salary/52/40). Pay basis
-      // is PER PERSON (a title rule mislabeled an hourly PM — Troy
-      // 2026-11-02); the payroll detail report's check history refines this.
-      const salaried = hourlyCol >= 0 && cellIsFormula(ws, r, hourlyCol);
+      // salaried = the TITLE rule (ALL PMs are Salary — Troy 2026-11-02), or
+      // a FORMULA in the Hourly cell (the workbook derives =salary/52/40 for
+      // salaried staff whose annual was typed)
+      const salaried = isSalariedPosition(position) || (hourlyCol >= 0 && cellIsFormula(ws, r, hourlyCol));
       let key = normHdr(personName);
       const n = (seen.get(key) || 0) + 1;
       seen.set(key, n);
@@ -897,11 +896,7 @@ export function parsePayrollDetail(buf: Buffer): DetailPerson[] {
       return [...byName.values()].map((x): DetailPerson => {
         const ordered = [...x.byDate.entries()].sort((a, b) => a[0] - b[0]).map(([, gTot]) => Math.round(gTot * 100) / 100);
         const lastPositive = [...ordered].reverse().find((gTot) => gTot > 0);
-        return {
-          name: x.name, title: x.title, gl: x.gl,
-          basis: basisFromChecks(ordered, x.ot),
-          lastGross: lastPositive ?? null,
-        };
+        return { name: x.name, title: x.title, gl: x.gl, lastGross: lastPositive ?? null };
       });
     }
   }

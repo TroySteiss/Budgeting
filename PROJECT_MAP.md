@@ -362,14 +362,15 @@ budgets' wage GLs. Modeled on the per-property sheets of the Payroll Budget Work
   one workbook is never uploaded twice. The generic Data-page parse 400s 'staffing' and
   points at the Payroll tab. Off-portfolio rows are dropped at store time; coverage is
   ALL tracked properties, comps included (the Minot sites are budgeted for payroll).
-- **Salaried staff — PER PERSON, never per title** (Troy 2026-11-02; a blanket "PMs are
-  salaried" rule mislabeled the hourly Commons & Plaza PM). Two signals: the ND workbook's
-  mechanics (hourly people have a TYPED Hourly cell, Annual = formula ×40×52; salaried
-  people's Hourly cell is the FORMULA =salary/52/40 — `cellIsFormula`, grids() returns the
-  raw sheet too), refined by the detail report's CHECK HISTORY (`basisFromChecks`): any OT
-  ⇒ hourly; the LAST THREE checks on one plateau (<0.5% spread) ⇒ salaried — recent-only,
-  so a mid-year PROMOTION step still reads as salary. payMethod Salary stores the ANNUAL
-  as the rate; salaries keep the exact raise % (no 25¢ MROUND — that's hourly only).
+- **Salaried staff — the TITLE rule, final (Troy 2026-11-02: "All PMs are Salary")**:
+  `isSalariedPosition` — Regionals, PMs (Property / Area / Dual-Site) and the LMS are
+  salaried; assistants and site staff are hourly. (A check-history heuristic was tried and
+  REVERTED — leave/partial periods make salaried checks vary; don't bring it back.)
+  `normalizePayBasis` enforces the rule when snapshots are READ (loadSnapshotPeople), so a
+  rule fix reaches already-loaded data with NO re-upload — Troy explicitly doesn't want to
+  re-drop the reports for every fix. Hourly↔Salary conversions ×/÷2080 (= the workbook's
+  ×40×52). payMethod Salary stores the ANNUAL as the rate; salaries keep the exact raise %
+  (no 25¢ MROUND — that's hourly only).
 - **Payroll detail report** ("_PayrollReports_Detail_…", one row per PROPERTY SLICE of
   each check — a person's true check gross is the SUM across properties at one check
   date): dropped WITH the ND workbook or later on its own. `parsePayrollDetail` takes each

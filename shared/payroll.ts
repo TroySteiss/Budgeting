@@ -33,7 +33,6 @@ export interface DetailPerson {
   name: string;
   title: string;
   gl: string | null;
-  basis: 'Salary' | 'Hourly' | null;
   /** gross of the MOST RECENT check — a salaried person's current pay
       (promotions included, Troy 2026-11-02): salary = lastGross × 26. */
   lastGross: number | null;
@@ -42,18 +41,6 @@ export interface DetailPerson {
 /** Monarch runs bi-weekly payroll (26 checks/yr — the budget instructions'
     accrual note), so a salaried annual = one check × 26. */
 export const PAY_PERIODS_PER_YEAR = 26;
-
-/** Pay basis from a person's check history IN DATE ORDER. Salaried = no OT
-    and the RECENT checks sit on one plateau — only the last three count, so a
-    mid-year promotion (step up to a new constant) still reads as salary. */
-export function basisFromChecks(grossInDateOrder: number[], overtime: number): 'Salary' | 'Hourly' | null {
-  if (overtime > 0.01) return 'Hourly';
-  const g = grossInDateOrder.filter((x) => x > 0);
-  if (g.length < 3) return null;
-  const last = g.slice(-3);
-  const hi = Math.max(...last), lo = Math.min(...last);
-  return hi > 0 && (hi - lo) / hi < 0.005 ? 'Salary' : 'Hourly';
-}
 
 const nameTokens = (n: string): string[] => String(n || '').toLowerCase().replace(/\(.*?\)/g, '').replace(/[^a-z ]/g, '').split(/\s+/).filter(Boolean);
 /** "Don Butterfield" ↔ "Donald Butterfield", middle names ignored: first
@@ -78,14 +65,14 @@ export function applyStaffingDetail(people: StaffingPerson[], details: DetailPer
     if (d.title) p.position = d.title;
     if (d.gl) p.gl = d.gl;
     p.rm = isRmPosition(p.position);
-    // the CHECK HISTORY decides the basis per person; no signal = keep the
-    // workbook's typed-vs-formula answer. A salaried person's CURRENT pay is
-    // their latest check × 26 (promotions beat the workbook's stale annual).
+    // the TITLE decides the basis (all PMs are Salary — Troy 2026-11-02); a
+    // salaried person's CURRENT pay is their latest check × 26, so promotions
+    // beat the workbook's stale annual
     const latestAnnual = d.lastGross && d.lastGross > 0 ? r2(d.lastGross * PAY_PERIODS_PER_YEAR) : null;
-    if (d.basis === 'Salary') {
+    if (isSalariedPosition(p.position)) {
       if (p.payMethod === 'Hourly') { p.payMethod = 'Salary'; p.payRate = latestAnnual ?? r2(p.payRate * 2080); flipped++; }
       else if (latestAnnual) p.payRate = latestAnnual;
-    } else if (d.basis === 'Hourly' && p.payMethod === 'Salary') {
+    } else if (p.payMethod === 'Salary') {
       p.payMethod = 'Hourly'; p.payRate = r2(p.payRate / 2080);
     }
   }
@@ -110,10 +97,29 @@ export function positionGl(position: string): { gl: string; mapped: boolean } {
 /** Regional-Manager-level positions: pay masked for everyone outside RM_PAY_USERS. */
 export const isRmPosition = (position: string): boolean => /regional/i.test(String(position || ''));
 
-/* NOTE: pay basis is PER PERSON, never per title — a blanket "PMs are
-   salaried" rule mislabeled the hourly Commons & Plaza PM (Troy 2026-11-02).
-   The workbook's typed-vs-formula mechanics and the detail report's check
-   history (below) are the two signals. */
+/** THE pay-basis rule (Troy 2026-11-02, final): ALL PMs are Salary — as are
+    Regionals, Area/Dual-Site managers and the LMS; assistants and site staff
+    are hourly. The title decides; check-history guessing was wrong (leave and
+    partial periods make even salaried checks vary). */
+export function isSalariedPosition(position: string): boolean {
+  const t = String(position || '');
+  if (/asst|assistant/i.test(t)) return false;
+  return /regional|\blms\b|leasing marketing|dual ?site|area prop|property m(anage|g)r|property manager|\bpm\b/i.test(t);
+}
+
+/** Enforce the title rule on a roster IN PLACE — applied when snapshots are
+    READ, so a fix never needs the reports re-uploaded (Troy 2026-11-02).
+    Hourly→Salary annualizes ×2080 (exactly the workbook's ×40×52 formula);
+    Salary→Hourly divides back. Idempotent. */
+export function normalizePayBasis(people: StaffingPerson[]): number {
+  let changed = 0;
+  for (const p of people) {
+    const shouldSalary = isSalariedPosition(p.position);
+    if (shouldSalary && p.payMethod === 'Hourly') { p.payMethod = 'Salary'; p.payRate = r2(p.payRate * 2080); changed++; }
+    else if (!shouldSalary && p.payMethod === 'Salary') { p.payMethod = 'Hourly'; p.payRate = r2(p.payRate / 2080); changed++; }
+  }
+  return changed;
+}
 
 const r2 = (n: number): number => Math.round(n * 100) / 100;
 
