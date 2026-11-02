@@ -629,7 +629,11 @@ payrollRouter.post('/iterations/:id/apply', requireAdmin, h(async (req, res) => 
     )).rows[0];
     if (!budget) { skipped.push({ code, reason: `no ${year} budget` }); continue; }
     const { wages, unmappedPositions } = annualWagesByGl(people, code, raises, it.effective, year);
-    const inputs = { ...(budget.inputs || {}), wages: { ...((budget.inputs || {}).wages || {}), ...wages } };
+    // the roster is AUTHORITATIVE for every wage GL: zero the ones it doesn't
+    // produce (6405 always, 6407 since rovers are maint — Troy 2026-11-02) so
+    // a stale payroll-model figure can't double-count underneath
+    const base: Record<string, number> = { '6402': 0, '6404': 0, '6405': 0, '6407': 0 };
+    const inputs = { ...(budget.inputs || {}), wages: { ...((budget.inputs || {}).wages || {}), ...base, ...wages } };
     await query('update budgets set inputs=$2, updated_at=now() where id=$1', [budget.id, JSON.stringify(inputs)]);
     const lb = (await loadBudget(budget.id))!;
     const built = buildLines(lb, lb.budget.inputs, lb.lines);

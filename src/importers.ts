@@ -7,12 +7,23 @@ import { POSITION_GL, isRmPosition, type StaffingPerson } from '../shared/payrol
 
 type Grid = any[][];
 
-function grids(buf: Buffer): { name: string; g: Grid }[] {
+function grids(buf: Buffer): { name: string; g: Grid; ws: XLSX.WorkSheet }[] {
   const wb = XLSX.read(buf, { type: 'buffer' });
   return wb.SheetNames.map((name) => ({
     name,
     g: XLSX.utils.sheet_to_json<any[]>(wb.Sheets[name], { header: 1, raw: true, defval: null }) as Grid,
+    ws: wb.Sheets[name],
   }));
+}
+
+/** Is a grid cell backed by a FORMULA on the underlying sheet? The ND payroll
+    workbook types the Hourly rate for hourly staff (Annual is the formula) and
+    derives it (=salary/52/40) for salaried staff — the formula side tells the
+    pay basis (Troy 2026-11-02: salaried individuals must be recognized). */
+function cellIsFormula(ws: XLSX.WorkSheet, gridRow: number, gridCol: number): boolean {
+  const off = XLSX.utils.decode_range(ws['!ref'] || 'A1').s;
+  const cell = ws[XLSX.utils.encode_cell({ r: gridRow + off.r, c: gridCol + off.c })];
+  return !!(cell && (cell as any).f);
 }
 
 const s = (v: any): string => (v == null ? '' : String(v).trim());
@@ -768,12 +779,12 @@ function parseDictionaryRoster(all: { name: string; g: Grid }[]): StaffingParsed
     Hourly / Annual columns; the two columns left of the first money column are
     position | name. Allocation %s derive from each row's per-property $ share.
     The CURRENT-year "Splits" sheet is preferred over the prior-year "Wages". */
-function parseSplitsGrid(all: { name: string; g: Grid }[]): StaffingParsed | null {
+function parseSplitsGrid(all: { name: string; g: Grid; ws: XLSX.WorkSheet }[]): StaffingParsed | null {
   const order = [...all].sort((a, b) => {
     const rank = (n: string) => (/split/i.test(n) ? 0 : /wages/i.test(n) ? 1 : 2);
     return rank(a.name) - rank(b.name);
   });
-  for (const { name, g } of order) {
+  for (const { name, g, ws } of order) {
     let header = -1;
     let codeCols: { c: number; code: string }[] = [];
     let mimgCol = -1, hourlyCol = -1, annualCol = -1;
@@ -819,14 +830,17 @@ function parseSplitsGrid(all: { name: string; g: Grid }[]): StaffingParsed | nul
       totalRows++;
       const hourly = hourlyCol >= 0 ? num(row[hourlyCol]) : 0;
       const annual = (annualCol >= 0 ? num(row[annualCol]) : 0) || sumAll;
+      // a FORMULA in the Hourly cell means the typed figure is the salary —
+      // the workbook derives the hourly equivalent (=salary/52/40)
+      const salaried = hourlyCol >= 0 && cellIsFormula(ws, r, hourlyCol);
       let key = normHdr(personName);
       const n = (seen.get(key) || 0) + 1;
       seen.set(key, n);
       if (n > 1) key = `${key}-${n}`;   // two people sharing a name stay distinct rows
       people.push({
         key, name: personName, position,
-        payMethod: hourly > 0 ? 'Hourly' : 'Salary',
-        payRate: hourly > 0 ? hourly : annual,
+        payMethod: salaried || hourly <= 0 ? 'Salary' : 'Hourly',
+        payRate: salaried || hourly <= 0 ? annual : hourly,
         monthlyBenefits: 0,
         startDate: null,
         status: 'FULL',

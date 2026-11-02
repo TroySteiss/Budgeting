@@ -52,16 +52,21 @@ describe('pay math', () => {
       return cur * 3 + nxt * 9;
     };
     expect(wages['6402']).toBeCloseTo(annual(18, 1), 1);
-    expect(wages['6404']).toBeCloseTo(annual(20, 1), 1);
-    expect(wages['6407']).toBeCloseTo(annual(24, 0.4), 1);
+    // two buckets (Troy 2026-11-02): the rover is MAINT — joins the tech in 6404
+    expect(wages['6404']).toBeCloseTo(annual(20, 1) + annual(24, 0.4), 1);
+    expect(wages['6407']).toBeUndefined();
     // nothing lands in 6405 (landscaping is contracted work, not payroll)
     expect(wages['6405']).toBeUndefined();
     // no raise entry = 0%
     const flat = annualWagesByGl(people, 'spnd', {}, '2027-04', 2027).wages;
-    expect(flat['6404']).toBeCloseTo(seatMonthly('Hourly', 20, 1) * 12, 1);
+    expect(flat['6404']).toBeCloseTo(seatMonthly('Hourly', 20, 1) * 12 + seatMonthly('Hourly', 24, 0.4) * 12, 1);
   });
-  it('positionGl / isRmPosition / burden split', () => {
+  it('positionGl: two buckets — office → 6402, maintenance (rovers included) → 6404', () => {
     expect(positionGl('Regional Property Mgr I').gl).toBe('6402');
+    expect(positionGl('Bookkeeper').gl).toBe('6402');
+    expect(positionGl('Maint Rover I').gl).toBe('6404');
+    expect(positionGl('Maintenance Rover').gl).toBe('6404');
+    expect(positionGl('Housekeeper').gl).toBe('6404');
     expect(isRmPosition('Regional Property Mgr I')).toBe(true);
     expect(isRmPosition('Property Manager II')).toBe(false);
     expect(positionGl('Underwater Basket Weaver').mapped).toBe(false);
@@ -201,7 +206,11 @@ describe('staffing report parser (synthetic workbook)', () => {
       [null, null, 'Count', 'Check row', null, 1, 1, 1],
     ];
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(splits), 'Splits');
+    const ws = XLSX.utils.aoa_to_sheet(splits);
+    // the workbook marks SALARIED people by deriving their hourly cell from a
+    // typed salary (=salary/52/40) — Robin is salaried, the others are hourly
+    ws['I5'] = { t: 'n', v: 24.04, f: '50000/52/40' };
+    XLSX.utils.book_append_sheet(wb, ws, 'Splits');
     const p = parseStaffingReport(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer);
     expect(p.people).toHaveLength(3);
     const robin = p.people.find((x) => x.name === 'Robin Sample')!;
@@ -210,8 +219,11 @@ describe('staffing report parser (synthetic workbook)', () => {
     expect(p.people.find((x) => x.name === 'Max Mock')!.group).toBe('Minot Support Staff');
     expect((robin.ord ?? 99) < (p.people.find((x) => x.name === 'Max Mock')!.ord ?? 0)).toBe(true);
     expect(robin.rm).toBe(true);
-    expect(robin.payMethod).toBe('Hourly');
-    expect(robin.payRate).toBe(45);
+    expect(robin.payMethod).toBe('Salary');
+    expect(robin.payRate).toBe(50000);          // the typed salary, not the derived hourly
+    const max = p.people.find((x) => x.name === 'Max Mock')!;
+    expect(max.payMethod).toBe('Hourly');       // typed hourly cell stays hourly
+    expect(max.payRate).toBe(22);
     // allocation %s = per-property $ share of the row total (MIMG included in the base)
     expect(robin.allocations).toEqual([{ code: 'clnd', pct: 0.4 }, { code: 'spnd', pct: 0.3 }, { code: 'wynd', pct: 0.2 }]);
     const lee = p.people.find((x) => x.name === 'Lee Demo')!;

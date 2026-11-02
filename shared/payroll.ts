@@ -22,14 +22,15 @@ export interface StaffingPerson {
   ord?: number;
 }
 
-/* Position → Monarch wage GL. Anything unrecognized lands in 6404.
-   NOTHING maps to 6405 landscaping (Troy 2026-08-21): housekeepers and
-   grounds crews are MAINTENANCE wages — landscaping is contracted work,
-   not payroll. */
+/* Position → Monarch wage GL. TWO BUCKETS (Troy 2026-11-02): office staff →
+   6402 ADMIN GROSS WAGES, maintenance staff (rovers, housekeepers and grounds
+   crews included) → 6404 MAINT GROSS WAGES. Nothing maps to 6405 landscaping
+   (Troy 2026-08-21: landscaping is contracted work, not payroll) and nothing
+   maps to 6407 any more — rovers are maintenance. Unrecognized titles land in
+   6404 and are reported in unmappedPositions. */
 export const POSITION_GL: [RegExp, string][] = [
   [/regional|lms|arm|bookkeep|office|leasing|apm|\bpm\b|manager|market/i, '6402'],
-  [/rover/i, '6407'],
-  [/supervisor|tech|housekeep|maint|janitor|porter|ground|landscap/i, '6404'],
+  [/rover|supervisor|tech|housekeep|maint|janitor|porter|ground|landscap/i, '6404'],
 ];
 export function positionGl(position: string): { gl: string; mapped: boolean } {
   for (const [re, gl] of POSITION_GL) if (re.test(position)) return { gl, mapped: true };

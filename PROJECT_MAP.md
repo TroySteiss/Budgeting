@@ -362,6 +362,15 @@ budgets' wage GLs. Modeled on the per-property sheets of the Payroll Budget Work
   one workbook is never uploaded twice. The generic Data-page parse 400s 'staffing' and
   points at the Payroll tab. Off-portfolio rows are dropped at store time; coverage is
   ALL tracked properties, comps included (the Minot sites are budgeted for payroll).
+- **Salaried staff** (Troy 2026-11-02): the ND workbook marks them by MECHANICS — hourly
+  people have a TYPED Hourly cell (Annual = formula ×40×52); salaried people's Hourly cell
+  is a FORMULA (=salary/52/40). `parseSplitsGrid` reads the formula flag (`cellIsFormula`,
+  grids() now returns the raw sheet too) → payMethod Salary with the ANNUAL as the rate.
+  Salaries keep the exact raise % (no 25¢ MROUND — that's hourly only).
+- **Two wage buckets** (Troy 2026-11-02): office → 6402 ADMIN wages, maintenance (rovers,
+  housekeepers, grounds included) → 6404 MAINT wages. Nothing maps to 6405 or 6407 any
+  more; apply writes a ZEROED base over all four wage GLs so a stale payroll-model 6407
+  can't double-count underneath.
 - **Math** in `shared/payroll.ts` (pure, test/payroll.test.ts, synthetic fixtures ONLY):
   `POSITION_GL` (moved from importers — one source), `seatMonthly` (2080 hrs/yr),
   `raisedMonthCount` (proration from the effective month), `annualWagesByGl` → the
