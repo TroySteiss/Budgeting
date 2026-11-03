@@ -430,3 +430,38 @@ describe('detectUploadKind — Data page auto-detect', () => {
     });
   }
 });
+
+describe('payroll flow (Troy 2026-11-03): roster wages carry their raises; burden from a mix of historicals', () => {
+  const actual = synthetic();
+  const inputs = defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10);
+  const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
+
+  it('roster wages get NO second March step — the Pay-rates apply already prorated each raise', () => {
+    const model = generateAnnualLines(coaList, inputs, { ...src, payrollWages: { '6402': 30000 } });
+    expect(sum(L(model, '6402').months)).toBeGreaterThan(30000);             // the old model: + March raise
+    const roster = generateAnnualLines(coaList, { ...inputs, wagesFromRoster: true }, { ...src, payrollWages: { '6402': 30000 } });
+    const w = L(roster, '6402');
+    expect(sum(w.months)).toBeCloseTo(30000, 0);
+    expect(w.months.every((v) => Math.abs(v - 2500) < 0.01)).toBe(true);
+    expect((w.driver as any).roster).toBe(true);
+    // burden still follows the (un-stepped) wages
+    expect(sum(L(roster, '6418').months)).toBeCloseTo(0.1 * 30000, 0);
+  });
+
+  it('burden basis: T12 actual ratio (default), CY budget ratio, or the average of the two', () => {
+    const budget: Record<string, Months> = { '6402': cal(Array(12).fill(2000)), '6418': cal(Array(12).fill(300)) };   // 15% of wages in the CY budget
+    const wages = { '6402': 30000 };
+    const t12 = generateAnnualLines(coaList, { ...inputs, wagesFromRoster: true }, { ...src, budget, payrollWages: wages });
+    const bud = generateAnnualLines(coaList, { ...inputs, wagesFromRoster: true, burdenBasis: 'budget' }, { ...src, budget, payrollWages: wages });
+    const mix = generateAnnualLines(coaList, { ...inputs, wagesFromRoster: true, burdenBasis: 'mix' }, { ...src, budget, payrollWages: wages });
+    const d = (ls: BudgetLine[]) => L(ls, '6418').driver as any;
+    expect(d(t12).basis).toBe('t12'); expect(d(t12).ratio).toBeCloseTo(0.10, 5);
+    expect(d(bud).basis).toBe('budget'); expect(d(bud).ratio).toBeCloseTo(0.15, 5);
+    expect(d(mix).basis).toBe('mix'); expect(d(mix).ratio).toBeCloseTo(0.125, 5);
+    expect(d(mix).t12Ratio).toBeCloseTo(0.10, 5); expect(d(mix).budgetRatio).toBeCloseTo(0.15, 5);
+    expect(sum(L(mix, '6418').months)).toBeCloseTo(0.125 * 30000, 0);
+    // a basis with no history on that side falls back to the other
+    const budOnly = generateAnnualLines(coaList, { ...inputs, wagesFromRoster: true, burdenBasis: 'budget' }, { ...src, payrollWages: wages });
+    expect(d(budOnly).ratio).toBeCloseTo(0.10, 5);
+  });
+});

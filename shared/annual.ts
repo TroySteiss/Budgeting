@@ -583,20 +583,25 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   for (const gl of TEMPLATE_ZERO_GLS) if (coaByCode.has(gl) && !isSet(gl)) mk(gl, zero12(), { method: 'zero' });
 
   /* ---- payroll (Troy): wages FLAT by month — the payroll model's annual (March
-     raise step) when a model is linked, else own trailing-12 × (1 + raise);
-     every other payroll line = its PRIOR-YEAR % of wages × the budgeted wages,
-     flat — so a change to wages (model, raise, or a hand-typed wage line)
-     moves taxes / benefits / bonus / OT with it ---- */
+     raise step) when a model is linked, else own trailing-12 × (1 + raise).
+     Roster wages (the Pay-rates apply) already carry each person's raise
+     prorated from its effective month, so they get NO second step.
+     Every other payroll line = a historical % of wages × the budgeted wages,
+     flat — the trailing-12 actual ratio, the CY budget ratio, or the average
+     of the two (inputs.burdenBasis; Troy 2026-11-03 "a % of wages pulled from
+     a mix of historicals") — so a change to wages (model, raise, or a
+     hand-typed wage line) moves taxes / benefits / bonus / OT with it ---- */
   const wages = src.payrollWages;      // model wages, with hand-overridden wage lines folded in (overriddenWages)
+  const rosterWages = inputs.wagesFromRoster === true;
   const raise = 1 + (inputs.payrollRaisePct ?? 0.035);
   const iMarch = (3 - startMonth + 12) % 12;
   let wagesTotal = 0;
   if (wages) {
     for (const [gl, annual] of Object.entries(wages)) {
       if (!annual || !coaByCode.has(gl)) continue;
-      const months = spreadMonthly(r2(annual), CURVES.flat).map((v, i) => (i >= iMarch ? r2(v * raise) : v)) as Months;
+      const months = spreadMonthly(r2(annual), CURVES.flat).map((v, i) => (!rosterWages && i >= iMarch ? r2(v * raise) : v)) as Months;
       wagesTotal = r2(wagesTotal + sum(months));
-      mk(gl, months, { method: 'payrollModel' } as any);
+      mk(gl, months, { method: 'payrollModel', ...(rosterWages ? { roster: true } : {}) } as any);
     }
   }
   for (const gl of WAGE_GLS) {
@@ -605,15 +610,27 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     if (!a || isSet(gl)) continue;
     if (baseline(a, 'flat', bl.glGrowth?.[gl] ?? (raise - 1))) wagesTotal = r2(wagesTotal + sum(lines.get(gl)!.months));
   }
-  const baseWages = WAGE_GLS.reduce((a, g) => a + Math.abs(baseTotal(g)), 0);
+  const burdenBasis: 't12' | 'budget' | 'mix' = inputs.burdenBasis || 't12';
+  const ratioIn = (cal: Record<string, Months> | null | undefined, gl: string): number | null => {
+    if (!cal) return null;
+    const w = WAGE_GLS.reduce((acc, g) => acc + Math.abs(sum(cal[g] || zero12())), 0);
+    const own = sum(cal[gl] || zero12());
+    return w > 0 && own ? own / w : null;
+  };
+  const r5 = (v: number) => Math.round(v * 100000) / 100000;
   for (const a of detail) {
     if (a.pcode !== '10' || WAGE_GLS.includes(a.code) || isSet(a.code)) continue;
-    const own = baseTotal(a.code);
-    if (!own) continue;
-    if (baseWages > 0 && wagesTotal > 0) {
-      const ratio = own / baseWages;
-      mk(a.code, spreadMonthly(r2(ratio * wagesTotal), CURVES.flat), { method: 'burdenRatio', ratio: Math.round(ratio * 100000) / 100000 } as any);
-    } else baseline(a, 'flat', bl.glGrowth?.[a.code] ?? (raise - 1));
+    const t12Ratio = ratioIn(src.actual, a.code);
+    const budgetRatio = ratioIn(src.budget, a.code);
+    const ratio = burdenBasis === 'budget' ? (budgetRatio ?? t12Ratio)
+      : burdenBasis === 'mix' ? (t12Ratio != null && budgetRatio != null ? (t12Ratio + budgetRatio) / 2 : (t12Ratio ?? budgetRatio))
+      : (t12Ratio ?? budgetRatio);
+    if (ratio != null && wagesTotal > 0) {
+      mk(a.code, spreadMonthly(r2(ratio * wagesTotal), CURVES.flat), {
+        method: 'burdenRatio', ratio: r5(ratio), basis: burdenBasis,
+        ...(t12Ratio != null ? { t12Ratio: r5(t12Ratio) } : {}), ...(budgetRatio != null ? { budgetRatio: r5(budgetRatio) } : {}),
+      } as any);
+    } else if (baseTotal(a.code)) baseline(a, 'flat', bl.glGrowth?.[a.code] ?? (raise - 1));
   }
 
   /* ---- everything else with history: PY same month × factor (template default) ---- */

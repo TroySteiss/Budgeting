@@ -94,6 +94,13 @@ export interface BudgetInputs {
   /** annual payroll raise applied to model wages from MARCH onward within the
       ownership year (Monarch raises hit in March). Default 3.5%. */
   payrollRaisePct?: number;
+  /** wages came from the Pay-rates roster apply: each person's raise is already
+      prorated from its effective month, so the engine adds NO March step. */
+  wagesFromRoster?: boolean;
+  /** which historical % of wages sizes every non-wage payroll line (taxes,
+      benefits, bonus, OT …): the trailing-12 actual ratio (default), the
+      current-year budget ratio, or the average of the two. */
+  burdenBasis?: 't12' | 'budget' | 'mix';
   year: number;
   units: number;
   capital: number;            // equity, for CoC

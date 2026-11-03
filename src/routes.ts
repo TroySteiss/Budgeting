@@ -1427,6 +1427,10 @@ function reviewArgs(lb: LoadedBudget, prop: any, compName: string): ReviewArgs {
     coa: lb.coa, lines: effectiveLines(lb), inputs: lb.budget.inputs, uw: lb.annual ? null : lb.uw,
     compWeights: lb.annual ? null : (lb.comps?.byGl || null), compUnits: lb.annual ? null : (lb.comps?.units || null), compName,
     annual: lb.annual, refs: lb.annual ? lb.refs : [], refLabel: lb.refLabel, template: lb.template,
+    payrollHist: lb.annual ? {
+      t12: lb.actualCal, t12Label: lb.refs.find((r) => r.key === 'actual')?.label || 'T12 actuals',
+      budget: lb.budgetCal, budgetLabel: lb.refs.find((r) => r.key === 'budget')?.label || 'CY budget',
+    } : null,
   };
 }
 

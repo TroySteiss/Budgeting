@@ -49,8 +49,9 @@ function drvMetaBase(l) {
     case 'vacancy': return { cls: 'drv-rr', tag: '%GPR', label: '% of GPR' };
     case 'catShare': return { cls: 'drv-uw', tag: 'UW', label: `UW category ${l.driver.pcode} share` };
     case 'perUnitComp': return { cls: 'drv-comp', tag: 'MINOT', label: `Minot $${l.driver.perUnit}/unit × units` };
-    case 'payrollModel': return { cls: 'drv-pay', tag: 'PAY', label: 'Payroll model wages' };
-    case 'burdenRatio': return { cls: 'drv-pay', tag: 'RATIO', label: `${((l.driver.ratio || 0) * 100).toFixed(1)}% of wages (${S.bv && S.bv.annual ? 'prior-year ratio × budgeted wages — moves with wages' : 'Minot ratio'})` };
+    case 'payrollModel': return { cls: 'drv-pay', tag: 'PAY', label: l.driver.roster ? 'Pay-rates roster wages (raises prorated — no March step)' : 'Payroll model wages' };
+    case 'burdenRatio': { const bs = l.driver.basis === 'budget' ? 'CY budget ratio' : l.driver.basis === 'mix' ? 'avg of T12 actual & CY budget ratios' : 'T12 actual ratio';
+      return { cls: 'drv-pay', tag: 'RATIO', label: `${((l.driver.ratio || 0) * 100).toFixed(1)}% of wages (${S.bv && S.bv.annual ? `${bs} × budgeted wages — moves with wages` : 'Minot ratio'})` }; }
     case 'mgmtPct': return { cls: 'drv-fee', tag: '%INC', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of income` };
     case 'interest': return { cls: 'drv-int', tag: 'INT', label: 'Interest (loan × rate × days)' };
     case 'sellerUtil': return { cls: 'drv-t12', tag: 'SLR', label: 'Seller statement level (× growth)' };
@@ -1338,6 +1339,7 @@ function paramFor(gl, line, inp) {
     return { label: 'growth %', value: pct((inp.utilities || {}).growthPct ?? 0.03), patch: (v) => ({ utilities: { ...(inp.utilities || {}), growthPct: v / 100 } }) };
   }
   if (m === 'payrollModel') {
+    if (inp.wagesFromRoster) return null;   // roster wages carry their own raises
     return { label: 'March raise %', value: pct(inp.payrollRaisePct ?? 0.035), patch: (v) => ({ payrollRaisePct: v / 100 }) };
   }
   if (m === 'recovery') {
@@ -3561,7 +3563,8 @@ function annualInputsHtml(inp) {
       <div class="fld"><label>Units</label><input id="in-units" value="${inp.units ?? 0}" style="width:70px"></div>
       <div class="fld"><label>Capital $ (CoC)</label><input id="in-cap" value="${inp.capital ?? 0}" style="width:110px"></div>
       ${tpl && tpl.debt && tpl.debt.interest.some((v) => v) ? `<span class="muted" style="align-self:center; font-size:11.5px">Interest &amp; principal come from the Yardi amortization schedule (${esc((tpl.debt.loans || []).join(', '))}: interest ${money(tpl.debt.interest.reduce((a, b) => a + b, 0))}/yr).</span>` : `<div class="fld"><label>Loan $ (no schedule on file)</label><input id="in-loan" value="${inp.loan ?? 0}" style="width:110px"></div><div class="fld"><label>Rate %</label><input id="in-rate" value="${((inp.rate || 0) * 100).toFixed(2)}" style="width:70px"></div>`}
-      <div class="fld"><label>Payroll raise % — wages flat × (1 + raise); model wages step up in March; taxes / benefits / bonus follow at the prior-year % of wages</label><input id="in-raise" value="${((inp.payrollRaisePct ?? 0.035) * 100).toFixed(1)}" style="width:70px"></div>
+      <div class="fld"><label>Payroll raise % — wages flat × (1 + raise); model wages step up in March (roster wages from the Pay-rates apply carry their own raises${inp.wagesFromRoster ? ' — on this budget' : ''})</label><input id="in-raise" value="${((inp.payrollRaisePct ?? 0.035) * 100).toFixed(1)}" style="width:70px"></div>
+      <div class="fld"><label>Other payroll lines (taxes, benefits, bonus, OT …) = % of wages from</label><select id="in-burden"><option value="t12" ${(inp.burdenBasis || 't12') === 't12' ? 'selected' : ''}>T12 actual ratio</option><option value="budget" ${inp.burdenBasis === 'budget' ? 'selected' : ''}>CY budget ratio</option><option value="mix" ${inp.burdenBasis === 'mix' ? 'selected' : ''}>Average of T12 actual &amp; CY budget</option></select></div>
     </div>
     <h3>Ties to the reference (${esc(S.bv.refLabel || 'T12')}) — off by default</h3>
     <div class="row">
@@ -3603,6 +3606,7 @@ async function applyAnnualInputs(b, el) {
     vacancyPct: parse12(q('#in-vac').value, cur.vacancyPct || Array(12).fill(0.05)),
     mgmtPct: num('#in-mgmt') / 100,
     payrollRaisePct: num('#in-raise') / 100,
+    burdenBasis: q('#in-burden') ? q('#in-burden').value : (cur.burdenBasis || 't12'),
     baseline: { ...(cur.baseline || {}), source: q('#in-blsrc').value, shape: q('#in-blshape').value, mround: num('#in-blmround'), growthPct, useUtilForecast: q('#in-blutil').checked },
     turnFees, corpRates,
     tieIncome: q('#in-tieinc').checked,

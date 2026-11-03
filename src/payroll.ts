@@ -678,7 +678,9 @@ payrollRouter.post('/iterations/:id/apply', requireAdmin, h(async (req, res) => 
     // produce (6405 always, 6407 since rovers are maint — Troy 2026-11-02) so
     // a stale payroll-model figure can't double-count underneath
     const base: Record<string, number> = { '6402': 0, '6404': 0, '6405': 0, '6407': 0 };
-    const inputs = { ...(budget.inputs || {}), wages: { ...((budget.inputs || {}).wages || {}), ...base, ...wages } };
+    // roster wages already carry each raise prorated from its effective month —
+    // the engine must not add its March step on top (it did: a second 3.5%)
+    const inputs = { ...(budget.inputs || {}), wages: { ...((budget.inputs || {}).wages || {}), ...base, ...wages }, wagesFromRoster: true };
     await query('update budgets set inputs=$2, updated_at=now() where id=$1', [budget.id, JSON.stringify(inputs)]);
     const lb = (await loadBudget(budget.id))!;
     const built = buildLines(lb, lb.budget.inputs, lb.lines);

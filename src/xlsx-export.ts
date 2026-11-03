@@ -8,7 +8,7 @@
 import ExcelJS from 'exceljs';
 import {
   CoaAccount, BudgetLine, UwSnapshotData, BudgetInputs, PCODES, PCODE_LABELS,
-  sum, zero12, r2, Months, monthLabels,
+  sum, zero12, r2, Months, monthLabels, WAGE_GLS,
 } from '../shared/domain.js';
 
 /* Budget-sheet columns (1-based): A code, B name, C notes, D driver,
@@ -143,7 +143,18 @@ export interface ReviewArgs {
       trailing-12 actuals, the current-year budget and 4-months-annualized,
       plus the Yardi template facts. */
   annual?: boolean; refs?: RefCol[]; refLabel?: string; template?: any;
+  /** ANNUAL: the payroll historicals laid out on the Payroll sheet — the
+      trailing-12 actual and CY budget calendars by GL (Jan..Dec). */
+  payrollHist?: { t12: Record<string, Months> | null; t12Label: string; budget: Record<string, Months> | null; budgetLabel: string } | null;
 }
+
+/** Where a property's Payroll sheet keeps its rows (the portfolio's Payroll
+    Summary references them). */
+export interface PayrollSheetInfo {
+  name: string; firstRow: number; lastRow: number; totalRow: number; wagesRow: number | null;
+  rows: { code: string; name: string; budget: number; t12: number }[];
+}
+const INPUT = 'FFFFF2CC';   // typed-input cell (the ratio used)
 
 /** Driver label additions for the annual (template) rules. */
 function annualDriverLabel(d: any): string {
@@ -179,7 +190,15 @@ export async function buildPortfolioWorkbook(sites: ReviewArgs[], portfolioLabel
   const wb = new ExcelJS.Workbook();
   wb.creator = 'nd-budget-tool';
   const wsP = wb.addWorksheet('Portfolio', { properties: { tabColor: { argb: 'FFFFC000' } }, views: [{ state: 'frozen', ySplit: 4, xSplit: 2 }] });
-  for (const site of sites) addReviewSheets(wb, site, `${site.propertyCode.toUpperCase()} `);
+  // the payroll rollup sits right behind the Portfolio tab (annual budgets only)
+  const anyAnnual = sites.some((s) => s.annual);
+  const wsPS = anyAnnual ? wb.addWorksheet('Payroll Summary', { properties: { tabColor: { argb: 'FFB4A0E0' } }, views: [{ state: 'frozen', ySplit: 3 }] }) : null;
+  const payInfos: { site: ReviewArgs; info: PayrollSheetInfo }[] = [];
+  for (const site of sites) {
+    const info = addReviewSheets(wb, site, `${site.propertyCode.toUpperCase()} `);
+    if (info) payInfos.push({ site, info });
+  }
+  if (wsPS) fillPayrollSummary(wsPS, payInfos, portfolioLabel, sites[0]?.year);
 
   // ----- Portfolio tab: same Summary rows, one column per site + Total -----
   wsP.getColumn(1).width = 3; wsP.getColumn(2).width = 34;
@@ -287,7 +306,7 @@ export async function buildPortfolioWorkbook(sites: ReviewArgs[], portfolioLabel
   return Buffer.from(buf as ArrayBuffer);
 }
 
-function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string): void {
+function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string): PayrollSheetInfo | null {
   const { coa, lines, inputs, uw, units } = args;
   // cross-sheet reference prefixes — prefixed tab names contain spaces, so quote
   const BQ = prefix ? `'${prefix}Budget'!` : 'Budget!';
@@ -323,6 +342,28 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
   });
   const widths = [8, 40, 16, 20, ...Array(12).fill(10.5), 1.5, 13, 1.5, 13, 13, 1.5, 1.5, 9.5, 9.5, 26];
   widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+
+  /* ---- Payroll sheet (annual): every payroll GL in COA order, a TOTAL WAGES
+     row under the last wage GL, a TOTAL row at the end. The Budget sheet's
+     payroll rows are live references into it. ---- */
+  const payGls = args.annual ? ordered.filter((a) => a.kind === 'detail' && a.pcode === '10') : [];
+  const payName = `${prefix}Payroll`;
+  const wsPay = payGls.length ? wb.addWorksheet(payName, { properties: { tabColor: { argb: 'FFB4A0E0' }, defaultRowHeight: 12 }, views: [{ state: 'frozen', xSplit: 2, ySplit: 5 }] }) : null;
+  const PQ = prefix ? `'${payName}'!` : 'Payroll!';
+  const PAY_FIRST = 6;
+  const payRowOf = new Map<string, number>();
+  let payWagesRow: number | null = null;
+  let payTotalRow = PAY_FIRST;
+  if (wsPay) {
+    let pr = PAY_FIRST;
+    const lastWage = [...payGls].reverse().find((a) => WAGE_GLS.includes(a.code));
+    for (const a of payGls) {
+      payRowOf.set(a.code, pr++);
+      if (lastWage && a.code === lastWage.code) payWagesRow = pr++;
+    }
+    payTotalRow = pr;
+  }
+  const payColL = (i: number): string => (wsPay ? wsPay.getColumn(PC.m1 + i).letter : '');
 
   // r1: title
   ws.getCell(1, 2).value = args.propertyName;
@@ -422,16 +463,19 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
 
     if (a.kind === 'detail') {
       const ln = byGl.get(a.code);
-      ws.getCell(r, C.driver).value = ln ? driverLabel(ln.driver) + (ln.override ? ' (manual)' : '') : '';
+      const payRow = wsPay ? payRowOf.get(a.code) : undefined;
+      ws.getCell(r, C.driver).value = (payRow ? '→ Payroll sheet' + (ln ? ' · ' : '') : '') + (ln ? driverLabel(ln.driver) + (ln.override ? ' (manual)' : '') : '');
       ws.getCell(r, C.driver).font = { size: 7.5, italic: true, color: { argb: 'FF808080' } };
       const hasVals = ln && (ln.months.some((v) => v) || ln.override);
       const dFill = DRIVER_FILLS[driverKind(hasVals ? ln : undefined)].fill;
       (ln?.months || zero12()).forEach((v, i) => {
         const cell = ws.getCell(r, C.m1 + i);
-        if (v) cell.value = v;
+        if (payRow) cell.value = { formula: `${PQ}${payColL(i)}${payRow}`, result: v || 0 } as any;
+        else if (v) cell.value = v;
         cell.numFmt = CUR;
         cell.font = f8;
-        if (hasVals) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: dFill } };
+        if (payRow) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DRIVER_FILLS.pay.fill } };
+        else if (hasVals) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: dFill } };
       });
       if (ln?.note) {
         ws.getCell(r, C.note).value = ln.note;
@@ -530,6 +574,8 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
       }
     }
   }
+
+  const payInfo = wsPay ? fillPayrollSheet(wsPay, payName, args, payGls, payRowOf, payWagesRow, payTotalRow, byGl, labels, refA, refB) : null;
 
   /* ================= Summary sheet ================= */
   const wsS = wb.addWorksheet(`${prefix}Summary`, { properties: { tabColor: { argb: 'FF92D050' } }, views: [{ state: 'frozen', ySplit: 4 }] });
@@ -771,4 +817,237 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     const t = sum(l.months);
     if (t || l.override) rawRow([l.gl_code, t, l.override ? 'Y' : '', JSON.stringify(l.driver)]);
   }
+  return payInfo;
+}
+
+/* ================= Payroll sheet =================
+   Troy 2026-11-03, modelled on the per-property tabs of the Payroll Budget
+   Workbook: wage rows carry the payroll model's monthly wages (typed-over
+   freely), every other payroll GL = "Ratio used" × that month's wages, and the
+   ratio sits beside the historicals it comes from (T12 actual % of wages, CY
+   budget % of wages) — default per the budget's burden basis, overwrite with a
+   number or any formula (=AVERAGE(U7,V7)). Below: the historicals by month. */
+const PC = { code: 1, name: 2, m1: 3, total: 15, t12: 16, bud: 17, diff: 18, pct: 19, rT12: 21, rBud: 22, used: 23, how: 24 };
+
+function fillPayrollSheet(
+  ws: ExcelJS.Worksheet, name: string, args: ReviewArgs, payGls: CoaAccount[], rowOf: Map<string, number>,
+  wagesRow: number | null, totalRow: number, byGl: Map<string, BudgetLine>, labels: string[],
+  refA: RefCol | null, refB: RefCol | null,
+): PayrollSheetInfo {
+  const L = (c: number): string => ws.getColumn(c).letter;
+  const widths = [8, 34, ...Array(12).fill(10.5), 13, 13, 13, 12, 8.5, 2, 11, 11, 11, 52];
+  widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  const basis: 't12' | 'budget' | 'mix' = args.inputs?.burdenBasis || 't12';
+  const basisLabel = basis === 'budget' ? 'CY budget % of wages' : basis === 'mix' ? 'average of the T12 actual and CY budget % of wages' : 'T12 actual % of wages';
+  const hist = args.payrollHist || null;
+  const t12Label = hist?.t12Label || refA?.label || 'T12 actuals';
+  const budLabel = hist?.budgetLabel || refB?.label || 'CY budget';
+  const histTot = (cal: Record<string, Months> | null | undefined, code: string): number | undefined =>
+    cal && cal[code] ? r2(sum(cal[code])) : undefined;
+  const t12Of = (code: string): number => histTot(hist?.t12, code) ?? refA?.byGl[code] ?? 0;
+  const budOf = (code: string): number => histTot(hist?.budget, code) ?? refB?.byGl[code] ?? 0;
+  const wageSet = new Set(WAGE_GLS);
+  const wageRows = payGls.filter((a) => wageSet.has(a.code)).map((a) => rowOf.get(a.code)!);
+  const glRows = payGls.map((a) => rowOf.get(a.code)!);
+
+  ws.getCell(1, 2).value = `${args.propertyName} (${args.propertyCode}) — ${args.year} Payroll`;
+  ws.getCell(1, 2).font = { size: 12, bold: true };
+  ws.getCell(2, 2).value = `Wage rows = the payroll model's monthly wages (type over them to change). Every other row = Ratio used (col ${L(PC.used)}) × that month's TOTAL WAGES; the ratio defaults to the ${basisLabel} shown beside it — type a % or any formula. The Budget sheet's payroll rows read from this sheet.`;
+  ws.getCell(2, 2).font = { size: 8, italic: true, color: { argb: 'FF505050' } };
+  ws.getCell(3, 2).value = 'Fill: lilac = payroll model / formula · yellow = ratio input · pink = manual override';
+  ws.getCell(3, 2).font = { size: 7.5, italic: true, color: { argb: 'FF808080' } };
+
+  const heads: [number, string][] = [
+    [PC.code, 'GL Code'], [PC.name, 'GL Name'], ...labels.map((m, i) => [PC.m1 + i, m] as [number, string]),
+    [PC.total, `${args.year} Budget Total`], [PC.t12, t12Label], [PC.bud, budLabel], [PC.diff, 'Difference vs T12'], [PC.pct, '% change'],
+    [PC.rT12, 'T12 % of wages'], [PC.rBud, 'CY budget % of wages'], [PC.used, 'Ratio used'], [PC.how, 'How this row is built'],
+  ];
+  for (const [col, text] of heads) {
+    const cell = ws.getCell(5, col);
+    cell.value = text; cell.font = f8b;
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: col === PC.used ? INPUT : HEAD } };
+    cell.border = { bottom: { style: 'thin' } };
+    cell.alignment = { horizontal: col >= PC.m1 && col !== PC.how ? 'right' : 'left', wrapText: col >= PC.total };
+  }
+
+  const rows: PayrollSheetInfo['rows'] = [];
+  const t12Wages = wageRows.length ? r2(payGls.filter((a) => wageSet.has(a.code)).reduce((acc, a) => acc + t12Of(a.code), 0)) : 0;
+  const budWages = wageRows.length ? r2(payGls.filter((a) => wageSet.has(a.code)).reduce((acc, a) => acc + budOf(a.code), 0)) : 0;
+  const money = (cell: ExcelJS.Cell, bold = false) => { cell.numFmt = CUR; cell.font = bold ? f8b : f8; };
+  for (const a of payGls) {
+    const r = rowOf.get(a.code)!;
+    const ln = byGl.get(a.code);
+    const d: any = ln?.driver || {};
+    const months = ln?.months || zero12();
+    const isWage = wageSet.has(a.code);
+    const asFormula = !!wagesRow && !isWage && d.method === 'burdenRatio' && !ln?.override;
+    const kind = driverKind(ln && (months.some((v) => v) || ln.override) ? ln : undefined);
+    const fill = asFormula || d.method === 'payrollModel' ? DRIVER_FILLS.pay.fill : ln && (months.some((v) => v) || ln.override) ? DRIVER_FILLS[kind].fill : null;
+    ws.getCell(r, PC.code).value = a.code;
+    ws.getCell(r, PC.code).font = { size: 8, color: { argb: 'FF808080' } };
+    ws.getCell(r, PC.name).value = '    ' + a.name;
+    ws.getCell(r, PC.name).font = f8;
+    months.forEach((v, i) => {
+      const cell = ws.getCell(r, PC.m1 + i);
+      if (asFormula) cell.value = { formula: `$${L(PC.used)}${r}*${L(PC.m1 + i)}${wagesRow}`, result: v || 0 } as any;
+      else if (v) cell.value = v;
+      money(cell);
+      if (fill) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
+    });
+    const tot = r2(sum(months)), t12 = t12Of(a.code), bud = budOf(a.code);
+    rows.push({ code: a.code, name: a.name, budget: tot, t12 });
+    const cT = ws.getCell(r, PC.total); cT.value = { formula: `SUM(${L(PC.m1)}${r}:${L(PC.m1 + 11)}${r})`, result: tot } as any; money(cT, true);
+    const cA = ws.getCell(r, PC.t12); if (t12) cA.value = t12; cA.numFmt = ACCT; cA.font = f8; cA.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: UWFILL } };
+    const cB = ws.getCell(r, PC.bud); if (bud) cB.value = bud; cB.numFmt = ACCT; cB.font = f8; cB.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COMPFILL } };
+    const cD = ws.getCell(r, PC.diff); cD.value = { formula: `${L(PC.total)}${r}-${L(PC.t12)}${r}`, result: r2(tot - t12) } as any; cD.numFmt = ACCT; cD.font = f8;
+    const cP = ws.getCell(r, PC.pct); cP.value = { formula: `IF(${L(PC.t12)}${r}<>0,${L(PC.diff)}${r}/${L(PC.t12)}${r},"")`, result: t12 ? r2((tot - t12) / t12 * 10000) / 10000 : '' } as any; cP.numFmt = PCT; cP.font = f8;
+    if (!isWage && wagesRow) {
+      const cU = ws.getCell(r, PC.rT12);
+      cU.value = { formula: `IF($${L(PC.t12)}$${wagesRow}<>0,${L(PC.t12)}${r}/$${L(PC.t12)}$${wagesRow},"")`, result: t12Wages ? Math.round(t12 / t12Wages * 100000) / 100000 : '' } as any;
+      cU.numFmt = PCT; cU.font = f8;
+      const cV = ws.getCell(r, PC.rBud);
+      cV.value = { formula: `IF($${L(PC.bud)}$${wagesRow}<>0,${L(PC.bud)}${r}/$${L(PC.bud)}$${wagesRow},"")`, result: budWages ? Math.round(bud / budWages * 100000) / 100000 : '' } as any;
+      cV.numFmt = PCT; cV.font = f8;
+      if (asFormula) {
+        const cW = ws.getCell(r, PC.used);
+        const f = basis === 'budget' ? `${L(PC.rBud)}${r}` : basis === 'mix' ? `AVERAGE(${L(PC.rT12)}${r},${L(PC.rBud)}${r})` : `${L(PC.rT12)}${r}`;
+        cW.value = { formula: f, result: d.ratio || 0 } as any;
+        cW.numFmt = '0.00%'; cW.font = f8b;
+        cW.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: INPUT } };
+        cW.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
+      }
+    }
+    const how = ws.getCell(r, PC.how);
+    how.value = asFormula ? `Ratio used × TOTAL WAGES — defaults to the ${basisLabel}; type a % or a formula`
+      : d.method === 'payrollModel' ? (d.roster ? 'Pay-rates roster wages — each raise prorated from its effective month (no March step); type over to change' : 'Payroll model wages, March raise step; type over to change')
+      : ln ? driverLabel(d) + (ln.override ? ' (manual)' : '') : 'no history — nothing budgeted';
+    how.font = { size: 7.5, italic: true, color: { argb: 'FF808080' } };
+  }
+
+  const sumOf = (col: number, rs: number[]): string => rs.map((r) => `${L(col)}${r}`).join('+');
+  if (wagesRow) {
+    ws.getCell(wagesRow, PC.name).value = `  TOTAL WAGES (ratio base: ${WAGE_GLS.join(', ')})`;
+    ws.getCell(wagesRow, PC.name).font = f8b;
+    for (let i = 0; i < 12; i++) {
+      const c = ws.getCell(wagesRow, PC.m1 + i);
+      c.value = { formula: sumOf(PC.m1 + i, wageRows), result: r2(wageRows.reduce((acc, wr) => acc + ((byGl.get(payGls.find((a) => rowOf.get(a.code) === wr)!.code)?.months || zero12())[i] || 0), 0)) } as any;
+      c.numFmt = ACCT; c.font = f8b; c.border = { top: { style: 'thin' } };
+    }
+    const wTot = r2(rows.filter((x) => wageSet.has(x.code)).reduce((acc, x) => acc + x.budget, 0));
+    const cT = ws.getCell(wagesRow, PC.total); cT.value = { formula: `SUM(${L(PC.m1)}${wagesRow}:${L(PC.m1 + 11)}${wagesRow})`, result: wTot } as any; cT.numFmt = ACCT; cT.font = f8b; cT.border = { top: { style: 'thin' } };
+    const cA = ws.getCell(wagesRow, PC.t12); cA.value = { formula: sumOf(PC.t12, wageRows), result: t12Wages } as any; cA.numFmt = ACCT; cA.font = f8b; cA.border = { top: { style: 'thin' } };
+    const cB = ws.getCell(wagesRow, PC.bud); cB.value = { formula: sumOf(PC.bud, wageRows), result: budWages } as any; cB.numFmt = ACCT; cB.font = f8b; cB.border = { top: { style: 'thin' } };
+    ws.getCell(wagesRow, PC.how).value = 'the wages every ratio row multiplies';
+    ws.getCell(wagesRow, PC.how).font = { size: 7.5, italic: true, color: { argb: 'FF808080' } };
+  }
+  // TOTAL PAYROLL EXPENSE: every GL row (the wages row is a subtotal, not an expense)
+  ws.getCell(totalRow, PC.name).value = ' TOTAL PAYROLL EXPENSE';
+  ws.getCell(totalRow, PC.name).font = f8b;
+  const budTot = r2(rows.reduce((acc, x) => acc + x.budget, 0));
+  const t12Tot = r2(rows.reduce((acc, x) => acc + x.t12, 0));
+  const budBudTot = r2(payGls.reduce((acc, a) => acc + budOf(a.code), 0));
+  for (let i = 0; i < 12; i++) {
+    const c = ws.getCell(totalRow, PC.m1 + i);
+    c.value = { formula: sumOf(PC.m1 + i, glRows), result: r2(payGls.reduce((acc, a) => acc + ((byGl.get(a.code)?.months || zero12())[i] || 0), 0)) } as any;
+    c.numFmt = ACCT; c.font = f8b; c.border = { top: { style: 'thin' }, bottom: { style: 'thin' } };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRAND } };
+  }
+  const tot = (col: number, result: number) => { const c = ws.getCell(totalRow, col); c.value = { formula: sumOf(col, glRows), result } as any; c.numFmt = ACCT; c.font = f8b; c.border = { top: { style: 'thin' }, bottom: { style: 'thin' } }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRAND } }; };
+  tot(PC.total, budTot); tot(PC.t12, t12Tot); tot(PC.bud, budBudTot);
+  const cD = ws.getCell(totalRow, PC.diff); cD.value = { formula: `${L(PC.total)}${totalRow}-${L(PC.t12)}${totalRow}`, result: r2(budTot - t12Tot) } as any; cD.numFmt = ACCT; cD.font = f8b;
+  const cP = ws.getCell(totalRow, PC.pct); cP.value = { formula: `IF(${L(PC.t12)}${totalRow}<>0,${L(PC.diff)}${totalRow}/${L(PC.t12)}${totalRow},"")`, result: t12Tot ? r2((budTot - t12Tot) / t12Tot * 10000) / 10000 : '' } as any; cP.numFmt = PCT; cP.font = f8b;
+
+  // largest movers, like the workbook's property tabs
+  const first = PAY_FIRST_ROW, last = totalRow - 1;
+  const rng = (col: number) => `$${L(col)}$${first}:$${L(col)}$${last}`;
+  const movers = rows.map((x) => ({ ...x, diff: r2(x.budget - x.t12) }));
+  const up = movers.reduce((m, x) => (x.diff > (m?.diff ?? -Infinity) ? x : m), null as any);
+  const dn = movers.reduce((m, x) => (x.diff < (m?.diff ?? Infinity) ? x : m), null as any);
+  const mv = (r: number, label: string, fn: 'MAX' | 'MIN', pick: any) => {
+    ws.getCell(r, PC.total).value = label; ws.getCell(r, PC.total).font = f8b; ws.getCell(r, PC.total).alignment = { horizontal: 'right' };
+    const cv = ws.getCell(r, PC.t12); cv.value = { formula: `${fn}(${rng(PC.diff)})`, result: pick?.diff ?? 0 } as any; cv.numFmt = ACCT; cv.font = f8b;
+    const cn = ws.getCell(r, PC.bud); cn.value = { formula: `INDEX(${rng(PC.name)},MATCH(${fn}(${rng(PC.diff)}),${rng(PC.diff)},0))`, result: pick ? '    ' + pick.name : '' } as any; cn.font = f8;
+  };
+  mv(totalRow + 2, 'Largest increase', 'MAX', up);
+  mv(totalRow + 3, 'Largest decrease', 'MIN', dn);
+
+  // the historicals by calendar month, as the workbook keeps them under the budget
+  let hr = totalRow + 6;
+  const block = (cal: Record<string, Months> | null | undefined, label: string) => {
+    if (!cal || !payGls.some((a) => cal[a.code] && cal[a.code].some((v) => v))) return;
+    ws.getCell(hr, PC.name).value = `${label} — by calendar month (Jan..Dec; the months after the last actual are the prior year's)`;
+    ws.getCell(hr, PC.name).font = f8b;
+    const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    MON.forEach((m, i) => { const c = ws.getCell(hr, PC.m1 + i); c.value = m; c.font = f8b; c.alignment = { horizontal: 'right' }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD } }; });
+    ws.getCell(hr, PC.total).value = 'Total'; ws.getCell(hr, PC.total).font = f8b; ws.getCell(hr, PC.total).alignment = { horizontal: 'right' };
+    hr++;
+    const h0 = hr;
+    for (const a of payGls) {
+      const m = cal[a.code] || zero12();
+      ws.getCell(hr, PC.code).value = a.code; ws.getCell(hr, PC.code).font = { size: 8, color: { argb: 'FF808080' } };
+      ws.getCell(hr, PC.name).value = '    ' + a.name; ws.getCell(hr, PC.name).font = f8;
+      m.forEach((v, i) => { const c = ws.getCell(hr, PC.m1 + i); if (v) c.value = v; c.numFmt = CUR; c.font = f8; });
+      const cT = ws.getCell(hr, PC.total); cT.value = { formula: `SUM(${L(PC.m1)}${hr}:${L(PC.m1 + 11)}${hr})`, result: r2(sum(m)) } as any; cT.numFmt = CUR; cT.font = f8;
+      hr++;
+    }
+    ws.getCell(hr, PC.name).value = ' TOTAL'; ws.getCell(hr, PC.name).font = f8b;
+    for (let i = 0; i <= 12; i++) {
+      const col = PC.m1 + i;
+      const c = ws.getCell(hr, col);
+      c.value = { formula: `SUM(${L(col)}${h0}:${L(col)}${hr - 1})`, result: r2(payGls.reduce((acc, a) => acc + (i < 12 ? ((cal[a.code] || zero12())[i] || 0) : sum(cal[a.code] || zero12())), 0)) } as any;
+      c.numFmt = ACCT; c.font = f8b; c.border = { top: { style: 'thin' } };
+    }
+    hr += 3;
+  };
+  block(hist?.t12, t12Label);
+  block(hist?.budget, budLabel);
+
+  return { name, firstRow: first, lastRow: last, totalRow, wagesRow, rows };
+}
+const PAY_FIRST_ROW = 6;
+
+/* ================= Payroll Summary (portfolio) =================
+   One row per property, like the workbook's Summary tab: budget vs T12,
+   difference, % change, and the GL that moved the most each way — every
+   figure a live reference into that property's Payroll sheet. */
+function fillPayrollSummary(ws: ExcelJS.Worksheet, infos: { site: ReviewArgs; info: PayrollSheetInfo }[], label: string, year?: number): void {
+  [10, 15, 15, 14, 10, 2, 34, 13, 34, 13].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  ws.getCell(1, 1).value = `${label} — ${year || ''} Payroll budget vs trailing-12, by property`;
+  ws.getCell(1, 1).font = { size: 12, bold: true };
+  const heads = ['Property', `${year || ''} Budget`, 'T12 Actuals', 'Difference', '% change', '', 'Largest increase', '$', 'Largest decrease', '$'];
+  heads.forEach((h, i) => {
+    if (!h) return;
+    const c = ws.getCell(3, i + 1);
+    c.value = h; c.font = f8b; c.alignment = { horizontal: i >= 1 && i <= 4 || i === 7 || i === 9 ? 'right' : 'left' };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD } };
+    c.border = { bottom: { style: 'thin' } };
+  });
+  let r = 4;
+  const first = r;
+  for (const { site, info } of infos) {
+    const S = `'${info.name}'!`;
+    const bud = r2(info.rows.reduce((a, x) => a + x.budget, 0)), t12 = r2(info.rows.reduce((a, x) => a + x.t12, 0));
+    const movers = info.rows.map((x) => ({ ...x, diff: r2(x.budget - x.t12) }));
+    const up = movers.reduce((m, x) => (x.diff > (m?.diff ?? -Infinity) ? x : m), null as any);
+    const dn = movers.reduce((m, x) => (x.diff < (m?.diff ?? Infinity) ? x : m), null as any);
+    const rng = (col: string) => `${S}$${col}$${info.firstRow}:$${col}$${info.lastRow}`;
+    ws.getCell(r, 1).value = site.propertyCode.toUpperCase(); ws.getCell(r, 1).font = f8b;
+    const put = (col: number, formula: string, result: any, fmt = ACCT, bold = false) => { const c = ws.getCell(r, col); c.value = { formula, result } as any; c.numFmt = fmt; c.font = bold ? f8b : f8; };
+    put(2, `${S}$O$${info.totalRow}`, bud);
+    put(3, `${S}$P$${info.totalRow}`, t12);
+    put(4, `B${r}-C${r}`, r2(bud - t12));
+    put(5, `IF(C${r}<>0,D${r}/C${r},"")`, t12 ? r2((bud - t12) / t12 * 10000) / 10000 : '', PCT);
+    put(7, `INDEX(${rng('B')},MATCH(MAX(${rng('R')}),${rng('R')},0))`, up ? '    ' + up.name : '', '@');
+    put(8, `MAX(${rng('R')})`, up?.diff ?? 0);
+    put(9, `INDEX(${rng('B')},MATCH(MIN(${rng('R')}),${rng('R')},0))`, dn ? '    ' + dn.name : '', '@');
+    put(10, `MIN(${rng('R')})`, dn?.diff ?? 0);
+    r++;
+  }
+  const last = r - 1;
+  ws.getCell(r, 1).value = 'TOTAL'; ws.getCell(r, 1).font = f8b;
+  const bud = r2(infos.reduce((a, { info }) => a + info.rows.reduce((b, x) => b + x.budget, 0), 0));
+  const t12 = r2(infos.reduce((a, { info }) => a + info.rows.reduce((b, x) => b + x.t12, 0), 0));
+  const tot = (col: number, formula: string, result: any, fmt = ACCT) => { const c = ws.getCell(r, col); c.value = { formula, result } as any; c.numFmt = fmt; c.font = f8b; c.border = { top: { style: 'thin' }, bottom: { style: 'thin' } }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRAND } }; };
+  tot(2, `SUM(B${first}:B${last})`, bud); tot(3, `SUM(C${first}:C${last})`, t12); tot(4, `B${r}-C${r}`, r2(bud - t12));
+  tot(5, `IF(C${r}<>0,D${r}/C${r},"")`, t12 ? r2((bud - t12) / t12 * 10000) / 10000 : '', PCT);
 }

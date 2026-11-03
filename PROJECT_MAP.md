@@ -448,6 +448,37 @@ budgets' wage GLs. Modeled on the per-property sheets of the Payroll Budget Work
   the overrides — don't restyle against it.
 - Remember `src/payroll.ts` + `shared/payroll.ts` in the esbuild entry list (done).
 
+## Payroll flow into the budget worksheet (Troy 2026-11-03)
+
+Modelled on the "2025 Payroll Budget Draft Revision KC ND Final" workbook's per-property tabs
+(rows = payroll GLs × months, budget total / T12 / difference / % change; historicals below)
+and its Summary tab. Nothing from that workbook's roster is read — only its layout.
+
+- **Engine** (`shared/annual.ts` payroll block): wage GLs come from the payroll model
+  (`inputs.wages`); when `inputs.wagesFromRoster` is set — the Pay-rates **apply** sets it —
+  the engine adds NO March step, because `annualWagesByGl` already prorates each person's
+  raise from its effective month (before this it double-raised: roster raise + 3.5% in
+  March). Every other payroll GL (taxes, WC, 401k, medical, bonus, commissions, OT, …) =
+  ratio × budgeted wages, flat; the ratio comes from `inputs.burdenBasis`: `'t12'` (default,
+  T12 actual % of wages), `'budget'` (CY budget % of wages) or `'mix'` (average of the two,
+  falling back to whichever side exists). Driver: `{ method: 'burdenRatio', ratio, basis,
+  t12Ratio, budgetRatio }`. Settings dialog: "Other payroll lines … = % of wages from".
+- **Excel** (`src/xlsx-export.ts`): every annual budget gets a **`<prefix>Payroll` sheet**
+  right behind its Budget sheet — GL rows in COA order, months C..N, O budget total, P T12,
+  Q CY budget, R Δ, S %, U T12 % of wages, V CY budget % of wages, **W Ratio used** (yellow
+  input: `=U` / `=V` / `=AVERAGE(U,V)` per the basis — type a % or any formula), X how.
+  Wage rows are typed values (lilac); a **TOTAL WAGES** row sits under the last wage GL
+  (`WAGE_GLS`, the engine's ratio base); every burdenRatio row is `=$W{r}*{col}{wagesRow}`;
+  manual/other rows stay values. TOTAL PAYROLL EXPENSE, largest increase/decrease
+  (INDEX/MATCH on R), then the T12 and CY-budget calendars by month (`ReviewArgs.payrollHist`
+  from `lb.actualCal` / `lb.budgetCal`). **The Budget sheet's payroll rows are live
+  references** into the Payroll sheet (driver column "→ Payroll sheet · …"), so a change on
+  the Payroll sheet flows through the Budget, Summary and Portfolio tabs. Portfolio
+  workbook: a **Payroll Summary** tab behind Portfolio — one live row per property (budget,
+  T12, Δ, %, largest movers) + total. Every formula carries a cached result.
+  `addReviewSheets` returns the `PayrollSheetInfo` the summary needs. Tests:
+  `test/xlsx-export.test.ts` (seed COA needs `active: true` stamped on — the DB does that).
+
 ## Gotchas / policy
 
 - **Never ingest individual employee compensation** through the GENERAL upload paths (the
