@@ -76,7 +76,7 @@ export type Driver = { revised?: boolean } & (
     1-2-1 weighted distribution; 'flat' = annual total / 12; 'curve' = total on
     the GL's named curve; 'last' = the last actual month, flat; 'avgnz' =
     average of the non-zero months, flat. */
-export type BaselineShape = 'wavg' | 'actual' | 'flat' | 'curve' | 'last' | 'avgnz';
+export type BaselineShape = 'wavg' | 'actual' | 'flat' | 'curve' | 'last' | 'avgnz' | 'turns';
 
 /** Everything the generator needs. Stored on budgets.inputs (jsonb). */
 export interface BudgetInputs {

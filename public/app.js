@@ -68,9 +68,9 @@ function drvMetaBase(l) {
     /* ---- annual (template) rules ---- */
     case 'baseline': {
       const d = l.driver;
-      const shape = { actual: 'same calendar month', wavg: '1-2-1 weighted distribution', flat: 'T12 ÷ 12 flat', curve: 'T12 total on the GL curve', last: 'last actual month, flat', avgnz: 'average of active months, flat' }[d.shape] || d.shape;
+      const shape = { actual: 'same calendar month', wavg: '1-2-1 weighted distribution', flat: 'T12 ÷ 12 flat', curve: 'T12 total on the GL curve', last: 'last actual month, flat', avgnz: 'average of active months, flat', turns: `T12 total on lease expirations + 1 mo lag${d.turns ? ` (${Math.round(d.turns)} expirations)` : ''}` }[d.shape] || d.shape;
       const factor = d.pcts ? `+ Conservice forecast ${(Math.min(...d.pcts) * 100).toFixed(0)}–${(Math.max(...d.pcts) * 100).toFixed(0)}% by month` : `× ${(1 + (d.pct || 0)).toFixed(3)}`;
-      const tag = d.src === 'budget' ? 'CYB' : d.shape === 'last' ? 'LAST' : d.pcts ? 'UTIL' : d.shape === 'wavg' ? 'WAVG' : d.shape === 'flat' ? 'T12/12' : 'T12';
+      const tag = d.src === 'budget' ? 'CYB' : d.shape === 'turns' ? 'TURNS' : d.shape === 'last' ? 'LAST' : d.pcts ? 'UTIL' : d.shape === 'wavg' ? 'WAVG' : d.shape === 'flat' ? 'T12/12' : 'T12';
       return { cls: 'drv-base', tag, label: `${d.src === 'budget' ? 'CY budget' : 'Own trailing-12 actual'} — ${shape} ${factor}${d.mult ? ` → MROUND $${d.mult}` : ''} · T12 ${Math.round(d.base || 0).toLocaleString()}${d.rule ? ' · GRKS foundation rule' : ''}` };
     }
     case 'pctGpr': return { cls: 'drv-base', tag: '%GPR', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.of === 'net' ? 'net rental income' : l.driver.of === 'netgpr' ? 'net GPR' : 'GPR'} (${l.driver.basis === 'last' ? 'last-month' : 'trailing-12'} ratio)` };
@@ -469,7 +469,7 @@ function newBudgetDialog() {
     <div class="row" style="margin-top:8px">${pick('nb-tpl', 'Yardi budget template', 'optional — carries its own T12 + CY budget, debt schedule, Conservice forecasts; none pulls for 2027 yet', 'yardi_template')}</div>
     <p class="muted" id="nb-tplnote" style="font-size:11.5px; margin:4px 0 8px"></p>
     <div class="row">
-      ${pick('nb-rent', 'Rent roll', 'GPR anchor, per-lease LTL, expirations, charges', 'rent_roll')}
+      ${pick('nb-rent', 'Rent roll / UAD', 'GPR anchor, per-lease LTL, lease expirations (turn costs follow them +1 mo)', 'rent_roll')}
       ${pick('nb-pay', 'Payroll model', 'wages', 'payroll')}
     </div>
     <p class="muted" style="font-size:11.5px; margin:10px 0 0">Every line starts as the same month last year × the GRKS foundation factor (admin 5%, maintenance 10%, reims 5%, utilities 5%), October-actual lines flat, GPR off the rent roll, vacancy at the October %, mgmt fee at the T12 %, debt off the template's schedule (else loan × rate in Assumptions, else the last actual month), payroll from the model. Nothing ties on its own — review the Δ columns.</p>` : `
@@ -642,7 +642,7 @@ async function openBudget(id) {
 /* ---------------- data (uploads) ---------------- */
 const UPLOAD_KINDS = [
   ['yardi_template', 'Yardi budget template (budgetYSR…xlsm)'],
-  ['rent_roll', 'Rent roll (Yardi summary, unit detail or lease charges)'],
+  ['rent_roll', 'Rent roll (Yardi summary, unit detail, lease charges) or Unit Availability Details'],
   ['statement', 'Monarch 12 Month Statement / 12 Month Budget'],
   ['payroll', 'ND payroll model (wage aggregates)'],
   ['uw_book', 'UW book model (.xlsx)'],
@@ -3693,7 +3693,7 @@ function openActualizeCsv(resp) {
    ========================================================================== */
 
 const ANNUAL_CATS = [['4', 'Utility income (reims)'], ['5', 'Other income'], ['8', 'RE & PP taxes'], ['9', 'Admin & accounting'], ['10', 'Payroll (no model)'], ['11', 'Marketing'], ['12', 'Utilities (no forecast)'], ['13', 'Repairs & maintenance'], ['14', 'Rehab / replacement'], ['*', 'everything else']];
-const SHAPE_LABELS = { actual: 'Same month × factor (template default)', wavg: '1-2-1 weighted distribution × factor', flat: 'T12 total ÷ 12, flat', curve: 'T12 total on the GL seasonal curve', last: 'Last actual month, flat', avgnz: 'Average of active months, flat' };
+const SHAPE_LABELS = { turns: 'T12 total on lease expirations, +1 month lag (turn costs)', actual: 'Same month × factor (template default)', wavg: '1-2-1 weighted distribution × factor', flat: 'T12 total ÷ 12, flat', curve: 'T12 total on the GL seasonal curve', last: 'Last actual month, flat', avgnz: 'Average of active months, flat' };
 
 function annualInputsHtml(inp) {
   const g = inp.gpr || {};

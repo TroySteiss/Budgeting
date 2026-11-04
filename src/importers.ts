@@ -257,9 +257,93 @@ export interface RentParsedProperty {
   charges?: Record<string, number>;
 }
 
+/** Yardi "Unit Availability Details" (UnitAvailabilityDetails…xlsx): one row per unit per
+    status group, grouped "Property Name (code) - <status group>", with "Total for <code>"
+    lines. Columns: Unit, Resident, Name, Resident Rent, Unit Rent, deposits, Status, Days
+    Vacant, Make Ready, Move In, Hold, Hold Until, Notice, Move Out, Lease Sign, Lease
+    From, Lease To. Occupied statuses (Current / Notice / Eviction) become leases
+    {market, rent, lease end}; Future / Applicant rows are the same unit again and are
+    skipped; vacant rows carry only the unit rent. Resident names are never read. */
+export function parseUnitAvailability(g: Grid): RentParsedProperty[] {
+  let asOf: string | null = null;
+  for (const row of g.slice(0, 8)) {
+    const m = s(row?.[0]).match(/as of:?\s*([\d/]+)/i);
+    if (m) asOf = m[1];
+  }
+  let h = -1;
+  for (let r = 0; r < Math.min(g.length, 15); r++) if (low(g[r]?.[0]) === 'unit' && (g[r] || []).map(low).includes('status')) { h = r; break; }
+  if (h < 0) throw new Error('Unit Availability Details: header row (Unit … Status …) not found');
+  const heads: string[] = [];
+  const width = Math.max(...g.slice(h, h + 2).map((r) => (r || []).length));
+  for (let c = 0; c < width; c++) heads[c] = [g[h]?.[c], g[h + 1]?.[c]].map(low).filter(Boolean).join(' ');
+  const col = (...want: string[]): number => heads.findIndex((hd) => want.every((w) => hd.includes(w)));
+  const cResRent = col('resident', 'rent'), cUnitRent = col('unit', 'rent'), cStatus = col('status'), cLeaseTo = col('lease', 'to');
+  if (cResRent < 0 || cUnitRent < 0 || cStatus < 0) throw new Error('Unit Availability Details: Resident Rent / Unit Rent / Status columns not found');
+  const toIso = (v: any): string | null => {
+    if (v == null || v === '') return null;
+    // a date cell comes back as local midnight (or UTC midnight, depending on the writer):
+    // noon-shift before reading the UTC date so neither offset moves the day
+    const day = (d: Date): string | null => (isNaN(d.getTime()) ? null : new Date(d.getTime() + 12 * 3600 * 1000).toISOString().slice(0, 10));
+    if (v instanceof Date) return day(v);
+    if (typeof v === 'number') return day(new Date(Math.round((v - 25569) * 86400 * 1000)));
+    return day(new Date(s(v).replace(/\s+\d{2}:\d{2}.*$/, '')));
+  };
+  type Acc = { name: string; units: Set<string>; market: number; inPlace: number; occ: number; leases: { m: number; r: number; e: string | null }[]; unitMarket: Map<string, number>; totalUnits: number | null };
+  const props = new Map<string, Acc>();
+  let cur: Acc | null = null;
+  for (let r = h + 2; r < g.length; r++) {
+    const row = g[r] || [];
+    const a0 = s(row[0]);
+    if (!a0) continue;
+    const sec = a0.match(/^(.*?)\(([a-z0-9]+)\)\s*-\s*(.+)$/i);
+    if (sec && row.slice(1).every((v) => v == null || v === '')) {
+      const code = sec[2].toLowerCase();
+      if (!props.has(code)) props.set(code, { name: sec[1].trim(), units: new Set(), market: 0, inPlace: 0, occ: 0, leases: [], unitMarket: new Map(), totalUnits: null });
+      cur = props.get(code)!;
+      continue;
+    }
+    const tot = a0.match(/^total for ([a-z0-9]+)/i);
+    if (tot) {
+      const acc = props.get(tot[1].toLowerCase());
+      const n = s(row[2]).match(/([\d,]+)\s*units?/i);
+      if (acc && n) acc.totalUnits = Number(n[1].replace(/,/g, ''));
+      cur = null;
+      continue;
+    }
+    if (!cur || low(a0) === 'total') continue;
+    const status = low(row[cStatus]);
+    if (status === 'future' || status === 'applicant' || status === 'past') continue;   // the same unit again, or history
+    const unit = a0;
+    const mkt = num(row[cUnitRent]);
+    if (!cur.units.has(unit)) { cur.units.add(unit); cur.market += mkt; cur.unitMarket.set(unit, mkt); }
+    const occupied = /^(current|notice|eviction)/.test(status);
+    const rent = num(row[cResRent]);
+    if (occupied) {
+      cur.occ++;
+      cur.inPlace += rent;
+      if (rent > 0) cur.leases.push({ m: Math.round(mkt * 100) / 100, r: Math.round(rent * 100) / 100, e: cLeaseTo >= 0 ? toIso(row[cLeaseTo]) : null });
+    }
+  }
+  const out: RentParsedProperty[] = [];
+  for (const [code, a] of props) {
+    const units = a.totalUnits || a.units.size;
+    if (!units) continue;
+    out.push({
+      code, name: a.name, units, marketMonthly: Math.round(a.market * 100) / 100, inPlaceMonthly: Math.round(a.inPlace * 100) / 100,
+      occupiedUnits: a.occ, asOf, source: 'unit_level', leases: a.leases, charges: {},
+    });
+  }
+  if (!out.length) throw new Error('Unit Availability Details: no property sections ("Name (code) - status") found');
+  return out;
+}
+
 export function parseRentRoll(buf: Buffer): RentParsedProperty[] {
   const all = grids(buf);
   const g = all[0].g;
+
+  // ---- Yardi "Unit Availability Details": every unit with resident rent, unit (market)
+  //      rent, status and lease dates — a rent roll with expirations (Troy 2026-11-04) ----
+  if (g.slice(0, 3).some((r) => low(r?.[0]).startsWith('unit availability details'))) return parseUnitAvailability(g);
 
   // ---- Yardi "Rent Roll" / "For Selected Properties" (summary OR unit-level) ----
   const isYardi = low(g[0]?.[0]) === 'rent roll' || all[0].name === 'Report1' && g.slice(0, 6).some((r) => low(r?.[0]).includes('for selected properties'));
@@ -1464,7 +1548,7 @@ export function detectUploadKind(buf: Buffer): UploadKind | null {
   }
   const first = XLSX.utils.sheet_to_json<any[]>(wb.Sheets[names[0]], { header: 1, raw: true, defval: null }) as any[][];
   const head = first.slice(0, 8).map((r) => (r || []).map((v) => (v == null ? '' : String(v))).join(' ')).join('\n');
-  if (/rent roll/i.test(head)) return 'rent_roll';
+  if (/rent roll|unit availability details/i.test(head)) return 'rent_roll';
   if (/property comparison/i.test(head)) return 'comparison';
   const monthHeader = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4}\b/i.test(head);
   if (monthHeader && /period\s*=/i.test(head) && /book\s*=/i.test(head)) {

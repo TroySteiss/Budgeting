@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parseReviewDraft, parseComparisonActuals } from '../src/importers.js';
+import * as XLSX from 'xlsx';
+import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parseReviewDraft, parseComparisonActuals, detectUploadKind } from '../src/importers.js';
 import { t12CategoryShapes } from '../shared/domain.js';
 
 const fx = (name: string): Buffer => readFileSync(join(process.cwd(), 'test', 'fixtures', name));
@@ -287,5 +288,58 @@ describe('parseComparisonActuals — North Dakota Aug-26 Cash comparison (one pe
   });
   it('rejects a multi-month or annual comparison', () => {
     expect(() => parseComparisonActuals(fx('comparison-minot4.xlsx'))).toThrow(/single-month period|Actual\/Budget/);
+  });
+});
+
+describe('parseRentRoll — Yardi Unit Availability Details (UAD, Troy 2026-11-04)', () => {
+  const D = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d));
+  const aoa = [
+    ['Unit Availability Details '], ['For Selected Properties'], ['As Of: 10/26/2026'], ['Showing Pre-Leased: Yes'], ['Showing Occupied: Yes'], ['Group By: None'],
+    ['Unit', 'Resident', 'Name', 'Resident', 'Unit', 'Resident', 'Unit', 'Status', 'Days', 'Make', 'Move', 'Hold', 'Hold', 'Notice', 'Move', 'Lease', 'Lease', 'Lease'],
+    [null, null, null, 'Rent', 'Rent', 'Deposit', 'Deposit', null, 'Vacant', 'Ready', 'In', null, 'Until', null, 'Out', 'Sign', 'From', 'To'],
+    [],
+    ['Test Place (tsnd) - Vacant Unrented Ready'],
+    ['01-101', null, null, 0, 1000, 0, 0, null, 30, D(2026, 10, 1), null, 'No', null, null, null, null, null, null],
+    ['Total', null, '1 Units', 0, 1000],
+    [],
+    ['Test Place (tsnd) - Notice Rented'],
+    ['01-102', 't01', 'Resident A', 900, 1000, 500, 0, 'Notice', null, null, D(2025, 3, 1), 'No', null, D(2026, 9, 1), D(2026, 11, 30), D(2025, 3, 1), D(2026, 3, 1), D(2026, 11, 30)],
+    ['01-102', 't02', 'Applicant B', 980, 1000, 500, 0, 'Future', null, null, D(2026, 12, 1), 'No', null, null, null, D(2026, 10, 20), D(2026, 12, 1), D(2027, 11, 30)],
+    ['Total', null, '2 Units', 1880, 2000],
+    [],
+    ['Test Place (tsnd) - Occupied No Notice'],
+    ['01-103', 't03', 'Resident C', 950, 1000, 500, 0, 'Current', null, null, D(2025, 6, 1), 'No', null, null, null, D(2025, 6, 1), D(2026, 6, 1), D(2027, 5, 31)],
+    ['01-104', 't04', 'Resident D', 1000, 1050, 500, 0, 'Current', null, null, D(2024, 1, 1), 'No', null, null, null, D(2024, 1, 1), D(2025, 1, 1), D(2025, 12, 31)],
+    ['Total', null, '2 Units', 1950, 2050],
+    ['Total for tsnd', null, '4 Units', 3830, 5050],
+    [],
+    ['Other Place (otnd) - Occupied No Notice'],
+    ['A1', 't05', 'Resident E', 700, 750, 0, 0, 'Current', null, null, D(2026, 2, 1), 'No', null, null, null, D(2026, 2, 1), D(2026, 2, 1), D(2027, 1, 31)],
+    ['Total', null, '1 Units', 700, 750],
+    ['Total for otnd', null, '1 Units', 700, 750],
+    ['Grand Total', null, '5 Units', 4530, 5800],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(aoa, { cellDates: true });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Report1');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', cellDates: true });
+  it('is detected as a rent-roll source', () => { expect(detectUploadKind(buf)).toBe('rent_roll'); });
+  it('one property per section family: units from "Total for", market = every unit, in-place + leases from occupied rows only', () => {
+    const out = parseRentRoll(buf);
+    const t = out.find((p) => p.code === 'tsnd')!;
+    expect(t.name).toBe('Test Place');
+    expect(t.units).toBe(4);
+    expect(t.marketMonthly).toBe(4050);               // 1000 + 1000 + 1000 + 1050 — the Future row is the same unit
+    expect(t.inPlaceMonthly).toBe(2850);              // 900 + 950 + 1000
+    expect(t.occupiedUnits).toBe(3);
+    expect(t.source).toBe('unit_level');
+    expect(t.asOf).toBe('10/26/2026');
+    expect(t.leases).toEqual([
+      { m: 1000, r: 900, e: '2026-11-30' }, { m: 1000, r: 950, e: '2027-05-31' }, { m: 1050, r: 1000, e: '2025-12-31' },
+    ]);
+    const o = out.find((p) => p.code === 'otnd')!;
+    expect(o.units).toBe(1); expect(o.leases!.length).toBe(1);
+    // no resident names anywhere in the parsed output
+    expect(JSON.stringify(out)).not.toMatch(/Resident [A-E]/);
   });
 });

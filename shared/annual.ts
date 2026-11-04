@@ -268,6 +268,13 @@ export const TEMPLATE_CAT_PCT: Record<string, number> = { '1': 0, loss: 0, '2': 
 export const TURN_GLS: Record<string, string> = { '5105': 'application fees', '5152': 'deposit forfeitures', '5157': 'move-in admin fees' };
 /** Trailing-12 total / 12 flat (template: only when the T12 exceeds $1,000). */
 export const FLAT_T12_GLS = new Set(['5135', '5151']);
+/** Turn-related expense lines (Troy 2026-11-04): paint, carpet, blinds, locks, appliances,
+    cleaning — budgeted on the lease-expiration curve with a ONE-MONTH lag for invoice
+    processing (shape 'turns'), whenever the budget has expirations. */
+export const TURN_EXPENSE_GLS = new Set(['6702', '6704', '6706', '6726', '6728', '6905', '6908', '6912', '6926', '7002', '7006', '7010', '7015']);
+/** The expirations curve shifted one month forward: a lease ending in month i is a turn
+    invoice in month i+1 (December's roll into January). */
+export function lagMonths(m: Months, lag = 1): Months { return m.map((_, i) => m[(i - lag + 12) % 12]) as Months; }
 /** Average of the non-zero months, flat. */
 export const AVG_NZ_GLS = new Set(['5110']);
 /** Template zeroes these (corporate allocation credits; one-time concessions). */
@@ -284,7 +291,7 @@ export const DEFAULT_BASELINE: NonNullable<BudgetInputs['baseline']> = { source:
 
 /** A calendar series → the budget months on a shape, × (1+pct) (or a
     per-month pct array), rotated into budget order, MROUNDed when asked. */
-export function annualBaseline(cal: Months, opts: { pct?: number; pcts?: Months | null; shape: BaselineShape; startMonth?: number; lastMonth?: number; curve?: Months | null; mult?: number }): Months {
+export function annualBaseline(cal: Months, opts: { pct?: number; pcts?: Months | null; shape: BaselineShape; startMonth?: number; lastMonth?: number; curve?: Months | null; mult?: number; turns?: Months | null }): Months {
   const g = (i: number) => 1 + (opts.pcts ? (opts.pcts[i] || 0) : (opts.pct || 0));
   const start = opts.startMonth || 1;
   const last = (opts.lastMonth || 10) - 1;
@@ -295,6 +302,15 @@ export function annualBaseline(cal: Months, opts: { pct?: number; pcts?: Months 
     case 'curve': {
       const tot = r2(cal.reduce((a, b) => a + b, 0) * (1 + (opts.pct || 0)));
       m = spreadMonthly(tot, opts.curve && opts.curve.some((v) => v > 0) ? opts.curve : CURVES.flat);
+      break;
+    }
+    case 'turns': {
+      // T12 total × factor, spread by lease expirations lagged one month (calendar order);
+      // with no expirations on file the line falls back to flat
+      const tot = r2(cal.reduce((a, b) => a + b, 0) * (1 + (opts.pct || 0)));
+      const w = opts.turns && opts.turns.some((v) => v > 0) ? opts.turns : CURVES.flat;
+      const ws = w.reduce((a, b) => a + b, 0);
+      m = w.map((v) => (ws ? (tot * v) / ws : tot / 12)) as Months;
       break;
     }
     case 'last': m = cal.map((_, c) => cal[last] * g(c)) as Months; break;
@@ -410,6 +426,14 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   /** statement line × factor on a shape; false when the property has no history on the GL.
       Precedence: the budget's own per-GL overrides → the GL's foundation rule
       (GRKS draft) → the built-in template rules → the budget-wide defaults. */
+  /* ---- lease expirations (calendar months): typed on the budget, else the rent roll /
+     UAD leases, else the Yardi template's count (Troy 2026-11-04: the UAD is the source
+     of expirations — it beats the template). The turn curve is the same series lagged
+     one month for invoice processing. ---- */
+  const exp: Months = (inputs.expirations && inputs.expirations.some((v) => v) ? inputs.expirations
+    : src.leases?.length ? expirationsFromLeases(src.leases, inputs.year)
+    : tpl?.leaseExpirations?.some((v) => v) ? tpl.leaseExpirations : zero12()) as Months;
+  const turnCurve: Months = lagMonths(exp, 1);
   const baseline = (a: CoaAccount, shape?: BaselineShape, pctOverride?: number): boolean => {
     const cal = base[a.code];
     if (!cal || !cal.some((v) => v)) return false;
@@ -420,19 +444,19 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const fc = tpl?.utilForecast?.[a.code];
     const pcts = bl.useUtilForecast && fc && fc.some((v) => v) && bl.glGrowth?.[a.code] == null ? fc : null;
     const ruleShape = rule ? RULE_SHAPE[rule.method] : undefined;
-    const sh: BaselineShape = bl.glShape?.[a.code] ?? shape ?? ruleShape ?? (LAST_MONTH_FLAT_GLS.has(a.code) ? 'last' : FLAT_T12_GLS.has(a.code) ? 'flat' : AVG_NZ_GLS.has(a.code) ? 'avgnz' : bl.shape);
+    const sh: BaselineShape = bl.glShape?.[a.code] ?? shape ?? ruleShape ?? (LAST_MONTH_FLAT_GLS.has(a.code) ? 'last' : FLAT_T12_GLS.has(a.code) ? 'flat' : AVG_NZ_GLS.has(a.code) ? 'avgnz' : TURN_EXPENSE_GLS.has(a.code) && turnCurve.some((v) => v > 0) ? 'turns' : bl.shape);
     // T12/12 flat only when the trailing-12 exceeds $1,000 (RMC's IF(T12>1000, …, 0))
     const threshold = sh === 'flat' && !shape && (rule ? rule.method === 'flatT12' && !rule.noThreshold : FLAT_T12_GLS.has(a.code));
     if (threshold && Math.abs(baseTotal(a.code)) <= 1000) return false;
     const mult = bl.glMround?.[a.code] ?? (bl.mround || rule?.mround || 0);
-    let months = annualBaseline(cal, { pct, pcts, shape: sh, startMonth, lastMonth, curve: CURVES[a.curve || 'flat'], mult });
+    let months = annualBaseline(cal, { pct, pcts, shape: sh, startMonth, lastMonth, curve: CURVES[a.curve || 'flat'], mult, turns: turnCurve });
     if (rule?.method === 'wavg' && sh === 'wavg' && !bl.glShape?.[a.code] && startMonth === 1) {
       // RMC's Excel weighted average can't wrap the year: January and December
       // fall back to the plain same-month × factor, MROUND $10 (the GRKS cells)
       const edge = (c: number) => { const v = cal[c] * (1 + pct); return r2(Math.round(v / 10) * 10); };
       months = [edge(0), ...months.slice(1, 11), edge(11)] as Months;
     }
-    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}) });
+    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}) });
     return true;
   };
 
@@ -452,9 +476,6 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   const lastGpr = lastOf('4994');
 
   /* ---- lease expirations → turnover ---- */
-  const exp: Months = (inputs.expirations && inputs.expirations.some((v) => v) ? inputs.expirations
-    : tpl?.leaseExpirations?.some((v) => v) ? tpl.leaseExpirations
-    : src.leases?.length ? expirationsFromLeases(src.leases, inputs.year) : zero12()) as Months;
   const renew = inputs.ltl?.renewalPct ?? tpl?.renewalPct ?? 0.65;
   const turns = exp.map((e) => r2(e * (1 - renew)));
   const turnsTotal = turns.reduce((a, b) => a + b, 0);

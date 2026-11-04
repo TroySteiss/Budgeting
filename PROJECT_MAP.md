@@ -514,6 +514,28 @@ dashed REFERENCE tag (`.histtag`), with the annual and per-unit columns filled a
 reference columns blank. The name cell carries `data-hist` + a ▸/▾ chevron; the toolbar chip
 `#hist-all` unfolds every GL at once (clicking one GL while "all" is on narrows back to it).
 
+## Unit Availability Details (UAD) → expirations, LTL burnoff, turn costs (Troy 2026-11-04)
+
+- **The UAD is a rent-roll source.** `parseUnitAvailability` (importers.ts; `parseRentRoll`
+  dispatches on the "Unit Availability Details" title, `detectUploadKind` → `rent_roll`)
+  reads every unit per "Property (code) - status group" section: units from the "Total for
+  <code>" line (else distinct units), market = every unit's Unit Rent, in-place and
+  `leases {m, r, e}` from the occupied statuses (Current / Notice / Eviction; Future /
+  Applicant rows are the same unit again, Past is history), lease end = "Lease To", as-of
+  from the header. Resident names are never read. Output is `source: 'unit_level'`, so the
+  Data page mapping, `rent_snapshots`, relink, the per-lease LTL burnoff and
+  `expirationsFromLeases` all work unchanged. Date cells are noon-shifted before taking
+  the day (xlsx hands back local-midnight Dates).
+- **Expiration precedence** (engine): typed `inputs.expirations` → rent roll / UAD leases
+  → the Yardi template's count. (Was template before leases.)
+- **Turn costs follow expirations + 1 month**: `TURN_EXPENSE_GLS` (6702 appliance parts,
+  6704/6912 blinds, 6706/6908 carpet cleaning, 6726 locks, 6728 paint, 6905 appliance
+  repair, 6926 painting, 7002/7006/7010/7015 RR appliances/carpet/blinds/painting) default
+  to shape `'turns'` whenever the budget has expirations: T12 total × factor spread on
+  `lagMonths(exp, 1)` (December rolls into January); any GL can pick or drop the shape in
+  its row shape menu ("T12 total on lease expirations, +1 month lag"); driver tag TURNS,
+  `driver.turns` = expirations counted. Tests in annual.test.ts / importers.test.ts (174).
+
 ## Gotchas / policy
 
 - **Never ingest individual employee compensation** through the GENERAL upload paths (the

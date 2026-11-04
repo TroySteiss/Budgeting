@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, gprStepsForTarget, gprStepsSummary, type TemplateData, type AnnualSources,
+  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, type TemplateData, type AnnualSources,
 } from '../shared/annual.js';
 import { sum, zero12, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
 import { parseYardiBudgetTemplate, parseRentRoll, parseMonarchStatement, detectUploadKind } from '../src/importers.js';
@@ -487,5 +487,35 @@ describe('GPR increases in specific months (Troy 2026-11-03)', () => {
     expect(gprStepsSummary(cal([0, 0, 0.03, 0, 0, 0, 0, 0, 0.02, 0, 0, 0]))).toBe('Mar +3%, Sep +2%');
     expect(gprStepsSummary(cal(Array(12).fill(0.005)))).toBe('0.50% every month');
     expect(gprStepsSummary(zero12())).toBe('no increases');
+  });
+});
+
+describe('turn costs follow lease expirations with a one-month lag (Troy 2026-11-04)', () => {
+  const actual = { ...synthetic(), '6926': cal(Array(12).fill(500)), '6728': cal(Array(12).fill(100)) };   // painting contractor 6,000/yr, paint 1,200/yr
+  const inputs = defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10);
+  // 24 leases: 12 end in March, 12 in September
+  const leases = [...Array(12).fill({ m: 1000, r: 950, e: '2026-03-31' }), ...Array(12).fill({ m: 1000, r: 950, e: '2026-09-30' })];
+  it('lagMonths shifts the curve forward and wraps December into January', () => {
+    expect(lagMonths(cal([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]))).toEqual([2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  });
+  it('painting lands in April and October, the months after the expirations', () => {
+    const lines = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10, leases });
+    const p = L(lines, '6926');
+    expect((p.driver as any).shape).toBe('turns');
+    expect(sum(p.months)).toBeCloseTo(6000 * (1 + (p.driver as any).pct), 0);
+    expect(p.months[3]).toBeGreaterThan(0); expect(p.months[9]).toBeGreaterThan(0);
+    expect(p.months.filter((v) => v).length).toBe(2);
+    expect(TURN_EXPENSE_GLS.has('6926') && TURN_EXPENSE_GLS.has('7006')).toBe(true);
+    // a GL outside the turn set keeps its template shape
+    expect((L(lines, '6604').driver as any).shape).not.toBe('turns');
+  });
+  it('rent-roll / UAD leases beat the template expirations; typed expirations beat both; no expirations → flat', () => {
+    const tpl = { leaseExpirations: cal([5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]) } as any;
+    const fromLeases = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10, leases, template: tpl });
+    expect(L(fromLeases, '6926').months.filter((v) => v).length).toBe(2);
+    const typed = generateAnnualLines(coaList, { ...inputs, expirations: cal([0, 0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0]) }, { actual, budget: null, lastMonth: 10, leases });
+    expect(L(typed, '6926').months[6]).toBeGreaterThan(0); expect(L(typed, '6926').months.filter((v) => v).length).toBe(1);
+    const none = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10 });
+    expect((L(none, '6926').driver as any).shape).not.toBe('turns');
   });
 });
