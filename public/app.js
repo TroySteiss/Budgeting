@@ -905,6 +905,7 @@ function renderEditor(el) {
             return items.filter(([c]) => used.has(c)).map(([c, lb]) => `<span><span class="dot ${c}"></span>${lb}</span>`).join('');
           })()}
           <span class="muted">· click a row's chip to change its formula</span>
+          ${bv.hist && (bv.hist.t12 || bv.hist.budget) ? `<button class="chip hist-all" id="hist-all" title="Unfold the prior trailing-12 and current-year budget by month under every GL — reference rows, not part of the budget">${S.histAll ? '▾ hide history' : '▸ history under every GL'}</button>` : ''}
           ${(() => {
             const ov = bv.lines.filter((l) => l.override);
             if (!ov.length) return '';
@@ -1174,6 +1175,17 @@ function renderEditor(el) {
     openRowTools(b, btn.dataset.tools, btn);
   }));
   el.querySelectorAll('button.fxp-steps').forEach((btn) => btn.addEventListener('click', (e) => { e.stopPropagation(); openGprSteps(b, btn); }));
+  // per-GL history: click the account name to unfold / fold its reference rows
+  el.querySelectorAll('td.name[data-hist]').forEach((td) => td.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const code = td.dataset.hist;
+    if (S.histAll) { S.histAll = false; S.histOpenSet = new Set([code]); }
+    else if (S.histOpenSet.has(code)) S.histOpenSet.delete(code); else S.histOpenSet.add(code);
+    localStorage.setItem('bt-hist', JSON.stringify([...S.histOpenSet]));
+    render();
+  }));
+  const histAllBtn = el.querySelector('#hist-all');
+  if (histAllBtn) histAllBtn.addEventListener('click', (e) => { e.stopPropagation(); S.histAll = !S.histAll; if (!S.histAll) { S.histOpenSet = new Set(); localStorage.setItem('bt-hist', '[]'); } render(); });
   // inline formula params: change → patch inputs → regenerate
   el.querySelectorAll('input.fxp').forEach((box) => box.addEventListener('change', async () => {
     const gl = box.dataset.fxp;
@@ -1286,6 +1298,16 @@ function gridHtml(bv, totals) {
     return `<td class="ref ${v < 0 ? 'neg' : ''}">${v ? money(v) : ''}</td>`;
   };
   const refCells = (code, kind) => `${cols.ref1 ? refCell(refA, code, kind) : ''}${cols.ref2 ? refCell(refB, code, kind) : ''}`;
+  // per-GL history (Troy 2026-11-04): the prior trailing-12 and the current-year budget by
+  // month, unfolded under a GL on click — reference rows, never part of the budget
+  if (!S.histOpenSet) S.histOpenSet = new Set(JSON.parse(localStorage.getItem('bt-hist') || '[]'));
+  const histFor = (code) => {
+    const h = bv.hist; if (!h) return [];
+    const out = [];
+    for (const src of [h.t12, h.budget]) { if (src && src.cal[code] && src.cal[code].some((v) => v)) out.push({ label: src.label, period: src.period, months: src.cal[code] }); }
+    return out;
+  };
+  const histOpen = (code) => S.histAll || S.histOpenSet.has(code);
   const rows = [];
   rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th${actIdx.has(i) ? ' class="actcol" title="Locked to posted actuals — an edit here corrects the posted figure"' : ''}>${labels[i]}${actIdx.has(i) ? ' ✓' : ''}</th>`).join('')}${cols.annual ? `<th>${bv.annual ? bv.budget.year : 'Year 1'}</th>` : ''}${cols.ref1 ? `<th title="${esc(refA.period)}">T12</th>` : ''}${cols.ref2 ? `<th title="${esc(refB.period)}">${esc(refB.label.replace(/ budget$/i, ' bud'))}</th>` : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
   const units = Number(bv.budget.inputs?.units) || 1;
@@ -1343,7 +1365,7 @@ function gridHtml(bv, totals) {
     const trCls = [sp ? 'sp' : '', smell ? 'badbills' : ''].filter(Boolean).join(' ');
     rows.push(`<tr${trCls ? ` class="${trCls}"` : ''}>
       <td class="code">${a.code}</td>
-      <td class="name" title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}">${esc(a.name)}${smell ? ` <span class="warnflag" title="Seller billing looks NON-ACCRUAL: ${esc(smell.join('; '))}. Likely bad bills — review, or smooth via WAVG / flat / Minot seasonal.">⚠</span>` : ''}${a.active === false ? ' <span class="badge" title="Deactivated GL still carrying dollars — Recalc zeroes it">inactive — recalc to zero</span>' : ''}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
+      <td class="name${histFor(a.code).length ? ' hashist' : ''}" ${histFor(a.code).length ? `data-hist="${a.code}"` : ''} title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}${histFor(a.code).length ? ' — click for the prior T12 / CY budget by month' : ''}">${histFor(a.code).length ? `<span class="hx">${histOpen(a.code) ? '▾' : '▸'}</span>` : ''}${esc(a.name)}${smell ? ` <span class="warnflag" title="Seller billing looks NON-ACCRUAL: ${esc(smell.join('; '))}. Likely bad bills — review, or smooth via WAVG / flat / Minot seasonal.">⚠</span>` : ''}${a.active === false ? ' <span class="badge" title="Deactivated GL still carrying dollars — Recalc zeroes it">inactive — recalc to zero</span>' : ''}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
       ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? (prm.steps ? `<button class="fxp fxp-steps" data-steps="${a.code}" title="${esc(prm.label)} — click to place increases in specific months">${esc(prm.value)}</button>` : `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">`) : ''}</td>` : ''}
       ${monthIdx.map((i) => `<td class="m ${actIdx.has(i) ? 'drv-act' : sp ? '' : dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money2(m[i]) : ''}"></td>`).join('')}
       ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}"><input data-ann="${a.code}" value="${ann ? money2(ann) : ''}" title="${bv.annual ? bv.budget.year : 'Year 1'} total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
@@ -1351,6 +1373,15 @@ function gridHtml(bv, totals) {
       ${cols.punit ? `<td>${ann ? money(ann / units) : ''}</td>` : ''}
       ${cols.note ? `<td class="note"><input data-gl="${a.code}" value="${esc(l ? l.note : '')}" placeholder="note"></td>` : ''}
     </tr>`);
+    if (histOpen(a.code)) for (const h of histFor(a.code)) {
+      const hs = sumM(h.months);
+      rows.push(`<tr class="hist" data-histrow="${a.code}" title="Reference only — ${esc(h.label)}${h.period ? ` (${esc(h.period)})` : ''} — not part of the ${bv.budget.year} budget">
+        <td class="code"></td><td class="name"><span class="histtag">reference</span>${esc(h.label)}${h.period ? ` <span class="muted">${esc(h.period)}</span>` : ''}</td>
+        ${cols.fx ? '<td></td>' : ''}
+        ${monthIdx.map((i) => `<td class="${h.months[i] < 0 ? 'neg' : ''}">${h.months[i] ? money(h.months[i]) : ''}</td>`).join('')}
+        ${cols.annual ? `<td class="${hs < 0 ? 'neg' : ''}">${money(hs)}</td>` : ''}${cols.ref1 ? '<td></td>' : ''}${cols.ref2 ? '<td></td>' : ''}
+        ${cols.punit ? `<td>${money(hs / units)}</td>` : ''}${cols.note ? '<td></td>' : ''}</tr>`);
+    }
   }
   return `<table class="grid">${rows.join('')}</table>`;
 }

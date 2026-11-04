@@ -502,6 +502,18 @@ and its Summary tab. Nothing from that workbook's roster is read — only its la
   step pattern on file scales by one factor so the months keep their places; only a budget
   with NO steps falls back to a uniform monthly rate.
 
+## Per-GL history rows (Troy 2026-11-04)
+
+Click a GL's name in the editor to unfold, right under it, the property's prior trailing-12
+actuals and current-year budget by month — reference only, never part of the budget.
+`budgetView` sends `hist: { t12: { label, period, cal }, budget: {...} }` (annual only; the
+calendars rotated to the budget's month order). `gridHtml`: `histFor(code)` lists the sources
+with data, `histOpen(code)` = `S.histAll || S.histOpenSet` (persisted in localStorage
+`bt-hist`); rows render as `tr.hist` with the hatched background, italic dim text and the
+dashed REFERENCE tag (`.histtag`), with the annual and per-unit columns filled and the
+reference columns blank. The name cell carries `data-hist` + a ▸/▾ chevron; the toolbar chip
+`#hist-all` unfolds every GL at once (clicking one GL while "all" is on narrows back to it).
+
 ## Gotchas / policy
 
 - **Never ingest individual employee compensation** through the GENERAL upload paths (the

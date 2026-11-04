@@ -577,6 +577,12 @@ function budgetView(lb: LoadedBudget) {
       return { label: lb.budget.inputs?.refSource === 'budget' ? 'CY budget' : 'T12', ...k.monthly };
     })(),
     categoryTotals: categoryTotals(lines, lb.coaMap),
+    // annual: the property's own history by GL — the trailing-12 actuals and the CY budget,
+    // laid on the budget's month order — for the per-GL history rows (Troy 2026-11-04)
+    hist: lb.annual ? {
+      t12: lb.actualCal ? { label: lb.refs.find((r) => r.key === 'actual')?.label || 'T12 actuals', period: lb.refs.find((r) => r.key === 'actual')?.period || '', cal: Object.fromEntries(Object.entries(lb.actualCal).map(([g, m]) => [g, rotate12(m, start)])) } : null,
+      budget: lb.budgetCal ? { label: lb.refs.find((r) => r.key === 'budget')?.label || 'CY budget', period: lb.refs.find((r) => r.key === 'budget')?.period || '', cal: Object.fromEntries(Object.entries(lb.budgetCal).map(([g, m]) => [g, rotate12(m, start)])) } : null,
+    } : null,
     // the tie-out reference: UW book (acquisition) or trailing-12 / CY budget / targets (annual)
     uw: refOf(lb),
     refLabel: lb.annual ? lb.refLabel : 'UW Y1',
