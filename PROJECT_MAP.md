@@ -479,6 +479,29 @@ and its Summary tab. Nothing from that workbook's roster is read — only its la
   `addReviewSheets` returns the `PayrollSheetInfo` the summary needs. Tests:
   `test/xlsx-export.test.ts` (seed COA needs `active: true` stamped on — the DB does that).
 
+## Dashboard property list, full-width editor, GPR month steps (Troy 2026-11-03)
+
+- **Properties card** (`propertyListHtml` / `wirePropertyList`, app.js) above the Budgets
+  table: every subject property (plus any comp that owns a budget), the budget for the
+  chosen year (`S.dashYear`, default next year) or **Not started** (with "has 2026" when
+  another year exists), and a reports pill. Click a row → `propertyReports(st, code,
+  budget, year)`: trailing-12 actual statement + CY budget statement are REQUIRED (a Yardi
+  template built for that budget year carries both); the template, a rent roll and the
+  payroll apply (`inputs.wagesFromRoster` or a payroll model) are recommended. Year-aware:
+  a statement whose period ends before `year-1`, or a template for another budget year,
+  reads as **stale**, not on file. Buttons: Open budget / **+ Start {year} budget** (presets
+  `S.nb = { prop, year }` for `newBudgetDialog`) / Upload data (the Data view).
+- **See everything at once**: the editor and payroll views add `.wrap.wide` (no 1340px cap);
+  `table.grid` pins the GL and Account columns (`th.l` / `td.code` / `td.name` sticky-left,
+  row backgrounds carried); side pane 400px, month inputs 64px.
+- **GPR increases in SPECIFIC months**: `inputs.gpr.growthPct[i]` is the % applied IN month
+  i (compounding). Assumptions shows a Jan..Dec grid (`gprStepsGrid` / `readGprSteps`, live
+  cumulative %); the 4994 row's Fx chip opens the same grid in a popover (`openGprSteps`);
+  the driver label reads "GPR — steps: Mar +3%, Sep +2%" (`gprStepsSummary`). The income
+  growth tie (`/tie-growth` key '1') calls `gprStepsForTarget` (shared/annual, tested): the
+  step pattern on file scales by one factor so the months keep their places; only a budget
+  with NO steps falls back to a uniform monthly rate.
+
 ## Gotchas / policy
 
 - **Never ingest individual employee compensation** through the GENERAL upload paths (the

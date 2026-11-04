@@ -94,7 +94,7 @@ table.list tr.click:hover { background: var(--hover); }
 .kpi .sub { font-size: 11.5px; color: var(--dim); }
 
 /* ---------- editor layout ---------- */
-.editor { display: grid; grid-template-columns: minmax(0, 1fr) 430px; gap: 16px; align-items: start; }
+.editor { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 14px; align-items: start; }
 .editor.noside { grid-template-columns: minmax(0, 1fr); }
 .editor.noside .side { display: none; }
 .editor .side { position: sticky; top: 60px; max-height: calc(100vh - 76px); overflow-y: auto; overflow-x: hidden; min-width: 0; }
@@ -117,7 +117,7 @@ table.grid td.name { text-align: left; max-width: 185px; overflow: hidden; text-
 table.grid tr.header td { background: var(--soft2); font-weight: 650; padding-top: 6px; }
 table.grid tr.total td { background: var(--total-bg); font-weight: 650; border-top: 1px solid var(--line); }
 table.grid tr.grand td { background: var(--grand-bg); font-weight: 700; }
-table.grid td.m input { width: 68px; border: 1px solid transparent; background: transparent; text-align: right; border-radius: 4px; padding: 2px 3px; color: inherit; }
+table.grid td.m input { width: 64px; border: 1px solid transparent; background: transparent; text-align: right; border-radius: 4px; padding: 2px 3px; color: inherit; }
 table.grid td.m input:hover { border-color: var(--line); }
 table.grid td.m input:focus { border-color: var(--accent); background: var(--input); outline: none; }
 table.grid td.ann input { width: 86px; border: 1px solid transparent; background: transparent; text-align: right; border-radius: 4px; padding: 2px 3px; color: inherit; font-weight: 600; }
@@ -316,6 +316,8 @@ body.monarch .card h2 { color: #00496f; font-size: 19px; letter-spacing: -.01em;
 body.monarch .btn { border-radius: 6px; font-weight: 700; }
 body.monarch select, body.monarch input { font-family: inherit; }
 body.monarch .wrap { max-width: 1340px; }
+/* the editor and payroll views use the whole window — a wide monitor shows every month column */
+body.monarch .wrap.wide { max-width: none; }
 
 /* denser payroll grid + primary-site group rows (one row per person) */
 .paytbl td { padding: 5px 10px; }
@@ -334,3 +336,27 @@ body.monarch .wrap { max-width: 1340px; }
 .rowmenu.gpr .rm-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; gap: 10px; }
 .rowmenu.gpr button { display: inline-block; width: auto; }
 button.fxp-steps { font-size: 11px; padding: 2px 7px; margin-left: 4px; border: 1px dashed var(--line); background: none; border-radius: 6px; cursor: pointer; color: var(--accent); }
+
+/* sticky GL / account columns: the months scroll, the names stay (Troy 2026-11-03) */
+table.grid th.l { position: sticky; z-index: 7; background: var(--soft); }
+table.grid th.l:first-child { left: 0; }
+table.grid th.l:nth-child(2) { left: 52px; }
+table.grid td.code, table.grid td.name { position: sticky; z-index: 3; background: var(--panel); }
+table.grid td.code { left: 0; min-width: 44px; }
+table.grid td.name { left: 52px; }
+table.grid tr.header td.code, table.grid tr.header td.name { background: var(--soft2); }
+table.grid tr.total td.code, table.grid tr.total td.name { background: var(--total-bg); }
+table.grid tr.grand td.code, table.grid tr.grand td.name { background: var(--grand-bg); }
+table.grid td.name { box-shadow: 2px 0 0 var(--gridline); }
+
+/* Properties list on the dashboard */
+table.plist td.st { white-space: nowrap; }
+.pill { display: inline-block; border-radius: 10px; padding: 1px 8px; font-size: 11px; font-weight: 600; }
+.pill.ok { background: var(--good-bg, #e6f3e9); color: var(--good, #1e6b3a); }
+.pill.miss { background: var(--bad-bg, #fbe5e3); color: var(--bad, #a2271c); }
+.pill.rec { background: var(--badge-bg); color: var(--dim); }
+.pill.none { background: var(--soft2); color: var(--dim); }
+tr.pdetail td { background: var(--soft); padding: 10px 14px 12px; }
+.reports { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px 16px; margin: 6px 0 10px; }
+.reports .rep { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; }
+.reports .rep .sub { color: var(--dim); font-size: 11px; }

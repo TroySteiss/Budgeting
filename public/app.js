@@ -169,7 +169,7 @@ function render() {
       <button class="theme" id="theme-toggle" title="Toggle dark mode">${S.theme === 'dark' ? '☀' : '🌙'}</button>
       <span class="who">${esc(S.auth.username)}${S.auth.isAdmin ? ' · admin' : ''}<button id="logout">Sign out</button></span>
     </div>
-    <div class="wrap" id="main"></div>`;
+    <div class="wrap${S.view === 'editor' || S.view === 'payroll' ? ' wide' : ''}" id="main"></div>`;
   document.querySelectorAll('.topbar nav button').forEach((b) =>
     b.addEventListener('click', () => { S.view = b.dataset.v; render(); }));
   document.getElementById('logout').addEventListener('click', async () => { await POST('/logout'); location.reload(); });
@@ -229,7 +229,9 @@ function renderDash(el) {
   const st = S.state;
   const props = new Map(st.properties.map((p) => [p.code, p]));
   const hasAcq = st.budgets.some((b) => b.budget_type !== 'annual');
+  const pl = propertyListHtml(st);
   el.innerHTML = `
+    ${pl.html}
     <div class="card">
       <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:10px">
         <h2 style="margin:0">Budgets</h2>
@@ -260,6 +262,7 @@ function renderDash(el) {
     <dialog class="assump" id="pm-dlg"></dialog>
     <dialog class="assump" id="actcsv-dlg"></dialog>`;
 
+  wirePropertyList(el, pl);
   el.querySelectorAll('tr.click').forEach((tr) => tr.addEventListener('click', async (e) => {
     if (e.target.dataset.del) return;
     await openBudget(Number(tr.dataset.id));
@@ -291,6 +294,110 @@ function renderDash(el) {
       menu.querySelector('[data-x="act"]').addEventListener('click', () => openActualizeCsv());
     });
   });
+}
+
+/* ---- Properties list (Troy 2026-11-03): every property, the budget for the
+   chosen year or "Not started", and — click in — which reports are on file and
+   which are missing. A budget needs the trailing-12 actual statement and the
+   CY budget statement (a Yardi template carries both); the template itself,
+   a rent roll and the payroll roster apply are recommended. ---- */
+function propertyReports(st, code, budget, year) {
+  // a report counts for `year` only when it is current: a trailing-12 that ends in the
+  // year before the budget (or a template built for that budget year) — last year's
+  // files are "stale", not "on file"
+  const yearOf = (period) => { const m = String(period || '').match(/(\d{4})(?!.*\d{4})/); return m ? Number(m[1]) : null; };
+  const current = (period) => { const y = yearOf(period); return y == null ? true : y >= (year || new Date().getFullYear() + 1) - 1; };
+  const tpls = (st.templates || []).filter((x) => x.property_code === code);
+  const stmts = (st.stmtSnapshots || []).filter((x) => x.property_code === code);
+  const rents = (st.rentSnapshots || []).filter((x) => x.property_code === code);
+  const fmtd = (d) => (d ? new Date(d).toLocaleDateString() : '');
+  const newest = (arr) => arr.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+  const tplCur = tpls.filter((x) => !year || Number(x.budget_year) === year);
+  const tpl = newest(tplCur) || newest(tpls), act = newest(stmts.filter((x) => x.kind === 'actual' && current(x.period))) || newest(stmts.filter((x) => x.kind === 'actual')), bud = newest(stmts.filter((x) => x.kind === 'budget' && current(x.period))) || newest(stmts.filter((x) => x.kind === 'budget')), rent = newest(rents);
+  const tplOk = !!tpl && (!year || Number(tpl.budget_year) === year);
+  const actOk = !!act && current(act.period), budOk = !!bud && current(bud.period);
+  const stale = (x, what) => `stale — have ${x.period || what}, need the ${what} for ${year}`;
+  const inp = (budget && budget.inputs) || {};
+  const payOk = !!budget && (inp.wagesFromRoster === true || !!budget.payroll_model_id);
+  return [
+    { key: 'actual', label: 'Trailing-12 actual statement', need: 'required', ok: actOk || (tplOk && !!tpl.actual_period),
+      sub: actOk ? `${act.period || ''} · ${fmtd(act.created_at)}` : tplOk && tpl.actual_period ? `from the Yardi template · ${tpl.actual_period}` : act ? stale(act, '12 months') : 'Property Comparison (Cash), 12 months — or the Yardi template' },
+    { key: 'budget', label: 'Current-year budget statement', need: 'required', ok: budOk || (tplOk && !!tpl.budget_period),
+      sub: budOk ? `${bud.period || ''} · ${fmtd(bud.created_at)}` : tplOk && tpl.budget_period ? `from the Yardi template · ${tpl.budget_period}` : bud ? stale(bud, 'current-year budget') : 'the reference column every tie compares to' },
+    { key: 'template', label: 'Yardi budget template', need: 'recommended', ok: tplOk,
+      sub: tplOk ? `budget ${tpl.budget_year} · ${fmtd(tpl.created_at)}` : tpl ? `have the ${tpl.budget_year} template — the ${year} one carries this year's expirations, debt and suggestions` : 'budgetYSR…xlsm — expirations, debt schedule, corporate suggestions' },
+    { key: 'rent', label: 'Rent roll', need: 'recommended', ok: !!rent,
+      sub: rent ? `${rent.as_of ? fmtd(rent.as_of) : ''} · ${rent.units || '?'} units` : 'unit-level — per-lease loss to lease and market rents' },
+    { key: 'payroll', label: 'Payroll wages', need: 'recommended', ok: payOk,
+      sub: !budget ? 'applied to the budget from the Pay-rates tab once it exists' : payOk ? (inp.wagesFromRoster ? 'Pay-rates roster applied' : 'payroll model linked') : 'not applied yet — Pay-rates tab → Apply to budgets' },
+  ];
+}
+function propertyListHtml(st) {
+  // every subject property, plus any comp that already owns a budget (the Minot sites are budgeted too)
+  const budgeted = new Set(st.budgets.map((b) => b.property_code));
+  const subjects = st.properties.filter((p) => p.role === 'subject' || budgeted.has(p.code)).sort((a, b) => (a.market || '').localeCompare(b.market || '') || a.code.localeCompare(b.code));
+  if (!subjects.length) return { html: '', rows: [] };
+  const years = [...new Set(st.budgets.map((b) => b.year))].sort((a, b) => b - a);
+  const nextYear = new Date().getFullYear() + 1;
+  if (!years.includes(nextYear)) years.unshift(nextYear);
+  const year = S.dashYear && years.includes(S.dashYear) ? S.dashYear : years[0];
+  S.dashYear = year;
+  const rows = subjects.map((p) => {
+    const mine = st.budgets.filter((b) => b.property_code === p.code);
+    const b = mine.filter((x) => x.year === year).sort((x, y) => new Date(y.updated_at) - new Date(x.updated_at))[0] || null;
+    const others = [...new Set(mine.filter((x) => x.year !== year).map((x) => x.year))].sort((a, c) => c - a);
+    const reports = propertyReports(st, p.code, b, year);
+    const missingReq = reports.filter((r) => r.need === 'required' && !r.ok);
+    const missingRec = reports.filter((r) => r.need === 'recommended' && !r.ok);
+    return { p, b, others, reports, missingReq, missingRec };
+  });
+  const notStarted = rows.filter((r) => !r.b).length;
+  const html = `
+    <div class="card">
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:10px">
+        <h2 style="margin:0">Properties <span class="badge">${rows.length}</span>${notStarted ? ` <span class="pill none" style="margin-left:6px">${notStarted} not started for ${year}</span>` : ''}</h2>
+        <div class="row" style="align-items:center; gap:8px"><label class="muted" style="font-size:12px">Budget year</label><select id="dash-year">${years.map((y) => `<option value="${y}" ${y === year ? 'selected' : ''}>${y}</option>`).join('')}</select></div>
+      </div>
+      <table class="list plist"><tr><th>Property</th><th>Units</th><th>Region</th><th>${year} budget</th><th>Reports</th><th>Updated</th></tr>
+        ${rows.map(({ p, b, others, missingReq, missingRec }) => {
+          const reps = missingReq.length ? `<span class="pill miss">${missingReq.length} required missing</span>` : missingRec.length ? `<span class="pill rec">${missingRec.length} recommended missing</span>` : '<span class="pill ok">all on file</span>';
+          const stat = b ? `<span class="pill ok">${esc(b.status || 'draft')}</span>${b.budget_type === 'annual' ? '' : ' <span class="muted">acquisition</span>'}`
+            : `<span class="pill none">Not started</span>${others.length ? ` <span class="muted" style="font-size:11px">has ${others.join(', ')}</span>` : ''}`;
+          return `<tr class="pclick" data-p="${esc(p.code)}" title="click for the reports on file">
+            <td><b>${esc(p.code)}</b> · ${esc(p.name)}</td><td>${p.units || ''}</td><td class="muted">${esc(p.market || '')}</td>
+            <td class="st">${stat}</td><td class="st">${reps}</td><td class="muted">${b ? new Date(b.updated_at).toLocaleDateString() : ''}</td></tr>
+            <tr class="pdetail" data-pd="${esc(p.code)}" hidden><td colspan="6"></td></tr>`;
+        }).join('')}
+      </table>
+    </div>`;
+  return { html, rows, year };
+}
+function wirePropertyList(el, pl) {
+  const sel = el.querySelector('#dash-year');
+  if (sel) sel.addEventListener('change', () => { S.dashYear = Number(sel.value); render(); });
+  el.querySelectorAll('tr.pclick').forEach((tr) => tr.addEventListener('click', () => {
+    const code = tr.dataset.p;
+    const det = el.querySelector(`tr.pdetail[data-pd="${code}"]`);
+    const open = !det.hidden;
+    el.querySelectorAll('tr.pdetail').forEach((d) => { d.hidden = true; });
+    if (open) return;
+    const r = pl.rows.find((x) => x.p.code === code);
+    const icon = (x) => (x.ok ? '<span class="pill ok">✓ on file</span>' : x.need === 'required' ? '<span class="pill miss">✗ missing</span>' : '<span class="pill rec">◦ recommended</span>');
+    det.firstElementChild.innerHTML = `
+      <div class="row" style="justify-content:space-between; align-items:center">
+        <div><b>${esc(r.p.name)}</b> — ${r.b ? `${pl.year} budget <span class="pill ok">${esc(r.b.status || 'draft')}</span>` : `<span class="pill none">Not started for ${pl.year}</span>`}
+          ${r.missingReq.length ? `<span class="muted" style="margin-left:8px">needs ${r.missingReq.map((x) => x.label.toLowerCase()).join(' and ')} before a budget can be built</span>` : ''}</div>
+        <div class="row" style="gap:6px">
+          ${r.b ? `<button class="btn" data-open="${r.b.id}">Open budget</button>` : `<button class="btn" data-start="${esc(code)}" ${r.missingReq.length ? 'title="upload the missing reports first — the dialog can take them inline"' : ''}>+ Start ${pl.year} budget</button>`}
+          <button class="btn sub" data-data="${esc(code)}">Upload data</button>
+        </div>
+      </div>
+      <div class="reports">${r.reports.map((x) => `<div class="rep">${icon(x)}<span><b>${esc(x.label)}</b><div class="sub">${esc(x.sub)}</div></span></div>`).join('')}</div>`;
+    det.hidden = false;
+    det.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', async (e) => { e.stopPropagation(); await openBudget(Number(b.dataset.open)); }));
+    det.querySelectorAll('[data-start]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); S.nb = { prop: b.dataset.start, year: pl.year }; S.newType = 'annual'; newBudgetDialog(); }));
+    det.querySelectorAll('[data-data]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); S.view = 'uploads'; render(); }));
+  }));
 }
 
 /* Everything on file, one table, grouped by property. A template's own two
