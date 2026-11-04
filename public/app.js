@@ -44,7 +44,7 @@ function drvMetaBase(l) {
   switch (method) {
     case 't3avg': return { cls: 'drv-comp', tag: 'T3', label: `T3 avg of ${l.driver.srcName || 'this GL'} × ${(((l.driver || {}).pct || 0)).toFixed(1)}% → MROUND $250` };
     case 'wavg': return { cls: l.driver.srcType === 'seller' ? 'drv-t12' : 'drv-comp', tag: 'WAVG', label: `1-2-1 weighted distribution of ${l.driver.srcName || ''} × ${((l.driver.pct || 0)).toFixed(1)}%${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
-    case 'gpr': return { cls: 'drv-rr', tag: 'RR', label: 'Rent roll — GPR growth' };
+    case 'gpr': return { cls: 'drv-rr', tag: 'RR', label: `GPR — steps: ${gprStepsSummary(((S.bv && S.bv.budget && S.bv.budget.inputs) || {}).gpr ? S.bv.budget.inputs.gpr.growthPct : null)}` };
     case 'ltl': return { cls: 'drv-rr', tag: 'LTL', label: 'Rent roll — lease burnoff' };
     case 'vacancy': return { cls: 'drv-rr', tag: '%GPR', label: '% of GPR' };
     case 'catShare': return { cls: 'drv-uw', tag: 'UW', label: `UW category ${l.driver.pcode} share` };
@@ -960,6 +960,7 @@ function renderEditor(el) {
         <button class="btn" id="inp-apply">Apply & regenerate</button>
       </div>`;
     dlg.querySelector('#assump-x').addEventListener('click', () => dlg.close());
+    wireGprCum(dlg, 'in-gprstep');   // live cumulative % under the GPR month grid
     dlg.querySelector('#inp-apply').addEventListener('click', async () => {
       const btn = dlg.querySelector('#inp-apply');
       btn.disabled = true; btn.textContent = 'Applying…';
@@ -1065,6 +1066,7 @@ function renderEditor(el) {
     e.stopPropagation();
     openRowTools(b, btn.dataset.tools, btn);
   }));
+  el.querySelectorAll('button.fxp-steps').forEach((btn) => btn.addEventListener('click', (e) => { e.stopPropagation(); openGprSteps(b, btn); }));
   // inline formula params: change → patch inputs → regenerate
   el.querySelectorAll('input.fxp').forEach((box) => box.addEventListener('change', async () => {
     const gl = box.dataset.fxp;
@@ -1235,7 +1237,7 @@ function gridHtml(bv, totals) {
     rows.push(`<tr${trCls ? ` class="${trCls}"` : ''}>
       <td class="code">${a.code}</td>
       <td class="name" title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}">${esc(a.name)}${smell ? ` <span class="warnflag" title="Seller billing looks NON-ACCRUAL: ${esc(smell.join('; '))}. Likely bad bills — review, or smooth via WAVG / flat / Minot seasonal.">⚠</span>` : ''}${a.active === false ? ' <span class="badge" title="Deactivated GL still carrying dollars — Recalc zeroes it">inactive — recalc to zero</span>' : ''}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
-      ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">` : ''}</td>` : ''}
+      ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? (prm.steps ? `<button class="fxp fxp-steps" data-steps="${a.code}" title="${esc(prm.label)} — click to place increases in specific months">${esc(prm.value)}</button>` : `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">`) : ''}</td>` : ''}
       ${monthIdx.map((i) => `<td class="m ${actIdx.has(i) ? 'drv-act' : sp ? '' : dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money2(m[i]) : ''}"></td>`).join('')}
       ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}"><input data-ann="${a.code}" value="${ann ? money2(ann) : ''}" title="${bv.annual ? bv.budget.year : 'Year 1'} total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
       ${refCells(a.code, 'detail')}
@@ -1301,6 +1303,62 @@ function trendSvg(bv) {
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%; display:block">${body}</svg><div style="margin-top:5px">${legend}</div>`;
 }
 
+/* ---- GPR increases in SPECIFIC months (Troy 2026-11-03: "not blanketed") ----
+   growthPct[i] is the % change applied IN calendar month i (compounding), so a
+   3% raise in March and 2% in September is [0,0,.03,0,0,0,0,0,.02,0,0,0]. */
+const GPR_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function gprStepsSummary(steps) {
+  if (!steps || !steps.some((v) => v)) return 'no increases';
+  const nz = steps.map((v, i) => [v, i]).filter(([v]) => v);
+  if (nz.length === 12 && nz.every(([v]) => Math.abs(v - nz[0][0]) < 1e-9)) return `${(nz[0][0] * 100).toFixed(2)}% every month`;
+  return nz.map(([v, i]) => `${GPR_MON[i]} ${v > 0 ? '+' : ''}${(v * 100).toFixed(2).replace(/\.?0+$/, '')}%`).join(', ');
+}
+function gprStepsGrid(steps, cls) {
+  const s = steps || [];
+  let cum = 1;
+  return `<div class="msteps">${GPR_MON.map((m, i) => { cum *= 1 + (s[i] || 0); return `<div class="ms"><label>${m}</label><input class="${cls}" data-i="${i}" value="${s[i] ? +(s[i] * 100).toFixed(3) : ''}" placeholder="–"><span class="cum" data-cum="${i}" title="cumulative vs the base">${((cum - 1) * 100).toFixed(1)}%</span></div>`; }).join('')}</div>`;
+}
+function readGprSteps(root, cls, fallback) {
+  const boxes = [...root.querySelectorAll(`.${cls}`)];
+  if (!boxes.length) return fallback || Array(12).fill(0);
+  const out = Array(12).fill(0);
+  boxes.forEach((x) => { const v = parseFloat(String(x.value).replace(/[%,\s]/g, '')); if (Number.isFinite(v)) out[+x.dataset.i] = v / 100; });
+  return out;
+}
+function wireGprCum(root, cls) {
+  const upd = () => { const s = readGprSteps(root, cls, []); let cum = 1; s.forEach((v, i) => { cum *= 1 + v; const c = root.querySelector(`[data-cum="${i}"]`); if (c) c.textContent = `${((cum - 1) * 100).toFixed(1)}%`; }); };
+  root.querySelectorAll(`.${cls}`).forEach((x) => x.addEventListener('input', upd));
+}
+/* the 4994 row's popover: the same grid, applied on Save */
+function openGprSteps(b, anchorBtn) {
+  document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
+  const inp = S.bv.budget.inputs || {};
+  const g = inp.gpr || {};
+  const menu = document.createElement('div');
+  menu.className = 'rowmenu gpr';
+  menu.innerHTML = `
+    <div class="rm-head">4994 GPR — % increase applied IN each month (compounds). Leave a month blank for no change.</div>
+    ${gprStepsGrid(g.growthPct || [], 'pop-gprstep')}
+    <div class="rm-foot"><span class="muted" id="pop-gprsum">${esc(gprStepsSummary(g.growthPct))}</span>
+      <span><button class="inline" data-act="clear">Clear</button> <button class="primary" data-act="save">Save &amp; regenerate</button></span></div>`;
+  const r = anchorBtn.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(r.left + window.scrollX, window.innerWidth - 700))}px`;
+  menu.style.top = `${r.bottom + window.scrollY + 2}px`;
+  document.body.appendChild(menu);
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  const close = () => menu.remove();
+  setTimeout(() => document.addEventListener('click', close, { once: true }), 0);
+  wireGprCum(menu, 'pop-gprstep');
+  menu.querySelectorAll('.pop-gprstep').forEach((x) => x.addEventListener('input', () => { menu.querySelector('#pop-gprsum').textContent = gprStepsSummary(readGprSteps(menu, 'pop-gprstep', [])); }));
+  menu.querySelector('[data-act="clear"]').addEventListener('click', () => { menu.querySelectorAll('.pop-gprstep').forEach((x) => { x.value = ''; }); wireGprCum(menu, 'pop-gprstep'); menu.querySelectorAll('.pop-gprstep')[0].dispatchEvent(new Event('input')); });
+  menu.querySelector('[data-act="save"]').addEventListener('click', async () => {
+    const steps = readGprSteps(menu, 'pop-gprstep', []);
+    pushUndo();
+    S.bv = await PUT(`/budgets/${b.id}`, { inputs: { gpr: { ...g, growthPct: steps } } });
+    close(); render();
+  });
+}
+
 /* Inline formula parameter for a row: shown next to the Fx chip so e.g.
    vacancy % is adjustable without opening Assumptions. Returns null when the
    row's formula has no single adjustable number. */
@@ -1323,7 +1381,7 @@ function paramFor(gl, line, inp) {
   }
   if (gl === '4994' && m === 'gpr') {
     const g = (inp.gpr || {}).growthPct || [];
-    return { label: 'growth %/mo', value: pct(g[1] || 0), patch: (v) => ({ gpr: { ...(inp.gpr || {}), growthPct: Array(12).fill(v / 100) } }) };
+    return { label: 'GPR % increases by month', value: gprStepsSummary(g), steps: true };
   }
   if (gl === '5003' && m === 'ltl') {
     return { label: 'renewal %', value: pct((inp.ltl || {}).renewalPct ?? 0.7), patch: (v) => ({ ltl: { ...(inp.ltl || {}), renewalPct: v / 100 } }) };
@@ -3513,7 +3571,7 @@ function annualInputsHtml(inp) {
     <h3>Gross potential rent · ${g.baseMonthly > 0 ? 'rent roll market rents' : 'last actual month'} × monthly % changes</h3>
     <div class="row">
       <div class="fld"><label>GPR base $/mo (0 = last actual month's GPR)</label><input id="in-gprbase" value="${g.baseMonthly ?? 0}" style="width:120px"></div>
-      <div class="fld"><label>% change by month (12 values, Jan..Dec — the template's "ENTER % CHANGE FOR GPR")</label><input id="in-gprgrow" value="${show12(g.growthPct || [])}" style="width:300px"></div>
+      <div class="fld"><label>% increase applied IN each month (compounds; leave a month blank for no change — e.g. 3 in Mar, 2 in Sep)</label>${gprStepsGrid(g.growthPct || [], 'in-gprstep')}</div>
     </div>
     <h3>Loss to lease ${S.bv.leaseCount ? `<span class="badge">${S.bv.leaseCount} leases on file — per-lease burnoff</span>` : '<span class="badge">template method: last actual month, burned off by lease expirations</span>'}</h3>
     <div class="row">
@@ -3594,7 +3652,7 @@ async function applyAnnualInputs(b, el) {
     loan: q('#in-loan') ? num('#in-loan') : (cur.loan || 0),
     rate: q('#in-rate') ? num('#in-rate') / 100 : (cur.rate || 0),
     startMonth: 1,
-    gpr: { baseMonthly: num('#in-gprbase'), growthPct: parse12(q('#in-gprgrow').value, Array(12).fill(0)) },
+    gpr: { baseMonthly: num('#in-gprbase'), growthPct: readGprSteps(el, 'in-gprstep', (cur.gpr || {}).growthPct) },
     ltl: {
       ...(cur.ltl || {}),
       mode: q('#in-ltlmode').value,

@@ -5,7 +5,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, type TemplateData, type StmtData, type AnnualSources,
+  refFromCalendar, refColumn, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary
 } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
@@ -1220,18 +1220,18 @@ router.post('/budgets/:id/tie-growth', h(async (req, res) => {
     }
     how = `percentages scaled ×${kTotal.toFixed(4)}`;
   } else if (key === '1') {
-    // GPR: uniform monthly growth g with base × Σ(1+g)^i = target (bisection)
+    // GPR: base × Σ cumulative steps = target (bisection), pattern preserved
     const gprLine = lines.find((l) => l.gl_code === '4994');
     if (gprLine?.override) return res.status(400).json({ error: 'GPR is overridden — release it first' });
     const base = inputs.gpr?.baseMonthly > 0 ? inputs.gpr.baseMonthly : (lb.actualCal?.['4994'] || zero12())[(lb.lastMonth || 10) - 1] || 0;
     if (!base) return res.status(400).json({ error: 'No GPR base (rent roll or last actual month)' });
-    const annualAt = (g: number) => { let c = base, s = 0; for (let i = 0; i < 12; i++) { c *= 1 + g; s += c; } return s; };
-    let lo = -0.5, hi = 0.5;
-    for (let i = 0; i < 60; i++) { const mid = (lo + hi) / 2; if (annualAt(mid) < target) lo = mid; else hi = mid; }
-    const g = Math.round(((lo + hi) / 2) * 1e6) / 1e6;
-    inputs.gpr = { ...(inputs.gpr || { baseMonthly: 0, growthPct: zero12() }), growthPct: Array(12).fill(g) as Months };
+    // the month steps on file keep their places and scale together; only a
+    // budget with NO steps falls back to a uniform monthly rate
+    const solved = gprStepsForTarget(base, inputs.gpr?.growthPct as Months | undefined, target);
+    inputs.gpr = { ...(inputs.gpr || { baseMonthly: 0, growthPct: zero12() }), growthPct: solved.growthPct };
     lines = buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lines).lines;
-    how = `GPR monthly growth ${(g * 100).toFixed(3)}%`;
+    how = solved.k != null ? `GPR steps scaled ×${solved.k} — ${gprStepsSummary(solved.growthPct)}`
+      : `GPR uniform monthly growth ${((solved.g || 0) * 100).toFixed(3)}% (no month steps were set — put increases in specific months under GPR to keep them there)`;
   } else {
     const isMember = (l: BudgetLine) => { const acc = lb.coaMap.get(l.gl_code); return acc?.kind === 'detail' && members.includes(acc.pcode || ''); };
     const adjustable = (l: BudgetLine) => { const d: any = l.driver; return isMember(l) && !l.override && d?.method === 'baseline' && d.src !== 'budget' && !d.pcts && sum(l.months) !== 0; };

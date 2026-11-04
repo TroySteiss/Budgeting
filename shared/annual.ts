@@ -323,6 +323,39 @@ export function expirationsFromLeases(leases: Lease[], year: number): Months {
   return out;
 }
 
+/* ---------------- GPR step pattern ---------------- */
+
+/** GPR month steps that land an annual target (Troy 2026-11-03: increases go
+    into SPECIFIC months, never blanketed). With a step pattern on file every
+    step is scaled by one factor k (the months keep their places — a March +3%
+    / September +2% pattern stays March / September); with no pattern the
+    fallback is the old uniform monthly rate. Bisection on the annual sum. */
+export function gprStepsForTarget(base: number, steps: Months | null | undefined, target: number): { growthPct: Months; k: number | null; g: number | null } {
+  const cur = (steps && steps.some((v) => v) ? steps : null) as Months | null;
+  const r6 = (v: number) => Math.round(v * 1e6) / 1e6;
+  if (cur) {
+    const annualAt = (k: number) => { let c = base, s = 0; for (let i = 0; i < 12; i++) { c *= Math.max(0.05, 1 + cur[i] * k); s += c; } return s; };
+    let lo = -5, hi = 5;
+    for (let i = 0; i < 80; i++) { const mid = (lo + hi) / 2; if (annualAt(mid) < target) lo = mid; else hi = mid; }
+    const k = (lo + hi) / 2;
+    return { growthPct: cur.map((v) => r6(v * k)) as Months, k: Math.round(k * 1e4) / 1e4, g: null };
+  }
+  const annualAt = (g: number) => { let c = base, s = 0; for (let i = 0; i < 12; i++) { c *= 1 + g; s += c; } return s; };
+  let lo = -0.5, hi = 0.5;
+  for (let i = 0; i < 60; i++) { const mid = (lo + hi) / 2; if (annualAt(mid) < target) lo = mid; else hi = mid; }
+  const g = r6((lo + hi) / 2);
+  return { growthPct: Array(12).fill(g) as Months, k: null, g };
+}
+
+/** "Mar +3%, Sep +2%" — the steps a GPR series carries, for labels. */
+export function gprStepsSummary(steps: Months | null | undefined): string {
+  if (!steps || !steps.some((v) => v)) return 'no increases';
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const nz = steps.map((v, i) => [v, i] as [number, number]).filter(([v]) => v);
+  if (nz.length === 12 && nz.every(([v]) => Math.abs(v - nz[0][0]) < 1e-9)) return `${(nz[0][0] * 100).toFixed(2)}% every month`;
+  return nz.map(([v, i]) => `${MON[i]} ${v > 0 ? '+' : ''}${(v * 100).toFixed(2).replace(/\.?0+$/, '')}%`).join(', ');
+}
+
 /* ---------------- generation ---------------- */
 
 /** One GL's foundation rule, as extracted from the GRKS draft

@@ -322,3 +322,15 @@ body.monarch .wrap { max-width: 1340px; }
 .paytbl th { padding: 7px 10px; }
 .paytbl tr.paygrp td { background: var(--soft2); color: var(--dim); font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 5px 10px; border-bottom: 1px solid var(--line); }
 .paywas { font-size: 10.5px; color: var(--pay-gold-ink); font-weight: 700; white-space: nowrap; }
+
+/* GPR increases by month (Troy 2026-11-03) */
+.msteps { display: grid; grid-template-columns: repeat(12, minmax(46px, 1fr)); gap: 4px; }
+.msteps .ms { display: flex; flex-direction: column; gap: 2px; align-items: stretch; }
+.msteps .ms label { font-size: 10.5px; color: var(--dim); text-align: center; }
+.msteps .ms input { min-width: 0; width: 100%; padding: 4px 4px; text-align: right; font-size: 12px; box-sizing: border-box; border: 1px solid var(--line); border-radius: 6px; }
+.msteps .ms .cum { font-size: 10px; color: var(--dim); text-align: right; }
+.rowmenu.gpr { min-width: 640px; padding: 8px; }
+.rowmenu.gpr .rm-head { white-space: normal; max-width: none; }
+.rowmenu.gpr .rm-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; gap: 10px; }
+.rowmenu.gpr button { display: inline-block; width: auto; }
+button.fxp-steps { font-size: 11px; padding: 2px 7px; margin-left: 4px; border: 1px dashed var(--line); background: none; border-radius: 6px; cursor: pointer; color: var(--accent); }

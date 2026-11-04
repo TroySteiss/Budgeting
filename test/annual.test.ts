@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, type TemplateData, type AnnualSources,
+  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, gprStepsForTarget, gprStepsSummary, type TemplateData, type AnnualSources,
 } from '../shared/annual.js';
 import { sum, zero12, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
 import { parseYardiBudgetTemplate, parseRentRoll, parseMonarchStatement, detectUploadKind } from '../src/importers.js';
@@ -463,5 +463,29 @@ describe('payroll flow (Troy 2026-11-03): roster wages carry their raises; burde
     // a basis with no history on that side falls back to the other
     const budOnly = generateAnnualLines(coaList, { ...inputs, wagesFromRoster: true, burdenBasis: 'budget' }, { ...src, payrollWages: wages });
     expect(d(budOnly).ratio).toBeCloseTo(0.10, 5);
+  });
+});
+
+describe('GPR increases in specific months (Troy 2026-11-03)', () => {
+  it('a tie scales the month pattern instead of blanketing a uniform rate', () => {
+    const steps = cal([0, 0, 0.03, 0, 0, 0, 0, 0, 0.02, 0, 0, 0]);
+    const base = 10000;
+    const annualOf = (s: Months) => { let c = base, t = 0; for (let i = 0; i < 12; i++) { c *= 1 + s[i]; t += c; } return t; };
+    const target = annualOf(steps) * 1.02;
+    const out = gprStepsForTarget(base, steps, target);
+    expect(out.k).not.toBeNull();
+    expect(out.growthPct.filter((v) => v).length).toBe(2);               // still March and September only
+    expect(out.growthPct[2]).toBeGreaterThan(0.03); expect(out.growthPct[8]).toBeGreaterThan(0.02);
+    expect(out.growthPct[2] / out.growthPct[8]).toBeCloseTo(1.5, 3);      // same proportions
+    expect(annualOf(out.growthPct)).toBeCloseTo(target, 0);
+    // no pattern on file → the old uniform rate
+    const flat = gprStepsForTarget(base, zero12(), base * 12 * 1.02);
+    expect(flat.g).not.toBeNull();
+    expect(flat.growthPct.every((v) => v === flat.growthPct[0])).toBe(true);
+  });
+  it('summarises the steps for labels', () => {
+    expect(gprStepsSummary(cal([0, 0, 0.03, 0, 0, 0, 0, 0, 0.02, 0, 0, 0]))).toBe('Mar +3%, Sep +2%');
+    expect(gprStepsSummary(cal(Array(12).fill(0.005)))).toBe('0.50% every month');
+    expect(gprStepsSummary(zero12())).toBe('no increases');
   });
 });
