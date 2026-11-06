@@ -52,7 +52,7 @@ function drvMetaBase(l) {
     case 'payrollModel': return { cls: 'drv-pay', tag: 'PAY', label: l.driver.roster ? 'Pay-rates roster wages (raises prorated — no March step)' : 'Payroll model wages' };
     case 'burdenRatio': { const bs = l.driver.basis === 'budget' ? 'CY budget ratio' : l.driver.basis === 'mix' ? 'avg of T12 actual & CY budget ratios' : 'T12 actual ratio';
       return { cls: 'drv-pay', tag: 'RATIO', label: `${((l.driver.ratio || 0) * 100).toFixed(1)}% of wages (${S.bv && S.bv.annual ? `${bs} × budgeted wages — moves with wages` : 'Minot ratio'})` }; }
-    case 'mgmtPct': return { cls: 'drv-fee', tag: '%INC', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of income` };
+    case 'mgmtPct': return { cls: 'drv-fee', tag: '%INC', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.priorMonth ? 'prior-month ' : ''}income` };
     case 'interest': return { cls: 'drv-int', tag: 'INT', label: 'Interest (loan × rate × days)' };
     case 'sellerUtil': return { cls: 'drv-t12', tag: 'SLR', label: 'Seller statement level (× growth)' };
     case 'sellerLine': return { cls: 'drv-t12', tag: 'SLR', label: `Seller: ${l.driver.name || ''} × ${(l.driver.pct || 0).toFixed(1)}%` };
@@ -1529,7 +1529,7 @@ function paramFor(gl, line, inp) {
     return { label: 'vacancy %', value: pct(vac[0] || 0), patch: (v) => ({ vacancyPct: Array(12).fill(v / 100) }) };
   }
   if (gl === '6112' && m === 'mgmtPct') {
-    return { label: '% of income', value: pct(inp.mgmtPct || 0), patch: (v) => ({ mgmtPct: v / 100 }) };
+    return { label: '% of prior-month income', value: pct(inp.mgmtPct || 0), patch: (v) => ({ mgmtPct: v / 100 }) };
   }
   if (m === 'sellerUtil') {
     return { label: 'growth %', value: pct((inp.utilities || {}).growthPct ?? 0.03), patch: (v) => ({ utilities: { ...(inp.utilities || {}), growthPct: v / 100 } }) };
@@ -1750,7 +1750,7 @@ function inputsHtml(inp) {
     </div>
     <h3>Fees & financing</h3>
     <div class="row">
-      <div class="fld"><label>Mgmt fee % of income</label><input id="in-mgmt" value="${((inp.mgmtPct || 0) * 100).toFixed(2)}" style="width:80px"></div>
+      <div class="fld"><label>Mgmt fee % of prior-month income</label><input id="in-mgmt" value="${((inp.mgmtPct || 0) * 100).toFixed(2)}" style="width:80px"></div>
       <div class="fld"><label>Units</label><input id="in-units" value="${inp.units ?? 0}" style="width:70px"></div>
       <div class="fld"><label>Loan $</label><input id="in-loan" value="${inp.loan ?? 0}" style="width:110px"></div>
       <div class="fld"><label>Rate %</label><input id="in-rate" value="${((inp.rate || 0) * 100).toFixed(2)}" style="width:70px"></div>
@@ -3693,6 +3693,23 @@ function openActualizeCsv(resp) {
    ========================================================================== */
 
 const ANNUAL_CATS = [['4', 'Utility income (reims)'], ['5', 'Other income'], ['8', 'RE & PP taxes'], ['9', 'Admin & accounting'], ['10', 'Payroll (no model)'], ['11', 'Marketing'], ['12', 'Utilities (no forecast)'], ['13', 'Repairs & maintenance'], ['14', 'Rehab / replacement'], ['*', 'everything else']];
+/* Prior-year move-outs from the 2027 template's MoveOuts sheet, shown under the expirations
+   input as a reference (NOT an input): scheduled = 60+ days' notice, unscheduled = under 60
+   days, month-to-month, skips and evictions. The ratio to expirations flags heavy months
+   the way the template does (red over 40%, amber 30-40%). */
+function moveOutsHtml(tpl, exp) {
+  const mo = tpl && tpl.moveOuts;
+  if (!mo) return '';
+  const sch = mo.scheduled || [], un = mo.unscheduled || [];
+  const cells = MONTHS.map((m, i) => {
+    const tot = (sch[i] || 0) + (un[i] || 0), e = (exp || [])[i] || 0, r = e ? tot / e : null;
+    const col = r == null ? '' : r > 0.4 ? 'var(--bad)' : r >= 0.3 ? 'var(--warn)' : 'var(--ok)';
+    return `<td title="${m}: ${sch[i] || 0} scheduled + ${un[i] || 0} unscheduled = ${tot} move-outs${e ? ` · ${Math.round(r * 100)}% of ${e} expirations` : ''}" style="text-align:right;padding:1px 6px;${col ? `color:${col};font-weight:600` : ''}">${tot}</td>`;
+  }).join('');
+  const sum = (a) => a.reduce((s, v) => s + (v || 0), 0);
+  return `<div class="fld" style="grid-column:1/-1"><label>PY move-outs (template MoveOuts sheet, reference only): ${sum(sch)} scheduled + ${sum(un)} unscheduled = ${sum(sch) + sum(un)} · colour = move-outs ÷ expirations (red over 40%, amber 30-40%)</label>
+    <table style="font-size:11.5px;border-collapse:collapse"><tr>${MONTHS.map((m) => `<th style="text-align:right;font-weight:500;color:var(--muted);padding:1px 6px">${m}</th>`).join('')}</tr><tr>${cells}</tr></table></div>`;
+}
 const SHAPE_LABELS = { turns: 'T12 total on lease expirations, +1 month lag (turn costs)', actual: 'Same month × factor (template default)', wavg: '1-2-1 weighted distribution × factor', flat: 'T12 total ÷ 12, flat', curve: 'T12 total on the GL seasonal curve', last: 'Last actual month, flat', avgnz: 'Average of active months, flat' };
 
 function annualInputsHtml(inp) {
@@ -3721,6 +3738,7 @@ function annualInputsHtml(inp) {
     </div>
     <div class="row" style="margin-top:6px">
       <div class="fld"><label>Lease expirations by month (12 values — drives LTL burnoff, application / admin / deposit fees)${tpl ? ' · from the template' : ''}</label><input id="in-exp" value="${(exp || []).join(', ')}" style="width:330px" placeholder="from the rent roll"></div>
+      ${moveOutsHtml(tpl, exp)}
       <div class="fld"><label>Start $/mo (neg; 0 = rent roll gap / last actual) — flat &amp; ramp</label><input id="in-ltlstart" value="${l.startMonthly ?? 0}" style="width:100px"></div>
       <div class="fld"><label>Ramp: target % of GPR</label><input id="in-ltlpct" value="${((l.targetPct || 0) * 100).toFixed(2)}" style="width:80px"></div>
     </div>

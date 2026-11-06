@@ -256,7 +256,8 @@ calendar months via `stmtCalendar`, the T12 is Jan–Oct this year + Nov–Dec l
 the template's PriorFinancials anchors say) and `template_snapshots` (`TemplateData`: debt
 schedule, mgmtFee {actualPct, matrix}, utilForecast gl→%[12], suggestions gl→$[12] + notes,
 leaseGoals/leaseExpirations, renewalPct/burnoffs/gprPct/vacancyPct, mortgage, distHist,
-softwareFixedMo, lastActual, pyYears). Budget FKs: `py_stmt_id`, `cy_budget_stmt_id`,
+softwareFixedMo, moveOuts {scheduled, unscheduled} from the 2027 template's MoveOuts sheet,
+lastActual, pyYears). Budget FKs: `py_stmt_id`, `cy_budget_stmt_id`,
 `template_id`. `routes.ts`: `loadBudget` builds `actualCal/budgetCal/lastMonth/template`,
 `ref` (= `refFromCalendar` of T12 / CY budget / typed targets per `inputs.refSource`) and
 `refs` (`refColumn`: annual $ by GL + Monarch totals for T12, CY budget, 4-mo annualized);
@@ -265,6 +266,10 @@ branches to `generateAnnualLines` / `regenerateAnnual` (shared `mergeFresh`). Up
 `POST /uploads/parse-many?kind=yardi_template|statement` (multi-file) → `/uploads/apply`
 creates the statements + template (and the property if new), optional relink of the
 property's annual budgets. `parseYardiBudgetTemplate` never reads "Paste Payroll Here".
+2027 template draft (Nov 2026): 6331's fixed cost is read from column D of its row (0 = actuals;
+the 2026 "$275/month" note still works), MoveOuts is carried as a reference (settings page
+under the expirations input, Raw Data in the export), and 6112 is % of the PRIOR month's total
+income — January on December's CY-budget income (its own income when no budget is linked).
 
 **Foundation rules**: `seed/annual-rules.json` (gl → `{method same|wavg|flatT12|last|engine…,
 mround, factor, noThreshold}`) extracted from the GRKS 2026 RMC draft by

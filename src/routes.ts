@@ -593,7 +593,7 @@ function budgetView(lb: LoadedBudget) {
       leaseExpirations: lb.template.leaseExpirations, leaseGoals: lb.template.leaseGoals, renewalPct: lb.template.renewalPct,
       mgmtFee: lb.template.mgmtFee, debt: lb.template.debt, mortgage: lb.template.mortgage, distHist: lb.template.distHist,
       suggestions: lb.template.suggestions, suggestionNotes: lb.template.suggestionNotes, utilForecast: lb.template.utilForecast,
-      softwareFixedMo: lb.template.softwareFixedMo,
+      softwareFixedMo: lb.template.softwareFixedMo, moveOuts: lb.template.moveOuts || null,
     } : null,
     lastMonth: lb.annual ? lb.lastMonth : null,
     t12Missing: lb.annual ? lb.t12Missing : [],

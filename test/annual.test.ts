@@ -5,7 +5,7 @@ import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
   refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, type TemplateData, type AnnualSources,
 } from '../shared/annual.js';
-import { sum, zero12, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
+import { sum, zero12, rollup, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
 import { parseYardiBudgetTemplate, parseRentRoll, parseMonarchStatement, detectUploadKind } from '../src/importers.js';
 import { loadAnnualRules } from '../src/annual-rules.js';
 
@@ -100,10 +100,21 @@ describe('generateAnnualLines — template rules on own history', () => {
     expect((L(lines, '5036').driver as any).of).toBe('netgpr');
     expect(L(lines, '5019').months[0]).toBe(-60);          // last-month ratio × same GPR
   });
-  it('mgmt fee = actual % of income, whole dollars; LTL starts at the last actual month', () => {
+  it('mgmt fee = actual % of the PRIOR month\'s income, whole dollars; LTL starts at the last actual month', () => {
     const inc = sum(L(lines, '4994').months) + sum(L(lines, '5003').months);
     expect(inputs.mgmtPct).toBeGreaterThan(0.03);
     expect(Number.isInteger(L(lines, '6112').months[0])).toBe(true);
+    // 2027 template: the fee bills a month in arrears — Feb's fee is Jan's total income × %
+    const incomeOf = (i: number) => rollup(new Map(lines.map((l) => [l.gl_code, l.months]))).get('5500')![i];
+    expect(L(lines, '6112').months[1]).toBe(Math.round(incomeOf(0) * inputs.mgmtPct));
+    expect(L(lines, '6112').months[11]).toBe(Math.round(incomeOf(10) * inputs.mgmtPct));
+    expect((L(lines, '6112').driver as any).priorMonth).toBe(true);
+    // with no current-year budget January runs on its own income; with one, on December's budgeted income
+    expect(L(lines, '6112').months[0]).toBe(Math.round(incomeOf(0) * inputs.mgmtPct));
+    const budget: Record<string, Months> = { '4994': cal([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 50000]), '5170': cal([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1000]) };
+    const withBud = generateAnnualLines(coaList, inputs, { actual, budget, lastMonth: 10 });
+    expect(L(withBud, '6112').months[0]).toBe(Math.round(51000 * inputs.mgmtPct));
+    expect(L(withBud, '6112').months[1]).toBe(L(lines, '6112').months[1]);
     expect(L(lines, '5003').months[0]).toBe(-500);
     expect(inc).toBeGreaterThan(0);
   });

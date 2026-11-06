@@ -87,7 +87,7 @@ function driverLabel(d: any): string {
     case 'perUnitComp': return `Minot $${d.perUnit}/unit`;
     case 'payrollModel': return 'payroll model wages';
     case 'burdenRatio': return `Minot ratio ${(d.ratio * 100).toFixed(1)}% of wages`;
-    case 'mgmtPct': return `${(d.pct * 100).toFixed(2)}% of income`;
+    case 'mgmtPct': return `${(d.pct * 100).toFixed(2)}% of ${d.priorMonth ? 'prior-month ' : ''}income`;
     case 'interest': return 'loan interest';
     case 'sellerUtil': return 'seller statement level';
     case 'recovery': return `${(d.pct * 100).toFixed(1)}% recovery of prior-month billing`;
@@ -783,6 +783,7 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
       rawRow(['renewal %', t.renewalPct ?? '']); rawRow(['mgmt fee actual %', t.mgmtFee?.actualPct ?? '']);
       rawRow(['mgmt fee matrix', JSON.stringify(t.mgmtFee?.matrix || {})]);
       rawRow(['lease expirations (Jan..Dec)', (t.leaseExpirations || []).join(', ')]);
+      if (t.moveOuts) { rawRow(['PY scheduled move-outs (Jan..Dec)', t.moveOuts.scheduled.join(', ')]); rawRow(['PY unscheduled move-outs (Jan..Dec)', t.moveOuts.unscheduled.join(', ')]); }
       rawRow(['lease goals (Jan..Dec)', (t.leaseGoals || []).join(', ')]);
       rawRow(['debt — interest (Jan..Dec)', (t.debt?.interest || []).join(', ')]);
       rawRow(['debt — principal (Jan..Dec)', (t.debt?.principal || []).join(', ')]);

@@ -53,7 +53,7 @@ export type Driver = { revised?: boolean } & (
   | { method: 'perUnitComp'; pcode: string; perUnit: number } // comp $/unit × subject units
   | { method: 'payrollModel' }                                 // property-level wages from the ND payroll model
   | { method: 'burdenRatio'; ratio: number }                   // Minot benefit/bonus ratio × subject wage total
-  | { method: 'mgmtPct'; pct: number }
+  | { method: 'mgmtPct'; pct: number; priorMonth?: boolean }
   | { method: 'interest'; loan: number; rate: number }
   | { method: 'sellerUtil' }                                   // seller-statement utility level
   | { method: 'recovery'; pct: number }                        // % of prior-month utility billing

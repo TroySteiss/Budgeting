@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as XLSX from 'xlsx';
-import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parseReviewDraft, parseComparisonActuals, detectUploadKind } from '../src/importers.js';
+import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parseReviewDraft, parseComparisonActuals, detectUploadKind, parseYardiBudgetTemplate } from '../src/importers.js';
 import { t12CategoryShapes } from '../shared/domain.js';
 
 const fx = (name: string): Buffer => readFileSync(join(process.cwd(), 'test', 'fixtures', name));
@@ -341,5 +341,42 @@ describe('parseRentRoll — Yardi Unit Availability Details (UAD, Troy 2026-11-0
     expect(o.units).toBe(1); expect(o.leases!.length).toBe(1);
     // no resident names anywhere in the parsed output
     expect(JSON.stringify(out)).not.toMatch(/Resident [A-E]/);
+  });
+});
+
+/* The 2027 template draft (Seth Russell, Nov 2026) moved two things the importer keyed on:
+   6331's fixed monthly cost now sits in column D of its row (0 = prior-year actuals) instead
+   of "$275/month" in the note, and a MoveOuts sheet carries last year's scheduled and
+   unscheduled move-outs by month. Synthetic workbook, no real data. */
+describe('parseYardiBudgetTemplate — 2027 layout (6331 in column D, MoveOuts sheet)', () => {
+  const serial = (y: number, m: number): number => Math.round((Date.UTC(y, m - 1, 1) / 86400000) + 25569);
+  const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const build = (softwareD: number | null, withMoveOuts: boolean): Buffer => {
+    const wb = XLSX.utils.book_new();
+    const bw: any[][] = [];
+    bw[0] = ['', 'Actuals From', '', '', ...Array.from({ length: 12 }, (_, i) => serial(i >= 10 ? 2025 : 2026, i + 1))];
+    bw[5] = ['GL Code', 'GL Name', 'Notes', 'Increase Factor'];
+    bw[6] = ['4993', 'NET GROSS POTENTIAL RENT', 'ENTER % CHANGE FOR GPR ------>', null, 0, 0.005, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    bw[7] = ['6331', 'COMPUTER SOFTWARE', 'Enter monthly fixed cost (default $275). Set to 0 to use prior-year actuals instead', softwareD];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(bw), 'Budget Worksheet');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['PropCode', 'PropName', 'UnitCount', 'TotalCapital', 'AcquisitionDate', 'BudgetDate'], ['tst', 'Test Village', 100, 5000000, 43559, 2027]]), 'PropertyInfo');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Account', 'AcctName', 'Month', 'MTD', 'MTDBudget'], ['6331', 'COMPUTER SOFTWARE', serial(2026, 1), 300, 280]]), 'PriorFinancials');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Property', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'], ['tst', 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]]), 'LeaseExpirations');
+    if (withMoveOuts) {
+      const hdr = ['Property', ...MO.map((m) => `${m}_Sched`), ...MO.map((m) => `${m}_Unsched`)];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([hdr, ['tst', 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]]), 'MoveOuts');
+    }
+    return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  };
+  it('reads the fixed software cost from column D, 0 meaning prior-year actuals', () => {
+    expect(parseYardiBudgetTemplate(build(275, true)).template.softwareFixedMo).toBe(275);
+    expect(parseYardiBudgetTemplate(build(0, true)).template.softwareFixedMo).toBeNull();
+  });
+  it('carries the MoveOuts sheet as scheduled / unscheduled by calendar month, null when absent', () => {
+    const t = parseYardiBudgetTemplate(build(275, true)).template;
+    expect(t.moveOuts?.scheduled).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(t.moveOuts?.unscheduled).toEqual(Array(12).fill(2));
+    expect(t.leaseExpirations[11]).toBe(16);
+    expect(parseYardiBudgetTemplate(build(275, false)).template.moveOuts).toBeNull();
   });
 });

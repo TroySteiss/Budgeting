@@ -243,7 +243,10 @@ export interface TemplateData {
   vacancyPct: number | null; delinqPct: number | null; priorPeriodPct: number | null;
   distHist: { date: string; type: string; pct: number; amount: number }[];
   mortgage: { loanCode: string; lender: string; program: string; origBal: number; rate: number; ioEnd: string | null; dueDate: string | null; amortYears: number | null }[];
-  softwareFixedMo: number | null;                       // "Fixed Budgeted Cost $275/month" (6331)
+  softwareFixedMo: number | null;                       // 6331 fixed monthly cost: column D of the row (2027 template, 0 = actuals) or "$275/month" in the note (2026)
+  /** prior-year move-outs by calendar month (2027 template's MoveOuts sheet): scheduled = 60+ days'
+      notice, unscheduled = under 60 days, month-to-month, skips and evictions */
+  moveOuts: { scheduled: Months; unscheduled: Months } | null;
 }
 
 /* ---------------- template rules ---------------- */
@@ -698,12 +701,20 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     baseline(a);
   }
 
-  /* ---- management fee: % of total income, rounded to the dollar (template) ---- */
+  /* ---- management fee: % of the PRIOR month's total income, rounded to the dollar
+     (2027 template: the fee bills a month in arrears, so January runs on December's
+     budgeted income; without a current-year budget January runs on its own income) ---- */
   const monthsMap = new Map<string, Months>();
   for (const [gl, ln] of lines) monthsMap.set(gl, ln.months);
   const totalIncome = rollup(monthsMap).get('5500') || zero12();
   const feePct = inputs.mgmtPct || tpl?.mgmtFee?.actualPct || 0;
-  if (feePct) mk('6112', totalIncome.map((v) => Math.round(v * feePct)), { method: 'mgmtPct', pct: feePct });
+  if (feePct) {
+    const prevCal = (startMonth + 10) % 12;                                   // calendar index of the month before the budget starts
+    const budIncome = src.budget && Object.keys(src.budget).length ? rollup(new Map(Object.entries(src.budget) as [string, Months][])).get('5500') : null;
+    const before = budIncome && budIncome[prevCal] ? budIncome[prevCal] : totalIncome[0];
+    const basis = totalIncome.map((v, i) => (i === 0 ? before : totalIncome[i - 1])) as Months;
+    mk('6112', basis.map((v) => Math.round(v * feePct)) as Months, { method: 'mgmtPct', pct: feePct, priorMonth: true });
+  }
   else if (coaByCode.has('6112')) baseline(coaByCode.get('6112')!);
 
   /* ---- debt service: the Yardi amortization schedule; else loan × rate; else history ---- */

@@ -1,7 +1,7 @@
 /* Parsers for the four upload formats. All label-driven (never fixed row
    numbers — the Cottonwood UW sheet is offset +20 rows vs its siblings). */
 import * as XLSX from 'xlsx';
-import type { UwSnapshotData } from '../shared/domain.js';
+import type { UwSnapshotData, Months } from '../shared/domain.js';
 import type { TemplateData } from '../shared/annual.js';
 import { POSITION_GL, isRmPosition, isSalariedPosition, type StaffingPerson, type DetailPerson } from '../shared/payroll.js';
 
@@ -1195,9 +1195,12 @@ export function parseYardiBudgetTemplate(buf: Buffer, coaDetail?: Set<string>): 
   const vacancyPct = pctCell('5031');
   const delinqPct = pctCell('5035');
   const priorPeriodPct = pctCell('5036');
-  const swRow = bwGrid.findIndex((r) => /computer software/i.test(s(r?.[1])) && /\$\s*[\d,.]+\s*\/\s*month/i.test(s(r?.[2])));
+  // 6331 fixed monthly cost: the 2027 template keeps it in column D of the row (0 = prior-year
+  // actuals); the 2026 template said "Fixed Budgeted Cost $275/month" in the note
+  const swRow = bwGrid.findIndex((r) => s(r?.[0]) === '6331' || /computer software/i.test(s(r?.[1])));
+  const swD = swRow >= 0 ? bwGrid[swRow]?.[3] : undefined;
   const swM = swRow >= 0 ? s(bwGrid[swRow][2]).match(/\$\s*([\d,.]+)\s*\/\s*month/i) : null;
-  const softwareFixedMo = swM ? num(swM[1]) : null;
+  const softwareFixedMo = typeof swD === 'number' && swD >= 1 ? Math.round(swD * 100) / 100 : typeof swD === 'number' && swD === 0 ? null : swM ? num(swM[1]) : null;
 
   // PriorFinancials → actual (PY months) + budget (current year) statements
   const pf = sheet(/^priorfinancials$/i);
@@ -1289,6 +1292,10 @@ export function parseYardiBudgetTemplate(buf: Buffer, coaDetail?: Set<string>): 
   const row12 = (re: RegExp): number[] => { const g2 = sheet(re); const r = g2?.[1] || []; return Array.from({ length: 12 }, (_, i) => num(r[1 + i])); };
   const leaseGoals = row12(/^leasegoals$/i);
   const leaseExpirations = row12(/^leaseexpirations$/i);
+  // MoveOuts (2027 template): row 2 = property, B..M scheduled, N..Y unscheduled move-outs by calendar month
+  const moG = sheet(/^moveouts$/i);
+  const moR = moG?.[1] || [];
+  const moveOuts = moG && moR.length > 1 ? { scheduled: Array.from({ length: 12 }, (_, i) => num(moR[1 + i])) as Months, unscheduled: Array.from({ length: 12 }, (_, i) => num(moR[13 + i])) as Months } : null;
   const dh = sheet(/^disthist$/i) || [];
   const distHist = dh.slice(1).filter((r) => r?.[0]).map((r) => { const d = serialDate(r[1]); return { date: d ? `${d.y}-${String(d.m).padStart(2, '0')}` : s(r[1]), type: s(r[2]), pct: num(r[3]), amount: num(r[4]) }; });
   const md = sheet(/^mortgagedetail$/i) || [];
@@ -1305,6 +1312,7 @@ export function parseYardiBudgetTemplate(buf: Buffer, coaDetail?: Set<string>): 
     debt: { interest: interest.map((v) => Math.round(v * 100) / 100), principal: principal.map((v) => Math.round(v * 100) / 100), principalGl, loans: [...loans] },
     mgmtFee, utilForecast, suggestions, suggestionNotes, leaseGoals, leaseExpirations,
     renewalPct, burnoffRenew, burnoffNew, gprPct, vacancyPct, delinqPct, priorPeriodPct, distHist, mortgage, softwareFixedMo,
+    moveOuts: moveOuts && (moveOuts.scheduled.some((v) => v) || moveOuts.unscheduled.some((v) => v)) ? moveOuts : null,
   };
   return { template, actual, budget, skippedSheets };
 }
