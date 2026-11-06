@@ -86,9 +86,24 @@ describe('generateAnnualLines — template rules on own history', () => {
     expect(L(lines, '6620').months[0]).toBe(321);
     expect(L(lines, '5165').months[2]).toBe(110);          // other income 0%
   });
-  it('"October actual" lines are flat at the last actual month', () => {
-    expect(L(lines, '6116').months).toEqual(Array(12).fill(1000));
-    expect((L(lines, '6116').driver as any).shape).toBe('last');
+  it('real estate taxes = trailing-12 total ÷ 12 flat (never October × 12), no $1,000 threshold', () => {
+    expect(L(lines, '6116').months).toEqual(Array(12).fill(925));          // (9 × 900 + 3 × 1,000) ÷ 12
+    expect((L(lines, '6116').driver as any).shape).toBe('flat');
+    const small = { ...actual, '6116': cal(Array(12).fill(50)) };          // T12 600 ≤ 1,000 still budgets
+    expect(L(generateAnnualLines(coaList, inputs, { ...src, actual: small }), '6116').months[0]).toBe(50);
+    // the GRKS rule for 6116 is `fixedAnnual` (RMC typed an annual) — same flat default, rule carried
+    const withRule = L(generateAnnualLines(coaList, inputs, { ...src, rules: { '6116': { method: 'fixedAnnual' } } }), '6116');
+    expect(withRule.months).toEqual(Array(12).fill(925));
+    expect((withRule.driver as any).rule).toBe('fixedAnnual');
+  });
+  it('"October actual" lines are flat at the last actual month, and flag a last month far off the T12 average', () => {
+    const a = { ...actual, '6618': cal([90, 90, 90, 90, 90, 90, 90, 90, 90, 100, 90, 90]), '6104': cal([223, 223, 223, 223, 223, 223, 223, 223, 223, 500, 223, 223]) };
+    const l = generateAnnualLines(coaList, inputs, { ...src, actual: a });
+    expect(L(l, '6618').months).toEqual(Array(12).fill(100));             // phones: October flat, 0% (within 25% of the average → no flag)
+    expect((L(l, '6618').driver as any).shape).toBe('last');
+    expect((L(l, '6618').driver as any).lastDev).toBeUndefined();
+    expect(L(l, '6104').months[0]).toBe(525);                              // auto insurance: October 500 × 1.05 flat
+    expect((L(l, '6104').driver as any).lastDev).toBeCloseTo(500 / (2953 / 12) - 1, 2);   // +103% vs the average → flagged
   });
   it('T12/12 flat only above $1,000; bad-debt recovery = average of active months', () => {
     expect(L(lines, '5135').months[0]).toBe(200);
@@ -195,9 +210,25 @@ describe('generateAnnualLines — template rules on own history', () => {
 });
 
 describe('lease expirations and turnover-driven lines', () => {
-  it('expirationsFromLeases counts lease ends by budget month; MTM/expired land in month 0', () => {
-    const e = expirationsFromLeases([{ m: 1000, r: 900, e: '2026-03-15' }, { m: 1000, r: 900, e: '2025-12-01' }, { m: 1000, r: 900, e: null }, { m: 1000, r: 900, e: '2027-01-01' }], 2026);
-    expect(e[2]).toBe(1); expect(e[0]).toBe(2); expect(sum(e)).toBe(3);
+  it('expirationsFromLeases counts lease ends by budget month; MTM/expired spread one twelfth a month; pre-start turns are not expirations', () => {
+    const leases = [{ m: 1000, r: 900, e: '2026-03-15' }, { m: 1000, r: 900, e: '2025-12-01' }, { m: 1000, r: 900, e: null }, { m: 1000, r: 900, e: '2027-01-01' }];
+    const e = expirationsFromLeases(leases, 2026);
+    expect(e[2]).toBe(1); expect(e[0]).toBe(1); expect(e[1]).toBe(1); expect(sum(e)).toBe(3);   // no as-of: the Dec-25 and undated leases are MTM, round-robin
+    const withRoll = expirationsFromLeases(leases, 2026, { asOf: '11/15/2025' });
+    expect(withRoll[2]).toBe(1); expect(withRoll[0]).toBe(1); expect(withRoll[11]).toBe(1); expect(sum(withRoll)).toBe(3);   // Dec-25 ends after the roll → turned before January, up again Dec-26
+  });
+  it('a lease ending between the roll date and the budget start resets in month 0 with the renewal mix (not MTM all year)', () => {
+    const actual = synthetic();
+    const inputs = defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10);
+    const noGrow = { ...inputs, ltl: { ...inputs.ltl, mode: 'leases' as const, renewalPct: 0, burnoffNew: 1, followGpr: false } };
+    // 12 leases ending 15 Dec 2025 (gap $100 each), roll as of 30 Sep 2025, budget Jan 2026
+    const leases = Array.from({ length: 12 }, () => ({ m: 1000, r: 900, e: '2025-12-15' }));
+    const stale = L(generateAnnualLines(coaList, noGrow, { actual, budget: null, lastMonth: 10, leases }), '5003');
+    expect(stale.months[0]).toBe(-1100);                                   // no as-of: treated as MTM, 1 resets a month
+    const fresh = L(generateAnnualLines(coaList, noGrow, { actual, budget: null, lastMonth: 10, leases, rollAsOf: '2025-09-30' }), '5003');
+    expect(fresh.months[0]).toBe(0);                                       // all 12 turned before January
+    const expired = L(generateAnnualLines(coaList, noGrow, { actual, budget: null, lastMonth: 10, leases: leases.map((l) => ({ ...l, e: '2025-06-01' })), rollAsOf: '2025-09-30' }), '5003');
+    expect(expired.months[0]).toBe(-1100);                                 // already expired at the roll → still MTM
   });
   it('application fees = last year $ ÷ this year move-ins × each month\'s move-ins', () => {
     const actual = synthetic();
@@ -333,7 +364,7 @@ describe('parseYardiBudgetTemplate — GRKS RMC draft ties to its Summary', () =
     const inputs = defaultAnnualInputs(2026, t.units, actual, null, coaList, t, 10);
     const lines = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10, template: t });
     expect(sum(L(lines, '4994').months)).toBeCloseTo(1493914.18, 1);
-    expect(sum(L(lines, '6116').months)).toBeCloseTo(103355.28, 1);
+    expect(sum(L(lines, '6116').months)).toBeCloseTo(101838.76, 1);   // RE tax: T12 flat, not RMC's typed 103,355 (October × 12)
     expect(sum(L(lines, '6108').months)).toBe(28500);
     expect(sum(L(lines, '7300').months)).toBeCloseTo(234066.04, 1);
     expect(sum(L(lines, '3080').months)).toBeCloseTo(-100862.94, 1);
@@ -374,7 +405,26 @@ describe('foundation rules (seed/annual-rules.json, extracted from the GRKS draf
       expect(L(lines, '6604').months[0]).toBe(800);                  // Jan: PY × 1.05 → MROUND 10 (RMC: 800)
       expect(sum(L(lines, '6702').months)).toBeCloseTo(2092.2, 0);   // flatT12 × 1.10 (RMC: 2,092)
       expect(L(lines, '5165').months[0]).toBe(1050);                 // PY Jan 1,030.65 → MROUND 50 (RMC: 1,050)
-      expect(sum(L(lines, '6116').months)).toBeCloseTo(103355.28, 1); // RE tax: last actual flat (RMC typed 103,355)
+      // RE tax: trailing-12 total flat (101,839), NOT October × 12 (103,355 — RMC's typed annual
+      // was a property decision; on clnd the same rule put 2026 taxes 110k under what was loaded)
+      expect(sum(L(lines, '6116').months)).toBeCloseTo(101838.76, 1);
+      expect((L(lines, '6116').driver as any).rule).toBe('fixedAnnual');
+    });
+    it('a typed category % outranks the per-GL foundation factors (the Assumptions boxes used to be inert)', () => {
+      const p = parseYardiBudgetTemplate(readFileSync(fx('yardi-template-grks-draft.xlsm')), detail);
+      const t = p.template;
+      const actual = stmtCalendar({ monthCal: p.actual.monthCal, monthYear: p.actual.monthYear, rows: p.actual.rows });
+      const inputs = defaultAnnualInputs(2026, t.units, actual, null, coaList, t, 10);
+      const src: AnnualSources = { actual, budget: null, lastMonth: 10, template: t, rules };
+      const catOf = (ls: BudgetLine[], pc: string) => ls.reduce((a, l) => a + (coaList.find((x) => x.code === l.gl_code)?.pcode === pc ? sum(l.months) : 0), 0);
+      const base = generateAnnualLines(coaList, inputs, src);
+      const typed = generateAnnualLines(coaList, { ...inputs, baseline: { ...inputs.baseline!, growthPct: { '13': 0.25 } } }, src);
+      expect(sum(L(typed, '6702').months)).toBeCloseTo(sum(L(base, '6702').months) * 1.25 / 1.10, 0);   // flatT12 rule 10% → typed 25%
+      expect(catOf(typed, '13') / catOf(base, '13')).toBeGreaterThan(1.1);                              // the category really moves
+      expect(catOf(typed, '9')).toBe(catOf(base, '9'));                                                 // other categories untouched
+      // a GL's own typed factor still wins over the category
+      const own = generateAnnualLines(coaList, { ...inputs, baseline: { ...inputs.baseline!, growthPct: { '13': 0.25 }, glGrowth: { '6702': 0 } } }, src);
+      expect(sum(L(own, '6702').months)).toBeCloseTo(sum(L(base, '6702').months) / 1.10, 0);
     });
   }
 });

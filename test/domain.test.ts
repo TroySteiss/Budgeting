@@ -463,6 +463,16 @@ describe('ltlMonths — per-lease burnoff at turnover', () => {
     expect(out[11]).toBe(0);
   });
 
+  it('with the roll as-of date, a lease ending between the roll and the start has turned by month 0; one expired at the roll is MTM', () => {
+    const out = ltlMonths([{ m: 1000, r: 900, e: '2026-08-15' }, { m: 1000, r: 800, e: '2026-06-01' }], 2026, 9,
+      { renewalPct: 0, burnoffRenew: 0.5, burnoffNew: 1, asOf: '7/31/2026' });
+    expect(out[0]).toBe(0);      // Aug-15 lease (after the 7/31 roll) turned before September; the Jun-01 lease is MTM and resets in month 0 too
+    const out2 = ltlMonths([{ m: 1000, r: 900, e: '2026-08-15' }, { m: 1000, r: 800, e: '2026-06-01' }, { m: 1000, r: 700, e: '2026-05-01' }], 2026, 9,
+      { renewalPct: 0, burnoffRenew: 0.5, burnoffNew: 1, asOf: '2026-07-31' });
+    expect(out2[0]).toBe(-200);  // two MTM leases: the larger (300) resets in month 0, the 200 one in month 1; the Aug-15 lease is gone at month 0
+    expect(out2[1]).toBe(0);
+  });
+
   it('renewal rate 100% keeps half of everything at expiry', () => {
     const out = ltlMonths([{ m: 1000, r: 800, e: '2026-10-01' }], 2026, 9, { renewalPct: 1, burnoffRenew: 0.5 });
     expect(out[0]).toBe(-200);

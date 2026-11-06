@@ -276,8 +276,16 @@ mround, factor, noThreshold}`) extracted from the GRKS 2026 RMC draft by
 `scripts/extract-annual-rules.mjs`; loaded by `src/annual-rules.ts` (`loadAnnualRules`, cached) and
 passed as `AnnualSources.rules`. `generateAnnualLines` → `baseline()` precedence: per-GL inputs
 (`baseline.glShape/glGrowth/glMround`) → rule → built-in sets (`LAST_MONTH_FLAT_GLS`,
-`TEMPLATE_GL_PCT`…) → `baseline.shape` / `growthPct`. Conservice forecasts apply only with
-`baseline.useUtilForecast`. Driver carries `rule` for the chip label.
+`FIXED_ANNUAL_GLS`, `TEMPLATE_GL_PCT`…) → `baseline.shape` / `growthPct`. Conservice forecasts
+apply only with `baseline.useUtilForecast`. Driver carries `rule` for the chip label.
+**Factor precedence (2026-11-05 fix):** `glGrowth[gl]` → a category % the user TYPED
+(`baseline.growthPct[pcode]`; blank box = unset, `defaultAnnualInputs` stores `{}` and migration
+009 strips untouched defaults) → the rule's factor → `TEMPLATE_GL_PCT` → typed `'*'` →
+`TEMPLATE_CAT_PCT`. Before this the GRKS factors outranked the Assumptions boxes (R&M +25% moved
+cat 13 by 4%). **Real estate taxes (6116)** = trailing-12 total ÷ 12 flat (`FIXED_ANNUAL_GLS`, rule
+`fixedAnnual` maps to the same), never October × 12 — the template's rule put clnd's 2026 taxes at
+407k vs 471k T12 / 517k loaded. Remaining `last`-shape lines get `driver.lastDev` (chip ⚠LAST) when
+the last month is >25% off the T12 average (`LAST_DEV_WARN`).
 
 Drivers added: `baseline {src, pct|pcts, shape actual|wavg|flat|curve|last|avgnz, mult, base, rule}`,
 `pctGpr {pct, of gpr|netgpr|net, basis last|t12}`, `recapture`, `perTurn {amount, turns}`,
@@ -533,6 +541,15 @@ reference columns blank. The name cell carries `data-hist` + a ▸/▾ chevron; 
   the day (xlsx hands back local-midnight Dates).
 - **Expiration precedence** (engine): typed `inputs.expirations` → rent roll / UAD leases
   → the Yardi template's count. (Was template before leases.)
+- **Roll as-of date (2026-11-05 fix):** `loadBudget` reads `rent_snapshots.as_of` →
+  `lb.rollAsOf` → `AnnualSources.rollAsOf` / the last arg of `generateLines`/`regenerate`
+  (`ltlModel`/`ltlMonths` `opts.asOf`, `expirationsFromLeases` `{asOf, startMonth}`). A lease ending
+  BETWEEN the roll and the budget start has already turned: `ltlModel` resets it in month 0 with
+  the renewal mix, `expirationsFromLeases` counts its renewal twelve months on. A lease already
+  expired at the roll (or undated) is month-to-month: one twelfth resets each month in BOTH
+  functions (expirations used to pile them all into January — 126 on bcnd off the 9/30 roll).
+  On the 9/30/26 roll this moved 2027 income +36k clnd / +41k bcnd / +53k ecnd. `dateKey` /
+  `leaseEndIndex` (domain.ts) parse ISO and M/D/YYYY. Assumptions shows "roll as of …".
 - **Turn costs follow expirations + 1 month**: `TURN_EXPENSE_GLS` (6702 appliance parts,
   6704/6912 blinds, 6706/6908 carpet cleaning, 6726 locks, 6728 paint, 6905 appliance
   repair, 6926 painting, 7002/7006/7010/7015 RR appliances/carpet/blinds/painting) default

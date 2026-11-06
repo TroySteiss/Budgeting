@@ -71,7 +71,8 @@ function drvMetaBase(l) {
       const shape = { actual: 'same calendar month', wavg: '1-2-1 weighted distribution', flat: 'T12 ÷ 12 flat', curve: 'T12 total on the GL curve', last: 'last actual month, flat', avgnz: 'average of active months, flat', turns: `T12 total on lease expirations + 1 mo lag${d.turns ? ` (${Math.round(d.turns)} expirations)` : ''}` }[d.shape] || d.shape;
       const factor = d.pcts ? `+ Conservice forecast ${(Math.min(...d.pcts) * 100).toFixed(0)}–${(Math.max(...d.pcts) * 100).toFixed(0)}% by month` : `× ${(1 + (d.pct || 0)).toFixed(3)}`;
       const tag = d.src === 'budget' ? 'CYB' : d.shape === 'turns' ? 'TURNS' : d.shape === 'last' ? 'LAST' : d.pcts ? 'UTIL' : d.shape === 'wavg' ? 'WAVG' : d.shape === 'flat' ? 'T12/12' : 'T12';
-      return { cls: 'drv-base', tag, label: `${d.src === 'budget' ? 'CY budget' : 'Own trailing-12 actual'} — ${shape} ${factor}${d.mult ? ` → MROUND $${d.mult}` : ''} · T12 ${Math.round(d.base || 0).toLocaleString()}${d.rule ? ' · GRKS foundation rule' : ''}` };
+      const lastWarn = d.lastDev != null ? ` · ⚠ last actual month is ${d.lastDev > 0 ? '+' : ''}${Math.round(d.lastDev * 100)}% vs the T12 average — one month is setting the year (shape menu: T12 ÷ 12 flat)` : '';
+      return { cls: 'drv-base', tag: d.lastDev != null ? '⚠LAST' : tag, label: `${d.src === 'budget' ? 'CY budget' : 'Own trailing-12 actual'} — ${shape} ${factor}${d.mult ? ` → MROUND $${d.mult}` : ''} · T12 ${Math.round(d.base || 0).toLocaleString()}${d.rule ? ' · GRKS foundation rule' : ''}${lastWarn}` };
     }
     case 'pctGpr': return { cls: 'drv-base', tag: '%GPR', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.of === 'net' ? 'net rental income' : l.driver.of === 'netgpr' ? 'net GPR' : 'GPR'} (${l.driver.basis === 'last' ? 'last-month' : 'trailing-12'} ratio)` };
     case 'recapture': return { cls: 'drv-base', tag: 'RECAP', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% recapture of the other concession lines (T12 ratio)` };
@@ -3728,7 +3729,7 @@ function annualInputsHtml(inp) {
       <div class="fld"><label>GPR base $/mo (0 = last actual month's GPR)</label><input id="in-gprbase" value="${g.baseMonthly ?? 0}" style="width:120px"></div>
       <div class="fld"><label>% increase applied IN each month (compounds; leave a month blank for no change — e.g. 3 in Mar, 2 in Sep)</label>${gprStepsGrid(g.growthPct || [], 'in-gprstep')}</div>
     </div>
-    <h3>Loss to lease ${S.bv.leaseCount ? `<span class="badge">${S.bv.leaseCount} leases on file — per-lease burnoff</span>` : '<span class="badge">template method: last actual month, burned off by lease expirations</span>'}</h3>
+    <h3>Loss to lease ${S.bv.leaseCount ? `<span class="badge">${S.bv.leaseCount} leases on file — per-lease burnoff${S.bv.rollAsOf ? ` · roll as of ${esc(S.bv.rollAsOf)} (leases ending before the budget start have already turned)` : ''}</span>` : '<span class="badge">template method: last actual month, burned off by lease expirations</span>'}</h3>
     <div class="row">
       <div class="fld"><label>Renewal %</label><input id="in-ltlrenew" value="${((l.renewalPct ?? (tpl && tpl.renewalPct) ?? 0.65) * 100).toFixed(1)}" style="width:70px"></div>
       <div class="fld"><label>Burnoff on renewal %</label><input id="in-ltlbr" value="${((l.burnoffRenew ?? 0.75) * 100).toFixed(0)}" style="width:70px"></div>
@@ -3756,9 +3757,9 @@ function annualInputsHtml(inp) {
     </div>
     <p class="muted" style="font-size:11px; margin:4px 0 0">Per-GL defaults follow the <b>GRKS 2026 draft's formulas</b> (the foundation): same-month × factor with MROUND $10/$50, the 1-2-1 weighted average for utilities and volatile fees (MROUND $25–$250), trailing-12 ÷ 12 flat for small/erratic lines (only when the T12 exceeds $1,000), October actual flat for taxes, phones and HAP. Shape and factor set here apply where the GL has no rule; a line's own chip input or “Own T12 → shape × factor…” wins over both.</p>
     <div class="row" style="margin-top:6px">
-      ${ANNUAL_CATS.map(([p, label]) => `<div class="fld"><label>${label} %</label><input class="in-blpct" data-p="${p}" value="${pct1(gp[p] ?? 0)}" style="width:70px"></div>`).join('')}
+      ${ANNUAL_CATS.map(([p, label]) => `<div class="fld"><label>${label} %</label><input class="in-blpct" data-p="${p}" value="${gp[p] == null ? '' : pct1(gp[p])}" placeholder="per GL" title="Blank = each GL keeps its own foundation factor. A typed % applies to EVERY trailing-12 × factor line in the category (it outranks the per-GL factors; a GL's own typed factor still wins)." style="width:70px"></div>`).join('')}
     </div>
-    <p class="muted" style="font-size:11px; margin:4px 0 0">Category % above is the fallback for GLs without a foundation rule. GRKS factors by section: other income 0%, reims 5%, admin 5%, maintenance / CAM / contract services 10%, rehab 15%, utilities 5% (trash 7%, internet 3%).</p>
+    <p class="muted" style="font-size:11px; margin:4px 0 0"><b>Blank = each GL's own foundation factor.</b> A typed category % moves every trailing-12 × factor line in that category (clear it to go back). GRKS factors by section: other income 0%, reims 5%, admin 5%, maintenance / CAM / contract services 10%, rehab 15%, utilities 5% (trash 7%, internet 3%).</p>
     <h3>Turnover-driven income · $ per new move-in (blank = last year's $ ÷ this year's move-ins)</h3>
     <div class="row">
       ${[['5105', 'Application fees'], ['5152', 'Deposit forfeitures'], ['5157', 'Move-in admin fee']].map(([gl, label]) => `<div class="fld"><label>${gl} ${label}</label><input class="in-turn" data-gl="${gl}" value="${(inp.turnFees || {})[gl] ?? ''}" style="width:90px" placeholder="auto"></div>`).join('')}

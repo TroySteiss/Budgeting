@@ -386,6 +386,8 @@ interface LoadedBudget {
   budget: any; lines: BudgetLine[]; coa: CoaAccount[]; coaMap: Map<string, CoaAccount>;
   uw: UwSnapshotData | null; comps: CompWeights | null; catShapes: Record<string, Months> | null;
   payrollWages: Record<string, number> | null; leases: Lease[] | null;
+  /** the linked rent roll's as-of date (ISO) — leases ending between it and the budget start have already turned */
+  rollAsOf: string | null;
   sellerUtil: SellerUtilRow[] | null; charges: Record<string, number> | null;
   savePoints?: any[];
   sellerRows: any[] | null;
@@ -469,10 +471,15 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   // per-lease detail + ancillary charges from the linked rent snapshot
   let leases: Lease[] | null = null;
   let charges: Record<string, number> | null = null;
+  let rollAsOf: string | null = null;
   if (budget.rent_snapshot_id) {
-    const rs = (await query('select data from rent_snapshots where id=$1', [budget.rent_snapshot_id])).rows[0];
+    const rs = (await query('select data, as_of from rent_snapshots where id=$1', [budget.rent_snapshot_id])).rows[0];
     if (Array.isArray(rs?.data?.leases) && rs.data.leases.length) leases = rs.data.leases;
     if (rs?.data?.charges && Object.keys(rs.data.charges).length) charges = rs.data.charges;
+    if (rs?.as_of) {
+      const d = rs.as_of instanceof Date ? rs.as_of : new Date(rs.as_of);
+      if (!isNaN(d.getTime())) rollAsOf = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
   }
   const savePoints = (await query(
     'select id, name, created_by, created_at, summary from budget_snapshots where budget_id=$1 order by created_at desc limit 50',
@@ -528,7 +535,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
       }));
     }
   }
-  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, sellerUtil, charges, sellerRows, savePoints,
+  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, savePoints,
            annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, ref, refLabel, refs };
 }
 
@@ -604,6 +611,7 @@ function budgetView(lb: LoadedBudget) {
     compShapes: lb.comps?.glShapes || null,
     payrollWages: lb.payrollWages,
     leaseCount: lb.leases?.length || 0,
+    rollAsOf: lb.rollAsOf,
     hasSellerUtil: !!(lb.sellerUtil && lb.sellerUtil.length),
     charges: lb.charges,
     sellerT12: lb.sellerRows,
@@ -764,12 +772,12 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   let lines: BudgetLine[];
   if (lb.annual) {
     // ANNUAL: the property's own statements + the Yardi template rules (shared/annual.ts)
-    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: loadAnnualRules(), comps: lb.comps, payrollWages: wages, leases: lb.leases, charges: lb.charges };
+    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: loadAnnualRules(), comps: lb.comps, payrollWages: wages, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges };
     lines = existing ? regenerateAnnual(existing, lb.coa, inputs, src) : generateAnnualLines(lb.coa, inputs, src);
   } else {
     lines = existing
-      ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges)
-      : generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges);
+      ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges, lb.rollAsOf)
+      : generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges, lb.rollAsOf);
   }
   lines = applyDependentPasses(lb, lines, inputs);
   const ref = refOf(lb);

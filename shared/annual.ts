@@ -33,7 +33,7 @@ import {
   type CoaAccount, type BudgetLine, type BudgetInputs, type Months, type Driver, type UwSnapshotData,
   type Lease, type CompWeights, type BaselineShape,
   zero12, r2, sum, rollup, spreadMonthly, rotate12, CURVES, WAGE_GLS, ltlMonths, ltlModel, chargeGlMonthly,
-  mergeFresh, overriddenWages, calMonthOf, calYearOf, daysInMonth,
+  mergeFresh, overriddenWages, calMonthOf, calYearOf, daysInMonth, dateKey, leaseEndIndex,
 } from './domain.js';
 
 /* ---------------- statements (own trailing-12 actuals / current budget) ---------------- */
@@ -259,7 +259,16 @@ export const CORP_RATES: Record<string, { perUnitYr?: number; flatMo?: number; l
   '6560': { perUnitYr: r2(18.87 + 5.89), label: 'Marketing salary allocations $24.76/unit/yr' },
 };
 /** "Default is October actuals": the last actual month, flat for 12. */
-export const LAST_MONTH_FLAT_GLS = new Set(['4995', '4996', '5018', '5020', '5021', '5023', '5024', '5025', '5028', '5032', '5033', '5034', '5040', '6104', '6116', '6601', '6602', '6616', '6617', '6618', '6619', '6630']);
+export const LAST_MONTH_FLAT_GLS = new Set(['4995', '4996', '5018', '5020', '5021', '5023', '5024', '5025', '5028', '5032', '5033', '5034', '5040', '6104', '6601', '6602', '6616', '6617', '6618', '6619', '6630']);
+/** A known ANNUAL amount budgeted flat — real estate taxes. The template's "October
+    actual × 12" put clnd's 2026 taxes at 407k against a 471k trailing-12 and the 517k
+    accounting loaded (one accrual true-up month set the year). Default = trailing-12
+    total ÷ 12, no $1,000 threshold; the RMC's typed annual (rule `fixedAnnual`) is a
+    property decision, so it lands here too. */
+export const FIXED_ANNUAL_GLS = new Set(['6116']);
+/** A `last`-shape line whose last actual month is this far off its trailing-12 average
+    gets `driver.lastDev` so the chip can warn (one odd month is setting the year). */
+export const LAST_DEV_WARN = 0.25;
 /** Per-GL increase factors the template hard-codes. */
 export const TEMPLATE_GL_PCT: Record<string, number> = {
   '5158': 0.05, '5167': 0.05, '5169': 0.05, '5170': 0.05, '5171': 0.05, '5172': 0.05, '5174': 0.05,
@@ -325,19 +334,28 @@ export function annualBaseline(cal: Months, opts: { pct?: number; pcts?: Months 
   return m.map((v) => (mult > 0 ? Math.round(v / mult) * mult : r2(v))) as Months;
 }
 
-/** Lease expirations per calendar month from unit-level leases: expired /
-    month-to-month leases count in month 0 (they turn right away). */
-export function expirationsFromLeases(leases: Lease[], year: number): Months {
+/** Lease expirations per budget month from unit-level leases. A lease ending between
+    the roll's as-of date and the budget start turns BEFORE the year; its renewal
+    comes up again twelve months on, so it counts in that month of the budget year.
+    One already expired at the roll date, or with no end date, is month-to-month and
+    is spread one twelfth a month, the same way `ltlModel` resets them (they used to
+    all land in month 0: a 9/30 roll put 126 "January" expirations on bcnd). */
+export function expirationsFromLeases(leases: Lease[], year: number, opts: { asOf?: string | null; startMonth?: number } = {}): Months {
   const out = zero12();
+  const startMonth = opts.startMonth || 1;
+  const startAbs = year * 12 + (startMonth - 1);
+  const asOfKey = dateKey(opts.asOf);
+  let mtm = 0;
   for (const l of leases) {
-    let idx = 0;
-    if (l.e) {
-      const iso = String(l.e).match(/^(\d{4})-(\d{1,2})/);
-      let y = NaN, mo = NaN;
-      if (iso) { y = +iso[1]; mo = +iso[2] - 1; } else { const d = new Date(l.e); if (!isNaN(d.getTime())) { y = d.getFullYear(); mo = d.getMonth(); } }
-      if (!isNaN(y)) { const k = (y - year) * 12 + mo; idx = k < 0 ? 0 : k > 11 ? -1 : k; }
+    const k = l.e ? leaseEndIndex(l.e, startAbs) : null;
+    if (k == null) { out[mtm++ % 12]++; continue; }                        // no / unreadable end date → MTM
+    if (k > 11) continue;                                                 // ends after the window
+    if (k >= 0) { out[k]++; continue; }
+    if (asOfKey != null && (dateKey(l.e) ?? -1) >= asOfKey) {             // turns before the year starts → up again a year later
+      if (k + 12 >= 0 && k + 12 <= 11) out[k + 12]++;
+      continue;
     }
-    if (idx >= 0) out[idx]++;
+    out[mtm++ % 12]++;                                                    // expired at the roll date → MTM
   }
   return out;
 }
@@ -386,7 +404,7 @@ export function gprStepsSummary(steps: Months | null | undefined): string {
     Other methods (engine / corpRate / suggested / debt / payroll) leave the
     engine's own logic in charge. */
 export interface AnnualRule { method: 'same' | 'wavg' | 'flatT12' | 'last' | 'engine' | 'corpRate' | 'suggested' | 'debt' | 'payroll' | 'fixedAnnual'; mround?: number; factor?: number; noThreshold?: boolean; name?: string }
-const RULE_SHAPE: Partial<Record<AnnualRule['method'], BaselineShape>> = { same: 'actual', wavg: 'wavg', flatT12: 'flat', last: 'last' };
+const RULE_SHAPE: Partial<Record<AnnualRule['method'], BaselineShape>> = { same: 'actual', wavg: 'wavg', flatT12: 'flat', last: 'last', fixedAnnual: 'flat' };
 
 export interface AnnualSources {
   actual: Record<string, Months> | null;    // trailing-12 posted actuals, calendar series by GL
@@ -399,6 +417,9 @@ export interface AnnualSources {
   comps?: CompWeights | null;
   payrollWages?: Record<string, number> | null;
   leases?: Lease[] | null;
+  /** the rent roll's as-of date (ISO or M/D/YYYY): a lease ending between it and the
+      budget start has already turned by month 0 (it is not month-to-month) */
+  rollAsOf?: string | null;
   charges?: Record<string, number> | null;
 }
 
@@ -415,7 +436,10 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   const lastMonth = src.lastMonth || tpl?.lastActual.month || 10;
   const units = inputs.units || tpl?.units || 0;
 
-  const bl = { ...DEFAULT_BASELINE, ...(inputs.baseline || {}), growthPct: { ...TEMPLATE_CAT_PCT, ...(inputs.baseline?.growthPct || {}) } };
+  // category %s the user TYPED (blank box = each GL's own foundation factor); the
+  // template defaults are only the floor under everything else
+  const userPct: Record<string, number> = inputs.baseline?.growthPct || {};
+  const bl = { ...DEFAULT_BASELINE, ...(inputs.baseline || {}), growthPct: { ...TEMPLATE_CAT_PCT, ...userPct } };
   const useBudget = bl.source === 'budget' && !!src.budget && Object.keys(src.budget).length > 0;
   const base: Record<string, Months> = useBudget ? src.budget! : (src.actual || {});
   const baseSrc: 'actual' | 'budget' = useBudget ? 'budget' : 'actual';
@@ -423,8 +447,12 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   const lastOf = (gl: string): number => (base[gl] || zero12())[lastMonth - 1] || 0;
   const rules = src.rules || {};
   const ruleOf = (gl: string): AnnualRule | null => { const r = rules[gl]; return r && RULE_SHAPE[r.method] ? r : null; };
+  /** Precedence: the GL's own typed factor → a category % the user typed (it must
+      move the whole category, or the Assumptions boxes are inert — the GRKS factors
+      used to outrank them) → the GL's foundation rule → the template's per-GL %
+      → the user's "everything else" → the template's category defaults. */
   const pctFor = (a: CoaAccount): number =>
-    bl.glGrowth?.[a.code] ?? ruleOf(a.code)?.factor ?? TEMPLATE_GL_PCT[a.code] ?? bl.growthPct?.[a.pcode || ''] ?? bl.growthPct?.['*'] ?? 0;
+    bl.glGrowth?.[a.code] ?? userPct[a.pcode || ''] ?? ruleOf(a.code)?.factor ?? TEMPLATE_GL_PCT[a.code] ?? userPct['*'] ?? TEMPLATE_CAT_PCT[a.pcode || ''] ?? TEMPLATE_CAT_PCT['*'] ?? 0;
   const isSet = (gl: string): boolean => (lines.get(gl)?.driver as any)?.method !== 'manual';
   /** statement line × factor on a shape; false when the property has no history on the GL.
       Precedence: the budget's own per-GL overrides → the GL's foundation rule
@@ -434,7 +462,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
      of expirations — it beats the template). The turn curve is the same series lagged
      one month for invoice processing. ---- */
   const exp: Months = (inputs.expirations && inputs.expirations.some((v) => v) ? inputs.expirations
-    : src.leases?.length ? expirationsFromLeases(src.leases, inputs.year)
+    : src.leases?.length ? expirationsFromLeases(src.leases, inputs.year, { asOf: src.rollAsOf, startMonth })
     : tpl?.leaseExpirations?.some((v) => v) ? tpl.leaseExpirations : zero12()) as Months;
   const turnCurve: Months = lagMonths(exp, 1);
   const baseline = (a: CoaAccount, shape?: BaselineShape, pctOverride?: number): boolean => {
@@ -447,7 +475,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const fc = tpl?.utilForecast?.[a.code];
     const pcts = bl.useUtilForecast && fc && fc.some((v) => v) && bl.glGrowth?.[a.code] == null ? fc : null;
     const ruleShape = rule ? RULE_SHAPE[rule.method] : undefined;
-    const sh: BaselineShape = bl.glShape?.[a.code] ?? shape ?? ruleShape ?? (LAST_MONTH_FLAT_GLS.has(a.code) ? 'last' : FLAT_T12_GLS.has(a.code) ? 'flat' : AVG_NZ_GLS.has(a.code) ? 'avgnz' : TURN_EXPENSE_GLS.has(a.code) && turnCurve.some((v) => v > 0) ? 'turns' : bl.shape);
+    const sh: BaselineShape = bl.glShape?.[a.code] ?? shape ?? ruleShape ?? (LAST_MONTH_FLAT_GLS.has(a.code) ? 'last' : FIXED_ANNUAL_GLS.has(a.code) || FLAT_T12_GLS.has(a.code) ? 'flat' : AVG_NZ_GLS.has(a.code) ? 'avgnz' : TURN_EXPENSE_GLS.has(a.code) && turnCurve.some((v) => v > 0) ? 'turns' : bl.shape);
     // T12/12 flat only when the trailing-12 exceeds $1,000 (RMC's IF(T12>1000, …, 0))
     const threshold = sh === 'flat' && !shape && (rule ? rule.method === 'flatT12' && !rule.noThreshold : FLAT_T12_GLS.has(a.code));
     if (threshold && Math.abs(baseTotal(a.code)) <= 1000) return false;
@@ -459,7 +487,15 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       const edge = (c: number) => { const v = cal[c] * (1 + pct); return r2(Math.round(v / 10) * 10); };
       months = [edge(0), ...months.slice(1, 11), edge(11)] as Months;
     }
-    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}) });
+    // a "last actual month" line whose last month is far off its own average: one odd
+    // month (a tax true-up, a zero) is setting the whole year — flag it for the chip
+    let lastDev: number | undefined;
+    if (sh === 'last') {
+      const avg = baseTotal(a.code) / 12;
+      const lastV = cal[lastMonth - 1] || 0;
+      if (avg && Math.abs(lastV - avg) > LAST_DEV_WARN * Math.abs(avg)) lastDev = Math.round((lastV / avg - 1) * 1000) / 1000;
+    }
+    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(lastDev != null ? { lastDev } : {}) });
     return true;
   };
 
@@ -490,7 +526,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     // Troy: hold the loss to lease — no burnoff. Start = typed $/mo, else the
     // rent roll's current gap, else the last actual month; market growth
     // still deepens it when "follows GPR" is on
-    const model = src.leases && src.leases.length ? ltlModel(src.leases, inputs.year, startMonth, { ...ltl, renewalPct: 1, burnoffRenew: 0, burnoffNew: 0 }) : null;
+    const model = src.leases && src.leases.length ? ltlModel(src.leases, inputs.year, startMonth, { ...ltl, renewalPct: 1, burnoffRenew: 0, burnoffNew: 0, asOf: src.rollAsOf }) : null;
     const L0 = ltl.startMonthly ? -Math.abs(ltl.startMonthly) : (model && model.months[0]) || lastOf('5003');
     // market growth deepens the gap on the occupied units' market (all units when the roll is summary-only)
     const deepen = (i: number) => (!followGpr || !gpr[0] ? 0 : model ? (gpr[i] / gpr[0] - 1) * model.occupiedMarket : gpr[i] - gpr[0]);
@@ -506,7 +542,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     // Troy: per-lease burnoff at each turnover; market growth deepens the gap
     // only on the leases that have not reset yet (a renewed / turned unit is
     // already at the new market), on their own market rent — not the whole GPR
-    const model = ltlModel(src.leases, inputs.year, startMonth, ltl);
+    const model = ltlModel(src.leases, inputs.year, startMonth, { ...ltl, asOf: src.rollAsOf });
     mk('5003', model.months.map((v, i) => r2(Math.min(0, v - (followGpr && gpr[0] ? (gpr[i] / gpr[0] - 1) * model.openMarket[i] : 0)))) as Months, { method: 'ltl' });
   } else if (lastGpr || ltl.startMonthly) {
     // template: last actual month's LTL, deepened by the market-rent change,
@@ -770,7 +806,9 @@ export function defaultAnnualInputs(year: number, units: number, actual: Record<
     rentalLossPct: ratio(catTot('3'), 0, 0.5),
     mgmtPct: tpl?.mgmtFee?.actualPct ? Math.round(tpl.mgmtFee.actualPct * 10000) / 10000 : (income > 0 && mgmt > 0 ? Math.round((mgmt / income) * 10000) / 10000 : 0.04),
     utilities: { source: 'baseline', growthPct: 0.03, recoveryPct: null },
-    baseline: { ...DEFAULT_BASELINE, growthPct: { ...TEMPLATE_CAT_PCT } },
+    // growthPct stays EMPTY: a category % is only set when the user types one (it then
+    // outranks every GL's foundation factor in that category)
+    baseline: { ...DEFAULT_BASELINE, growthPct: {} },
     refSource: 'actual',
     expirations: tpl?.leaseExpirations?.some((v) => v) ? tpl.leaseExpirations : null,
     uwAbs: {},

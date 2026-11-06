@@ -328,6 +328,28 @@ export function chargeGlMonthly(charges: Record<string, number>): Record<string,
 /** One lease off the unit-level rent roll: market rent, actual rent, lease end. */
 export interface Lease { m: number; r: number; e?: string | null }
 
+/** A date string ('YYYY-MM-DD', 'M/D/YYYY', or anything Date parses) → a sortable
+    y*10000+m*100+d key, null when unreadable. Year-month parsed directly: Date('YYYY-MM-DD')
+    is UTC while the getters are local, which shifts month-firsts back a day. */
+export function dateKey(v: string | null | undefined): number | null {
+  if (!v) return null;
+  const t = String(v).trim();
+  const iso = t.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?/);
+  if (iso) return +iso[1] * 10000 + +iso[2] * 100 + (+iso[3] || 1);
+  const us = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (us) { let y = +us[3]; if (y < 100) y += 2000; return y * 10000 + +us[1] * 100 + +us[2]; }
+  const d = new Date(t);
+  return isNaN(d.getTime()) ? null : d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+}
+/** A lease end → its month index relative to `startAbs` (year*12 + startMonth-1): negative =
+    before the window, 0..11 inside, > 11 after; null when the date is unreadable. */
+export function leaseEndIndex(e: string | null | undefined, startAbs: number): number | null {
+  const k = dateKey(e);
+  if (k == null) return null;
+  const y = Math.floor(k / 10000), mo = Math.floor((k % 10000) / 100) - 1;
+  return y * 12 + mo - startAbs;
+}
+
 /** Monthly LOSS/GAIN TO LEASE (signed, loss negative) from per-lease burnoff:
     a lease's LTL changes only in its turnover month — renewals burn
     `burnoffRenew` of their gap (default half), new move-ins burn `burnoffNew`
@@ -338,7 +360,7 @@ export interface Lease { m: number; r: number; e?: string | null }
     window never burn inside it. */
 export function ltlMonths(
   leases: Lease[], year: number, startMonth: number,
-  opts: { renewalPct?: number; burnoffRenew?: number; burnoffNew?: number } = {}
+  opts: { renewalPct?: number; burnoffRenew?: number; burnoffNew?: number; asOf?: string | null } = {}
 ): Months {
   return ltlModel(leases, year, startMonth, opts).months;
 }
@@ -348,31 +370,27 @@ export function ltlMonths(
     market-rent growth deepens the loss on (a unit that just renewed or turned
     is already at the new market). Leases already expired or month-to-month at
     the start are spread round-robin over the 12 months (largest gap first)
-    instead of all resetting in month 0. */
+    instead of all resetting in month 0. With the roll's as-of date (`opts.asOf`)
+    a lease ending BETWEEN the roll and the budget start is not month-to-month:
+    it has already renewed or turned by month 0, so it resets there with the
+    renewal mix (a 9/30 roll on a January budget carried two months of such
+    leases as MTM, burning them off through the whole year). */
 export function ltlModel(
   leases: Lease[], year: number, startMonth: number,
-  opts: { renewalPct?: number; burnoffRenew?: number; burnoffNew?: number } = {}
+  opts: { renewalPct?: number; burnoffRenew?: number; burnoffNew?: number; asOf?: string | null } = {}
 ): { months: Months; openMarket: Months; occupiedMarket: number } {
   const renewalPct = opts.renewalPct ?? 0.7;
   const keepRenew = 1 - (opts.burnoffRenew ?? 0.5);
   const keepNew = 1 - (opts.burnoffNew ?? 1);
   const startAbs = year * 12 + (startMonth - 1);
+  const asOfKey = dateKey(opts.asOf);
   const items = leases.map((l) => {
-    let expM = -1; // -1 = no/invalid end date or already expired → month-to-month
-    if (l.e) {
-      // parse the year-month directly — Date('YYYY-MM-DD') is UTC while the
-      // getters are local, which shifts month-firsts back a month
-      const iso = String(l.e).match(/^(\d{4})-(\d{1,2})/);
-      let y = NaN, mo = NaN;
-      if (iso) { y = +iso[1]; mo = +iso[2] - 1; }
-      else {
-        const d = new Date(l.e);
-        if (!isNaN(d.getTime())) { y = d.getFullYear(); mo = d.getMonth(); }
-      }
-      if (!isNaN(y)) {
-        const idx = y * 12 + mo - startAbs;
-        expM = idx < 0 ? -1 : idx > 11 ? 99 : idx;
-      }
+    let expM = -1; // -1 = no/invalid end date or already expired at the roll → month-to-month
+    const idx = l.e ? leaseEndIndex(l.e, startAbs) : null;
+    if (idx != null) {
+      if (idx > 11) expM = 99;
+      else if (idx >= 0) expM = idx;
+      else if (asOfKey != null && (dateKey(l.e) ?? -1) >= asOfKey) expM = 0;   // turned between the roll and the start
     }
     return { m: l.m || 0, ltl: r2((l.m || 0) - (l.r || 0)), expM };  // positive = loss to lease
   });
@@ -856,7 +874,7 @@ function categoryItems(pcode: string, coa: CoaAccount[], comps: CompWeights | nu
   return items;
 }
 
-export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null, leases?: Lease[] | null, sellerUtil?: SellerUtilRow[] | null, charges?: Record<string, number> | null): BudgetLine[] {
+export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null, leases?: Lease[] | null, sellerUtil?: SellerUtilRow[] | null, charges?: Record<string, number> | null, rollAsOf?: string | null): BudgetLine[] {
   /* THE 12 MONTHS ARE THE OWNERSHIP YEAR (UW Year 1): index 0 = the start
      month of inputs.year, wrapping into the next calendar year. Seasonal
      calendar shapes are rotated into ownership order. The whole window ties
@@ -887,7 +905,7 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
   // burn burnoffRenew, move-ins burn burnoffNew). 'ramp' keeps the legacy
   // linear ramp to a % of GPR.
   if (inputs.ltl.mode !== 'ramp' && leases && leases.length) {
-    mk('5003', ltlMonths(leases, inputs.year, startMonth, inputs.ltl), { method: 'ltl' });
+    mk('5003', ltlMonths(leases, inputs.year, startMonth, { ...inputs.ltl, asOf: rollAsOf }), { method: 'ltl' });
   } else if (inputs.ltl.mode !== 'ramp') {
     const rp = inputs.ltl.renewalPct ?? 0.7;
     const blend = rp * (inputs.ltl.burnoffRenew ?? 0.5) + (1 - rp) * (inputs.ltl.burnoffNew ?? 1);
@@ -1062,9 +1080,9 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
     EXCEPTION: an inactive GL is dead — deactivating it (Settings) is the
     explicit instruction that it must carry nothing, so even an overridden
     inactive line regenerates to the fresh zero. */
-export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null, leases?: Lease[] | null, sellerUtil?: SellerUtilRow[] | null, charges?: Record<string, number> | null): BudgetLine[] {
+export function regenerate(existing: BudgetLine[], coaList: CoaAccount[], inputs: BudgetInputs, uw: UwSnapshotData | null, comps: CompWeights | null, catShapes?: Record<string, Months> | null, payrollWages?: Record<string, number> | null, leases?: Lease[] | null, sellerUtil?: SellerUtilRow[] | null, charges?: Record<string, number> | null, rollAsOf?: string | null): BudgetLine[] {
   const effWages = overriddenWages(existing, payrollWages);
-  return mergeFresh(existing, coaList, generateLines(coaList, inputs, uw, comps, catShapes, effWages, leases, sellerUtil, charges));
+  return mergeFresh(existing, coaList, generateLines(coaList, inputs, uw, comps, catShapes, effWages, leases, sellerUtil, charges, rollAsOf));
 }
 
 /** MANUAL wage-line overrides feed the burden base: benefits/bonuses (ratio ×
