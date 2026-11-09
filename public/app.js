@@ -1179,7 +1179,8 @@ function renderEditor(el) {
     e.stopPropagation();
     openRowTools(b, btn.dataset.tools, btn);
   }));
-  el.querySelectorAll('button.fxp-steps').forEach((btn) => btn.addEventListener('click', (e) => { e.stopPropagation(); openGprSteps(b, btn); }));
+  el.querySelectorAll('button[data-steps]').forEach((btn) => btn.addEventListener('click', (e) => { e.stopPropagation(); openGprSteps(b, btn); }));
+  el.querySelectorAll('button[data-multi]').forEach((btn) => btn.addEventListener('click', (e) => { e.stopPropagation(); openMultiParams(b, btn.dataset.multi, btn); }));
   // per-GL history: click the account name to unfold / fold its reference rows
   el.querySelectorAll('td.name[data-hist]').forEach((td) => td.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1195,10 +1196,8 @@ function renderEditor(el) {
   el.querySelectorAll('input.fxp').forEach((box) => box.addEventListener('change', async () => {
     const gl = box.dataset.fxp;
     const line = S.bv.lines.find((l) => l.gl_code === gl);
-    const prm = paramFor(gl, line, S.bv.budget.inputs || {});
-    // a formula with several inputs renders one box per input (data-k picks it)
-    const p = prm && prm.multi ? prm.multi.find((x) => x.k === box.dataset.k) : prm;
-    if (!p) return;
+    const p = paramFor(gl, line, S.bv.budget.inputs || {});
+    if (!p || p.multi || p.steps) return;
     const v = parseFloat(String(box.value).replace(/[$,%\s]/g, ''));
     if (!Number.isFinite(v)) return;
     pushUndo();
@@ -1373,7 +1372,7 @@ function gridHtml(bv, totals) {
     rows.push(`<tr${trCls ? ` class="${trCls}"` : ''}>
       <td class="code">${a.code}</td>
       <td class="name${histFor(a.code).length ? ' hashist' : ''}" ${histFor(a.code).length ? `data-hist="${a.code}"` : ''} title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}${histFor(a.code).length ? ' — click for the prior T12 / CY budget by month' : ''}">${histFor(a.code).length ? `<span class="hx">${histOpen(a.code) ? '▾' : '▸'}</span>` : ''}${esc(a.name)}${smell ? ` <span class="warnflag" title="Seller billing looks NON-ACCRUAL: ${esc(smell.join('; '))}. Likely bad bills — review, or smooth via WAVG / flat / Minot seasonal.">⚠</span>` : ''}${a.active === false ? ' <span class="badge" title="Deactivated GL still carrying dollars — Recalc zeroes it">inactive — recalc to zero</span>' : ''}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
-      ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? (prm.steps ? `<button class="fxp fxp-steps" data-steps="${a.code}" title="${esc(prm.label)} — click to place increases in specific months">${esc(prm.value)}</button>` : (prm.multi || [prm]).map((p) => `${p.short ? `<span class="fxl">${esc(p.short)}</span>` : ''}<input class="fxp" data-fxp="${a.code}"${p.k ? ` data-k="${p.k}"` : ''} value="${p.value}" title="${esc(p.label)} — Enter applies & regenerates">`).join('')) : ''}</td>` : ''}
+      ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? (prm.steps ? `<button class="fxp fxp-steps" data-steps="${a.code}" title="${esc(prm.label)} — click to place increases in specific months">${esc(prm.value)}</button>` : prm.multi ? `<button class="fxp fxp-steps" data-multi="${a.code}" title="${esc(prm.title || '')} — click to edit every input">${esc(prm.summary)}</button>` : `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">`) : ''}</td>` : ''}
       ${monthIdx.map((i) => `<td class="m ${actIdx.has(i) ? 'drv-act' : sp ? '' : dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money2(m[i]) : ''}"></td>`).join('')}
       ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}"><input data-ann="${a.code}" value="${ann ? money2(ann) : ''}" title="${bv.annual ? bv.budget.year : 'Year 1'} total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
       ${refCells(a.code, 'detail')}
@@ -1504,6 +1503,58 @@ function openGprSteps(b, anchorBtn) {
   });
 }
 
+/* A formula with several inputs (LTL renewal % + burnoffs, corporate rate,
+   interest) gets the GPR treatment: the chip shows a summary, clicking it
+   opens a popover with one labelled box per input and Save & regenerate.
+   Only boxes that were changed are saved, so untouched inputs keep whatever
+   the budget already had (incl. "unset → engine default"). */
+function openMultiParams(b, gl, anchorBtn) {
+  document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
+  const inputs = S.bv.budget.inputs || {};
+  const line = S.bv.lines.find((l) => l.gl_code === gl);
+  const prm = paramFor(gl, line, inputs);
+  if (!prm || !prm.multi) return;
+  const menu = document.createElement('div');
+  menu.className = 'rowmenu gpr multi';
+  menu.innerHTML = `
+    <div class="rm-head">${esc(prm.title || '')}</div>
+    <div class="mfields">${prm.multi.map((p) => `<div class="mf"><label>${esc(p.short)}</label>
+      <span class="mfin"><input class="pop-multi" data-k="${p.k}" value="${p.value}"><span class="unit">${esc(p.unit || '')}</span></span>
+      <span class="hint">${esc(p.label)}</span></div>`).join('')}</div>
+    <div class="rm-foot"><span class="muted">${esc(prm.summary)}</span>
+      <span><button class="inline" data-act="x">Cancel</button> <button class="primary" data-act="save">Save &amp; regenerate</button></span></div>`;
+  const r = anchorBtn.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(r.left + window.scrollX, window.innerWidth - 560))}px`;
+  menu.style.top = `${r.bottom + window.scrollY + 2}px`;
+  document.body.appendChild(menu);
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  const close = () => menu.remove();
+  setTimeout(() => document.addEventListener('click', close, { once: true }), 0);
+  const first = menu.querySelector('input.pop-multi');
+  if (first) { first.focus(); first.select(); }
+  const save = async () => {
+    // fold the changed boxes into one patch: each patch is built against the
+    // inputs as updated so far, so the last one carries every change
+    let cur = inputs, patch = {};
+    for (const box of menu.querySelectorAll('input.pop-multi')) {
+      const p0 = prm.multi.find((x) => x.k === box.dataset.k);
+      const v = parseFloat(String(box.value).replace(/[$,%\s]/g, ''));
+      if (!p0 || !Number.isFinite(v) || String(box.value).trim() === String(p0.value)) continue;
+      const p = paramFor(gl, line, cur).multi.find((x) => x.k === box.dataset.k);
+      const d = p.patch(v);
+      patch = { ...patch, ...d };
+      cur = { ...cur, ...d };
+    }
+    if (!Object.keys(patch).length) { close(); return; }
+    pushUndo();
+    S.bv = await PUT(`/budgets/${b.id}`, { inputs: patch });
+    close(); render();
+  };
+  menu.querySelector('[data-act="x"]').addEventListener('click', close);
+  menu.querySelector('[data-act="save"]').addEventListener('click', () => save().catch((err) => alert(err.message)));
+  menu.querySelectorAll('input.pop-multi').forEach((x) => x.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save().catch((err) => alert(err.message)); } if (e.key === 'Escape') close(); }));
+}
+
 /* Inline formula parameter for a row: shown next to the Fx chip so e.g.
    vacancy % is adjustable without opening Assumptions. Returns null when the
    row's formula has no single adjustable number. */
@@ -1524,9 +1575,9 @@ function paramFor(gl, line, inp) {
   if (m === 'corpRate') {
     const cur = { perUnitYr: line.driver.perUnitYr || 0, flatMo: line.driver.flatMo || 0 };
     const rate = (k) => (v) => ({ corpRates: { ...(inp.corpRates || {}), [gl]: { ...cur, [k]: v } } });
-    return { multi: [
-      { k: 'perUnitYr', short: '$/unit/yr', label: 'Corporate rate — $ per unit per year', value: cur.perUnitYr, patch: rate('perUnitYr') },
-      { k: 'flatMo', short: '$/mo', label: 'Corporate rate — flat $ per month on top', value: cur.flatMo, patch: rate('flatMo') },
+    return { title: `${gl} — corporate rate: $ per unit per year ÷ 12, plus a flat $ per month.`, summary: `${money(cur.perUnitYr)}/unit/yr + ${money(cur.flatMo)}/mo`, multi: [
+      { k: 'perUnitYr', short: '$ per unit per year', unit: '$', label: 'Spread evenly over the 12 months', value: cur.perUnitYr, patch: rate('perUnitYr') },
+      { k: 'flatMo', short: 'Flat $ per month', unit: '$', label: 'Added on top every month', value: cur.flatMo, patch: rate('flatMo') },
     ] };
   }
   if (gl === '4994' && m === 'gpr') {
@@ -1537,20 +1588,24 @@ function paramFor(gl, line, inp) {
     // every LTL input on the row (Troy 2026-11-09: no trip to Assumptions when a formula has several)
     const lt = inp.ltl || {};
     const ltlPatch = (k, scale) => (v) => ({ ltl: { ...lt, [k]: scale ? v / scale : v } });
-    if (lt.mode === 'flat') return { multi: [
-      { k: 'startMonthly', short: 'start $/mo', label: 'Loss to lease held flat — start $/mo (negative; 0 = rent roll gap / last actual month)', value: lt.startMonthly ?? 0, patch: ltlPatch('startMonthly') },
+    if (lt.mode === 'flat') return { title: '5003 Loss to lease — held flat all year.', summary: `flat ${money(lt.startMonthly ?? 0)}/mo`, multi: [
+      { k: 'startMonthly', short: 'Start $/mo', unit: '$', label: 'Monthly loss to lease, negative (0 = rent roll gap / last actual month)', value: lt.startMonthly ?? 0, patch: ltlPatch('startMonthly') },
     ] };
-    if (lt.mode === 'ramp') return { multi: [
-      { k: 'startMonthly', short: 'start $/mo', label: 'Ramp start $/mo (negative)', value: lt.startMonthly ?? 0, patch: ltlPatch('startMonthly') },
-      { k: 'targetPct', short: 'target %', label: 'Ramp target — % of GPR', value: pct(lt.targetPct ?? 0), patch: ltlPatch('targetPct', 100) },
-      { k: 'rampMonths', short: 'months', label: 'Ramp length in months', value: lt.rampMonths ?? 12, patch: ltlPatch('rampMonths') },
+    if (lt.mode === 'ramp') return { title: '5003 Loss to lease — ramps from a start $ toward a target % of GPR.', summary: `ramp ${money(lt.startMonthly ?? 0)} → ${pct(lt.targetPct ?? 0)}% over ${lt.rampMonths ?? 12} mo`, multi: [
+      { k: 'startMonthly', short: 'Start $/mo', unit: '$', label: 'Ramp start, negative', value: lt.startMonthly ?? 0, patch: ltlPatch('startMonthly') },
+      { k: 'targetPct', short: 'Target % of GPR', unit: '%', label: 'Where the ramp ends', value: pct(lt.targetPct ?? 0), patch: ltlPatch('targetPct', 100) },
+      { k: 'rampMonths', short: 'Ramp months', unit: 'mo', label: 'Months from start to target', value: lt.rampMonths ?? 12, patch: ltlPatch('rampMonths') },
     ] };
     const annual = S.bv && S.bv.annual;
-    return { multi: [
-      { k: 'renewalPct', short: 'renew', label: 'Renewal % — share of expiring leases that renew (the rest turn over)', value: pct(lt.renewalPct ?? (annual ? 0.65 : 0.7)), patch: ltlPatch('renewalPct', 100) },
-      { k: 'burnoffRenew', short: 'burn·renew', label: 'LTL burnoff on a RENEWAL — % of that lease\'s gap closed at renewal', value: pct(lt.burnoffRenew ?? (annual ? 0.75 : 0.5)), patch: ltlPatch('burnoffRenew', 100) },
-      { k: 'burnoffNew', short: 'burn·move-in', label: 'LTL burnoff on a MOVE-IN — % of the gap closed when the unit turns', value: pct(lt.burnoffNew ?? 1), patch: ltlPatch('burnoffNew', 100) },
-    ] };
+    const rp = lt.renewalPct ?? (annual ? 0.65 : 0.7), br = lt.burnoffRenew ?? (annual ? 0.75 : 0.5), bn = lt.burnoffNew ?? 1;
+    return {
+      title: '5003 Loss to lease — each expiring lease either renews (renewal %) or turns; the gap to market burns off by the matching % and deepens with GPR growth.',
+      summary: `renew ${pct(rp)}% · burnoff ${pct(br)}% / ${pct(bn)}%`,
+      multi: [
+        { k: 'renewalPct', short: 'Renewal %', unit: '%', label: 'Share of expiring leases that renew (the rest turn over)', value: pct(rp), patch: ltlPatch('renewalPct', 100) },
+        { k: 'burnoffRenew', short: 'LTL burnoff — renewal', unit: '%', label: '% of that lease\'s gap to market closed at renewal', value: pct(br), patch: ltlPatch('burnoffRenew', 100) },
+        { k: 'burnoffNew', short: 'LTL burnoff — move-in', unit: '%', label: '% of the gap closed when the unit turns to a new resident', value: pct(bn), patch: ltlPatch('burnoffNew', 100) },
+      ] };
   }
   if (gl === '5031' && m === 'vacancy') {
     const vac = inp.vacancyPct || [];
@@ -1576,9 +1631,9 @@ function paramFor(gl, line, inp) {
     return { label: 'rental loss % of GPR (total)', value: pct(inp.rentalLossPct || 0), patch: (v) => ({ rentalLossPct: v / 100 }) };
   }
   if (m === 'interest') {
-    return { multi: [
-      { k: 'loan', short: 'loan $', label: 'Loan balance — interest = loan × rate ÷ 360 × days', value: inp.loan || 0, patch: (v) => ({ loan: v }) },
-      { k: 'rate', short: 'rate %', label: 'Interest rate %', value: pct(inp.rate || 0), patch: (v) => ({ rate: v / 100 }) },
+    return { title: `${gl} — interest = loan × rate ÷ 360 × days in the month.`, summary: `${money(inp.loan || 0)} @ ${pct(inp.rate || 0)}%`, multi: [
+      { k: 'loan', short: 'Loan balance', unit: '$', label: 'Principal the interest accrues on', value: inp.loan || 0, patch: (v) => ({ loan: v }) },
+      { k: 'rate', short: 'Interest rate', unit: '%', label: 'Annual rate, actual/360', value: pct(inp.rate || 0), patch: (v) => ({ rate: v / 100 }) },
     ] };
   }
   return null;

@@ -2,7 +2,7 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-11-09 — multi-input Fx chips (LTL renewal % + burnoffs on the row; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
+> Last updated: 2026-11-09 — multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
 > Earlier: 2026-09-10 — actualized months (partial-month rule; section above Exports); 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
 > w/ per-unit basis + ND payroll model).
 
@@ -120,11 +120,15 @@ hides/shows Fx, each month, Year 1, $/Unit, Note (localStorage `bt-hidecols`; ce
 hidden-column-safe — months come from line data, only the edited index changes). **Undo** (↶):
 client keeps up to 25 pre-mutation snapshots per budget; POST /budgets/:id/restore writes a
 snapshot back verbatim (no regeneration, no ties).
-**Inline formula boxes (`paramFor` in app.js, 2026-11-09):** a chip's inputs sit on the row
-(`input.fxp`, Enter → PUT inputs → regenerate). `paramFor` returns one `{label, value, patch}`
-or `{ multi: [{k, short, label, value, patch}] }` — one box per input with a `.fxl` caption and
-`data-k` picking the patch (Troy: "if there are multiple inputs, I should not need to go into
-settings"). Multi today: **LTL 5003** — renewal %, burnoff on renewal %, burnoff on move-in %
+**Inline formula boxes (`paramFor` in app.js, 2026-11-09):** a chip's single input sits on the row
+(`input.fxp`, Enter → PUT inputs → regenerate). A formula with several inputs gets the GPR
+treatment instead: `paramFor` returns `{ title, summary, multi: [{k, short, unit, label, value, patch}] }`,
+the row shows a summary button (`button[data-multi]`, e.g. "renew 65% · burnoff 75% / 100%") and
+`openMultiParams` opens a `.rowmenu.multi` popover with one labelled box per input, Cancel and
+Save & regenerate (Troy: "if there are multiple inputs, I should not need to go into settings…
+should look like the GPR section"). Save folds only the changed boxes into one PUT, re-deriving
+each patch against the inputs-so-far so the last patch carries every change (the server merges
+inputs shallowly). Multi today: **LTL 5003** — renewal %, burnoff on renewal %, burnoff on move-in %
 (flat mode: start $/mo; ramp: start, target %, months; method + "follows GPR" stay in Assumptions),
 **corpRate** ($/unit/yr + $/mo), acquisition **interest** (loan $ + rate %). The LTL chip label
 names the method in use.
