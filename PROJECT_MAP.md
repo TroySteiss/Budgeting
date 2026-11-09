@@ -507,6 +507,13 @@ category % boxes hop the same way.
   columns on rows without figures); compare card column after the reference (`table.t3` tightens
   the card). Reference only — ties and Δ% still run against the chosen reference. Annual budgets
   only (acquisition budgets have no own T12). `ann4` (4-mo, the workbook Summary) is unchanged.
+- **Property role** (`properties.role` subject | comp) only drives client lists: the dashboard
+  Properties card, the New budget dialog's property picker and the payroll-model preview. Nothing
+  server-side reads it (comp sets are uploaded data). Migration 010 made the Minot sites (clnd,
+  spnd, tcnd, tpnd, wynd) subjects — they are budgeted here as well as being the comp set; tpndc
+  (0-unit commercial) stays a comp. Admins change a role under Settings → Properties (select,
+  saves on pick via POST /properties). Keep migration files ASCII: the local dev database is
+  WIN1252 and rejects other characters.
 - **Whole dollars**: month cells and the year-total box DISPLAY rounded dollars; stored months keep
   cents (CSV / workbook unchanged). Display never writes: only a typed change dirties a row, so
   nothing gets overridden or locked by the rounding.

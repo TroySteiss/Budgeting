@@ -340,7 +340,8 @@ function propertyReports(st, code, budget, year) {
   ];
 }
 function propertyListHtml(st) {
-  // every subject property, plus any comp that already owns a budget (the Minot sites are budgeted too)
+  // every subject property, plus any comp that already owns a budget. The role is an admin
+  // setting (Settings → Properties); the Minot sites are subjects since migration 010.
   const budgeted = new Set(st.budgets.map((b) => b.property_code));
   const subjects = st.properties.filter((p) => p.role === 'subject' || budgeted.has(p.code)).sort((a, b) => (a.market || '').localeCompare(b.market || '') || a.code.localeCompare(b.code));
   if (!subjects.length) return { html: '', rows: [] };
@@ -3688,8 +3689,9 @@ function renderSettings(el) {
       <table class="list"><tr><th>Code</th><th>Name</th><th>Units</th><th>Market</th><th>Portfolio</th><th>Role</th></tr>
       ${st.properties.map((p) => `<tr><td><b>${p.code}</b></td><td>${esc(p.name)}</td>
         <td>${S.auth.isAdmin ? `<input data-units="${p.code}" value="${p.units}" style="width:60px">` : p.units}</td>
-        <td>${esc(p.market)}</td><td>${esc(pf.get(p.portfolio_id) || '')}</td><td>${esc(p.role)}</td></tr>`).join('')}</table>
-      ${S.auth.isAdmin ? '<p class="muted">Edit a unit count and press Enter to save.</p>' : ''}
+        <td>${esc(p.market)}</td><td>${esc(pf.get(p.portfolio_id) || '')}</td>
+        <td>${S.auth.isAdmin ? `<select data-role="${p.code}" title="subject = budgeted here: listed on the dashboard and in the New budget dialog. comp = comparison data only."><option value="subject" ${p.role === 'subject' ? 'selected' : ''}>subject</option><option value="comp" ${p.role === 'comp' ? 'selected' : ''}>comp</option></select>` : esc(p.role)}</td></tr>`).join('')}</table>
+      ${S.auth.isAdmin ? '<p class="muted">Edit a unit count and press Enter to save. Role saves when picked: a <b>subject</b> is budgeted here (dashboard list, New budget dialog); a <b>comp</b> is comparison data only. Changing it never touches comp sets or existing budgets.</p>' : ''}
     </div>
     <div class="card">
       <h2>Chart of accounts <span class="badge">${st.coa.length} accounts</span></h2>
@@ -3712,6 +3714,11 @@ function renderSettings(el) {
     if (e.key !== 'Enter') return;
     const p = st.properties.find((x) => x.code === box.dataset.units);
     await POST('/properties', { ...p, code: p.code, units: Number(box.value) || 0, portfolioId: p.portfolio_id });
+    await refreshState(); render();
+  }));
+  el.querySelectorAll('select[data-role]').forEach((sel) => sel.addEventListener('change', async () => {
+    const p = st.properties.find((x) => x.code === sel.dataset.role);
+    await POST('/properties', { ...p, code: p.code, portfolioId: p.portfolio_id, role: sel.value });
     await refreshState(); render();
   }));
   const saveGl = async (box, field) => {
