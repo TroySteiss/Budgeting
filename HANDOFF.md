@@ -10,7 +10,7 @@ architecture detail; this is the operational summary.
   Heights 119u, nrnd North Ridge 68u, rrnd River Ridge 146u) and Jamestown 2
   (drnd Deer Ridge 163u, mwnd Meadows 84u). Annual-budget mode is future phase 3
   (blocked on a monthly-actuals Yardi export — the Budget Worksheet export has none).
-- **Prod**: https://app-production-15d8.up.railway.app · login = your name + password `Monarch7!`
+- **Prod**: https://app-production-15d8.up.railway.app · login = your name + the shared app password (kept outside the repo — ask Troy)
 - **Repo**: https://github.com/TroySteiss/Budgeting (local: `C:\Users\TroySteiss\nd-budget-tool`)
 - **Deploys**: `railway up` from the local folder (Railway project `nd-budget-tool`,
   service `app` + Postgres). GitHub is source control only — connect the Railway

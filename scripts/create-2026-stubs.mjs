@@ -19,7 +19,10 @@ async function call(path, opts = {}) {
   return j;
 }
 
-await call('/login', { method: 'POST', body: { username: 'Troy Steiss', password: process.env.APP_PASSWORD || 'Monarch7!' } });
+// the shared app password comes from the environment — never hard-code it here
+const APP_PASSWORD = process.env.APP_PASSWORD;
+if (!APP_PASSWORD) { console.error('Set APP_PASSWORD in the environment first'); process.exit(1); }
+await call('/login', { method: 'POST', body: { username: 'Troy Steiss', password: APP_PASSWORD } });
 const st = await call('/state');
 const comp = st.compSets.find((c) => /12-month budget/i.test(c.name)) || st.compSets[0];
 const pay = (st.payrollModels || [])[0];

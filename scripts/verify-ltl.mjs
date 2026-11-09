@@ -32,7 +32,10 @@ const wb = XLSX.utils.book_new();
 XLSX.utils.book_append_sheet(wb, ws, 'Report1');
 const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
-await call('/login', { method: 'POST', body: { username: 'Troy Steiss', password: 'Monarch7!' } });
+// the shared app password comes from the environment — never hard-code it here
+const APP_PASSWORD = process.env.APP_PASSWORD;
+if (!APP_PASSWORD) { console.error('Set APP_PASSWORD in the environment first'); process.exit(1); }
+await call('/login', { method: 'POST', body: { username: 'Troy Steiss', password: APP_PASSWORD } });
 const fd = new FormData();
 fd.append('file', new Blob([buf]), 'synthetic-rr.xlsx');
 const parsed = await call('/uploads/parse?kind=rent_roll', { method: 'POST', body: fd });
