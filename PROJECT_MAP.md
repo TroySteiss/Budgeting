@@ -485,7 +485,7 @@ reimbursement income (pcode 4: 5164–5174, not 5122 HAP) is not history-shaped:
 the most recent actual month × (1 − budgeted vacancy that month) ÷ that month's actual
 occupancy (|5031| ÷ 4994, floored at 50%), flat, no GPR link — so it ties to the vacancy
 assumption. Driver `flatFee {base, lastMonth, occLast, pct}`, chip FLAT FEE; the row's box is a
-fee-increase % (`baseline.glGrowth`). Default stays RUBS / history: Troy picks it per budget.
+fee-increase % (`baseline.glGrowth`). **Site default** (`FLAT_FEE_PROPERTIES`, `flatFeeBilling()`): BCND, PHND and FHND are flat-fee unless the budget's `utilities.billing` says otherwise; every other site is RUBS / history. `budgetView.flatFeeSite` lets the Assumptions select show which is the default.
 
 **Enter on an inline assumption box** (`input.fxp`) applies the value and lands on the next
 row's box (`focusFxpAfter`); an unchanged value just moves on. The Assumptions dialog's

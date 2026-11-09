@@ -200,6 +200,10 @@ describe('generateAnnualLines — template rules on own history', () => {
     expect(up.months[0]).toBeCloseTo(870.83, 2);
     // RUBS / default: history as before (same month × factor)
     expect((L(lines, '5170').driver as any).method).toBe('baseline');
+    // site default (Troy 2026-11-09): BCND / PHND / FHND are flat-fee unless the budget says otherwise
+    expect((L(generateAnnualLines(coaList, inputs, { ...src, propertyCode: 'bcnd' }), '5170').driver as any).method).toBe('flatFee');
+    expect((L(generateAnnualLines(coaList, inputs, { ...src, propertyCode: 'clnd' }), '5170').driver as any).method).toBe('baseline');
+    expect((L(generateAnnualLines(coaList, { ...inputs, utilities: { billing: 'rubs' } }, { ...src, propertyCode: 'fhnd' }), '5170').driver as any).method).toBe('baseline');
   });
   it('employee rent 6413 is not a % of wages: the last actual month carried flat, no raise', () => {
     const e = L(lines, '6413');

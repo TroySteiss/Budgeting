@@ -270,6 +270,14 @@ export const FIXED_ANNUAL_GLS = new Set(['6116']);
     (Troy 2026-11-09: employee rent is what it is, not a ratio). A row's shape
     menu can do the same for any other payroll line. */
 export const BURDEN_LAST_GLS = new Set(['6413']);
+/** Sites that bill residents an in-house flat utility fee per occupied unit (Troy 2026-11-09,
+    default on): BCND always; PHND and FHND since fall 2026 (off Conservice RUBS). A budget's
+    utilities.billing, when set, wins. */
+export const FLAT_FEE_PROPERTIES = new Set(['bcnd', 'phnd', 'fhnd']);
+export function flatFeeBilling(inputs: { utilities?: { billing?: string } } | null | undefined, propertyCode: string | null | undefined): boolean {
+  const b = inputs?.utilities?.billing;
+  return b ? b === 'flat' : FLAT_FEE_PROPERTIES.has(String(propertyCode || '').toLowerCase());
+}
 /** A `last`-shape line whose last actual month is this far off its trailing-12 average
     gets `driver.lastDev` so the chip can warn (one odd month is setting the year). */
 export const LAST_DEV_WARN = 0.25;
@@ -425,6 +433,8 @@ export interface AnnualSources {
       budget start has already turned by month 0 (it is not month-to-month) */
   rollAsOf?: string | null;
   charges?: Record<string, number> | null;
+  /** lowercase Yardi code — site defaults (FLAT_FEE_PROPERTIES) key off it */
+  propertyCode?: string | null;
 }
 
 export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs, src: AnnualSources): BudgetLine[] {
@@ -763,7 +773,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
      from that month's occupancy to each budget month's budgeted occupancy, so it ties
      to the vacancy assumption. No GPR link; a typed per-GL % is a fee increase. HAP
      utility allowance (5122) is not a fee and keeps its history. ---- */
-  if (inputs.utilities?.billing === 'flat') {
+  if (flatFeeBilling(inputs, src.propertyCode)) {
     const act = src.actual || {};
     const lastAct = (gl: string): number => (act[gl] || zero12())[lastMonth - 1] || 0;
     const lastGprA = lastAct('4994');

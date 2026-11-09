@@ -5,8 +5,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary
-} from '../shared/annual.js';
+  refFromCalendar, refColumn, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
@@ -641,6 +640,7 @@ function budgetView(lb: LoadedBudget) {
       softwareFixedMo: lb.template.softwareFixedMo, moveOuts: lb.template.moveOuts || null,
     } : null,
     lastMonth: lb.annual ? lb.lastMonth : null,
+    flatFeeSite: lb.annual ? FLAT_FEE_PROPERTIES.has(String(lb.budget.property_code || '').toLowerCase()) : false,
     t12Missing: lb.annual ? lb.t12Missing : [],
     t12Dead: lb.annual ? lb.t12Dead : [],
     t12Live: lb.annual ? lb.t12Live : 12,
@@ -810,7 +810,7 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   let lines: BudgetLine[];
   if (lb.annual) {
     // ANNUAL: the property's own statements + the Yardi template rules (shared/annual.ts)
-    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: loadAnnualRules(), comps: lb.comps, payrollWages: wages, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges };
+    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: loadAnnualRules(), comps: lb.comps, payrollWages: wages, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code };
     lines = existing ? regenerateAnnual(existing, lb.coa, inputs, src) : generateAnnualLines(lb.coa, inputs, src);
   } else {
     lines = existing
