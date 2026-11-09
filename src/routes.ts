@@ -2,7 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import multer from 'multer';
 import { query, tx } from './db.js';
 import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
-import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
+import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, trailing12, annualizedFromCal,
   refFromCalendar, refColumn, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary
@@ -161,9 +161,9 @@ router.post('/uploads/parse', upload.single('file'), h(async (req, res) => {
     const parsed = parsePayrollModel(buf);
     return res.json({ kind, filename: req.file.originalname, payroll: parsed });
   }
-  if (kind === 'statement' || kind === 'yardi_template') {
+  if (kind === 'statement' || kind === 'yardi_template' || kind === 'payroll_template') {
     const coa = await loadCoa();
-    return res.json({ kind, files: [parseAnnualFile(kind, req.file.originalname, buf, coa)] });
+    return res.json({ kind, files: parseAnnualFiles(kind, req.file.originalname, buf, coa) });
   }
   if (kind === 'staffing') {
     // individual pay never flows through the Data page — the Payroll tab's own
@@ -175,6 +175,13 @@ router.post('/uploads/parse', upload.single('file'), h(async (req, res) => {
 
 /** Annual-mode data files: a Monarch 12 Month Statement / 12 Month Budget
     export, or the Yardi budget template workbook (one property each). */
+function parseAnnualFiles(kind: string, filename: string, buf: Buffer, coa: CoaAccount[]): any[] {
+  if (kind === 'payroll_template') {
+    // one workbook may carry several property sheets; §1/§2 (individual pay) are never read
+    return parsePayrollTemplate(buf).map((t) => ({ filename: `${filename} › ${t.sheet}`, statement: t, propertyGuess: t.propertyGuess }));
+  }
+  return [parseAnnualFile(kind, filename, buf, coa)];
+}
 function parseAnnualFile(kind: string, filename: string, buf: Buffer, coa: CoaAccount[]): any {
   const detail = new Set(coa.filter((a) => a.kind === 'detail').map((a) => a.code));
   if (kind === 'statement') {
@@ -192,11 +199,11 @@ router.post('/uploads/parse-many', upload.array('files', 40), h(async (req, res)
   const kind = String(req.query.kind || req.body?.kind || '');
   const files = (req.files as Express.Multer.File[]) || [];
   if (!files.length) return res.status(400).json({ error: 'No files' });
-  if (kind !== 'statement' && kind !== 'yardi_template') return res.status(400).json({ error: `Unknown upload kind "${kind}"` });
+  if (kind !== 'statement' && kind !== 'yardi_template' && kind !== 'payroll_template') return res.status(400).json({ error: `Unknown upload kind "${kind}"` });
   const coa = await loadCoa();
   const out: any[] = [];
   for (const f of files) {
-    try { out.push(parseAnnualFile(kind, f.originalname, f.buffer, coa)); }
+    try { out.push(...parseAnnualFiles(kind, f.originalname, f.buffer, coa)); }
     catch (e: any) { out.push({ filename: f.originalname, error: e?.message || String(e) }); }
   }
   res.json({ kind, files: out });
@@ -323,7 +330,7 @@ router.post('/uploads/apply', h(async (req, res) => {
     logChange(user, 'upload payroll model', { filename, payrollModelId: row.id });
     return res.json({ ok: true, uploadId, payrollModelId: row.id, relinked });
   }
-  if (kind === 'statement' || kind === 'yardi_template') {
+  if (kind === 'statement' || kind === 'yardi_template' || kind === 'payroll_template') {
     // mappings: [{index, propertyCode}] over payload.files; a property the
     // chart doesn't know yet (a non-ND site's template) is created on the fly
     const created: any[] = [];
@@ -334,6 +341,18 @@ router.post('/uploads/apply', h(async (req, res) => {
       if (!f || f.error || !code) continue;
       const tplName = f.template?.name || f.statement?.label || code;
       const exists = (await query('select code, units from properties where code=$1', [code])).rows[0];
+      if (kind === 'payroll_template') {
+        // a tie-out reference for a property we budget: never creates a property, never relinks
+        if (!exists) continue;
+        const t = f.statement;
+        const id = (await query(
+          'insert into stmt_snapshots(property_code, upload_id, kind, label, period, book, data) values($1,$2,$3,$4,$5,$6,$7) returning id',
+          [code, uploadId, 'payroll_template', `${t.label || f.filename} — payroll template ${t.year}`.trim(), t.period || '', '',
+           JSON.stringify({ monthCal: t.monthCal, monthYear: t.monthYear, rows: t.rows, total: t.total, year: t.year, sheet: t.sheet })]
+        )).rows[0].id;
+        created.push({ propertyCode: code, payrollTemplateId: id, year: t.year });
+        continue;
+      }
       if (!exists) {
         await query(`insert into properties(code, name, units, market, role) values($1,$2,$3,'',$4) on conflict (code) do nothing`,
           [code, String(tplName).replace(/\s*\([^)]*\)\s*$/, ''), Number(f.template?.units) || 0, 'subject']);
@@ -398,6 +417,8 @@ interface LoadedBudget {
   /** the tie-out reference (trailing-12 / CY budget / typed targets) — the annual budget's "UW" */
   ref: UwSnapshotData | null; refLabel: string;
   refs: RefCol[];
+  /** the latest Payroll Budget Workbook sheet for this property + year (stmt kind 'payroll_template') — a reference, never an input */
+  payrollTpl: { id: number; label: string; period: string; total: number; cal: Record<string, Months> } | null;
 }
 
 /** The tie-out reference: the UW snapshot for acquisitions, the chosen
@@ -493,6 +514,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   let actualCal: Record<string, Months> | null = null, budgetCal: Record<string, Months> | null = null;
   let lastMonth = 10, ref: UwSnapshotData | null = null, refLabel = 'UW';
   let t12Missing: string[] = [], t12Dead: string[] = [], t12Live = 12;
+  let payrollTpl: LoadedBudget['payrollTpl'] = null;
   const refs: RefCol[] = [];
   if (annual) {
     const stmtRows = await query('select id, kind, period, data from stmt_snapshots where id = any($1)', [[budget.py_stmt_id, budget.cy_budget_stmt_id].filter(Boolean)]);
@@ -510,6 +532,20 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     t12Live = t12?.liveMonths || 12;
     budgetCal = stmtBudget ? stmtCalendar(stmtBudget) : null;
     lastMonth = t12 ? t12.lastMonth : (template?.lastActual?.month || 10);
+    const pt = (await query(
+      `select id, label, period, data from stmt_snapshots where property_code=$1 and kind='payroll_template' and (data->>'year')::int = $2 order by created_at desc limit 1`,
+      [budget.property_code, Number(budget.year)]
+    )).rows[0];
+    if (pt) {
+      // calendar by GL, zero rows KEPT (a 0 on the template — 6450 allocations out — is a statement worth showing)
+      const cal: Record<string, Months> = {};
+      for (const r of (pt.data?.rows || []) as { gl: string; months: number[] }[]) {
+        const m = zero12();
+        (pt.data.monthCal as number[]).forEach((c: number, i: number) => { if (c >= 1 && c <= 12) m[c - 1] = r2(m[c - 1] + (r.months[i] || 0)); });
+        cal[r.gl] = m;
+      }
+      payrollTpl = { id: pt.id, label: pt.label, period: pt.period, total: Number(pt.data?.total) || 0, cal };
+    }
     const units = Number(budget.inputs?.units) || 0;
     const t12Label = t12 && t12.dead.length ? `T12 actuals (${t12.liveMonths} mo annualized)` : 'T12 actuals';
     if (actualCal && t12) refs.push({ key: 'actual', label: t12Label, period: t12.period || sa?.period || '', ...refColumn(actualCal) });
@@ -535,7 +571,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
       }));
     }
   }
-  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, savePoints,
+  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, savePoints, payrollTpl,
            annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, ref, refLabel, refs };
 }
 
@@ -589,6 +625,8 @@ function budgetView(lb: LoadedBudget) {
     hist: lb.annual ? {
       t12: lb.actualCal ? { label: lb.refs.find((r) => r.key === 'actual')?.label || 'T12 actuals', period: lb.refs.find((r) => r.key === 'actual')?.period || '', cal: Object.fromEntries(Object.entries(lb.actualCal).map(([g, m]) => [g, rotate12(m, start)])) } : null,
       budget: lb.budgetCal ? { label: lb.refs.find((r) => r.key === 'budget')?.label || 'CY budget', period: lb.refs.find((r) => r.key === 'budget')?.period || '', cal: Object.fromEntries(Object.entries(lb.budgetCal).map(([g, m]) => [g, rotate12(m, start)])) } : null,
+      // Seth's Payroll Budget Workbook sheet for this property/year: the payroll tie-out reference (Troy 2026-11-09)
+      payroll: lb.payrollTpl ? { label: lb.payrollTpl.label, period: lb.payrollTpl.period, total: lb.payrollTpl.total, cal: Object.fromEntries(Object.entries(lb.payrollTpl.cal).map(([g, m]) => [g, rotate12(m, start)])) } : null,
     } : null,
     // the tie-out reference: UW book (acquisition) or trailing-12 / CY budget / targets (annual)
     uw: refOf(lb),

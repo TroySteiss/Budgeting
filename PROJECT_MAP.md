@@ -2,7 +2,7 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-11-09 — 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
+> Last updated: 2026-11-09 — payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
 > Earlier: 2026-09-10 — actualized months (partial-month rule; section above Exports); 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
 > w/ per-unit basis + ND payroll model).
 
@@ -475,6 +475,23 @@ budgets' wage GLs. Modeled on the per-property sheets of the Payroll Budget Work
   green-tinted dark palette). The old `:root` palette survives only as the fallback under
   the overrides — don't restyle against it.
 - Remember `src/payroll.ts` + `shared/payroll.ts` in the esbuild entry list (done).
+
+## Payroll template tie-out (Troy 2026-11-09)
+
+Seth Russell's **Payroll Budget Workbook <year>.xlsb** builds a per-property payroll sheet
+("Budget Section", or the macro's copy of it: "<Name>: FY 2027 Payroll Budget", property code
+in B6, §1/§2 employee lists, §3 the GL × month paste table rows 58–77). The tool uses that
+sheet as a **check, not an input**: `parsePayrollTemplate` (importers.ts) reads ONLY §3 — the
+header row "GL Code | GL Name | 12 dates" — and never the employee sections (individual pay).
+Upload kind `payroll_template` (Data page; `detectUploadKind` picks it ahead of the roster
+check since the same workbook carries the HRIS dictionary; one file may yield several property
+sheets). Apply stores a `stmt_snapshots` row of kind `payroll_template` for a KNOWN property
+only (never creates properties, never relinks); `loadBudget` picks the latest one for the
+budget's property + year (`data.year`) into `lb.payrollTpl`, served as `hist.payroll`. Editor:
+a reference row under every payroll GL the sheet carries (zeros included), two rows under
+**6470 TOTAL PAYROLL EXPENSE** (template by month, Δ budget − template with %), and a toolbar
+chip "payroll template Δ" that unfolds the payroll GLs. The budget is never changed by it.
+`TEMPLATE_2027_REVIEW.md` §2 documents how the workbook builds each GL.
 
 ## Payroll flow into the budget worksheet (Troy 2026-11-03)
 

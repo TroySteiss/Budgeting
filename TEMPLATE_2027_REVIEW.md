@@ -1,6 +1,6 @@
 # 2027 budget template review — what to take, what to skip, what imports
 
-Reviewed 2026-11-09 against Seth Russell's release email of the same day to the Asset
+Reviewed 2026-11-09 against Seth Russell's release email of the same day (rev1 at 12:33 fixed a shifted formula for unallocated employees and refreshed the property list; no change to the §3 table layout) to the Asset
 Managers and Analysts lists: *Instructions for 2027 Budget Templates* (docx/pdf) and
 *Payroll Budget Workbook 2027.xlsb*. Budget questions go to Quentin; template errors to Seth
 (email only, no reply-all).
@@ -56,6 +56,10 @@ move-outs, 2019–Aug 2026), *Financial Data* (payroll GL actuals + budget Sep-2
 
 ## 3. Importing the workbook
 
+- **Tie-out import (built 11-09):** run *Create a Payroll Budget* for a property, save, and drop
+  the workbook on the Data page. The property sheet's §3 table is stored as a reference and
+  shows under each payroll GL, with Δ rows under TOTAL PAYROLL EXPENSE and a toolbar chip. The
+  employee sections are never read.
 - **Staffing upload parses it as-is.** `parseStaffingReport` recognises *Dictionary of
   Employees* + *Allocated Employee Data*: 2,241 people; **85 with ND allocations across 16 ND
   codes** (bcnd 14, clnd 16, cwnd 17, drnd 8, ecnd 13, fhnd 8, grks 8, lhnd 17, mwnd 8,

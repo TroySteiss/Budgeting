@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as XLSX from 'xlsx';
-import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parseReviewDraft, parseComparisonActuals, detectUploadKind, parseYardiBudgetTemplate } from '../src/importers.js';
+import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parseReviewDraft, parseComparisonActuals, detectUploadKind, parseYardiBudgetTemplate, parsePayrollTemplate } from '../src/importers.js';
 import { t12CategoryShapes } from '../shared/domain.js';
 
 const fx = (name: string): Buffer => readFileSync(join(process.cwd(), 'test', 'fixtures', name));
@@ -378,5 +378,56 @@ describe('parseYardiBudgetTemplate — 2027 layout (6331 in column D, MoveOuts s
     expect(t.moveOuts?.unscheduled).toEqual(Array(12).fill(2));
     expect(t.leaseExpirations[11]).toBe(16);
     expect(parseYardiBudgetTemplate(build(275, false)).template.moveOuts).toBeNull();
+  });
+});
+
+describe('Payroll Budget Workbook — a property payroll sheet as the tie-out reference (Troy 2026-11-09)', () => {
+  const serial = (y: number, m: number) => Math.round(Date.UTC(y, m - 1, 1) / 86400000) + 25569;
+  const months2027 = Array.from({ length: 12 }, (_, i) => serial(2027, i + 1));
+  const aoa: any[][] = [];
+  const put = (r: number, c: number, v: any) => { while (aoa.length <= r) aoa.push([]); aoa[r][c] = v; };
+  put(1, 1, 'Test Property: FY 2027 Payroll Budget');
+  put(5, 1, 'clnd');
+  put(8, 1, '1.) Review current allocated employees');
+  ['', 'Position', 'Employee Name', 'Booked to GL', 'Pay Type', 'Allocation %', 'Current Pay Rate'].forEach((h, c) => put(10, c, h));
+  // an employee row — must never surface in the parse
+  [1, 'Maintenance Tech I', 'Someone Private', 6404, 'Hourly', 1, 99.99].forEach((v, c) => put(11, c, v));
+  put(55, 1, '3.) Review potential budget (when completed, paste this table into the non-payroll budgeting workbook)');
+  put(57, 1, 'GL Code'); put(57, 2, 'GL Name'); months2027.forEach((d, i) => put(57, 3 + i, d)); put(57, 15, 'Total');
+  const row = (r: number, gl: number, name: string, m: number[]) => { put(r, 1, gl); put(r, 2, name); m.forEach((v, i) => put(r, 3 + i, v)); put(r, 15, m.reduce((a, b) => a + b, 0)); };
+  row(58, 6402, 'ADMINISTRATIVE GROSS WAGES', Array(12).fill(1000));
+  row(59, 6404, 'MAINTENANCE GROSS WAGES', Array(12).fill(2000));
+  row(63, 6408, 'BONUS', [500, 0, 0, 500, 0, 0, 500, 0, 0, 500, 0, 0]);
+  row(74, 6450, 'PAYROLL- ALLOCATIONS OUT', Array(12).fill(0));
+  row(76, 6470, 'TOTAL PAYROLL EXPENSE', Array(12).fill(0).map((_, i) => 3000 + (i % 3 === 0 ? 500 : 0)));
+  // the comparison block below uses month NAMES — must not be mistaken for the table
+  put(103, 1, 'GL Code'); put(103, 2, 'GL Name'); put(103, 3, 'Type'); ['January', 'February'].forEach((m, i) => put(103, 4 + i, m));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'Budget Section');
+  // the workbook also carries the HRIS dictionary — detection must still say payroll_template
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['PrismID', 'EmployeeName', 'PayRate', 'PropertyCode'], [1, 'Someone Private', 20, 'clnd']]), 'Dictionary of Employees');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+
+  it('reads only the GL × month table: property, year, calendar months, rows, total — never the employee rows', () => {
+    const [t] = parsePayrollTemplate(buf);
+    expect(t.kind).toBe('payroll_template');
+    expect(t.propertyGuess).toBe('clnd');
+    expect(t.year).toBe(2027);
+    expect(t.period).toBe('Jan 2027-Dec 2027');
+    expect(t.monthCal).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(t.monthYear.every((y) => y === 2027)).toBe(true);
+    expect(t.rows.map((r) => r.gl)).toEqual(['6402', '6404', '6408', '6450']);   // 6470 is the total, not a row
+    expect(t.rows.find((r) => r.gl === '6408')!.months[3]).toBe(500);
+    expect(t.rows.find((r) => r.gl === '6450')!.total).toBe(0);                  // a zero row is kept — it is a statement
+    expect(t.total).toBe(38000);
+    expect(JSON.stringify(t)).not.toMatch(/Someone Private|99\.99|Pay Rate/);
+  });
+  it('is detected as payroll_template even though the workbook also carries the HRIS roster', () => {
+    expect(detectUploadKind(buf)).toBe('payroll_template');
+  });
+  it('a workbook without a property sheet says so', () => {
+    const wb2 = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb2, XLSX.utils.aoa_to_sheet([['PrismID', 'EmployeeName', 'PayRate', 'PropertyCode']]), 'Dictionary of Employees');
+    expect(() => parsePayrollTemplate(XLSX.write(wb2, { type: 'buffer', bookType: 'xlsx' }) as Buffer)).toThrow(/Create a Payroll Budget/);
   });
 });

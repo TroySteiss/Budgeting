@@ -450,7 +450,7 @@ function newBudgetDialog() {
   if (!S.newType) S.newType = (st.templates || []).length || !st.uwSnapshots.length ? 'annual' : 'new_acq';
   const annual = S.newType === 'annual';
   const nb = S.nb || (S.nb = {});           // selections survive the re-render after an inline upload
-  const KIND_LABEL = { yardi_template: 'Yardi budget template (budgetYSR…xlsm)', rent_roll: 'rent roll', payroll: 'payroll model', statement: '12 Month Statement / Budget' };
+  const KIND_LABEL = { yardi_template: 'Yardi budget template (budgetYSR…xlsm)', rent_roll: 'rent roll', payroll: 'payroll model', statement: '12 Month Statement / Budget', payroll_template: 'payroll template sheet' };
   // a picker: select + an Upload button that parses, saves and selects the file right here
   const pick = (id, label, hint, uploadKind) => `
     <div class="fld" style="flex:1; min-width:240px"><label>${label}${hint ? ` <span class="muted">— ${hint}</span>` : ''}</label>
@@ -649,6 +649,7 @@ const UPLOAD_KINDS = [
   ['yardi_template', 'Yardi budget template (budgetYSR…xlsm)'],
   ['rent_roll', 'Rent roll (Yardi summary, unit detail, lease charges) or Unit Availability Details'],
   ['statement', 'Monarch 12 Month Statement / 12 Month Budget'],
+  ['payroll_template', 'Payroll Budget Workbook — a property payroll sheet (tie-out reference)'],
   ['payroll', 'ND payroll model (wage aggregates)'],
   ['uw_book', 'UW book model (.xlsx)'],
   ['comparison', 'Property comparison (comp set)'],
@@ -657,7 +658,7 @@ const UPLOAD_KINDS = [
 function renderUploads(el) {
   const u = S.upload;
   const files = u.files || [];
-  const multi = u.kind === 'yardi_template' || u.kind === 'statement';
+  const multi = u.kind === 'yardi_template' || u.kind === 'statement' || u.kind === 'payroll_template';
   el.innerHTML = `
     <div class="card">
       <h2>Add data</h2>
@@ -696,7 +697,7 @@ function renderUploads(el) {
     u.busy = true; u.err = ''; u.msg = ''; render();
     try {
       const fd = new FormData();
-      if (u.kind === 'yardi_template' || u.kind === 'statement') {
+      if (u.kind === 'yardi_template' || u.kind === 'statement' || u.kind === 'payroll_template') {
         for (const f of fs) fd.append('files', f);
         u.parsed = await api(`/uploads/parse-many?kind=${u.kind}`, { method: 'POST', body: fd });
       } else {
@@ -753,7 +754,7 @@ function guessProp(text) {
 }
 
 function renderUploadPreview(el, parsed) {
-  if (parsed.kind === 'yardi_template' || parsed.kind === 'statement') return renderAnnualUploadPreview(el, parsed);
+  if (parsed.kind === 'yardi_template' || parsed.kind === 'statement' || parsed.kind === 'payroll_template') return renderAnnualUploadPreview(el, parsed);
   if (parsed.kind === 'uw_book') {
     el.innerHTML = `<h3>Sheets found — map each to a property</h3>
       <div class="mapping"><table class="list"><tr><th>Sheet</th><th>Units</th><th>UW EGI</th><th>UW NOI</th><th></th><th>Property</th></tr>
@@ -911,6 +912,7 @@ function renderEditor(el) {
           })()}
           <span class="muted">· click a row's chip to change its formula</span>
           ${bv.hist && (bv.hist.t12 || bv.hist.budget) ? `<button class="chip hist-all" id="hist-all" title="Unfold the prior trailing-12 and current-year budget by month under every GL — reference rows, not part of the budget">${S.histAll ? '▾ hide history' : '▸ history under every GL'}</button>` : ''}
+    ${bv.hist && bv.hist.payroll ? (() => { const tpl = Object.values(bv.hist.payroll.cal).reduce((a, m) => a + m.reduce((x, y) => x + y, 0), 0); const bud = (bv.categoryTotals && bv.categoryTotals['10']) ?? null; const d = bud == null ? null : bud - tpl; return `<button class="chip paytie-chip" id="paytie-open" title="${esc(bv.hist.payroll.label)} — Seth's payroll template for this property: budget payroll ${money(bud)} vs template ${money(tpl)}. Click to unfold the template under every payroll GL (reference rows; the budget is not changed).">payroll template Δ ${d == null ? '' : `${d >= 0 ? '+' : ''}${money(d)}`}${tpl && d != null ? ` (${((d / Math.abs(tpl)) * 100).toFixed(1)}%)` : ''}</button>`; })() : ''}
           ${(() => {
             const ov = bv.lines.filter((l) => l.override);
             if (!ov.length) return '';
@@ -1190,6 +1192,8 @@ function renderEditor(el) {
     localStorage.setItem('bt-hist', JSON.stringify([...S.histOpenSet]));
     render();
   }));
+  const payTieBtn = el.querySelector('#paytie-open');
+  if (payTieBtn) payTieBtn.addEventListener('click', (e) => { e.stopPropagation(); const codes = Object.keys((S.bv.hist && S.bv.hist.payroll && S.bv.hist.payroll.cal) || {}); const allOpen = codes.every((c) => S.histOpenSet.has(c)); S.histAll = false; if (allOpen) codes.forEach((c) => S.histOpenSet.delete(c)); else codes.forEach((c) => S.histOpenSet.add(c)); localStorage.setItem('bt-hist', JSON.stringify([...S.histOpenSet])); render(); });
   const histAllBtn = el.querySelector('#hist-all');
   if (histAllBtn) histAllBtn.addEventListener('click', (e) => { e.stopPropagation(); S.histAll = !S.histAll; if (!S.histAll) { S.histOpenSet = new Set(); localStorage.setItem('bt-hist', '[]'); } render(); });
   // inline formula params: change → patch inputs → regenerate
@@ -1311,8 +1315,18 @@ function gridHtml(bv, totals) {
     const h = bv.hist; if (!h) return [];
     const out = [];
     for (const src of [h.t12, h.budget]) { if (src && src.cal[code] && src.cal[code].some((v) => v)) out.push({ label: src.label, period: src.period, months: src.cal[code] }); }
+    // Seth's payroll template: shown on every payroll GL it carries, zeros included (a zero there is a statement too)
+    if (h.payroll && h.payroll.cal[code]) out.push({ label: h.payroll.label, period: h.payroll.period, months: h.payroll.cal[code], tpl: true });
     return out;
   };
+  // payroll tie-out: the tool's payroll lines vs the template sheet, by month and in total
+  const payTie = (() => {
+    const p = bv.hist && bv.hist.payroll; if (!p) return null;
+    const tplM = Array(12).fill(0);
+    for (const m of Object.values(p.cal)) for (let i = 0; i < 12; i++) tplM[i] += m[i] || 0;
+    const budM = totals.get('6470') || Array(12).fill(0);
+    return { tplM, budM, deltaM: budM.map((v, i) => v - tplM[i]), tpl: sumM(tplM), bud: sumM(budM) };
+  })();
   const histOpen = (code) => S.histAll || S.histOpenSet.has(code);
   const rows = [];
   rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th${actIdx.has(i) ? ' class="actcol" title="Locked to posted actuals — an edit here corrects the posted figure"' : ''}>${labels[i]}${actIdx.has(i) ? ' ✓' : ''}</th>`).join('')}${cols.annual ? `<th>${bv.annual ? bv.budget.year : 'Year 1'}</th>` : ''}${cols.ref1 ? `<th title="${esc(refA.period)}">T12</th>` : ''}${cols.ref2 ? `<th title="${esc(refB.period)}">${esc(refB.label.replace(/ budget$/i, ' bud'))}</th>` : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
@@ -1348,6 +1362,17 @@ function gridHtml(bv, totals) {
         ${refCells(a.code, 'total')}
         ${cols.punit ? `<td>${money(ann / units)}</td>` : ''}
         ${cols.note ? '<td></td>' : ''}</tr>`);
+      if (a.code === '6470' && payTie) {
+        const d = payTie.bud - payTie.tpl;
+        rows.push(`<tr class="hist paytie" title="Seth's Payroll Budget Workbook sheet for this property — reference only, never part of the budget">
+          <td class="code"></td><td class="name"><span class="histtag">reference</span>${esc(bv.hist.payroll.label)} <span class="muted">${esc(bv.hist.payroll.period)}</span></td>
+          ${cols.fx ? '<td></td>' : ''}${monthIdx.map((i) => `<td>${money(payTie.tplM[i])}</td>`).join('')}
+          ${cols.annual ? `<td>${money(payTie.tpl)}</td>` : ''}${cols.ref1 ? '<td></td>' : ''}${cols.ref2 ? '<td></td>' : ''}${cols.punit ? `<td>${money(payTie.tpl / units)}</td>` : ''}${cols.note ? '<td></td>' : ''}</tr>`);
+        rows.push(`<tr class="hist paytie delta" title="Budget minus the payroll template, by month">
+          <td class="code"></td><td class="name"><span class="histtag">Δ</span>budget − template <span class="muted">${payTie.tpl ? `${d >= 0 ? '+' : ''}${((d / Math.abs(payTie.tpl)) * 100).toFixed(1)}%` : ''}</span></td>
+          ${cols.fx ? '<td></td>' : ''}${monthIdx.map((i) => `<td class="${payTie.deltaM[i] < 0 ? 'neg' : ''}">${money(payTie.deltaM[i])}</td>`).join('')}
+          ${cols.annual ? `<td class="${d < 0 ? 'neg' : ''}"><b>${money(d)}</b></td>` : ''}${cols.ref1 ? '<td></td>' : ''}${cols.ref2 ? '<td></td>' : ''}${cols.punit ? `<td>${money(d / units)}</td>` : ''}${cols.note ? '<td></td>' : ''}</tr>`);
+      }
       if (S.showDist && ann) {
         rows.push(`<tr class="dist"><td></td><td class="name">% of ${bv.annual ? bv.budget.year : 'Year 1'}</td>
           ${cols.fx ? '<td></td>' : ''}
@@ -1361,7 +1386,7 @@ function gridHtml(bv, totals) {
     const m = l ? l.months : Array(12).fill(0);
     const ann = sumM(m);
     // annual: a GL with history (T12 / CY budget) but no budget stays visible — that's a decision to see
-    const hasRef = (refA && refA.byGl[a.code]) || (refB && refB.byGl[a.code]);
+    const hasRef = (refA && refA.byGl[a.code]) || (refB && refB.byGl[a.code]) || (bv.hist && bv.hist.payroll && bv.hist.payroll.cal[a.code]);   // a payroll-template row (even a 0) keeps the GL visible
     const isZero = !ann && !m.some((v) => v) && !(l && l.note) && !hasRef;
     if (isZero && !S.showZero && !sp) continue;
     const dm = drvMeta(l && (ann || l.override) ? l : null);
@@ -3957,8 +3982,10 @@ function openShapeMenu(b, gl, acc, anchorBtn, inp) {
 function renderAnnualUploadPreview(el, parsed) {
   const files = parsed.files || [];
   const isTpl = parsed.kind === 'yardi_template';
-  el.innerHTML = `<h3>${isTpl ? 'Yardi budget templates' : 'Monarch statements'} — one per property</h3>
-    <div class="mapping"><table class="list"><tr><th>File</th><th>${isTpl ? 'Template' : 'Statement'}</th><th>Period</th><th>Rows</th><th>GPR (T12)</th><th>${isTpl ? 'Units · capital · last actual' : 'Kind'}</th><th>Property</th></tr>
+  const isPay = parsed.kind === 'payroll_template';
+  el.innerHTML = `<h3>${isTpl ? 'Yardi budget templates' : isPay ? 'Payroll Budget Workbook — property payroll sheets' : 'Monarch statements'} — one per property</h3>
+    ${isPay ? '<p class="muted" style="font-size:11.5px">Only the GL × month table (§3, the paste table) is read — the employee sections are never read. Saved as a reference: it shows under each payroll GL and ties out against the budget\'s own payroll lines; it never changes a line.</p>' : ''}
+    <div class="mapping"><table class="list"><tr><th>File</th><th>${isTpl ? 'Template' : isPay ? 'Sheet' : 'Statement'}</th><th>Period</th><th>Rows</th><th>${isPay ? 'Payroll total' : 'GPR (T12)'}</th><th>${isTpl ? 'Units · capital · last actual' : 'Kind'}</th><th>Property</th></tr>
     ${files.map((f, i) => {
       if (f.error) return `<tr><td>${esc(f.filename)}</td><td colspan="6" class="neg">✗ ${esc(f.error)}</td></tr>`;
       const st = isTpl ? f.actual : f.statement;
@@ -3968,22 +3995,22 @@ function renderAnnualUploadPreview(el, parsed) {
         <td>${esc(f.filename)}</td>
         <td>${esc(isTpl ? `${t.name} (${t.code}) · budget ${t.budgetYear}` : st.label)}${isTpl && (f.skippedSheets || []).length ? ` <span class="badge" title="Never read — restricted individual compensation">payroll sheet skipped</span>` : ''}</td>
         <td>${esc(st.period || '')}${isTpl ? `<div class="muted" style="font-size:10.5px">budget ${esc(f.budget.period || '')}</div>` : ''}</td>
-        <td>${st.rows.length}</td><td>${money(st.gpr)}</td>
-        <td>${isTpl ? `${t.units}u · ${money(t.capital)} · ${esc(String(t.lastActual.year))}-${String(t.lastActual.month).padStart(2, '0')}` : (st.kind === 'budget' ? 'CY budget' : 'actuals')}</td>
-        <td><select data-map="${i}">${propOptions(known ? f.propertyGuess : guessProp(st.label))}${f.propertyGuess && !known ? `<option value="${esc(f.propertyGuess)}" selected>${esc(f.propertyGuess)} — NEW property (${esc(isTpl ? t.name : st.label)})</option>` : ''}</select></td>
+        <td>${st.rows.length}</td><td>${money(isPay ? st.total : st.gpr)}</td>
+        <td>${isTpl ? `${t.units}u · ${money(t.capital)} · ${esc(String(t.lastActual.year))}-${String(t.lastActual.month).padStart(2, '0')}` : isPay ? `FY ${st.year} payroll template` : (st.kind === 'budget' ? 'CY budget' : 'actuals')}</td>
+        <td><select data-map="${i}">${propOptions(known ? f.propertyGuess : guessProp(st.label))}${f.propertyGuess && !known && !isPay ? `<option value="${esc(f.propertyGuess)}" selected>${esc(f.propertyGuess)} — NEW property (${esc(isTpl ? t.name : st.label)})</option>` : ''}</select></td>
       </tr>`; }).join('')}</table></div>
     <div class="row" style="margin-top:10px">
-      <label style="align-self:center" title="Point every existing ANNUAL budget of a mapped property at the new data and regenerate — overrides and MROUNDs are kept"><input type="checkbox" id="up-relink" checked> Relink existing annual budgets &amp; regenerate</label>
+      ${isPay ? '' : '<label style="align-self:center" title="Point every existing ANNUAL budget of a mapped property at the new data and regenerate — overrides and MROUNDs are kept"><input type="checkbox" id="up-relink" checked> Relink existing annual budgets &amp; regenerate</label>'}
       <button class="btn" id="up-apply">Save</button>
     </div>
     ${isTpl ? '<p class="muted" style="font-size:11.5px">Each template saves three things: the trailing-12 actuals statement, the current-year budget statement, and the template facts (debt schedule, fee matrix, Conservice utility forecasts, corporate suggestions, lease expirations, property info).</p>' : ''}`;
   el.querySelector('#up-apply').addEventListener('click', async () => {
     const mappings = [...el.querySelectorAll('[data-map]')].map((sel) => ({ index: Number(sel.dataset.map), propertyCode: sel.value || null })).filter((m) => m.propertyCode);
     if (!mappings.length) { S.upload.err = 'Map at least one file to a property'; render(); return; }
-    const relink = el.querySelector('#up-relink').checked;
+    const relink = isPay ? false : el.querySelector('#up-relink').checked;
     try {
       const resp = await POST('/uploads/apply', { kind: parsed.kind, filename: files.map((f) => f.filename).join(', ').slice(0, 200), payload: parsed, mappings, relink });
-      S.upload.msg = `Saved ${resp.created.length} ${isTpl ? 'template(s)' : 'statement(s)'}${relink ? ` · relinked ${resp.relinked || 0} budget(s)` : ''}`;
+      S.upload.msg = `Saved ${resp.created.length} ${isTpl ? 'template(s)' : isPay ? 'payroll template sheet(s) — open the budget: reference rows under the payroll GLs and the tie-out chip' : 'statement(s)'}${relink ? ` · relinked ${resp.relinked || 0} budget(s)` : ''}`;
       S.upload.parsed = null;
     } catch (e) { S.upload.err = e.message; }
     await refreshState(); render();

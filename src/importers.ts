@@ -1110,6 +1110,79 @@ export function parseMonarchStatement(buf: Buffer, coaDetail?: Set<string>): Mon
   };
 }
 
+/* ========================= PAYROLL BUDGET WORKBOOK — a property's payroll sheet (tie-out) =========================
+   Seth Russell's "Payroll Budget Workbook <year>.xlsb" (2027: released 2026-11-09).
+   Its per-property sheet — "Budget Section", or whatever the "Create a Payroll
+   Budget" macro names its copies — holds §1/§2 (the employee list: INDIVIDUAL
+   COMPENSATION, NEVER READ) and §3, the GL × 12-month table that gets pasted
+   into the Yardi template ("Paste Payroll Here"). Only §3 is read: it is the
+   same granularity as the budget itself. Each sheet becomes a statement-shaped
+   record (stmt_snapshots kind 'payroll_template') shown as a reference row
+   under the payroll GLs and tied out against the tool's own payroll lines
+   (Troy 2026-11-09: "use the payroll sheet as a check / tie-out"). */
+export interface PayrollTemplateParsed {
+  kind: 'payroll_template';
+  sheet: string;
+  label: string;                 // "<Property name>: FY 2027 Payroll Budget"
+  propertyGuess: string | null;  // the sheet's property code cell (e.g. "clnd")
+  year: number;
+  period: string;                // "Jan 2027-Dec 2027"
+  monthCal: number[]; monthYear: number[];
+  rows: { gl: string; name: string; months: number[]; total: number }[];
+  total: number;                 // the sheet's TOTAL PAYROLL EXPENSE (6470)
+}
+const MON3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+export function parsePayrollTemplate(buf: Buffer): PayrollTemplateParsed[] {
+  const out: PayrollTemplateParsed[] = [];
+  for (const { name, g } of grids(buf)) {
+    // the title sits in the first rows: "<Name>: FY 2027 Payroll Budget"
+    let label = '', year = 0;
+    for (const row of g.slice(0, 6)) for (const v of row || []) {
+      const m = s(v).match(/^(.*?):?\s*FY\s*(\d{4})\s*Payroll Budget/i);
+      if (m) { label = s(v); year = Number(m[2]); break; }
+    }
+    if (!year) continue;
+    // the property code: a short lowercase code alone in a cell of the first rows (B6)
+    let propertyGuess: string | null = null;
+    for (const row of g.slice(0, 10)) for (const v of row || []) { const t = s(v); if (/^[a-z]{3,5}[a-z0-9]?$/.test(t) && t === t.toLowerCase()) { propertyGuess = t; break; } }
+    // §3 header: "GL Code" | "GL Name" | 12 month DATES (the §1/§2 headers start
+    // with "Position"; the comparison block below uses month NAMES, not dates)
+    let h = -1, glCol = -1, cols: number[] = [], monthCal: number[] = [], monthYear: number[] = [];
+    for (let r = 0; r < g.length; r++) {
+      const row = g[r] || [];
+      const c0 = row.findIndex((v) => /^gl code$/i.test(s(v)));
+      if (c0 < 0 || !/^gl name$/i.test(s(row[c0 + 1]))) continue;
+      const dates: { y: number; m: number }[] = [];
+      for (let c = c0 + 2; c < c0 + 14; c++) { const d = serialDate(row[c]); if (!d) break; dates.push(d); }
+      if (dates.length !== 12) continue;
+      h = r; glCol = c0; cols = Array.from({ length: 12 }, (_, i) => c0 + 2 + i);
+      monthCal = dates.map((d) => d.m); monthYear = dates.map((d) => d.y);
+      break;
+    }
+    if (h < 0) continue;
+    const rows: PayrollTemplateParsed['rows'] = [];
+    let total = 0;
+    for (let r = h + 1; r < g.length; r++) {
+      const row = g[r] || [];
+      const gl = s(row[glCol]);
+      if (!/^\d{4}$/.test(gl)) {
+        if ((row as any[]).every((v) => s(v) === '')) continue;             // a blank spacer row
+        if (rows.length) break; continue;                                   // the table ends at the first non-GL text row
+      }
+      const months = cols.map((c) => Math.round(num(row[c]) * 100) / 100);
+      const sum = Math.round(months.reduce((a, b) => a + b, 0) * 100) / 100;
+      if (gl === '6470' || /^total payroll/i.test(s(row[glCol + 1]))) { total = sum; break; }
+      rows.push({ gl, name: s(row[glCol + 1]), months, total: sum });
+    }
+    if (!rows.length) continue;
+    if (!total) total = Math.round(rows.reduce((a, r) => a + r.total, 0) * 100) / 100;
+    const period = `${MON3[monthCal[0] - 1]} ${monthYear[0]}-${MON3[monthCal[11] - 1]} ${monthYear[11]}`;
+    out.push({ kind: 'payroll_template', sheet: name, label, propertyGuess, year, period, monthCal, monthYear, rows, total });
+  }
+  if (!out.length) throw new Error('Payroll Budget Workbook: no property payroll sheet found — run "Create a Payroll Budget" for the property first (the sheet titled "<Property>: FY <year> Payroll Budget" with the GL Code × month table)');
+  return out;
+}
+
 /* ========================= YARDI BUDGET TEMPLATE (budgetYSR<year>_budget_<id>.xlsm) ========================= */
 
 export interface TemplateParsed {
@@ -1542,12 +1615,20 @@ export function budgetCsvBlockText(b: BudgetCsvParsed): string {
 /** Guess which upload a workbook is from its sheet names / title cells so the
     Data page can take any file without asking what it is first. Returns null
     when nothing recognisable is found (the user then picks the kind). */
-export type UploadKind = 'uw_book' | 'rent_roll' | 'comparison' | 'seller_t12' | 'payroll' | 'yardi_template' | 'statement' | 'staffing';
+export type UploadKind = 'uw_book' | 'rent_roll' | 'comparison' | 'seller_t12' | 'payroll' | 'yardi_template' | 'statement' | 'staffing' | 'payroll_template';
 export function detectUploadKind(buf: Buffer): UploadKind | null {
   const wb = XLSX.read(buf, { type: 'buffer', sheetRows: 150 });
   const names = wb.SheetNames;
   if (names.some((n) => /^budget worksheet$/i.test(n)) && names.some((n) => /priorfinancials/i.test(n))) return 'yardi_template';
   if (names.some((n) => /^wages$/i.test(n))) return 'payroll';
+  // Payroll Budget Workbook with a property's payroll sheet ("<Name>: FY 2027 Payroll
+  // Budget" + the GL Code × month table): the tie-out reference. Checked before the
+  // roster, since the same workbook carries the HRIS dictionary.
+  for (const n of names) {
+    const g = XLSX.utils.sheet_to_json<any[]>(wb.Sheets[n], { header: 1, raw: true, defval: null }) as any[][];
+    const head = g.slice(0, 6).map((r) => (r || []).map((v) => (v == null ? '' : String(v))).join(' ')).join(' ');
+    if (/FY\s*\d{4}\s*Payroll Budget/i.test(head) && g.some((r) => (r || []).some((v) => /^gl code$/i.test(String(v ?? '').trim())))) return 'payroll_template';
+  }
   // HRIS roster export (staffing report): EmployeeName + PayRate + PropertyCode headers
   for (const n of names.slice(0, 4)) {
     const g = XLSX.utils.sheet_to_json<any[]>(wb.Sheets[n], { header: 1, raw: true, defval: null }) as any[][];
