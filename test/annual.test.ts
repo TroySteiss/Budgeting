@@ -171,7 +171,7 @@ describe('generateAnnualLines — template rules on own history', () => {
     expect((e.driver as any).pct).toBe(0);
     expect(e.months.every((v) => v === 650)).toBe(true);
     // the row's shape menu can keep ANY payroll line off the ratio
-    const shaped = generateAnnualLines(coaList, { ...inputs, baseline: { ...inputs.baseline, glShape: { '6418': 'last' } } }, src);
+    const shaped = generateAnnualLines(coaList, { ...inputs, baseline: { ...inputs.baseline!, glShape: { '6418': 'last' as const } } }, src);
     expect((L(shaped, '6418').driver as any).method).toBe('baseline');
     expect(L(shaped, '6418').months.every((v) => v === 207)).toBe(true);   // 200 × 1.035 raise default
   });

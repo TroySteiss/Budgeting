@@ -72,6 +72,15 @@ describe('pay math', () => {
     expect(isRmPosition('Regional Property Mgr I')).toBe(true);
     expect(isRmPosition('Property Manager II')).toBe(false);
     expect(positionGl('Underwater Basket Weaver').mapped).toBe(false);
+    // 2027 payroll workbook titles (abbreviated): office roles, one of them regional-level
+    expect(positionGl('Dual Site Property Mgr')).toEqual({ gl: '6402', mapped: true });
+    expect(positionGl('Roving Asst Prop Mgr')).toEqual({ gl: '6402', mapped: true });
+    expect(positionGl('Asst Reg Property Mgr II')).toEqual({ gl: '6402', mapped: true });
+    expect(isRmPosition('Asst Reg Property Mgr II')).toBe(true);
+    expect(isRmPosition('Registered Maint Tech')).toBe(false);
+    expect(isSalariedPosition('Dual Site Property Mgr')).toBe(true);
+    expect(isSalariedPosition('Roving Asst Prop Mgr')).toBe(false);
+    expect(positionGl('Maint Rover II').gl).toBe('6404');
     expect(marginalBurdenPct('Leasing Consultant')).toBeLessThan(marginalBurdenPct('Maintenance Tech I'));
   });
 });

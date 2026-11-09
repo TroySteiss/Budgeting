@@ -2,11 +2,14 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-11-09 — payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
+> Last updated: 2026-11-09 — 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
 > Earlier: 2026-09-10 — actualized months (partial-month rule; section above Exports); 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
 > w/ per-unit basis + ND payroll model).
 
 ## What this is
+
+> 2027 budget season: `TEMPLATE_2027_REVIEW.md` is the per-GL take/skip review of Monarch's
+> 2027 template release (instructions + payroll workbook) and what still needs a real Yardi pull.
 
 Budgeting web app for Monarch properties. Replaces the FHND/PHND Excel budget workbooks for
 **new acquisitions** (Bismarck 4: cwnd/lhnd/nrnd/rrnd, Jamestown 2: drnd/mwnd), with an
