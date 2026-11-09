@@ -2,7 +2,7 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-11-09 — annual budgets take wages from the Payroll tab by default (roster + raise entries, drafts included; `src/payroll-data.ts`, `inputs.wageSource`); 6310 corporate rate follows the budget year (2027 workbook rev2: $58.17/unit/yr + $513/mo), Minot sites are subjects with the role editable in Settings; editor view pass (quarterly % rows on totals, trend chart axis fitted to the data instead of zero, T3-annualized reference column after the T12 in the grid and the compare card, whole-dollar cell display); flat-fee utility billing (reimbursement income = last actual month × budgeted occupancy, `utilities.billing`), Enter on an assumption box moves to the next row; payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
+> Last updated: 2026-11-09 — vacancy is an annual average shaped by lease expirations (`vacancyByMonth`); roster raises start in the cycle's effective month (editable on the Payroll tab); Δ% T12 column; annual budgets take wages from the Payroll tab by default (roster + raise entries, drafts included; `src/payroll-data.ts`, `inputs.wageSource`); 6310 corporate rate follows the budget year (2027 workbook rev2: $58.17/unit/yr + $513/mo), Minot sites are subjects with the role editable in Settings; editor view pass (quarterly % rows on totals, trend chart axis fitted to the data instead of zero, T3-annualized reference column after the T12 in the grid and the compare card, whole-dollar cell display); flat-fee utility billing (reimbursement income = last actual month × budgeted occupancy, `utilities.billing`), Enter on an assumption box moves to the next row; payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
 > Earlier: 2026-09-10 — actualized months (partial-month rule; section above Exports); 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
 > w/ per-unit basis + ND payroll model).
 
@@ -520,6 +520,12 @@ category % boxes hop the same way.
   in); 2026 budgets keep $43.14 + $483. A rate typed on a budget (`inputs.corpRates`) still wins.
   The Assumptions dialog no longer saves a box left at the year's default (it used to pin every
   default onto the budget); migration 011 strips the pinned 2026 6310 default from 2027+ budgets.
+- **Δ% T12 column** (blended increase, Troy 2026-11-09): right after the year total, every detail
+  and total row shows (year total − T12) ÷ T12 (`cols.refpct`, picker key `refpct`, `pctCell` /
+  `t12PctText`; signed reference like the compare card; "new" when the line has no T12). Bold in
+  the override colour on a hand-adjusted line. It updates LIVE while a row's months or its year
+  total are being typed (`liveT12Pct`, before the row saves), so a manual change shows what % it
+  comes out to. Annual budgets only.
 - **Whole dollars**: month cells and the year-total box DISPLAY rounded dollars; stored months keep
   cents (CSV / workbook unchanged). Display never writes: only a typed change dirties a row, so
   nothing gets overridden or locked by the rounding.
@@ -569,9 +575,37 @@ finalized iteration; everything else ran on own trailing-12 wages × a flat 3.5%
 - Client: Assumptions → "Wages come from" (`#in-wagesrc`: Payroll tab default / own history),
   with the cycle and each region's iteration state; the raise % box is labelled as the fallback.
   `budgetView.rosterLink`. Acquisition budgets are unchanged (payroll model). The Apply button
-  still works but is no longer needed for wages to flow. Known gap: the dashboard's "Payroll
-  wages" report pill still keys off Apply / a payroll model, so a live-linked budget can read
-  "recommended missing".
+  still works but is no longer needed for wages to flow. Dashboard: `/state` carries `rosterYears`
+  (`rosterCoverage()`: per budget year, the cycle + each property code the roster books staff
+  to, with a draft flag — no pay data); `propertyReports`' "Payroll wages" item is on file when
+  that covers the property for the budget's year (budget or not yet, unless `wageSource` is
+  'manual'), else it falls back to the old test (applied roster / linked payroll model).
+
+- **Raises start in their effective month** (Troy 2026-11-09, same day: the first cut spread the
+  roster's annual total flat, so the raise showed in months before it hit). `monthlyWagesByGl`
+  (shared/payroll.ts) gives each wage GL by calendar month — old rate until the cycle's effective
+  month, raised from it on; `RosterLink.monthly` → `AnnualSources.wagesLive.monthly`; the engine
+  lays wages on that shape (a typed / overridden wage total rides it, scaled, penny-fixed on
+  December). Burden lines follow each month's wages, so they step too. The step month is the
+  CYCLE's `effective` — a cycle effective in January is raised all year (new cycles default to
+  January). Admins change it on the Payroll tab header ("Raises effective", `#pay-eff` →
+  `PUT /payroll/cycles/:id { effective }`); entries are untouched. The older Apply path still
+  writes an annual figure spread flat.
+
+## Vacancy: an annual average shaped by lease expirations (Troy 2026-11-09)
+
+"The target/input should be more of an average/annual total. The lease expirations should
+dictate where we incur more or less vacancy." `vacancyByMonth(pcts, exp, gpr, weight)`
+(shared/annual.ts, tested): `inputs.vacancyPct` with one value (all twelve equal) is the ANNUAL
+AVERAGE; each month's % = average × ((1 − w) + w × turnover ÷ the GPR-weighted mean turnover),
+turnover = expirations lagged one month (the turn-cost lag). The year's 5031 always equals
+average × GPR (cent difference on the largest month). `inputs.vacancyExpWeight` (default 1;
+0 = flat) is the "Vacancy follows lease expirations %" box in Assumptions. Twelve DIFFERENT
+values = typed by month, used as they are. **Guard:** fewer than nine months with expirations
+(`VACANCY_MIN_EXP_MONTHS` — a template listing only the next few months, e.g. clnd 2026's
+[…2, 29…]) → flat, or the whole year would land on those months. Driver `{ method: 'vacancy',
+avg, shaped expirations|typed|flat, pcts, weight }`, chip VAC·EXP; the row box is the average.
+Flat-fee utility income reads the same shaped monthly %. Annual engine only.
 
 ## Payroll flow into the budget worksheet (Troy 2026-11-03)
 

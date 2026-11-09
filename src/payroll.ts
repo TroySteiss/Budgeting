@@ -180,6 +180,16 @@ payrollRouter.post('/cycles', requireAdmin, h(async (req, res) => {
     the roster simply stop rendering. */
 payrollRouter.put('/cycles/:id', requireAdmin, h(async (req, res) => {
   const id = Number(req.params.id);
+  // the month the raises take effect (Troy 2026-11-09): budgets step their wages up from this
+  // month, so it must be correctable after the cycle exists. Entries are untouched.
+  if (req.body?.effective !== undefined) {
+    const effective = String(req.body.effective || '').trim();
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(effective)) return res.status(400).json({ error: 'Effective month must be YYYY-MM' });
+    const r = await query('update raise_cycles set effective=$2 where id=$1 returning id', [id, effective]);
+    if (!r.rows.length) return res.status(404).json({ error: 'No such cycle' });
+    logChange(req.session.username || '', 'set raise cycle effective month', { cycleId: id, effective });
+    if (req.body?.staffingSnapshotId === undefined) return res.json({ ok: true, effective });
+  }
   const snapId = Number(req.body?.staffingSnapshotId);
   const people = await loadSnapshotPeople(snapId);
   if (!people.length) return res.status(400).json({ error: 'No such staffing snapshot' });

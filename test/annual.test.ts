@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor,gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, type TemplateData, type AnnualSources,
+  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, type TemplateData, type AnnualSources,
 } from '../shared/annual.js';
 import { sum, zero12, rollup, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
 import { parseYardiBudgetTemplate, parseRentRoll, parseMonarchStatement, detectUploadKind } from '../src/importers.js';
@@ -593,6 +593,23 @@ describe('payroll flow (Troy 2026-11-03): roster wages carry their raises; burde
     expect((L(fin, '6402').driver as any).draft).toBe(false);
   });
 
+  it('LIVE wages keep the raise step: months before the effective month stay at the old rate (never smeared flat)', () => {
+    // raise effective April: Jan-Mar 2,400, Apr-Dec 2,500
+    const monthly = { '6402': [2400, 2400, 2400, 2500, 2500, 2500, 2500, 2500, 2500, 2500, 2500, 2500] as Months };
+    const annual = 2400 * 3 + 2500 * 9;
+    const wagesLive = { label: 'FY27', effective: '2027-04', draft: true, monthly };
+    const ls = generateAnnualLines(coaList, inputs, { ...src, payrollWages: { '6402': annual }, wagesLive });
+    expect(L(ls, '6402').months).toEqual(monthly['6402']);
+    // burden follows each month's own wages, so it steps too
+    const tax = L(ls, '6418').months;
+    expect(tax[3]).toBeGreaterThan(tax[0]);
+    // a wage total typed on the budget rides the same shape, scaled, and ties to the penny
+    const typed = L(generateAnnualLines(coaList, inputs, { ...src, payrollWages: { '6402': annual * 1.1 }, wagesLive }), '6402').months;
+    expect(sum(typed)).toBeCloseTo(annual * 1.1, 2);
+    expect(typed[0]).toBeLessThan(typed[3]);
+    expect(typed[0] / typed[3]).toBeCloseTo(2400 / 2500, 3);
+  });
+
   it('a wage GL the roster books NOTHING to is a set zero — the trailing-12 fallback cannot refill it', () => {
     const a2 = { ...actual, '6407': cal(Array(12).fill(400)) };                 // rover wages in the history
     const base = { ...src, actual: a2 };
@@ -675,5 +692,53 @@ describe('turn costs follow lease expirations with a one-month lag (Troy 2026-11
     expect(L(typed, '6926').months[6]).toBeGreaterThan(0); expect(L(typed, '6926').months.filter((v) => v).length).toBe(1);
     const none = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10 });
     expect((L(none, '6926').driver as any).shape).not.toBe('turns');
+  });
+});
+
+describe('vacancy: an annual average shaped by lease expirations (Troy 2026-11-09)', () => {
+  const gpr = Array(12).fill(100000) as Months;
+  // expirations by calendar month: heavy in summer
+  const exp = [2, 2, 4, 6, 10, 14, 16, 12, 6, 4, 2, 2] as Months;
+  const flat5 = Array(12).fill(0.05);
+
+  it('months follow expirations one month later; the year still totals average x GPR', () => {
+    const v = vacancyByMonth(flat5, exp, gpr);
+    expect(v.shaped).toBe('expirations');
+    expect(v.avg).toBe(0.05);
+    // July leases (16) vacate in August: August is the peak; December expirations land in January
+    expect(v.pcts.indexOf(Math.max(...v.pcts))).toBe(7);
+    expect(v.pcts[0]).toBeCloseTo(v.pcts[2], 6);                 // Jan <- Dec (2), Mar <- Feb (2)
+    expect(v.pcts[7] / v.pcts[1]).toBeCloseTo(16 / 2, 4);
+    expect(v.pcts.reduce((a, p, i) => a + p * gpr[i], 0)).toBeCloseTo(0.05 * sum(gpr), 0);
+  });
+  it('weight blends toward flat; 0 is flat; no expirations is flat; twelve typed values are kept', () => {
+    const half = vacancyByMonth(flat5, exp, gpr, 0.5).pcts;
+    const full = vacancyByMonth(flat5, exp, gpr, 1).pcts;
+    expect(half[7]).toBeCloseTo((full[7] + 0.05) / 2, 6);
+    expect(vacancyByMonth(flat5, exp, gpr, 0)).toMatchObject({ shaped: 'flat', pcts: flat5 });
+    expect(vacancyByMonth(flat5, zero12(), gpr)).toMatchObject({ shaped: 'flat', pcts: flat5 });
+    const typed = [0.03, 0.03, 0.04, 0.05, 0.06, 0.07, 0.07, 0.06, 0.05, 0.04, 0.03, 0.03];
+    expect(vacancyByMonth(typed, exp, gpr)).toMatchObject({ shaped: 'typed', pcts: typed });
+  });
+  it('a partial expiration schedule (a few months only) never piles the year onto those months — flat', () => {
+    const partial = [0, 0, 0, 0, 0, 0, 0, 0, 2, 29, 0, 0] as Months;
+    expect(vacancyByMonth(flat5, partial, gpr)).toMatchObject({ shaped: 'flat', pcts: flat5 });
+  });
+  it('rising GPR: the average is GPR-weighted, so vacancy $ ties to average x the year GPR', () => {
+    const g = Array.from({ length: 12 }, (_, i) => 100000 + i * 1000) as Months;
+    const v = vacancyByMonth(flat5, exp, g);
+    expect(v.pcts.reduce((a, p, i) => a + p * g[i], 0)).toBeCloseTo(0.05 * sum(g), 0);
+  });
+  it('engine: 5031 follows the shape and totals the average to the cent', () => {
+    const actual = synthetic();
+    const inputs = { ...defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10), vacancyPct: flat5 as Months, expirations: exp };
+    const ls = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10 });
+    const vacL = L(ls, '5031'), gprL = L(ls, '4994');
+    expect((vacL.driver as any).shaped).toBe('expirations');
+    expect(sum(vacL.months)).toBeCloseTo(-0.05 * sum(gprL.months), 2);
+    expect(Math.abs(vacL.months[7])).toBeGreaterThan(Math.abs(vacL.months[1]) * 3);
+    const flat = L(generateAnnualLines(coaList, { ...inputs, vacancyExpWeight: 0 }, { actual, budget: null, lastMonth: 10 }), '5031');
+    expect((flat.driver as any).shaped).toBe('flat');
+    expect(sum(flat.months)).toBeCloseTo(sum(vacL.months), 0);
   });
 });

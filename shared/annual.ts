@@ -310,6 +310,32 @@ export const TURN_EXPENSE_GLS = new Set(['6702', '6704', '6706', '6726', '6728',
 /** The expirations curve shifted one month forward: a lease ending in month i is a turn
     invoice in month i+1 (December's roll into January). */
 export function lagMonths(m: Months, lag = 1): Months { return m.map((_, i) => m[(i - lag + 12) % 12]) as Months; }
+/** Vacancy % by month (Troy 2026-11-09): the input is the ANNUAL AVERAGE; lease expirations
+    decide where it lands. Each month's % = average x ((1 - w) + w x that month's turnover /
+    the GPR-weighted mean turnover), turnover being the expirations lagged one month (a lease
+    that ends in June is a vacant unit in July — the same lag the turn costs use). The year's
+    vacancy $ still equals average x GPR. w = `weight` (1 = fully on expirations, 0 = flat).
+    Twelve DIFFERENT typed values are a by-month entry and are used as they are; with no
+    expirations on file — or a partial schedule (fewer than nine months with expirations) —
+    the average applies flat. */
+export const VACANCY_MIN_EXP_MONTHS = 9;
+export function vacancyByMonth(pcts: number[] | undefined | null, exp: Months, gpr: Months, weight = 1): { pcts: Months; avg: number; shaped: 'expirations' | 'typed' | 'flat' } {
+  const p = Array.from({ length: 12 }, (_, i) => Number(pcts?.[i]) || 0) as Months;
+  const avg = p[0];
+  if (p.some((v) => Math.abs(v - avg) > 1e-9)) {
+    const g = sum(gpr);
+    return { pcts: p, avg: g ? p.reduce((a, v, i) => a + v * gpr[i], 0) / g : p.reduce((a, v) => a + v, 0) / 12, shaped: 'typed' };
+  }
+  const w = Math.min(1, Math.max(0, Number.isFinite(weight) ? weight : 1));
+  const turn = lagMonths(exp, 1);
+  const gSum = sum(gpr);
+  const mean = gSum ? turn.reduce((a, v, i) => a + v * gpr[i], 0) / gSum : turn.reduce((a, v) => a + v, 0) / 12;
+  // a PARTIAL expiration schedule (a template that only lists the next few months, a roll that
+  // predates most of the year) would pile the whole year's vacancy onto those months — the
+  // shape applies only when at least nine months carry expirations; otherwise the average is flat
+  if (!avg || !w || !(mean > 0) || turn.filter((v) => v > 0).length < VACANCY_MIN_EXP_MONTHS) return { pcts: p, avg, shaped: 'flat' };
+  return { pcts: turn.map((v) => Math.round(avg * ((1 - w) + (w * v) / mean) * 1e6) / 1e6) as Months, avg, shaped: 'expirations' };
+}
 /** Average of the non-zero months, flat. */
 export const AVG_NZ_GLS = new Set(['5110']);
 /** Template zeroes these (corporate allocation credits; one-time concessions). */
@@ -441,7 +467,9 @@ export interface AnnualSources {
   payrollWages?: Record<string, number> | null;
   /** set when `payrollWages` is the LIVE Pay-rates roster (the default wage source): the
       wages already carry each person's raise prorated from the cycle's effective month */
-  wagesLive?: { label: string; effective: string; draft: boolean } | null;
+  wagesLive?: { label: string; effective: string; draft: boolean;
+    /** the roster wages by CALENDAR month — old rate before the raise's effective month, raised from it on */
+    monthly?: Record<string, Months> | null } | null;
   leases?: Lease[] | null;
   /** the rent roll's as-of date (ISO or M/D/YYYY): a lease ending between it and the
       budget start has already turned by month 0 (it is not month-to-month) */
@@ -593,8 +621,19 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     mk('5003', out.map((v) => Math.min(0, v)) as Months, { method: 'ltl' });
   }
 
-  /* ---- vacancy: % of GPR (default the last actual month's %) ---- */
-  mk('5031', gpr.map((v, i) => -r2((inputs.vacancyPct?.[i] || 0) * v)), { method: 'vacancy' });
+  /* ---- vacancy: the input is the annual average % of GPR; lease expirations (+1 month)
+     decide which months carry more or less of it (vacancyByMonth) ---- */
+  const vac = vacancyByMonth(inputs.vacancyPct, exp, gpr as Months, inputs.vacancyExpWeight ?? 1);
+  const vacPct = vac.pcts;
+  {
+    const months = gpr.map((v, i) => -r2(vacPct[i] * v)) as Months;
+    if (vac.shaped === 'expirations') {
+      // rounding: the year still totals average x GPR — the cent difference goes on the largest month
+      const drift = r2(-r2(vac.avg * sum(gpr)) - sum(months));
+      if (drift) { const bi = months.reduce((mi, v, i) => (Math.abs(v) > Math.abs(months[mi]) ? i : mi), 0); months[bi] = r2(months[bi] + drift); }
+    }
+    mk('5031', months, { method: 'vacancy', avg: Math.round(vac.avg * 1e6) / 1e6, shaped: vac.shaped, pcts: vacPct, weight: inputs.vacancyExpWeight ?? 1 } as any);
+  }
 
   /* ---- concessions & other rental loss: TRAILING-12 ratio to GPR × GPR (Troy:
      "use T12 ratio" — the October ratio made a light month set the year) ---- */
@@ -735,7 +774,21 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
         if (rosterWages && WAGE_GLS.includes(gl) && annual === 0) mk(gl, zero12(), rosterDriver);
         continue;
       }
-      const months = spreadMonthly(r2(annual), CURVES.flat).map((v, i) => (!rosterWages && i >= iMarch ? r2(v * raise) : v)) as Months;
+      // LIVE roster wages keep their month-by-month shape: the old rate until the raise's
+      // effective month, the raised rate from it on — never the year's total smeared flat
+      // (Troy 2026-11-09: "equal across the year, including months prior to the increases").
+      // A wage total typed / overridden on the budget rides the same shape, scaled.
+      const shape = live?.monthly?.[gl] ? rotate12(live.monthly[gl], startMonth) : null;
+      const shapeSum = shape ? sum(shape) : 0;
+      let months: Months;
+      if (shape && shapeSum) {
+        const k = r2(annual) / shapeSum;
+        months = shape.map((v) => r2(v * k)) as Months;
+        const drift = r2(r2(annual) - sum(months));               // penny-fix on the last month
+        if (drift) months[11] = r2(months[11] + drift);
+      } else {
+        months = spreadMonthly(r2(annual), CURVES.flat).map((v, i) => (!rosterWages && i >= iMarch ? r2(v * raise) : v)) as Months;
+      }
       addWages(months);
       mk(gl, months, rosterDriver);
     }
@@ -808,7 +861,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       if (!act[a.code] || !act[a.code].some((v) => v)) continue;
       const feeBase = lastAct(a.code);
       const pct = bl.glGrowth?.[a.code] ?? 0;
-      const months = Array.from({ length: 12 }, (_, i) => r2(feeBase * (1 + pct) * (1 - (inputs.vacancyPct?.[i] || 0)) / occLast)) as Months;
+      const months = Array.from({ length: 12 }, (_, i) => r2(feeBase * (1 + pct) * (1 - (vacPct[i] || 0)) / occLast)) as Months;
       mk(a.code, months, { method: 'flatFee', base: feeBase, lastMonth, occLast: Math.round(occLast * 10000) / 10000, pct } as any);
     }
   }

@@ -141,6 +141,9 @@ td.m.drv-t12 { background: var(--drv-t12); }  td.m.drv-t12 input { color: var(--
 td.m.drv-base { background: var(--drv-base); } td.m.drv-base input { color: var(--drv-base-ink); }
 td.m.drv-corp { background: var(--drv-corp); } td.m.drv-corp input { color: var(--drv-corp-ink); }
 td.ref { text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* blended % vs T12: stands out on a hand-adjusted line, and while a row is being typed */
+td.ref.t12pct.man { color: var(--drv-man-ink, var(--accent)); font-weight: 600; }
+td.ref.t12pct.live { outline: 1px dashed var(--accent); outline-offset: -2px; }
 /* special projects — every cell orange: budgeted manually per site */
 tr.sp td { background: var(--drv-sp); }
 tr.sp td input { color: var(--drv-sp-ink); }

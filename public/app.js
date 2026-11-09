@@ -51,7 +51,12 @@ function drvMetaBase(l) {
       const how = lt.mode === 'flat' ? 'held flat (no burnoff)' : lt.mode === 'ramp' ? 'ramp to a % of GPR' : (S.bv && S.bv.leaseCount) ? 'per-lease burnoff at each turnover' : 'burnoff on lease expirations';
       return { cls: 'drv-rr', tag: 'LTL', label: `Loss to lease — ${how}${lt.followGpr !== false && lt.mode !== 'ramp' ? ', deepens with GPR growth' : ''} · renewal %, burnoff on renewal / move-in are the boxes to the right (method + "follows GPR" under Assumptions)` };
     }
-    case 'vacancy': return { cls: 'drv-rr', tag: '%GPR', label: '% of GPR' };
+    case 'vacancy': {
+      const d = l.driver;
+      if (d.shaped === 'expirations') return { cls: 'drv-rr', tag: 'VAC·EXP', label: `Vacancy averages ${(d.avg * 100).toFixed(2)}% of GPR for the year; lease expirations (+1 month) decide the months — ${(Math.min(...d.pcts) * 100).toFixed(1)}% to ${(Math.max(...d.pcts) * 100).toFixed(1)}%${d.weight != null && d.weight < 1 ? ` (${Math.round(d.weight * 100)}% weight on expirations)` : ''}` };
+      if (d.shaped === 'typed') return { cls: 'drv-rr', tag: '%GPR', label: `Vacancy % of GPR typed month by month (averages ${(d.avg * 100).toFixed(2)}%)` };
+      return { cls: 'drv-rr', tag: '%GPR', label: d.avg != null ? `Vacancy ${(d.avg * 100).toFixed(2)}% of GPR every month (set flat, or the lease expirations on file cover fewer than nine months)` : '% of GPR' };
+    }
     case 'flatFee': return { cls: 'drv-rr', tag: 'FLAT FEE', label: `Flat utility fee per occupied unit — ${MONTHS[(l.driver.lastMonth || 1) - 1]} actual $${money(l.driver.base || 0)} × budgeted occupancy ÷ ${((l.driver.occLast || 1) * 100).toFixed(1)}% occupied that month (ties to the vacancy assumption)${l.driver.pct ? ` × ${(l.driver.pct * 100).toFixed(1)}% fee increase` : ''}` };
     case 'catShare': return { cls: 'drv-uw', tag: 'UW', label: `UW category ${l.driver.pcode} share` };
     case 'perUnitComp': return { cls: 'drv-comp', tag: 'MINOT', label: `Minot $${l.driver.perUnit}/unit × units` };
@@ -131,6 +136,20 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const fmtd = (d) => (d ? new Date(d).toLocaleDateString() : '');
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const sumM = (m) => (m || []).reduce((a, b) => a + (Number(b) || 0), 0);
+/* Blended increase of a year total over its trailing-12, as text. Signed reference, like the
+   compare card: a contra line shrinking 10% reads -10%. No T12 to compare to reads "new". */
+function t12PctText(total, t12) {
+  if (!t12) return Math.abs(total) >= 0.5 ? 'new' : '';
+  const g = (total - t12) / t12;
+  return `${g > 0 ? '+' : ''}${(g * 100).toFixed(1)}%`;
+}
+/* live: while a row is being typed, show what its total now comes out to vs the T12 */
+function liveT12Pct(gl, total) {
+  const td = document.querySelector(`td[data-t12pct="${gl}"]`);
+  if (!td) return;
+  td.textContent = t12PctText(total, Number(td.dataset.t12) || 0);
+  td.classList.add('man', 'live');
+}
 
 /* Corporate rate defaults by budget year — mirrors corpRatesFor() in shared/annual.ts, keep in step.
    2027+: 6310 = $58.17/unit/yr + $513/mo (Payroll Budget Workbook 2027 rev2, 6451 folded in). */
@@ -331,7 +350,13 @@ function propertyReports(st, code, budget, year) {
   const actOk = !!act && current(act.period), budOk = !!bud && current(bud.period);
   const stale = (x, what) => `stale — have ${x.period || what}, need the ${what} for ${year}`;
   const inp = (budget && budget.inputs) || {};
-  const payOk = !!budget && (inp.wagesFromRoster === true || !!budget.payroll_model_id);
+  // Payroll wages: an annual budget follows the Payroll tab by default — on file when a raise
+  // cycle effective in the budget year books staff to this property (st.rosterYears), unless
+  // the budget opted out (wageSource 'manual'). Else an applied roster / linked payroll model.
+  const cov = (st.rosterYears || {})[String((budget && budget.year) || year)];
+  const covHere = cov && cov.codes && cov.codes[code] ? cov.codes[code] : null;
+  const followsTab = !!covHere && (!budget || budget.budget_type === 'annual') && inp.wageSource !== 'manual';
+  const payOk = followsTab || (!!budget && (inp.wagesFromRoster === true || !!budget.payroll_model_id));
   return [
     { key: 'actual', label: 'Trailing-12 actual statement', need: 'required', ok: actOk || (tplOk && !!tpl.actual_period),
       sub: actOk ? `${act.period || ''} · ${fmtd(act.created_at)}` : tplOk && tpl.actual_period ? `from the Yardi template · ${tpl.actual_period}` : act ? stale(act, '12 months') : 'Property Comparison (Cash), 12 months — or the Yardi template' },
@@ -342,7 +367,10 @@ function propertyReports(st, code, budget, year) {
     { key: 'rent', label: 'Rent roll', need: 'recommended', ok: !!rent,
       sub: rent ? `${rent.as_of ? fmtd(rent.as_of) : ''} · ${rent.units || '?'} units` : 'unit-level — per-lease loss to lease and market rents' },
     { key: 'payroll', label: 'Payroll wages', need: 'recommended', ok: payOk,
-      sub: !budget ? 'follows the Payroll tab once the budget exists' : payOk ? (inp.wagesFromRoster ? 'Pay-rates roster applied' : 'payroll model linked') : 'follows the Payroll tab when a raise cycle is effective in the budget year — else own trailing-12 wages' },
+      sub: followsTab ? `${budget ? 'follows' : 'will follow'} the Payroll tab · ${cov.label} · ${covHere.draft ? 'draft raises' : 'raises finalized'}`
+        : payOk ? (inp.wagesFromRoster ? 'Pay-rates roster applied' : 'payroll model linked')
+        : inp.wageSource === 'manual' ? 'set to its own history in Assumptions — trailing-12 wages × the raise %'
+        : `no raise cycle effective in ${(budget && budget.year) || year} books staff here — Payroll tab → start the cycle (until then: trailing-12 wages × the raise %)` },
   ];
 }
 function propertyListHtml(st) {
@@ -1135,6 +1163,7 @@ function renderEditor(el) {
       if (!p || p.gl !== box.dataset.gl) return;
       p.months[Number(box.dataset.i)] = parseFloat(String(box.value).replace(/,/g, '')) || 0;
       p.dirty = true;
+      liveT12Pct(p.gl, sumM(p.months));
     });
     box.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); box.blur(); commitRow(); } });
   });
@@ -1158,6 +1187,7 @@ function renderEditor(el) {
   el.querySelectorAll('td.ann input').forEach((box) => {
     box.addEventListener('focus', () => box.select());
     box.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); box.blur(); } });
+    box.addEventListener('input', () => { const v = parseFloat(String(box.value).replace(/[$,]/g, '')); if (Number.isFinite(v)) liveT12Pct(box.dataset.ann, v); });
     box.addEventListener('change', async () => {
       const gl = box.dataset.ann;
       const target = parseFloat(String(box.value).replace(/[$,]/g, ''));
@@ -1337,8 +1367,8 @@ function gridHtml(bv, totals) {
   const refA = bv.annual ? (bv.refs || []).find((r) => r.key === 'actual') : null;
   const refB = bv.annual ? (bv.refs || []).find((r) => r.key === 'budget') : null;
   const refT3 = bv.annual ? (bv.refs || []).find((r) => r.key === 'ann3') : null;   // last 3 actual months × 4, right after the T12
-  const cols = { fx: !hide.has('fx'), annual: !hide.has('annual'), ref1: !!refA && !hide.has('ref1'), ref3: !!refT3 && !hide.has('ref3'), ref2: !!refB && !hide.has('ref2'), punit: !hide.has('punit'), note: !hide.has('note') };
-  const nRef = (cols.ref1 ? 1 : 0) + (cols.ref3 ? 1 : 0) + (cols.ref2 ? 1 : 0);
+  const cols = { fx: !hide.has('fx'), annual: !hide.has('annual'), refpct: !!refA && !hide.has('refpct'), ref1: !!refA && !hide.has('ref1'), ref3: !!refT3 && !hide.has('ref3'), ref2: !!refB && !hide.has('ref2'), punit: !hide.has('punit'), note: !hide.has('note') };
+  const nRef = (cols.refpct ? 1 : 0) + (cols.ref1 ? 1 : 0) + (cols.ref3 ? 1 : 0) + (cols.ref2 ? 1 : 0);
   const refBlank = '<td></td>'.repeat(nRef);   // the reference columns on rows that have no reference figure
   const span = 2 + (cols.fx ? 1 : 0) + monthIdx.length + (cols.annual ? 1 : 0) + nRef + (cols.punit ? 1 : 0) + (cols.note ? 1 : 0);
   const actIdx = new Set((bv.actualMonths || []).filter((a) => a.index >= 0).map((a) => a.index));   // months locked to posted actuals (declared BEFORE the header row uses it)
@@ -1347,7 +1377,14 @@ function gridHtml(bv, totals) {
     const v = kind === 'total' ? ref.totals[code] : ref.byGl[code];
     return `<td class="ref ${v < 0 ? 'neg' : ''}">${v ? money(v) : ''}</td>`;
   };
-  const refCells = (code, kind) => `${cols.ref1 ? refCell(refA, code, kind) : ''}${cols.ref3 ? refCell(refT3, code, kind) : ''}${cols.ref2 ? refCell(refB, code, kind) : ''}`;
+  // blended increase over the T12 (Troy 2026-11-09): the line's year total vs its trailing-12,
+  // right beside the total — so a hand-typed line shows what % it comes out to. The cell carries
+  // its T12 so it can update live while a row is being typed (see the month / total handlers).
+  const pctCell = (code, kind, ann, manual) => {
+    const v = (kind === 'total' ? refA.totals[code] : refA.byGl[code]) || 0;
+    return `<td class="ref t12pct${manual ? ' man' : ''}" ${kind === 'total' ? '' : `data-t12pct="${code}"`} data-t12="${v}" title="${kind === 'total' ? 'Subtotal' : 'Line'} total vs its trailing-12 actual of ${money(v)}${manual ? ' — this line is hand-adjusted' : ''}">${t12PctText(ann, v)}</td>`;
+  };
+  const refCells = (code, kind, ann, manual) => `${cols.refpct ? pctCell(code, kind, ann, manual) : ''}${cols.ref1 ? refCell(refA, code, kind) : ''}${cols.ref3 ? refCell(refT3, code, kind) : ''}${cols.ref2 ? refCell(refB, code, kind) : ''}`;
   // per-GL history (Troy 2026-11-04): the prior trailing-12 and the current-year budget by
   // month, unfolded under a GL on click — reference rows, never part of the budget
   if (!S.histOpenSet) S.histOpenSet = new Set(JSON.parse(localStorage.getItem('bt-hist') || '[]'));
@@ -1369,7 +1406,7 @@ function gridHtml(bv, totals) {
   })();
   const histOpen = (code) => S.histAll || S.histOpenSet.has(code);
   const rows = [];
-  rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th${actIdx.has(i) ? ' class="actcol" title="Locked to posted actuals — an edit here corrects the posted figure"' : ''}>${labels[i]}${actIdx.has(i) ? ' ✓' : ''}</th>`).join('')}${cols.annual ? `<th>${bv.annual ? bv.budget.year : 'Year 1'}</th>` : ''}${cols.ref1 ? `<th title="${esc(refA.period)}">T12</th>` : ''}${cols.ref3 ? `<th title="T3 annualized — ${esc(refT3.period)}">T3 ann</th>` : ''}${cols.ref2 ? `<th title="${esc(refB.period)}">${esc(refB.label.replace(/ budget$/i, ' bud'))}</th>` : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
+  rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th${actIdx.has(i) ? ' class="actcol" title="Locked to posted actuals — an edit here corrects the posted figure"' : ''}>${labels[i]}${actIdx.has(i) ? ' ✓' : ''}</th>`).join('')}${cols.annual ? `<th>${bv.annual ? bv.budget.year : 'Year 1'}</th>` : ''}${cols.refpct ? `<th title="Blended increase: the ${bv.budget.year} total vs the trailing-12 actual (${esc(refA.period)})">Δ% T12</th>` : ''}${cols.ref1 ? `<th title="${esc(refA.period)}">T12</th>` : ''}${cols.ref3 ? `<th title="T3 annualized — ${esc(refT3.period)}">T3 ann</th>` : ''}${cols.ref2 ? `<th title="${esc(refB.period)}">${esc(refB.label.replace(/ budget$/i, ' bud'))}</th>` : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
   const units = Number(bv.budget.inputs?.units) || 1;
   const GRAND = new Set(['5500', '7279', '7280', '8200', '9000']);
   // condensed (collapsed) sections — locked via localStorage across renders
@@ -1399,7 +1436,7 @@ function gridHtml(bv, totals) {
         ${cols.fx ? '<td></td>' : ''}
         ${monthIdx.map((i) => `<td class="${m[i] < 0 ? 'neg' : ''}">${money(m[i])}</td>`).join('')}
         ${cols.annual ? `<td class="${ann < 0 ? 'neg' : ''}"><b>${money(ann)}</b></td>` : ''}
-        ${refCells(a.code, 'total')}
+        ${refCells(a.code, 'total', ann, false)}
         ${cols.punit ? `<td>${money(ann / units)}</td>` : ''}
         ${cols.note ? '<td></td>' : ''}</tr>`);
       if (a.code === '6470' && payTie) {
@@ -1455,7 +1492,7 @@ function gridHtml(bv, totals) {
       ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? (prm.steps ? `<button class="fxp fxp-steps" data-steps="${a.code}" title="${esc(prm.label)} — click to place increases in specific months">${esc(prm.value)}</button>` : prm.multi ? `<button class="fxp fxp-steps" data-multi="${a.code}" title="${esc(prm.title || '')} — click to edit every input">${esc(prm.summary)}</button>` : `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">`) : ''}</td>` : ''}
       ${monthIdx.map((i) => `<td class="m ${actIdx.has(i) ? 'drv-act' : sp ? '' : dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money(Math.round(m[i]) || 0) : ''}"></td>`).join('')}
       ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}"><input data-ann="${a.code}" value="${ann ? money(Math.round(ann) || 0) : ''}" title="${bv.annual ? bv.budget.year : 'Year 1'} total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
-      ${refCells(a.code, 'detail')}
+      ${refCells(a.code, 'detail', ann, !!(l && l.override))}
       ${cols.punit ? `<td>${ann ? money(ann / units) : ''}</td>` : ''}
       ${cols.note ? `<td class="note"><input data-gl="${a.code}" value="${esc(l ? l.note : '')}" placeholder="note"></td>` : ''}
     </tr>`);
@@ -1704,7 +1741,9 @@ function paramFor(gl, line, inp) {
   }
   if (gl === '5031' && m === 'vacancy') {
     const vac = inp.vacancyPct || [];
-    return { label: 'vacancy %', value: pct(vac[0] || 0), patch: (v) => ({ vacancyPct: Array(12).fill(v / 100) }) };
+    // the box is the ANNUAL AVERAGE; the months follow lease expirations (engine: vacancyByMonth)
+    const d = line.driver || {};
+    return { label: d.shaped === 'expirations' ? 'average vacancy % for the year — lease expirations decide the months' : 'vacancy % (annual average)', value: pct(d.avg != null ? d.avg : (vac[0] || 0)), patch: (v) => ({ vacancyPct: Array(12).fill(v / 100) }) };
   }
   if (gl === '6112' && m === 'mgmtPct') {
     return { label: '% of prior-month income', value: pct(inp.mgmtPct || 0), patch: (v) => ({ mgmtPct: v / 100 }) };
@@ -1744,7 +1783,7 @@ function openColsMenu(anchorBtn, labels) {
     ${item('fx', 'Fx (formula chip)')}
     ${labels.map((lb, i) => item('m' + i, lb)).join('')}
     ${item('annual', S.bv && S.bv.annual ? `${S.bv.budget.year} total` : 'Year 1 total')}
-    ${S.bv && S.bv.annual ? item('ref1', 'T12 actuals') + item('ref3', 'T3 annualized') + item('ref2', 'CY budget') : ''}
+    ${S.bv && S.bv.annual ? item('refpct', 'Δ% vs T12') + item('ref1', 'T12 actuals') + item('ref3', 'T3 annualized') + item('ref2', 'CY budget') : ''}
     ${item('punit', '$/Unit')}
     ${item('note', 'Note')}
     <button data-all="1" style="color:var(--accent)">Show all</button>`;
@@ -3267,6 +3306,8 @@ function payHeaderHtml(st) {
       <select id="pay-cycle">${st.cycles.map((x) => `<option value="${x.id}" ${x.id === P.cycleId ? 'selected' : ''}>${esc(x.label)} · eff. ${esc(x.effective)}</option>`).join('')}</select>` : ''}
       ${st.isAdmin && P.cycleId && st.snapshots.length && (st.cycles.find((x) => x.id === P.cycleId) || {}).staffing_snapshot_id !== st.snapshots[0].id
         ? `<button class="btn sub" id="pay-relink-snap" title="Point this cycle at the newest staffing report — raises carry over (rows match by person)">↻ Use latest staffing</button>` : ''}
+      ${st.isAdmin && P.cycleId ? `<label class="muted" style="font-size:12px" title="The month the raises take effect. Budgets that follow the Payroll tab keep wages at the current rate until this month and step up from it — so a raise never shows in the months before it hits. Changing it does not touch the raise entries; recalc a budget to pick it up.">Raises effective</label>
+      <input id="pay-eff" value="${esc((st.cycles.find((x) => x.id === P.cycleId) || {}).effective || '')}" placeholder="YYYY-MM" style="width:86px" title="YYYY-MM — press Enter to save">` : ''}
       ${st.isAdmin ? `<button class="btn sub" id="pay-newcycle">＋ New cycle</button>` : ''}
     </div>
     ${P.newCycle && st.isAdmin ? `<div class="row" style="margin-top:10px; gap:10px; flex-wrap:wrap; align-items:flex-end">
@@ -3289,6 +3330,15 @@ function wirePayHeader(el, st) {
     try {
       await PUT(`/payroll/cycles/${S.pay.cycleId}`, { staffingSnapshotId: st.snapshots[0].id });
       S.pay.msg = 'Cycle now reads the latest staffing report'; S.pay.st = null; render();
+    } catch (e) { S.pay.err = e.message; render(); }
+  });
+  const eff = el.querySelector('#pay-eff');
+  if (eff) eff.addEventListener('change', async () => {
+    const v = eff.value.trim();
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(v)) { S.pay.err = 'Effective month must be YYYY-MM (e.g. 2027-03)'; render(); return; }
+    try {
+      await PUT(`/payroll/cycles/${S.pay.cycleId}`, { effective: v });
+      S.pay.err = ''; S.pay.msg = `Raises now take effect ${v} — recalc a budget to step its wages from that month`; S.pay.st = null; S.pay.cycle = null; render();
     } catch (e) { S.pay.err = e.message; render(); }
   });
   const go = el.querySelector('#nc-go');
@@ -3941,7 +3991,8 @@ function annualInputsHtml(inp) {
     </div>
     <h3>Rental loss</h3>
     <div class="row">
-      <div class="fld"><label>Vacancy % of GPR (1 or 12 values; default = last actual month's %)</label><input id="in-vac" value="${show12(inp.vacancyPct || [])}" style="width:220px"></div>
+      <div class="fld"><label>Vacancy % of GPR — the <b>annual average</b> (one value). Twelve values = typed month by month, used as they are.</label><input id="in-vac" value="${show12(inp.vacancyPct || [])}" style="width:220px"></div>
+      <div class="fld"><label title="100 = each month's vacancy follows that month's lease expirations (one month later); 0 = the average every month; in between blends the two. The year's vacancy $ equals the average either way.">Vacancy follows lease expirations %</label><input id="in-vacw" value="${Math.round(((inp.vacancyExpWeight ?? 1)) * 100)}" style="width:70px"></div>
       <span class="muted" style="align-self:center; font-size:11.5px">Delinquency, prior-period collections and concessions run at their trailing-12 / last-month ratios — change one on its row (%GPR chip) or via “% of GPR…” in the row menu.</span>
     </div>
     <h3>Baseline — every other GL = own history × increase factor</h3>
@@ -4031,6 +4082,7 @@ async function applyAnnualInputs(b, el) {
     },
     expirations: expVals.length === 12 ? expVals : null,
     vacancyPct: parse12(q('#in-vac').value, cur.vacancyPct || Array(12).fill(0.05)),
+    vacancyExpWeight: q('#in-vacw') ? Math.min(1, Math.max(0, num('#in-vacw', 100) / 100)) : (cur.vacancyExpWeight ?? 1),
     mgmtPct: num('#in-mgmt') / 100,
     payrollRaisePct: num('#in-raise') / 100,
     wageSource: q('#in-wagesrc') ? q('#in-wagesrc').value : (cur.wageSource || 'payroll'),

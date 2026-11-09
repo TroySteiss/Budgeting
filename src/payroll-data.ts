@@ -5,7 +5,7 @@
    ONLY property-level annual wages by wage GL plus cycle metadata — nothing per person
    ever leaves this module through it. */
 import { query } from './db.js';
-import { annualWagesByGl, homeRegionsOf, normalizePayBasis, normalizeRmCorporateShare, type StaffingPerson, type RaiseMap } from '../shared/payroll.js';
+import { annualWagesByGl, monthlyWagesByGl, homeRegionsOf, normalizePayBasis, normalizeRmCorporateShare, type StaffingPerson, type RaiseMap } from '../shared/payroll.js';
 
 export async function loadSnapshotPeople(snapshotId: number): Promise<StaffingPerson[]> {
   const r = (await query('select data from staffing_snapshots where id=$1', [snapshotId])).rows[0];
@@ -47,6 +47,8 @@ export async function latestIterByRegion(cycleId: number): Promise<Map<string, {
 export interface RosterLink {
   /** annual $ by wage GL — all four wage GLs present (0 where the roster books nothing) */
   wages: Record<string, number>;
+  /** the same wages by CALENDAR month of the budget year: old rate until the cycle's effective month, raised rate from it on */
+  monthly: Record<string, number[]>;
   cycleId: number; label: string; effective: string;
   /** true while any region feeding this property is still on a draft (un-finalized) iteration */
   draft: boolean;
@@ -85,7 +87,39 @@ export async function rosterWagesFor(code: string, year: number): Promise<Roster
   return {
     // the roster is authoritative for every wage GL: the ones it books nothing to are zero
     wages: { '6402': 0, '6404': 0, '6405': 0, '6407': 0, ...wages },
+    monthly: monthlyWagesByGl(people, code, raises, cycle.effective, year),
     cycleId: cycle.id, label: cycle.label, effective: cycle.effective,
     draft: regions.some((r) => !r.finalized), regions,
   };
+}
+
+/** Which properties the Pay-rates tab can feed, per budget year — for the dashboard's
+    "Payroll wages" report item. Per year: the cycle `rosterWagesFor` would use, and each
+    property code the roster books staff to, with whether a feeding region is still on a
+    draft iteration. Codes and flags only — no pay data. */
+export interface RosterCoverage { label: string; effective: string; codes: Record<string, { draft: boolean }> }
+export async function rosterCoverage(): Promise<Record<string, RosterCoverage>> {
+  const cycles = (await query(
+    `select distinct on (left(effective, 4)) id, label, effective, staffing_snapshot_id from raise_cycles
+      where staffing_snapshot_id is not null and effective ~ '^[0-9]{4}-[0-9]{2}$' order by left(effective, 4), id desc`
+  )).rows as any[];
+  if (!cycles.length) return {};
+  const market = await marketOfCode();
+  const out: Record<string, RosterCoverage> = {};
+  for (const c of cycles) {
+    const people = await loadSnapshotPeople(c.staffing_snapshot_id);
+    const homes = homeRegionsOf(people, market);
+    const latest = await latestIterByRegion(c.id);
+    const codes: Record<string, { draft: boolean }> = {};
+    for (const p of people) {
+      const home = homes.get(p.key) || '';
+      const draft = !latest.get(home)?.finalized;
+      for (const a of p.allocations || []) {
+        if (!a.code || !a.pct) continue;
+        codes[a.code] = { draft: (codes[a.code]?.draft || false) || draft };
+      }
+    }
+    out[String(c.effective).slice(0, 4)] = { label: c.label, effective: c.effective, codes };
+  }
+  return out;
 }

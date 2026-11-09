@@ -1,4 +1,4 @@
-import { rosterWagesFor, type RosterLink } from './payroll-data.js';
+import { rosterWagesFor, rosterCoverage, type RosterLink } from './payroll-data.js';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import multer from 'multer';
 import { query, tx } from './db.js';
@@ -128,6 +128,8 @@ router.get('/state', h(async (_req, res) => {
     coa, portfolios: portfolios.rows, properties: properties.rows,
     budgets: budgets.rows, uwSnapshots: uws.rows, compSets: comps.rows,
     t12Snapshots: t12s.rows, payrollModels: payrolls.rows, rentSnapshots: rents.rows,
+    // which properties the Pay-rates tab feeds, per budget year (codes + draft flags only) — the dashboard's Payroll wages item
+    rosterYears: await rosterCoverage().catch(() => ({})),
     stmtSnapshots: stmts.rows, templates: templates.rows,
     curves: CURVES,   // named seasonal shapes (Jan-Dec weights) for client-side spread tools
   });
@@ -838,7 +840,7 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   let lines: BudgetLine[];
   if (lb.annual) {
     // ANNUAL: the property's own statements + the Yardi template rules (shared/annual.ts)
-    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: loadAnnualRules(), comps: lb.comps, payrollWages: wages, wagesLive: live ? { label: live.label, effective: live.effective, draft: live.draft } : null, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code };
+    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: loadAnnualRules(), comps: lb.comps, payrollWages: wages, wagesLive: live ? { label: live.label, effective: live.effective, draft: live.draft, monthly: live.monthly as Record<string, Months> } : null, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code };
     lines = existing ? regenerateAnnual(existing, lb.coa, inputs, src) : generateAnnualLines(lb.coa, inputs, src);
   } else {
     lines = existing
