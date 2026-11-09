@@ -147,6 +147,9 @@ tr.sp td.code, tr.sp td.name { color: var(--drv-sp-ink); }
 .drv { border: 1px solid var(--line); border-radius: 5px; font-size: 9.5px; font-weight: 700; letter-spacing: .3px; padding: 1px 5px; min-width: 38px; text-align: center; }
 input.fxp { width: 42px; margin-left: 3px; border: 1px solid var(--line); border-radius: 4px; padding: 1px 3px; font-size: 10.5px; text-align: right; color: var(--dim); background: var(--input); }
 .rnd { font-size: 9px; color: var(--warn); margin-left: 3px; font-weight: 700; }
+/* short caption before each inline formula box when a formula has several (renew · burn·renew · burn·move-in) */
+.fxl { font-size: 9px; color: var(--dim); margin-left: 5px; letter-spacing: .2px; }
+input.fxp[data-k="loan"], input.fxp[data-k="startMonthly"] { width: 64px; }
 input.fxp:focus { border-color: var(--accent); color: var(--ink); outline: none; }
 .drv.drv-rr { background: var(--drv-rr); color: var(--drv-rr-ink); }
 .drv.drv-uw { background: var(--drv-uw); color: var(--drv-uw-ink); }

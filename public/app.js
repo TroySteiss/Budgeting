@@ -45,7 +45,11 @@ function drvMetaBase(l) {
     case 't3avg': return { cls: 'drv-comp', tag: 'T3', label: `T3 avg of ${l.driver.srcName || 'this GL'} × ${(((l.driver || {}).pct || 0)).toFixed(1)}% → MROUND $250` };
     case 'wavg': return { cls: l.driver.srcType === 'seller' ? 'drv-t12' : 'drv-comp', tag: 'WAVG', label: `1-2-1 weighted distribution of ${l.driver.srcName || ''} × ${((l.driver.pct || 0)).toFixed(1)}%${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
     case 'gpr': return { cls: 'drv-rr', tag: 'RR', label: `GPR — steps: ${gprStepsSummary(((S.bv && S.bv.budget && S.bv.budget.inputs) || {}).gpr ? S.bv.budget.inputs.gpr.growthPct : null)}` };
-    case 'ltl': return { cls: 'drv-rr', tag: 'LTL', label: 'Rent roll — lease burnoff' };
+    case 'ltl': {
+      const lt = (S.bv && S.bv.budget && S.bv.budget.inputs && S.bv.budget.inputs.ltl) || {};
+      const how = lt.mode === 'flat' ? 'held flat (no burnoff)' : lt.mode === 'ramp' ? 'ramp to a % of GPR' : (S.bv && S.bv.leaseCount) ? 'per-lease burnoff at each turnover' : 'burnoff on lease expirations';
+      return { cls: 'drv-rr', tag: 'LTL', label: `Loss to lease — ${how}${lt.followGpr !== false && lt.mode !== 'ramp' ? ', deepens with GPR growth' : ''} · renewal %, burnoff on renewal / move-in are the boxes to the right (method + "follows GPR" under Assumptions)` };
+    }
     case 'vacancy': return { cls: 'drv-rr', tag: '%GPR', label: '% of GPR' };
     case 'catShare': return { cls: 'drv-uw', tag: 'UW', label: `UW category ${l.driver.pcode} share` };
     case 'perUnitComp': return { cls: 'drv-comp', tag: 'MINOT', label: `Minot $${l.driver.perUnit}/unit × units` };
@@ -1192,11 +1196,13 @@ function renderEditor(el) {
     const gl = box.dataset.fxp;
     const line = S.bv.lines.find((l) => l.gl_code === gl);
     const prm = paramFor(gl, line, S.bv.budget.inputs || {});
-    if (!prm) return;
-    const v = parseFloat(String(box.value).replace(/,/g, ''));
+    // a formula with several inputs renders one box per input (data-k picks it)
+    const p = prm && prm.multi ? prm.multi.find((x) => x.k === box.dataset.k) : prm;
+    if (!p) return;
+    const v = parseFloat(String(box.value).replace(/[$,%\s]/g, ''));
     if (!Number.isFinite(v)) return;
     pushUndo();
-    S.bv = await PUT(`/budgets/${b.id}`, { inputs: prm.patch(v) });
+    S.bv = await PUT(`/budgets/${b.id}`, { inputs: p.patch(v) });
     render();
   }));
   // annual growth targets: typing saves the target; "tie" applies it
@@ -1367,7 +1373,7 @@ function gridHtml(bv, totals) {
     rows.push(`<tr${trCls ? ` class="${trCls}"` : ''}>
       <td class="code">${a.code}</td>
       <td class="name${histFor(a.code).length ? ' hashist' : ''}" ${histFor(a.code).length ? `data-hist="${a.code}"` : ''} title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}${histFor(a.code).length ? ' — click for the prior T12 / CY budget by month' : ''}">${histFor(a.code).length ? `<span class="hx">${histOpen(a.code) ? '▾' : '▸'}</span>` : ''}${esc(a.name)}${smell ? ` <span class="warnflag" title="Seller billing looks NON-ACCRUAL: ${esc(smell.join('; '))}. Likely bad bills — review, or smooth via WAVG / flat / Minot seasonal.">⚠</span>` : ''}${a.active === false ? ' <span class="badge" title="Deactivated GL still carrying dollars — Recalc zeroes it">inactive — recalc to zero</span>' : ''}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
-      ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? (prm.steps ? `<button class="fxp fxp-steps" data-steps="${a.code}" title="${esc(prm.label)} — click to place increases in specific months">${esc(prm.value)}</button>` : `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">`) : ''}</td>` : ''}
+      ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? (prm.steps ? `<button class="fxp fxp-steps" data-steps="${a.code}" title="${esc(prm.label)} — click to place increases in specific months">${esc(prm.value)}</button>` : (prm.multi || [prm]).map((p) => `${p.short ? `<span class="fxl">${esc(p.short)}</span>` : ''}<input class="fxp" data-fxp="${a.code}"${p.k ? ` data-k="${p.k}"` : ''} value="${p.value}" title="${esc(p.label)} — Enter applies & regenerates">`).join('')) : ''}</td>` : ''}
       ${monthIdx.map((i) => `<td class="m ${actIdx.has(i) ? 'drv-act' : sp ? '' : dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money2(m[i]) : ''}"></td>`).join('')}
       ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}"><input data-ann="${a.code}" value="${ann ? money2(ann) : ''}" title="${bv.annual ? bv.budget.year : 'Year 1'} total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
       ${refCells(a.code, 'detail')}
@@ -1516,14 +1522,35 @@ function paramFor(gl, line, inp) {
     return { label: '$ per move-in', value: line.driver.amount || 0, patch: (v) => ({ turnFees: { ...(inp.turnFees || {}), [gl]: v } }) };
   }
   if (m === 'corpRate') {
-    return { label: '$/unit/yr', value: line.driver.perUnitYr || 0, patch: (v) => ({ corpRates: { ...(inp.corpRates || {}), [gl]: { perUnitYr: v, flatMo: line.driver.flatMo || 0 } } }) };
+    const cur = { perUnitYr: line.driver.perUnitYr || 0, flatMo: line.driver.flatMo || 0 };
+    const rate = (k) => (v) => ({ corpRates: { ...(inp.corpRates || {}), [gl]: { ...cur, [k]: v } } });
+    return { multi: [
+      { k: 'perUnitYr', short: '$/unit/yr', label: 'Corporate rate — $ per unit per year', value: cur.perUnitYr, patch: rate('perUnitYr') },
+      { k: 'flatMo', short: '$/mo', label: 'Corporate rate — flat $ per month on top', value: cur.flatMo, patch: rate('flatMo') },
+    ] };
   }
   if (gl === '4994' && m === 'gpr') {
     const g = (inp.gpr || {}).growthPct || [];
     return { label: 'GPR % increases by month', value: gprStepsSummary(g), steps: true };
   }
   if (gl === '5003' && m === 'ltl') {
-    return { label: 'renewal %', value: pct((inp.ltl || {}).renewalPct ?? 0.7), patch: (v) => ({ ltl: { ...(inp.ltl || {}), renewalPct: v / 100 } }) };
+    // every LTL input on the row (Troy 2026-11-09: no trip to Assumptions when a formula has several)
+    const lt = inp.ltl || {};
+    const ltlPatch = (k, scale) => (v) => ({ ltl: { ...lt, [k]: scale ? v / scale : v } });
+    if (lt.mode === 'flat') return { multi: [
+      { k: 'startMonthly', short: 'start $/mo', label: 'Loss to lease held flat — start $/mo (negative; 0 = rent roll gap / last actual month)', value: lt.startMonthly ?? 0, patch: ltlPatch('startMonthly') },
+    ] };
+    if (lt.mode === 'ramp') return { multi: [
+      { k: 'startMonthly', short: 'start $/mo', label: 'Ramp start $/mo (negative)', value: lt.startMonthly ?? 0, patch: ltlPatch('startMonthly') },
+      { k: 'targetPct', short: 'target %', label: 'Ramp target — % of GPR', value: pct(lt.targetPct ?? 0), patch: ltlPatch('targetPct', 100) },
+      { k: 'rampMonths', short: 'months', label: 'Ramp length in months', value: lt.rampMonths ?? 12, patch: ltlPatch('rampMonths') },
+    ] };
+    const annual = S.bv && S.bv.annual;
+    return { multi: [
+      { k: 'renewalPct', short: 'renew', label: 'Renewal % — share of expiring leases that renew (the rest turn over)', value: pct(lt.renewalPct ?? (annual ? 0.65 : 0.7)), patch: ltlPatch('renewalPct', 100) },
+      { k: 'burnoffRenew', short: 'burn·renew', label: 'LTL burnoff on a RENEWAL — % of that lease\'s gap closed at renewal', value: pct(lt.burnoffRenew ?? (annual ? 0.75 : 0.5)), patch: ltlPatch('burnoffRenew', 100) },
+      { k: 'burnoffNew', short: 'burn·move-in', label: 'LTL burnoff on a MOVE-IN — % of the gap closed when the unit turns', value: pct(lt.burnoffNew ?? 1), patch: ltlPatch('burnoffNew', 100) },
+    ] };
   }
   if (gl === '5031' && m === 'vacancy') {
     const vac = inp.vacancyPct || [];
@@ -1549,7 +1576,10 @@ function paramFor(gl, line, inp) {
     return { label: 'rental loss % of GPR (total)', value: pct(inp.rentalLossPct || 0), patch: (v) => ({ rentalLossPct: v / 100 }) };
   }
   if (m === 'interest') {
-    return { label: 'rate %', value: pct(inp.rate || 0), patch: (v) => ({ rate: v / 100 }) };
+    return { multi: [
+      { k: 'loan', short: 'loan $', label: 'Loan balance — interest = loan × rate ÷ 360 × days', value: inp.loan || 0, patch: (v) => ({ loan: v }) },
+      { k: 'rate', short: 'rate %', label: 'Interest rate %', value: pct(inp.rate || 0), patch: (v) => ({ rate: v / 100 }) },
+    ] };
   }
   return null;
 }
