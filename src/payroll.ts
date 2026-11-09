@@ -14,6 +14,7 @@ import { requireAuth, requireAdmin, isAdminUser, canSeeRmPay, normUser } from '.
 import { parseStaffingReport, parsePayrollModel, parsePayrollDetail } from './importers.js';
 import { loadBudget, buildLines, saveLines } from './routes.js';
 import { maskPeople, hiddenAggregates, annualWagesByGl, seatMonthly, homeRegionsOf, applyStaffingDetail, normalizePayBasis, normalizeRmCorporateShare, type StaffingPerson, type RaiseMap, type DetailPerson } from '../shared/payroll.js';
+import { loadSnapshotPeople, regionOf, marketOfCode, latestIterByRegion } from './payroll-data.js';
 import { buildRaiseWorkbook, parseRaiseImport, type RaiseExportRow, type RaiseSheetSpec } from './payroll-xlsx.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -152,41 +153,6 @@ payrollRouter.post('/staffing', requireAdmin, upload.array('files', 4), h(async 
 }));
 
 /* ---------------- cycles ---------------- */
-async function loadSnapshotPeople(snapshotId: number): Promise<StaffingPerson[]> {
-  const r = (await query('select data from staffing_snapshots where id=$1', [snapshotId])).rows[0];
-  const people = ((r?.data?.people as StaffingPerson[]) || []).map((p) => ({ ...p }));
-  // enforce the rules on READ (all PMs are Salary; MI covers 30% of every
-  // RM's pay — Troy 2026-11-02), so rule fixes reach snapshots that are
-  // already loaded without any re-upload
-  normalizePayBasis(people);
-  normalizeRmCorporateShare(people);
-  return people;
-}
-const regionOf = (p: { market?: string }): string => String(p.market || '').trim() || 'Other';
-
-/** code → region lookup over EVERY property (home regions must be stable,
-    never viewer-scoped). */
-async function marketOfCode(): Promise<(code: string) => string | null> {
-  const m = new Map((await query('select code, market from properties')).rows.map((p: any) => [p.code, regionOf(p)]));
-  return (code: string) => m.get(code) || null;
-}
-
-/** Each region's LATEST iteration of a cycle, with its raise entries — what a
-    foreign-home person's raise reads as from any other region's view. */
-async function latestIterByRegion(cycleId: number): Promise<Map<string, { id: number; num: number; finalized: boolean; entries: Record<string, number> }>> {
-  const iters = (await query('select id, region, num, finalized_at from raise_iterations where cycle_id=$1 order by region, num', [cycleId])).rows as any[];
-  const latest = new Map<string, { id: number; num: number; finalized: boolean; entries: Record<string, number> }>();
-  for (const it of iters) latest.set(it.region, { id: it.id, num: it.num, finalized: !!it.finalized_at, entries: {} });
-  const ids = [...latest.values()].map((x) => x.id);
-  if (ids.length) {
-    const byId = new Map([...latest.values()].map((x) => [x.id, x]));
-    for (const e of (await query('select iteration_id, person_key, raise_pct from raise_entries where iteration_id = any($1)', [ids])).rows) {
-      const t = byId.get(e.iteration_id);
-      if (t) t.entries[e.person_key] = Number(e.raise_pct);
-    }
-  }
-  return latest;
-}
 
 payrollRouter.post('/cycles', requireAdmin, h(async (req, res) => {
   const { label, effective, staffingSnapshotId } = req.body || {};

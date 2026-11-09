@@ -97,6 +97,8 @@ export interface BudgetInputs {
   /** wages came from the Pay-rates roster apply: each person's raise is already
       prorated from its effective month, so the engine adds NO March step. */
   wagesFromRoster?: boolean;
+  /** annual budgets: 'payroll' (default) = wages follow the Pay-rates tab's roster + raise entries whenever a cycle is effective in the budget year; 'manual' = never (payroll model / own trailing-12 x raise %) */
+  wageSource?: 'payroll' | 'manual';
   /** which historical % of wages sizes every non-wage payroll line (taxes,
       benefits, bonus, OT …): the trailing-12 actual ratio (default), the
       current-year budget ratio, or the average of the two. */

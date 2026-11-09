@@ -2,7 +2,7 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-11-09 — editor view pass (quarterly % rows on totals, trend chart axis fitted to the data instead of zero, T3-annualized reference column after the T12 in the grid and the compare card, whole-dollar cell display); flat-fee utility billing (reimbursement income = last actual month × budgeted occupancy, `utilities.billing`), Enter on an assumption box moves to the next row; payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
+> Last updated: 2026-11-09 — annual budgets take wages from the Payroll tab by default (roster + raise entries, drafts included; `src/payroll-data.ts`, `inputs.wageSource`); 6310 corporate rate follows the budget year (2027 workbook rev2: $58.17/unit/yr + $513/mo), Minot sites are subjects with the role editable in Settings; editor view pass (quarterly % rows on totals, trend chart axis fitted to the data instead of zero, T3-annualized reference column after the T12 in the grid and the compare card, whole-dollar cell display); flat-fee utility billing (reimbursement income = last actual month × budgeted occupancy, `utilities.billing`), Enter on an assumption box moves to the next row; payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
 > Earlier: 2026-09-10 — actualized months (partial-month rule; section above Exports); 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
 > w/ per-unit basis + ND payroll model).
 
@@ -514,6 +514,12 @@ category % boxes hop the same way.
   (0-unit commercial) stays a comp. Admins change a role under Settings → Properties (select,
   saves on pick via POST /properties). Keep migration files ASCII: the local dev database is
   WIN1252 and rejects other characters.
+- **Corporate rates by year** (`corpRatesFor(year)`, shared/annual.ts; client mirror `corpDefaults`
+  in app.js — keep in step): the 2026 constants (`CORP_RATES`) plus `CORP_RATES_2027` from 2027
+  on. 6310 = $58.17/unit/yr + $513/mo per the Payroll Budget Workbook 2027 rev2 (6451 folded
+  in); 2026 budgets keep $43.14 + $483. A rate typed on a budget (`inputs.corpRates`) still wins.
+  The Assumptions dialog no longer saves a box left at the year's default (it used to pin every
+  default onto the budget); migration 011 strips the pinned 2026 6310 default from 2027+ budgets.
 - **Whole dollars**: month cells and the year-total box DISPLAY rounded dollars; stored months keep
   cents (CSV / workbook unchanged). Display never writes: only a typed change dirties a row, so
   nothing gets overridden or locked by the rounding.
@@ -534,6 +540,38 @@ a reference row under every payroll GL the sheet carries (zeros included), two r
 **6470 TOTAL PAYROLL EXPENSE** (template by month, Δ budget − template with %), and a toolbar
 chip "payroll template Δ" that unfolds the payroll GLs. The budget is never changed by it.
 `TEMPLATE_2027_REVIEW.md` §2 documents how the workbook builds each GL.
+
+## Wages follow the Payroll tab by default (Troy 2026-11-09)
+
+"Payroll wages should be coming off of the Payroll tab, with the raise % tied to the payroll
+sheet by default." Before this, roster wages reached a budget ONLY through the admin Apply on a
+finalized iteration; everything else ran on own trailing-12 wages × a flat 3.5% from March.
+
+- `src/payroll-data.ts` (new; holds the loaders moved out of payroll.ts — `loadSnapshotPeople`,
+  `regionOf`, `marketOfCode`, `latestIterByRegion` — so routes.ts and payroll.ts share them
+  without importing each other). `rosterWagesFor(code, year)` → `RosterLink | null`: the latest
+  raise cycle whose `effective` falls in the budget year, its staffing snapshot, and each
+  person's raise from their HOME region's latest iteration — **drafts included** (Troy's call) —
+  through `annualWagesByGl` (prorated from the effective month). Returns only wages by wage GL
+  (all four present, 0 where the roster books nothing) + cycle label / effective / `draft` /
+  per-region iteration state. Null when no cycle is effective that year or nobody is booked to
+  the property → the budget falls back to the payroll model / own T12 × `payrollRaisePct`.
+- `loadBudget` sets `lb.rosterLink` for every annual budget; `buildLines` uses it unless
+  `inputs.wageSource === 'manual'` (decided from the inputs it is GIVEN). Live roster wages
+  replace the payroll model and supersede an applied snapshot in `inputs.wages`
+  (`wagesFromRoster`); a wage typed on the budget (inputs.wages without that flag) still wins.
+  Nothing is written by the link — stored lines move on the next regenerate / Recalc.
+- Engine (`AnnualSources.wagesLive`): roster wages get no March step and ignore
+  `payrollRaisePct`; driver `{ method: 'payrollModel', roster, live, cycle, effective, draft }`
+  (chip PAY, or PAY·draft while a feeding region is un-finalized). A wage GL the roster reports
+  as 0 is a SET zero, so the trailing-12 fallback cannot refill it (this also closes that gap
+  for the older Apply path).
+- Client: Assumptions → "Wages come from" (`#in-wagesrc`: Payroll tab default / own history),
+  with the cycle and each region's iteration state; the raise % box is labelled as the fallback.
+  `budgetView.rosterLink`. Acquisition budgets are unchanged (payroll model). The Apply button
+  still works but is no longer needed for wages to flow. Known gap: the dashboard's "Payroll
+  wages" report pill still keys off Apply / a payroll model, so a live-linked budget can read
+  "recommended missing".
 
 ## Payroll flow into the budget worksheet (Troy 2026-11-03)
 

@@ -1,3 +1,4 @@
+import { rosterWagesFor, type RosterLink } from './payroll-data.js';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import multer from 'multer';
 import { query, tx } from './db.js';
@@ -418,6 +419,8 @@ interface LoadedBudget {
   /** the tie-out reference (trailing-12 / CY budget / typed targets) — the annual budget's "UW" */
   ref: UwSnapshotData | null; refLabel: string;
   refs: RefCol[];
+  /** the Pay-rates roster wages for this property + year (annual budgets) — the default wage source unless inputs.wageSource is 'manual' */
+  rosterLink: RosterLink | null;
   /** the latest Payroll Budget Workbook sheet for this property + year (stmt kind 'payroll_template') — a reference, never an input */
   payrollTpl: { id: number; label: string; period: string; total: number; cal: Record<string, Months> } | null;
 }
@@ -516,6 +519,11 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   let lastMonth = 10, ref: UwSnapshotData | null = null, refLabel = 'UW';
   let t12Missing: string[] = [], t12Dead: string[] = [], t12Live = 12;
   let payrollTpl: LoadedBudget['payrollTpl'] = null;
+  // the default wage source for an annual budget: the Pay-rates tab's roster + raise entries
+  // (Troy 2026-11-09). Aggregates by wage GL only; null = no cycle for the year / nobody booked here.
+  // Always loaded for an annual budget; buildLines decides from the inputs it is GIVEN whether the
+  // budget follows it (inputs.wageSource), so switching the source in one save works both ways.
+  const rosterLink = annual ? await rosterWagesFor(String(budget.property_code), Number(budget.year)) : null;
   const refs: RefCol[] = [];
   if (annual) {
     const stmtRows = await query('select id, kind, period, data from stmt_snapshots where id = any($1)', [[budget.py_stmt_id, budget.cy_budget_stmt_id].filter(Boolean)]);
@@ -582,7 +590,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
       }));
     }
   }
-  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, savePoints, payrollTpl,
+  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, savePoints, payrollTpl, rosterLink,
            annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, ref, refLabel, refs };
 }
 
@@ -660,6 +668,8 @@ function budgetView(lb: LoadedBudget) {
     compUnits: lb.comps?.units || null,
     compShapes: lb.comps?.glShapes || null,
     payrollWages: lb.payrollWages,
+    // where the wages come from: the Pay-rates link (cycle, draft / finalized by region) or null
+    rosterLink: lb.rosterLink ? { label: lb.rosterLink.label, effective: lb.rosterLink.effective, draft: lb.rosterLink.draft, regions: lb.rosterLink.regions, wages: lb.rosterLink.wages } : null,
     leaseCount: lb.leases?.length || 0,
     rollAsOf: lb.rollAsOf,
     hasSellerUtil: !!(lb.sellerUtil && lb.sellerUtil.length),
@@ -818,11 +828,17 @@ function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[], inputs?: Bu
 /** Full generation pipeline: ownership-year plan (UW Year 1) → income tie
     (LTL) → NOI tie (flex). The whole 12-month window ties to UW Y1 in full. */
 export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLine[]): { lines: BudgetLine[] } {
-  const wages = effectiveWages(lb.payrollWages, inputs.wages);
+  // Wages: the live Pay-rates roster when the budget follows it (the annual default) — it
+  // replaces the payroll model, and supersedes a snapshot an earlier Apply left in
+  // inputs.wages (wagesFromRoster); a wage typed on the budget itself still wins.
+  const live = lb.annual && inputs.wageSource !== 'manual' ? lb.rosterLink : null;
+  const wages = live
+    ? effectiveWages(live.wages, inputs.wagesFromRoster === true ? null : inputs.wages)
+    : effectiveWages(lb.payrollWages, inputs.wages);
   let lines: BudgetLine[];
   if (lb.annual) {
     // ANNUAL: the property's own statements + the Yardi template rules (shared/annual.ts)
-    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: loadAnnualRules(), comps: lb.comps, payrollWages: wages, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code };
+    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: loadAnnualRules(), comps: lb.comps, payrollWages: wages, wagesLive: live ? { label: live.label, effective: live.effective, draft: live.draft } : null, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code };
     lines = existing ? regenerateAnnual(existing, lb.coa, inputs, src) : generateAnnualLines(lb.coa, inputs, src);
   } else {
     lines = existing
