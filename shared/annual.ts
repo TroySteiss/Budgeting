@@ -266,6 +266,10 @@ export const LAST_MONTH_FLAT_GLS = new Set(['4995', '4996', '5018', '5020', '502
     total ÷ 12, no $1,000 threshold; the RMC's typed annual (rule `fixedAnnual`) is a
     property decision, so it lands here too. */
 export const FIXED_ANNUAL_GLS = new Set(['6116']);
+/** Payroll lines that are NOT a % of wages: the last actual month carried flat
+    (Troy 2026-11-09: employee rent is what it is, not a ratio). A row's shape
+    menu can do the same for any other payroll line. */
+export const BURDEN_LAST_GLS = new Set(['6413']);
 /** A `last`-shape line whose last actual month is this far off its trailing-12 average
     gets `driver.lastDev` so the chip can warn (one odd month is setting the year). */
 export const LAST_DEV_WARN = 0.25;
@@ -679,21 +683,25 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
      raise step) when a model is linked, else own trailing-12 × (1 + raise).
      Roster wages (the Pay-rates apply) already carry each person's raise
      prorated from its effective month, so they get NO second step.
-     Every other payroll line = a historical % of wages × the budgeted wages,
-     flat — the trailing-12 actual ratio, the CY budget ratio, or the average
-     of the two (inputs.burdenBasis; Troy 2026-11-03 "a % of wages pulled from
-     a mix of historicals") — so a change to wages (model, raise, or a
-     hand-typed wage line) moves taxes / benefits / bonus / OT with it ---- */
+     Every other payroll line = a historical % of wages × EACH MONTH's budgeted
+     wages (Troy 2026-11-09: the ratio is monthly, not an annual total spread
+     flat — so the lines step with the March raise) — the trailing-12 actual
+     ratio, the CY budget ratio, or the average of the two (inputs.burdenBasis;
+     Troy 2026-11-03 "a % of wages pulled from a mix of historicals") — so a
+     change to wages (model, raise, or a hand-typed wage line) moves taxes /
+     benefits / bonus / OT with it. Lines that aren't a function of wages
+     (BURDEN_LAST_GLS, or a shape picked on the row) carry their own history. ---- */
   const wages = src.payrollWages;      // model wages, with hand-overridden wage lines folded in (overriddenWages)
   const rosterWages = inputs.wagesFromRoster === true;
   const raise = 1 + (inputs.payrollRaisePct ?? 0.035);
   const iMarch = (3 - startMonth + 12) % 12;
-  let wagesTotal = 0;
+  const wagesMonthly = zero12();
+  const addWages = (m: Months) => { for (let i = 0; i < 12; i++) wagesMonthly[i] = r2(wagesMonthly[i] + m[i]); };
   if (wages) {
     for (const [gl, annual] of Object.entries(wages)) {
       if (!annual || !coaByCode.has(gl)) continue;
       const months = spreadMonthly(r2(annual), CURVES.flat).map((v, i) => (!rosterWages && i >= iMarch ? r2(v * raise) : v)) as Months;
-      wagesTotal = r2(wagesTotal + sum(months));
+      addWages(months);
       mk(gl, months, { method: 'payrollModel', ...(rosterWages ? { roster: true } : {}) } as any);
     }
   }
@@ -701,8 +709,9 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     // wage GLs the model doesn't carry: own trailing-12 ÷ 12 flat × (1 + raise)
     const a = coaByCode.get(gl);
     if (!a || isSet(gl)) continue;
-    if (baseline(a, 'flat', bl.glGrowth?.[gl] ?? (raise - 1))) wagesTotal = r2(wagesTotal + sum(lines.get(gl)!.months));
+    if (baseline(a, 'flat', bl.glGrowth?.[gl] ?? (raise - 1))) addWages(lines.get(gl)!.months);
   }
+  const wagesTotal = sum(wagesMonthly);
   const burdenBasis: 't12' | 'budget' | 'mix' = inputs.burdenBasis || 't12';
   const ratioIn = (cal: Record<string, Months> | null | undefined, gl: string): number | null => {
     if (!cal) return null;
@@ -713,13 +722,17 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   const r5 = (v: number) => Math.round(v * 100000) / 100000;
   for (const a of detail) {
     if (a.pcode !== '10' || WAGE_GLS.includes(a.code) || isSet(a.code)) continue;
+    // not a % of wages: employee rent carries its last actual month flat (no
+    // raise on it), and any payroll line whose row menu picked a shape keeps it
+    const ownShape = bl.glShape?.[a.code] ?? (BURDEN_LAST_GLS.has(a.code) ? 'last' : undefined);
+    if (ownShape && baseline(a, ownShape, bl.glGrowth?.[a.code] ?? (BURDEN_LAST_GLS.has(a.code) ? 0 : raise - 1))) continue;
     const t12Ratio = ratioIn(src.actual, a.code);
     const budgetRatio = ratioIn(src.budget, a.code);
     const ratio = burdenBasis === 'budget' ? (budgetRatio ?? t12Ratio)
       : burdenBasis === 'mix' ? (t12Ratio != null && budgetRatio != null ? (t12Ratio + budgetRatio) / 2 : (t12Ratio ?? budgetRatio))
       : (t12Ratio ?? budgetRatio);
     if (ratio != null && wagesTotal > 0) {
-      mk(a.code, spreadMonthly(r2(ratio * wagesTotal), CURVES.flat), {
+      mk(a.code, wagesMonthly.map((w) => r2(ratio * w)) as Months, {
         method: 'burdenRatio', ratio: r5(ratio), basis: burdenBasis,
         ...(t12Ratio != null ? { t12Ratio: r5(t12Ratio) } : {}), ...(budgetRatio != null ? { budgetRatio: r5(budgetRatio) } : {}),
       } as any);

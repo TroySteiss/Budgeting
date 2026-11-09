@@ -2,7 +2,7 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-11-09 — multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
+> Last updated: 2026-11-09 — payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
 > Earlier: 2026-09-10 — actualized months (partial-month rule; section above Exports); 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
 > w/ per-unit basis + ND payroll model).
 
@@ -484,7 +484,11 @@ and its Summary tab. Nothing from that workbook's roster is read — only its la
   the engine adds NO March step, because `annualWagesByGl` already prorates each person's
   raise from its effective month (before this it double-raised: roster raise + 3.5% in
   March). Every other payroll GL (taxes, WC, 401k, medical, bonus, commissions, OT, …) =
-  ratio × budgeted wages, flat; the ratio comes from `inputs.burdenBasis`: `'t12'` (default,
+  ratio × EACH MONTH's budgeted wages (2026-11-09, Troy: "monthly, not annualized" — the
+  lines step with the March raise instead of spreading an annual total flat). Lines that are
+  not a function of wages skip the ratio: `BURDEN_LAST_GLS` (6413 employee rent → last actual
+  month flat, no raise) and any payroll GL whose row shape menu set `baseline.glShape`.
+  The ratio comes from `inputs.burdenBasis`: `'t12'` (default,
   T12 actual % of wages), `'budget'` (CY budget % of wages) or `'mix'` (average of the two,
   falling back to whichever side exists). Driver: `{ method: 'burdenRatio', ratio, basis,
   t12Ratio, budgetRatio }`. Settings dialog: "Other payroll lines … = % of wages from".

@@ -38,6 +38,7 @@ function synthetic(): Record<string, Months> {
     '6702': cal(Array(12).fill(50)),
     '6402': cal(Array(12).fill(2000)),
     '6418': cal(Array(12).fill(200)),
+    '6413': cal([600, 600, 600, 600, 600, 600, 600, 600, 600, 650, 650, 650]),   // employee rent: Oct = 650
     '6112': cal(Array(12).fill(400)),
     '7300': cal(Array(12).fill(1500)),
     '7321': cal(Array(12).fill(5000)),      // special projects — never carried forward
@@ -142,21 +143,37 @@ describe('generateAnnualLines — template rules on own history', () => {
     expect(sum(L(lines, '7321').months)).toBe(0);
     expect(L(lines, '7300').months[0]).toBe(1500);
   });
-  it('payroll: wages flat × (1 + raise); burden = prior-year % of wages × budgeted wages, and it moves with wages', () => {
+  it('payroll: wages flat × (1 + raise); burden = prior-year % of wages × each month of wages, so it steps with the raise', () => {
     // no model: own T12 24,000 × 1.035 flat = 2,070/mo (never the lumpy same-month history)
     const w = L(lines, '6402');
     expect(w.months.every((v) => v === w.months[0])).toBe(true);
     expect(sum(w.months)).toBeCloseTo(24000 * 1.035, 0);
-    // 6418 was 10% of wages last year → 10% of this year's wages, flat
+    // 6418 was 10% of wages last year → 10% of each month's wages
     const b = L(lines, '6418');
     expect((b.driver as any).method).toBe('burdenRatio');
     expect((b.driver as any).ratio).toBeCloseTo(0.1, 5);
     expect(sum(b.months)).toBeCloseTo(0.1 * sum(w.months), 0);
-    expect(b.months.every((v) => Math.abs(v - b.months[0]) < 0.02)).toBe(true);
-    // a model (or a hand-typed wage line) changes wages → burden follows
+    b.months.forEach((v, i) => expect(v).toBeCloseTo(0.1 * w.months[i], 2));
+    // a model (or a hand-typed wage line) changes wages → burden follows, month by month:
+    // the model's March raise step shows in the burden too (Troy 2026-11-09: monthly, not annualized)
     const withModel = generateAnnualLines(coaList, inputs, { ...src, payrollWages: { '6402': 30000 } });
-    expect(sum(L(withModel, '6402').months)).toBeGreaterThan(30000);   // March raise
-    expect(sum(L(withModel, '6418').months)).toBeCloseTo(0.1 * sum(L(withModel, '6402').months), 0);
+    const mw = L(withModel, '6402').months, mb = L(withModel, '6418').months;
+    expect(sum(mw)).toBeGreaterThan(30000);   // March raise
+    expect(mw[2]).toBeGreaterThan(mw[1]);
+    mb.forEach((v, i) => expect(v).toBeCloseTo(0.1 * mw[i], 2));
+    expect(mb[2]).toBeGreaterThan(mb[1]);
+    expect(mb[0]).toBeCloseTo(0.1 * 2500, 2);
+  });
+  it('employee rent 6413 is not a % of wages: the last actual month carried flat, no raise', () => {
+    const e = L(lines, '6413');
+    expect((e.driver as any).method).toBe('baseline');
+    expect((e.driver as any).shape).toBe('last');
+    expect((e.driver as any).pct).toBe(0);
+    expect(e.months.every((v) => v === 650)).toBe(true);
+    // the row's shape menu can keep ANY payroll line off the ratio
+    const shaped = generateAnnualLines(coaList, { ...inputs, baseline: { ...inputs.baseline, glShape: { '6418': 'last' } } }, src);
+    expect((L(shaped, '6418').driver as any).method).toBe('baseline');
+    expect(L(shaped, '6418').months.every((v) => v === 207)).toBe(true);   // 200 × 1.035 raise default
   });
   it('loss to lease per lease: expired / MTM leases spread over the year, growth deepens only un-reset leases', () => {
     // 24 leases: 12 already expired (MTM), 12 expiring one per month; gap $100 each, market $1,000
