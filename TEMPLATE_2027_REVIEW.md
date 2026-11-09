@@ -52,7 +52,7 @@ move-outs, 2019–Aug 2026), *Financial Data* (payroll GL actuals + budget Sep-2
 | 6422 medical | Per-seat monthly benefits from HRIS × allocation (portfolio default per seat from the Tax Table) | Ratio | **Take.** The roster we already parse carries each person's monthly benefits. |
 | 6424 drug / background | 0.5 % of wages | Ratio | Same as taxes. |
 | 6450 allocations out | **Do not budget** (0) | Ratio of a negative T12 | **Take: zero.** |
-| 6310 corp alloc + consulting | Units × $43.14/yr ÷ 12 + $390 + $93, "do not change" | `CORP_RATES['6310']` identical | Matches (the paste table labels this row 6310, confirming the 6451 merge). |
+| 6310 corp alloc + consulting | **rev2 (2026-11-09 16:14):** Units × $58.17/yr ÷ 12 + $420 + $93 (6451 folded in "with the updated figures"; components 11.61 + 24.17 + 11.81 + 6.51 + 4.07). Earlier revisions: Units × $43.14/yr ÷ 12 + $390 + $93. "Do not change" | `corpRatesFor(year)`: 2027+ budgets use the rev2 figures (`CORP_RATES_2027`), 2026 budgets keep $43.14 + $483 | Matches rev2 from 2027 on. Migration 011 strips the old default where the Assumptions dialog had pinned it on a 2027+ budget; such a budget needs a Recalc to move. |
 
 ## 3. Importing the workbook
 

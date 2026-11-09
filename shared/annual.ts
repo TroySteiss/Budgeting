@@ -258,6 +258,17 @@ export const CORP_RATES: Record<string, { perUnitYr?: number; flatMo?: number; l
   '6320': { perUnitYr: 7.86, label: 'Legal department $7.86/unit/yr' },
   '6560': { perUnitYr: r2(18.87 + 5.89), label: 'Marketing salary allocations $24.76/unit/yr' },
 };
+/** 2027 changes to the corporate rates. Payroll Budget Workbook 2027 rev2 (Seth Russell,
+    2026-11-09): 6451 is folded into 6310 "with the updated figures" — the paste-table row is
+    units × (11.61 + 24.17 + 11.81 + 6.51 + 4.07) / 12 + 420 + 93. */
+export const CORP_RATES_2027: typeof CORP_RATES = {
+  '6310': { perUnitYr: r2(11.61 + 24.17 + 11.81 + 6.51 + 4.07), flatMo: 420 + 93, label: 'IT $420/mo + $93/mo + $58.17/unit/yr corporate allocations (2027 workbook rev2)' },
+};
+/** The corporate rates in force for a budget year: the 2026 constants, with the 2027
+    release's changes from 2027 on. Earlier budgets keep the rates they were built on. */
+export function corpRatesFor(year: number): typeof CORP_RATES {
+  return Number(year) >= 2027 ? { ...CORP_RATES, ...CORP_RATES_2027 } : { ...CORP_RATES };
+}
 /** "Default is October actuals": the last actual month, flat for 12. */
 export const LAST_MONTH_FLAT_GLS = new Set(['4995', '4996', '5018', '5020', '5021', '5023', '5024', '5025', '5028', '5032', '5033', '5034', '5040', '6104', '6601', '6602', '6616', '6617', '6618', '6619', '6630']);
 /** A known ANNUAL amount budgeted flat — real estate taxes. The template's "October
@@ -428,6 +439,9 @@ export interface AnnualSources {
   rules?: Record<string, AnnualRule> | null;
   comps?: CompWeights | null;
   payrollWages?: Record<string, number> | null;
+  /** set when `payrollWages` is the LIVE Pay-rates roster (the default wage source): the
+      wages already carry each person's raise prorated from the cycle's effective month */
+  wagesLive?: { label: string; effective: string; draft: boolean } | null;
   leases?: Lease[] | null;
   /** the rent roll's as-of date (ISO or M/D/YYYY): a lease ending between it and the
       budget start has already turned by month 0 (it is not month-to-month) */
@@ -659,7 +673,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   }
 
   /* ---- corporate rules ---- */
-  const corp = { ...CORP_RATES } as Record<string, { perUnitYr?: number; flatMo?: number }>;
+  const corp = corpRatesFor(inputs.year) as Record<string, { perUnitYr?: number; flatMo?: number }>;
   for (const [gl, v] of Object.entries(inputs.corpRates || {})) corp[gl] = v;
   if (units > 0) {
     for (const [gl, rate] of Object.entries(corp)) {
@@ -702,17 +716,28 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
      benefits / bonus / OT with it. Lines that aren't a function of wages
      (BURDEN_LAST_GLS, or a shape picked on the row) carry their own history. ---- */
   const wages = src.payrollWages;      // model wages, with hand-overridden wage lines folded in (overriddenWages)
-  const rosterWages = inputs.wagesFromRoster === true;
+  // Roster wages — the live Pay-rates link (the default, Troy 2026-11-09) or an applied
+  // snapshot — carry their own raises: no March step, and the generic raise % is not used.
+  const live = src.wagesLive || null;
+  const rosterWages = inputs.wagesFromRoster === true || !!live;
   const raise = 1 + (inputs.payrollRaisePct ?? 0.035);
   const iMarch = (3 - startMonth + 12) % 12;
   const wagesMonthly = zero12();
   const addWages = (m: Months) => { for (let i = 0; i < 12; i++) wagesMonthly[i] = r2(wagesMonthly[i] + m[i]); };
+  const rosterDriver = { method: 'payrollModel', ...(rosterWages ? { roster: true } : {}), ...(live ? { live: true, cycle: live.label, effective: live.effective, draft: live.draft } : {}) } as any;
   if (wages) {
     for (const [gl, annual] of Object.entries(wages)) {
-      if (!annual || !coaByCode.has(gl)) continue;
+      if (!coaByCode.has(gl)) continue;
+      if (!annual) {
+        // the roster is authoritative for every wage GL: one it books NOTHING to is a set
+        // zero, so the trailing-12 fallback below cannot refill it (rovers and grounds are
+        // booked to 6404 — a T12 6407 on top would count them twice)
+        if (rosterWages && WAGE_GLS.includes(gl) && annual === 0) mk(gl, zero12(), rosterDriver);
+        continue;
+      }
       const months = spreadMonthly(r2(annual), CURVES.flat).map((v, i) => (!rosterWages && i >= iMarch ? r2(v * raise) : v)) as Months;
       addWages(months);
-      mk(gl, months, { method: 'payrollModel', ...(rosterWages ? { roster: true } : {}) } as any);
+      mk(gl, months, rosterDriver);
     }
   }
   for (const gl of WAGE_GLS) {

@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, type TemplateData, type AnnualSources,
+  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor,gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, type TemplateData, type AnnualSources,
 } from '../shared/annual.js';
 import { sum, zero12, rollup, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
 import { parseYardiBudgetTemplate, parseRentRoll, parseMonarchStatement, detectUploadKind } from '../src/importers.js';
@@ -139,6 +139,13 @@ describe('generateAnnualLines — template rules on own history', () => {
     expect(L(lines, '6108').months[0]).toBe(Math.round((10 * 285) / 12 * 100) / 100);
     expect(L(lines, '6320').months[0]).toBe(Math.round((10 * 7.86) / 12 * 100) / 100);
     expect((L(lines, '6108').driver as any).method).toBe('corpRate');
+  });
+  it('6310 follows the budget year: units x 58.17 / 12 + 513 from 2027 (workbook rev2), the 2026 rate before; a typed rate wins', () => {
+    const u = Number(inputs.units);
+    const gen = (extra: Partial<typeof inputs>) => L(generateAnnualLines(coaList, { ...inputs, ...extra }, src), '6310').months[0];
+    expect(gen({ year: 2027 })).toBe(Math.round(((u * 58.17) / 12 + 513) * 100) / 100);
+    expect(gen({ year: 2026 })).toBe(Math.round(((u * 43.14) / 12 + 483) * 100) / 100);
+    expect(gen({ year: 2027, corpRates: { '6310': { perUnitYr: 50, flatMo: 500 } } })).toBe(Math.round(((u * 50) / 12 + 500) * 100) / 100);
   });
   it('special projects are never carried forward; interest falls back to history when no schedule / loan', () => {
     expect(sum(L(lines, '7321').months)).toBe(0);
@@ -523,6 +530,13 @@ describe('CORP_RATES', () => {
     expect(CORP_RATES['6310'].flatMo).toBe(483);
     expect(zero12().length).toBe(12);
   });
+  it('6310 takes the 2027 workbook rev2 figures from 2027 on; earlier years keep the 2026 rate', () => {
+    expect(corpRatesFor(2026)['6310']).toMatchObject({ perUnitYr: 43.14, flatMo: 483 });
+    expect(corpRatesFor(2027)['6310']).toMatchObject({ perUnitYr: 58.17, flatMo: 513 });
+    expect(corpRatesFor(2028)['6310'].perUnitYr).toBe(58.17);
+    // the other corporate rates are untouched by the 2027 release
+    for (const gl of ['6108', '6320', '6560']) expect(corpRatesFor(2027)[gl]).toEqual(CORP_RATES[gl]);
+  });
 });
 
 /* The Data page takes any file and guesses what it is — every fixture on disk
@@ -565,6 +579,31 @@ describe('payroll flow (Troy 2026-11-03): roster wages carry their raises; burde
     expect((w.driver as any).roster).toBe(true);
     // burden still follows the (un-stepped) wages
     expect(sum(L(roster, '6418').months)).toBeCloseTo(0.1 * 30000, 0);
+  });
+
+  it('LIVE Payroll-tab wages (the default source): no March step, no generic raise %, driver names the cycle and its draft state', () => {
+    const wagesLive = { label: 'FY27 raises', effective: '2027-01', draft: true };
+    // payrollRaisePct is set high on purpose: it must not touch roster wages
+    const ls = generateAnnualLines(coaList, { ...inputs, payrollRaisePct: 0.5 }, { ...src, payrollWages: { '6402': 30000 }, wagesLive });
+    const w = L(ls, '6402');
+    expect(w.months.every((v) => Math.abs(v - 2500) < 0.01)).toBe(true);
+    expect(w.driver).toMatchObject({ method: 'payrollModel', roster: true, live: true, cycle: 'FY27 raises', effective: '2027-01', draft: true });
+    expect(sum(L(ls, '6418').months)).toBeCloseTo(0.1 * 30000, 0);            // burden follows the roster wages
+    const fin = generateAnnualLines(coaList, inputs, { ...src, payrollWages: { '6402': 30000 }, wagesLive: { ...wagesLive, draft: false } });
+    expect((L(fin, '6402').driver as any).draft).toBe(false);
+  });
+
+  it('a wage GL the roster books NOTHING to is a set zero — the trailing-12 fallback cannot refill it', () => {
+    const a2 = { ...actual, '6407': cal(Array(12).fill(400)) };                 // rover wages in the history
+    const base = { ...src, actual: a2 };
+    // no roster: 6407 comes back from its own trailing-12
+    expect(sum(L(generateAnnualLines(coaList, inputs, base), '6407').months)).toBeGreaterThan(4800);
+    // roster books rovers to 6404 and reports 6407 = 0: it stays zero (no double count)
+    const ls = generateAnnualLines(coaList, inputs, { ...base, payrollWages: { '6402': 30000, '6404': 20000, '6407': 0 }, wagesLive: { label: 'c', effective: '2027-01', draft: false } });
+    expect(sum(L(ls, '6407').months)).toBe(0);
+    expect((L(ls, '6407').driver as any).roster).toBe(true);
+    // a plain payroll MODEL with a zero keeps the old behaviour (history fills the GL)
+    expect(sum(L(generateAnnualLines(coaList, inputs, { ...base, payrollWages: { '6402': 30000, '6407': 0 } }), '6407').months)).toBeGreaterThan(4800);
   });
 
   it('burden basis: T12 actual ratio (default), CY budget ratio, or the average of the two', () => {
