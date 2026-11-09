@@ -383,7 +383,11 @@ export function ltlMonths(
     leases as MTM, burning them off through the whole year). */
 export function ltlModel(
   leases: Lease[], year: number, startMonth: number,
-  opts: { renewalPct?: number; burnoffRenew?: number; burnoffNew?: number; asOf?: string | null } = {}
+  opts: { renewalPct?: number; burnoffRenew?: number; burnoffNew?: number; asOf?: string | null;
+    /** market-rent growth by month as a factor of month 0 (GPR[m] / GPR[0]); omitted = no growth.
+        Each lease's gap is measured against the GROWN market, and a reset burns its share of
+        that whole gap — so 0% burnoff keeps the gap, growth included (Troy 2026-11-09). */
+    growth?: number[] | null } = {}
 ): { months: Months; openMarket: Months; occupiedMarket: number } {
   const renewalPct = opts.renewalPct ?? 0.7;
   const keepRenew = 1 - (opts.burnoffRenew ?? 0.5);
@@ -398,8 +402,9 @@ export function ltlModel(
       else if (idx >= 0) expM = idx;
       else if (asOfKey != null && (dateKey(l.e) ?? -1) >= asOfKey) expM = 0;   // turned between the roll and the start
     }
-    return { m: l.m || 0, ltl: r2((l.m || 0) - (l.r || 0)), expM };  // positive = loss to lease
+    return { m: l.m || 0, r: l.r || 0, ltl: r2((l.m || 0) - (l.r || 0)), expM };  // ltl positive = loss to lease
   });
+  const g = (m: number): number => { const v = Number(opts.growth?.[m]); return Number.isFinite(v) && v > 0 ? v : 1; };
   // month-to-month / already-expired: one twelfth of them resets each month
   const mtm = items.filter((it) => it.expM < 0).sort((a, b) => b.ltl - a.ltl);
   mtm.forEach((it, i) => { it.expM = i % 12; });
@@ -407,12 +412,17 @@ export function ltlModel(
   const out = zero12();
   const open = zero12();
   for (let m = 0; m < 12; m++) {
+    // every lease's gap this month, against the market as it stands NOW: rent is fixed
+    // between resets, so market growth deepens the gap on every lease — reset or not
+    for (const it of items) it.ltl = r2(it.m * g(m) - it.r);
     const expiring = items.filter((it) => it.expM === m);
     if (expiring.length) {
       // largest LTL renews first
       expiring.sort((a, b) => b.ltl - a.ltl);
       const nRenew = Math.round(renewalPct * expiring.length);
-      expiring.forEach((it, i) => { it.ltl = r2(it.ltl * (i < nRenew ? keepRenew : keepNew)); });
+      // a reset burns its share of the WHOLE current gap (growth included) by re-pricing the
+      // rent: 0% burnoff leaves the rent — and so the gap — exactly where it was
+      expiring.forEach((it, i) => { it.ltl = r2(it.ltl * (i < nRenew ? keepRenew : keepNew)); it.r = it.m * g(m) - it.ltl; });
     }
     out[m] = r2(-items.reduce((a, it) => a + it.ltl, 0)) || 0;   // normalize -0
     open[m] = r2(items.reduce((a, it) => a + (it.expM > m ? it.m : 0), 0));

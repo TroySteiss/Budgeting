@@ -223,7 +223,7 @@ describe('generateAnnualLines — template rules on own history', () => {
     expect((L(shaped, '6418').driver as any).method).toBe('baseline');
     expect(L(shaped, '6418').months.every((v) => v === 207)).toBe(true);   // 200 × 1.035 raise default
   });
-  it('loss to lease per lease: expired / MTM leases spread over the year, growth deepens only un-reset leases', () => {
+  it('loss to lease per lease: expired / MTM leases spread over the year, market growth deepens every lease still below market', () => {
     // 24 leases: 12 already expired (MTM), 12 expiring one per month; gap $100 each, market $1,000
     const leases = [
       ...Array.from({ length: 12 }, () => ({ m: 1000, r: 900, e: '2025-06-01' })),
@@ -235,11 +235,28 @@ describe('generateAnnualLines — template rules on own history', () => {
     expect(l.months[0]).toBe(-2200);
     expect(l.months[11]).toBe(0);
     for (let i = 1; i < 12; i++) expect(l.months[i]).toBe(l.months[i - 1] + 200);
-    // with 12% GPR growth in month 2 and "follows GPR": the deepening is 12% of the
-    // OPEN leases' market (20 × 1,000 = 20,000 → 2,400), not 12% of the whole GPR
+    // with 12% GPR growth in month 2 and "follows GPR": every lease's gap is measured against the
+    // grown market ($1,120). The 20 not-yet-reset leases carry 100 + 120; the 2 that signed at
+    // $1,000 in January are now $120 under market too; February's 2 resets go to market.
     const grow = { ...noGrow, ltl: { ...noGrow.ltl, followGpr: true }, gpr: { ...inputs.gpr, growthPct: [0, 0.12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] as Months } };
     const l2 = L(generateAnnualLines(coaList, grow, { ...src, leases }), '5003');
-    expect(l2.months[1]).toBeCloseTo(-2000 - 2400, 0);
+    expect(l2.months[1]).toBeCloseTo(-(20 * 220) - (2 * 120), 0);
+    // December: every lease has reset; only those that signed before the February increase are under market
+    expect(l2.months[11]).toBeCloseTo(-(2 * 120), 0);
+  });
+  it('loss to lease: 100% renewal with 0% burnoff burns NOTHING — the gap holds all year, market step included (Troy 2026-11-09)', () => {
+    const leases = [
+      ...Array.from({ length: 12 }, () => ({ m: 1000, r: 900, e: '2025-06-01' })),
+      ...Array.from({ length: 12 }, (_, i) => ({ m: 1000, r: 900, e: `2026-${String(i + 1).padStart(2, '0')}-01` })),
+    ];
+    const hold = { ...inputs, ltl: { ...inputs.ltl, mode: 'leases' as const, renewalPct: 1, burnoffRenew: 0, burnoffNew: 0.95, followGpr: true }, gpr: { ...inputs.gpr, growthPct: [0, 0.03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] as Months } };
+    const l = L(generateAnnualLines(coaList, hold, { ...src, leases }), '5003');
+    expect(l.months[0]).toBe(-2400);                                   // 24 x $100
+    // February: market +3% on all 24 occupied units ($30 each) and it STAYS there — no renewal gives any of it back
+    for (let i = 1; i < 12; i++) expect(l.months[i]).toBeCloseTo(-2400 - 24 * 30, 0);
+    // same leases at 50% burnoff on renewal: each reset halves that lease's whole gap, growth included
+    const half = L(generateAnnualLines(coaList, { ...hold, ltl: { ...hold.ltl, burnoffRenew: 0.5 } }, { ...src, leases }), '5003');
+    expect(half.months[11]).toBeCloseTo(-(2 * (50 + 30)) - (22 * 65), 0);   // January's 2 halved before the step, then +30; the other 22 halve 130
   });
   it('loss to lease: flat mode holds the last actual month with no burnoff (deepens only with GPR when asked)', () => {
     const flatIn = { ...inputs, ltl: { ...inputs.ltl, mode: 'flat' as const, followGpr: false } };

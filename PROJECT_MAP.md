@@ -2,7 +2,7 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-11-09 — vacancy is an annual average shaped by lease expirations (`vacancyByMonth`); roster raises start in the cycle's effective month (editable on the Payroll tab); Δ% T12 column; annual budgets take wages from the Payroll tab by default (roster + raise entries, drafts included; `src/payroll-data.ts`, `inputs.wageSource`); 6310 corporate rate follows the budget year (2027 workbook rev2: $58.17/unit/yr + $513/mo), Minot sites are subjects with the role editable in Settings; editor view pass (quarterly % rows on totals, trend chart axis fitted to the data instead of zero, T3-annualized reference column after the T12 in the grid and the compare card, whole-dollar cell display); flat-fee utility billing (reimbursement income = last actual month × budgeted occupancy, `utilities.billing`), Enter on an assumption box moves to the next row; payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
+> Last updated: 2026-11-09 — loss to lease: market growth deepens every lease and a reset burns only the burnoff share (`ltlModel` growth); vacancy is an annual average shaped by lease expirations (`vacancyByMonth`); roster raises start in the cycle's effective month (editable on the Payroll tab); Δ% T12 column; annual budgets take wages from the Payroll tab by default (roster + raise entries, drafts included; `src/payroll-data.ts`, `inputs.wageSource`); 6310 corporate rate follows the budget year (2027 workbook rev2: $58.17/unit/yr + $513/mo), Minot sites are subjects with the role editable in Settings; editor view pass (quarterly % rows on totals, trend chart axis fitted to the data instead of zero, T3-annualized reference column after the T12 in the grid and the compare card, whole-dollar cell display); flat-fee utility billing (reimbursement income = last actual month × budgeted occupancy, `utilities.billing`), Enter on an assumption box moves to the next row; payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
 > Earlier: 2026-09-10 — actualized months (partial-month rule; section above Exports); 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
 > w/ per-unit basis + ND payroll model).
 
@@ -591,6 +591,19 @@ finalized iteration; everything else ran on own trailing-12 wages × a flat 3.5%
   January). Admins change it on the Payroll tab header ("Raises effective", `#pay-eff` →
   `PUT /payroll/cycles/:id { effective }`); entries are untouched. The older Apply path still
   writes an annual figure spread flat.
+
+## Loss to lease: market growth and the burnoff share (Troy 2026-11-09)
+
+Troy, on clnd 2027 (renew 100%, burnoff 0% / 95%, GPR +3% in Feb): "How would LTL get burnt off
+if 100% renewal rate and no burnoff?" It did: the annual engine added the market-growth
+deepening only on leases that had NOT reset yet (`openMarket`), so every renewal wiped the
+growth part of its gap whatever the burnoff %. Fixed in `ltlModel` (domain.ts): `opts.growth`
+(GPR[m] / GPR[0]) — each lease keeps its RENT between resets, its gap is measured against the
+grown market every month, and a reset burns only the burnoff share of that whole gap (the rent
+is re-priced to market − kept gap). So 0% burnoff holds the gap all year, step included; a lease
+that reset before a later increase is below market again after it. `openMarket` is still
+returned but the annual engine no longer uses it; acquisition budgets pass no growth (unchanged).
+The no-leases template path already behaved (burn share × remaining).
 
 ## Vacancy: an annual average shaped by lease expirations (Troy 2026-11-09)
 

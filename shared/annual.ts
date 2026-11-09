@@ -595,11 +595,12 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     }
     mk('5003', out, { method: 'ltl' });
   } else if (src.leases && src.leases.length) {
-    // Troy: per-lease burnoff at each turnover; market growth deepens the gap
-    // only on the leases that have not reset yet (a renewed / turned unit is
-    // already at the new market), on their own market rent — not the whole GPR
-    const model = ltlModel(src.leases, inputs.year, startMonth, { ...ltl, asOf: src.rollAsOf });
-    mk('5003', model.months.map((v, i) => r2(Math.min(0, v - (followGpr && gpr[0] ? (gpr[i] / gpr[0] - 1) * model.openMarket[i] : 0)))) as Months, { method: 'ltl' });
+    // Troy: per-lease burnoff at each turnover. Market growth deepens every lease's gap (its
+    // rent is fixed until it resets); a reset burns only the burnoff share of that gap. Before
+    // 2026-11-09 a reset wiped the growth part entirely whatever the burnoff % — so at 100%
+    // renewal / 0% burnoff the February step still "burned off" through the year.
+    const model = ltlModel(src.leases, inputs.year, startMonth, { ...ltl, asOf: src.rollAsOf, growth: followGpr && gpr[0] ? gpr.map((v) => v / gpr[0]) : null });
+    mk('5003', model.months.map((v) => r2(Math.min(0, v))) as Months, { method: 'ltl' });
   } else if (lastGpr || ltl.startMonthly) {
     // template: last actual month's LTL, deepened by the market-rent change,
     // burned off by that month's expirations × renewal % × burnoff shares
