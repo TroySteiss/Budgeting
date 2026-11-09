@@ -38,6 +38,7 @@ function synthetic(): Record<string, Months> {
     '6702': cal(Array(12).fill(50)),
     '6402': cal(Array(12).fill(2000)),
     '6418': cal(Array(12).fill(200)),
+    '6408': cal([3000, 0, 0, 3000, 0, 0, 3000, 0, 0, 3000, 0, 0]),   // quarterly NOI bonus, Jan/Apr/Jul/Oct
     '6413': cal([600, 600, 600, 600, 600, 600, 600, 600, 600, 650, 650, 650]),   // employee rent: Oct = 650
     '6112': cal(Array(12).fill(400)),
     '7300': cal(Array(12).fill(1500)),
@@ -163,6 +164,23 @@ describe('generateAnnualLines — template rules on own history', () => {
     mb.forEach((v, i) => expect(v).toBeCloseTo(0.1 * mw[i], 2));
     expect(mb[2]).toBeGreaterThan(mb[1]);
     expect(mb[0]).toBeCloseTo(0.1 * 2500, 2);
+  });
+  it('burden ratio is SAME-MONTH: a quarterly bonus keeps its Jan/Apr/Jul/Oct shape instead of smearing flat', () => {
+    const b = L(lines, '6408'), w = L(lines, '6402');
+    expect((b.driver as any).sameMonth).toBe(true);
+    // Jan: 3000 / 2000 wages = 150% of that month's budgeted wages; Feb: 0%
+    expect(b.months[0]).toBeCloseTo(1.5 * w.months[0], 2);
+    expect(b.months[1]).toBe(0);
+    expect(b.months.filter((v) => v > 0).length).toBe(4);
+    expect([0, 3, 6, 9].every((i) => b.months[i] > 0)).toBe(true);
+    // the annual ratio is still carried for the chip, and the ratios array is calendar-indexed
+    expect((b.driver as any).ratio).toBeCloseTo(12000 / 24000, 5);
+    expect((b.driver as any).ratios[3]).toBeCloseTo(1.5, 5);
+    // a budget starting in October reads the calendar ratios rotated: month 0 = October's 150%
+    const oct = generateAnnualLines(coaList, { ...inputs, startMonth: 10 } as any, src);
+    const bo = L(oct, '6408'), wo = L(oct, '6402');
+    expect(bo.months[0]).toBeCloseTo(1.5 * wo.months[0], 2);
+    expect(bo.months[1]).toBe(0);
   });
   it('employee rent 6413 is not a % of wages: the last actual month carried flat, no raise', () => {
     const e = L(lines, '6413');

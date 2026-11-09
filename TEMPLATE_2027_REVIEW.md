@@ -37,16 +37,16 @@ Employees* (HRIS roster), *Allocated Employee Data* (splits), *Property Details*
 move-outs, 2019–Aug 2026), *Financial Data* (payroll GL actuals + budget Sep-25 → Oct-26),
 *Sensitive Data* (protected; not readable, not needed).
 
-| GL | Workbook 2027 | Tool today | Call |
+| GL | Workbook 2027 | Tool today (ratio lines = same-month % of wages since 11-09) | Call |
 |---|---|---|---|
 | 6402/6404/6405/6406/6407 wages | Current rate × allocation (hourly × 2080 ÷ 12), **flat 12 months, no raise step**. No 2027 increases are loaded for ND ("Old Pay Rate" blank). | Roster wages with Pay-rates raises prorated from each effective month | **Keep ours** — the workbook has no raise. |
-| 6408 bonus | Per-position quarterly NOI potential (Bonus Key) × allocation, placed **Jan / Apr / Jul / Oct**; + office delinquency bonus tiered by unit count, monthly; + maintenance on-call bonus × days in month | T12 ratio × each month's wages | **Offer as a method.** Deterministic and quarterly-shaped, but it budgets the full potential; the T12 ratio is what was actually paid. Troy's call on the default. |
-| 6410 commissions | Expirations (PY same-month leases ended from Renewal Data, else units ÷ 12) × PY renewal rate (else 60 %) × top renewal tier, + new leases × 11–12-month tier; paid ~45 days later with a seasonal weighting | T12 ratio | **Take.** We already have expirations (UAD) and renewal %; commissions = renewals × tier + new leases × tier, lagged a month. |
+| 6408 bonus | Per-position quarterly NOI potential (Bonus Key) × allocation, placed **Jan / Apr / Jul / Oct**; + office delinquency bonus tiered by unit count, monthly; + maintenance on-call bonus × days in month | Same-month T12 ratio × that month's wages (keeps the Jan/Apr/Jul/Oct shape) | **Offer as a method.** Deterministic, but it budgets the full potential; the same-month ratio is what was actually paid, in the months it was paid. Troy's call on the default. |
+| 6410 commissions | Expirations (PY same-month leases ended from Renewal Data, else units ÷ 12) × PY renewal rate (else 60 %) × top renewal tier, + new leases × 11–12-month tier; paid ~45 days later with a seasonal weighting | Same-month T12 ratio (keeps the summer peak) | **Take.** We already have expirations (UAD) and renewal %; commissions = renewals × tier + new leases × tier, lagged a month. |
 | 6412 overtime | Hourly wages × (T12 OT ÷ T12 wages, **capped 8 %**, fallback 3.75 %) | Ratio of all wages, no cap | Minor. Hourly-only base + cap is a small refinement. |
 | 6413 employee rent | **Last actual month (Oct-26) flat** | Same since 11-09 (`BURDEN_LAST_GLS`) | Matches. |
 | 6414 contract labor | **PY same-month actuals**, no growth | Ratio × wages | **Take: PY same month** (shape `actual`, 0 %). It is not wage-driven. |
 | 6416 admin fee | Payroll-provider fee per allocated head per month (Tax Table) | Ratio | Take when convenient: heads × fee. Ratio approximates it. |
-| 6418 payroll taxes | Per seat: SS 6.2 % + Medicare 1.45 % + SUTA 1.62 % to a $46,600 base + FUTA 0.6 % to $7,000; full rate on bonus/commission/OT | T12 / CY-budget / mix ratio | **Offer "statutory" as a basis option.** The T12 ratio carries real SUTA experience and the Q1 front-load from wage caps; statutory is flat. |
+| 6418 payroll taxes | Per seat: SS 6.2 % + Medicare 1.45 % + SUTA 1.62 % to a $46,600 base + FUTA 0.6 % to $7,000; full rate on bonus/commission/OT | Same-month T12 / CY-budget / mix ratio | **Offer "statutory" as a basis option.** The T12 ratio carries real SUTA experience and the Q1 front-load from wage caps; statutory is flat. |
 | 6420 workers comp | WC admin 0.535 % on 6402 seats, WC maintenance 1.605 % on the rest; admin rate on bonus/commission/OT | Ratio | Same as taxes. |
 | 6421 401(k) | 2 % of wages + bonus + commissions + OT | Ratio | Same as taxes. |
 | 6422 medical | Per-seat monthly benefits from HRIS × allocation (portfolio default per seat from the Tax Table) | Ratio | **Take.** The roster we already parse carries each person's monthly benefits. |

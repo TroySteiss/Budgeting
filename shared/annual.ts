@@ -719,7 +719,24 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const own = sum(cal[gl] || zero12());
     return w > 0 && own ? own / w : null;
   };
+  /* SAME-MONTH ratio (Troy 2026-11-09, "the ratio is monthly, not annualized"):
+     each calendar month's own % of wages, so quarterly NOI bonuses (Jan / Apr /
+     Jul / Oct), summer leasing commissions and Q1 tax front-loading keep their
+     shape instead of being smeared flat — a flat line guarantees a variance both
+     ways every month. A month with no wages in the history falls back to the
+     annual ratio. Returns calendar-indexed ratios (null = no wages that month). */
+  const ratiosIn = (cal: Record<string, Months> | null | undefined, gl: string): (number | null)[] | null => {
+    if (!cal) return null;
+    const own = cal[gl] || zero12();
+    if (!own.some((v) => v)) return null;
+    return Array.from({ length: 12 }, (_, c) => {
+      const w = WAGE_GLS.reduce((acc, g) => acc + Math.abs((cal[g] || zero12())[c]), 0);
+      return w > 0 ? own[c] / w : null;
+    });
+  };
   const r5 = (v: number) => Math.round(v * 100000) / 100000;
+  const pickRatio = <T,>(t12: T | null, bud: T | null, avg: (a: T, b: T) => T): T | null =>
+    burdenBasis === 'budget' ? (bud ?? t12) : burdenBasis === 'mix' ? (t12 != null && bud != null ? avg(t12, bud) : (t12 ?? bud)) : (t12 ?? bud);
   for (const a of detail) {
     if (a.pcode !== '10' || WAGE_GLS.includes(a.code) || isSet(a.code)) continue;
     // not a % of wages: employee rent carries its last actual month flat (no
@@ -728,12 +745,13 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     if (ownShape && baseline(a, ownShape, bl.glGrowth?.[a.code] ?? (BURDEN_LAST_GLS.has(a.code) ? 0 : raise - 1))) continue;
     const t12Ratio = ratioIn(src.actual, a.code);
     const budgetRatio = ratioIn(src.budget, a.code);
-    const ratio = burdenBasis === 'budget' ? (budgetRatio ?? t12Ratio)
-      : burdenBasis === 'mix' ? (t12Ratio != null && budgetRatio != null ? (t12Ratio + budgetRatio) / 2 : (t12Ratio ?? budgetRatio))
-      : (t12Ratio ?? budgetRatio);
+    const ratio = pickRatio(t12Ratio, budgetRatio, (x, y) => (x + y) / 2);
+    const t12M = ratiosIn(src.actual, a.code), budM = ratiosIn(src.budget, a.code);
     if (ratio != null && wagesTotal > 0) {
-      mk(a.code, wagesMonthly.map((w) => r2(ratio * w)) as Months, {
-        method: 'burdenRatio', ratio: r5(ratio), basis: burdenBasis,
+      const monthly = Array.from({ length: 12 }, (_, c) => pickRatio(t12M?.[c] ?? null, budM?.[c] ?? null, (x, y) => (x + y) / 2) ?? ratio);
+      const months = wagesMonthly.map((w, i) => r2(monthly[(startMonth - 1 + i) % 12] * w)) as Months;
+      mk(a.code, months, {
+        method: 'burdenRatio', ratio: r5(ratio), basis: burdenBasis, sameMonth: true, ratios: monthly.map(r5),
         ...(t12Ratio != null ? { t12Ratio: r5(t12Ratio) } : {}), ...(budgetRatio != null ? { budgetRatio: r5(budgetRatio) } : {}),
       } as any);
     } else if (baseTotal(a.code)) baseline(a, 'flat', bl.glGrowth?.[a.code] ?? (raise - 1));

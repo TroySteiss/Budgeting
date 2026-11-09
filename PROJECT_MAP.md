@@ -487,8 +487,11 @@ and its Summary tab. Nothing from that workbook's roster is read — only its la
   the engine adds NO March step, because `annualWagesByGl` already prorates each person's
   raise from its effective month (before this it double-raised: roster raise + 3.5% in
   March). Every other payroll GL (taxes, WC, 401k, medical, bonus, commissions, OT, …) =
-  ratio × EACH MONTH's budgeted wages (2026-11-09, Troy: "monthly, not annualized" — the
-  lines step with the March raise instead of spreading an annual total flat). Lines that are
+  the SAME-MONTH ratio × that month's budgeted wages (2026-11-09, Troy: "monthly, not
+  annualized" — each calendar month's own % of wages, so quarterly NOI bonuses, summer
+  commissions and Q1 tax front-loading keep their shape; a flat line guarantees a variance
+  both ways every month. A month with no wages in the history falls back to the annual
+  ratio; driver carries `sameMonth: true, ratios[12]` calendar-indexed). Lines that are
   not a function of wages skip the ratio: `BURDEN_LAST_GLS` (6413 employee rent → last actual
   month flat, no raise) and any payroll GL whose row shape menu set `baseline.glShape`.
   The ratio comes from `inputs.burdenBasis`: `'t12'` (default,
