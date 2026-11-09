@@ -51,6 +51,7 @@ function drvMetaBase(l) {
       return { cls: 'drv-rr', tag: 'LTL', label: `Loss to lease — ${how}${lt.followGpr !== false && lt.mode !== 'ramp' ? ', deepens with GPR growth' : ''} · renewal %, burnoff on renewal / move-in are the boxes to the right (method + "follows GPR" under Assumptions)` };
     }
     case 'vacancy': return { cls: 'drv-rr', tag: '%GPR', label: '% of GPR' };
+    case 'flatFee': return { cls: 'drv-rr', tag: 'FLAT FEE', label: `Flat utility fee per occupied unit — ${MONTHS[(l.driver.lastMonth || 1) - 1]} actual $${money(l.driver.base || 0)} × budgeted occupancy ÷ ${((l.driver.occLast || 1) * 100).toFixed(1)}% occupied that month (ties to the vacancy assumption)${l.driver.pct ? ` × ${(l.driver.pct * 100).toFixed(1)}% fee increase` : ''}` };
     case 'catShare': return { cls: 'drv-uw', tag: 'UW', label: `UW category ${l.driver.pcode} share` };
     case 'perUnitComp': return { cls: 'drv-comp', tag: 'MINOT', label: `Minot $${l.driver.perUnit}/unit × units` };
     case 'payrollModel': return { cls: 'drv-pay', tag: 'PAY', label: l.driver.roster ? 'Pay-rates roster wages (raises prorated — no March step)' : 'Payroll model wages' };
@@ -1076,6 +1077,9 @@ function renderEditor(el) {
       </div>`;
     dlg.querySelector('#assump-x').addEventListener('click', () => dlg.close());
     wireGprCum(dlg, 'in-gprstep');   // live cumulative % under the GPR month grid
+    // Enter in a category % box hops to the next one (Troy 2026-11-09) — Apply still applies
+    const blp = [...dlg.querySelectorAll('.in-blpct')];
+    blp.forEach((x, i) => x.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); const n = blp[i + 1]; if (n) { n.focus(); n.select(); } } }));
     dlg.querySelector('#inp-apply').addEventListener('click', async () => {
       const btn = dlg.querySelector('#inp-apply');
       btn.disabled = true; btn.textContent = 'Applying…';
@@ -1197,17 +1201,37 @@ function renderEditor(el) {
   const histAllBtn = el.querySelector('#hist-all');
   if (histAllBtn) histAllBtn.addEventListener('click', (e) => { e.stopPropagation(); S.histAll = !S.histAll; if (!S.histAll) { S.histOpenSet = new Set(); localStorage.setItem('bt-hist', '[]'); } render(); });
   // inline formula params: change → patch inputs → regenerate
-  el.querySelectorAll('input.fxp').forEach((box) => box.addEventListener('change', async () => {
-    const gl = box.dataset.fxp;
-    const line = S.bv.lines.find((l) => l.gl_code === gl);
-    const p = paramFor(gl, line, S.bv.budget.inputs || {});
-    if (!p || p.multi || p.steps) return;
-    const v = parseFloat(String(box.value).replace(/[$,%\s]/g, ''));
-    if (!Number.isFinite(v)) return;
-    pushUndo();
-    S.bv = await PUT(`/budgets/${b.id}`, { inputs: p.patch(v) });
-    render();
-  }));
+  // Enter on an assumption box applies it and lands on the NEXT row's box (Troy 2026-11-09:
+  // walk the column without reaching for the mouse); an unchanged value just moves on
+  const focusFxpAfter = (gl) => {
+    const boxes = [...document.querySelectorAll('input.fxp[data-fxp]')];
+    const i = boxes.findIndex((x) => x.dataset.fxp === gl);
+    const nx = i >= 0 ? boxes[i + 1] : null;
+    if (nx) { nx.focus(); nx.select(); nx.scrollIntoView({ block: 'nearest' }); }
+  };
+  el.querySelectorAll('input.fxp').forEach((box) => {
+    box.addEventListener('focus', () => box.select());
+    box.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      if (box.value === box.defaultValue) { focusFxpAfter(box.dataset.fxp); return; }
+      S.fxpNext = box.dataset.fxp;
+      box.blur();   // fires change → PUT → render → focus the next box
+    });
+    box.addEventListener('change', async () => {
+      const gl = box.dataset.fxp;
+      const goNext = S.fxpNext === gl; S.fxpNext = null;
+      const line = S.bv.lines.find((l) => l.gl_code === gl);
+      const p = paramFor(gl, line, S.bv.budget.inputs || {});
+      if (!p || p.multi || p.steps) return;
+      const v = parseFloat(String(box.value).replace(/[$,%\s]/g, ''));
+      if (!Number.isFinite(v)) return;
+      pushUndo();
+      S.bv = await PUT(`/budgets/${b.id}`, { inputs: p.patch(v) });
+      render();
+      if (goNext) focusFxpAfter(gl);
+    });
+  });
   // annual growth targets: typing saves the target; "tie" applies it
   const tieGrowth = async (key, pct) => { pushUndo(); S.bv = await POST(`/budgets/${b.id}/tie-growth`, { pcode: key, pct }); render(); };
   el.querySelectorAll('.tie [data-gt]').forEach((box) => box.addEventListener('change', async () => {
@@ -1631,6 +1655,10 @@ function paramFor(gl, line, inp) {
         { k: 'burnoffRenew', short: 'LTL burnoff — renewal', unit: '%', label: '% of that lease\'s gap to market closed at renewal', value: pct(br), patch: ltlPatch('burnoffRenew', 100) },
         { k: 'burnoffNew', short: 'LTL burnoff — move-in', unit: '%', label: '% of the gap closed when the unit turns to a new resident', value: pct(bn), patch: ltlPatch('burnoffNew', 100) },
       ] };
+  }
+  if (m === 'flatFee') {
+    const bl = inp.baseline || {};
+    return { label: 'fee increase % (on the last actual month)', value: pct(line.driver.pct || 0), patch: (v) => ({ baseline: { ...bl, glGrowth: { ...(bl.glGrowth || {}), [gl]: v / 100 } } }) };
   }
   if (gl === '5031' && m === 'vacancy') {
     const vac = inp.vacancyPct || [];
@@ -3889,6 +3917,7 @@ function annualInputsHtml(inp) {
       <div class="fld"><label>Capital $ (CoC)</label><input id="in-cap" value="${inp.capital ?? 0}" style="width:110px"></div>
       ${tpl && tpl.debt && tpl.debt.interest.some((v) => v) ? `<span class="muted" style="align-self:center; font-size:11.5px">Interest &amp; principal come from the Yardi amortization schedule (${esc((tpl.debt.loans || []).join(', '))}: interest ${money(tpl.debt.interest.reduce((a, b) => a + b, 0))}/yr).</span>` : `<div class="fld"><label>Loan $ (no schedule on file)</label><input id="in-loan" value="${inp.loan ?? 0}" style="width:110px"></div><div class="fld"><label>Rate %</label><input id="in-rate" value="${((inp.rate || 0) * 100).toFixed(2)}" style="width:70px"></div>`}
       <div class="fld"><label>Payroll raise % — wages flat × (1 + raise); model wages step up in March (roster wages from the Pay-rates apply carry their own raises${inp.wagesFromRoster ? ' — on this budget' : ''})</label><input id="in-raise" value="${((inp.payrollRaisePct ?? 0.035) * 100).toFixed(1)}" style="width:70px"></div>
+      <div class="fld"><label>Utility reimbursements (5164–5174)</label><select id="in-utilbill" title="Flat fee: residents pay an in-house flat utility fee per occupied unit (BCND; PHND / FHND since fall 2026), so the income is the most recent actual month scaled to each month's budgeted occupancy — flat, no GPR link. RUBS / history: each GL's own trailing-12 × factor (Conservice billing)."><option value="rubs" ${(inp.utilities && inp.utilities.billing) === 'flat' ? '' : 'selected'}>RUBS / history (T12 × factor)</option><option value="flat" ${(inp.utilities && inp.utilities.billing) === 'flat' ? 'selected' : ''}>Flat fee — last month × budgeted occupancy</option></select></div>
       <div class="fld"><label>Other payroll lines (taxes, benefits, bonus, OT …) = % of wages from</label><select id="in-burden"><option value="t12" ${(inp.burdenBasis || 't12') === 't12' ? 'selected' : ''}>T12 actual ratio</option><option value="budget" ${inp.burdenBasis === 'budget' ? 'selected' : ''}>CY budget ratio</option><option value="mix" ${inp.burdenBasis === 'mix' ? 'selected' : ''}>Average of T12 actual &amp; CY budget</option></select></div>
     </div>
     <h3>Ties to the reference (${esc(S.bv.refLabel || 'T12')}) — off by default</h3>
@@ -3932,6 +3961,7 @@ async function applyAnnualInputs(b, el) {
     mgmtPct: num('#in-mgmt') / 100,
     payrollRaisePct: num('#in-raise') / 100,
     burdenBasis: q('#in-burden') ? q('#in-burden').value : (cur.burdenBasis || 't12'),
+    utilities: { ...(cur.utilities || {}), billing: q('#in-utilbill') ? q('#in-utilbill').value : ((cur.utilities || {}).billing || 'rubs') },
     baseline: { ...(cur.baseline || {}), source: q('#in-blsrc').value, shape: q('#in-blshape').value, mround: num('#in-blmround'), growthPct, useUtilForecast: q('#in-blutil').checked },
     turnFees, corpRates,
     tieIncome: q('#in-tieinc').checked,

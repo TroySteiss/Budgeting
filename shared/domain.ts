@@ -146,7 +146,9 @@ export interface BudgetInputs {
   /** utilities model: 'seller' = levels from the seller statements with
       recovery-lag income (default when a seller T12 is linked); 'uw' = UW
       allocation like other categories. */
-  utilities?: { source?: 'seller' | 'uw' | 'baseline' | 'recovery'; growthPct?: number; recoveryPct?: number | null };
+  /** billing (annual): 'flat' = residents pay an in-house flat utility fee per occupied unit (BCND; PHND/FHND from
+      fall 2026), so reimbursement income = last actual month scaled to budgeted occupancy; default = RUBS/history */
+  utilities?: { source?: 'seller' | 'uw' | 'baseline' | 'recovery'; growthPct?: number; recoveryPct?: number | null; billing?: 'flat' | 'rubs' };
   /** legacy field from the (removed) stub-proration design — ignored. */
   uwProration?: Record<string, number>;
 

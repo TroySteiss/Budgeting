@@ -182,6 +182,25 @@ describe('generateAnnualLines — template rules on own history', () => {
     expect(bo.months[0]).toBeCloseTo(1.5 * wo.months[0], 2);
     expect(bo.months[1]).toBe(0);
   });
+  it('flat-fee utility billing: reimbursement income = last actual month, scaled to budgeted occupancy, flat (Troy 2026-11-09)', () => {
+    // synthetic: 5170 = 800 in every month, October (last month) GPR 10,000 with vacancy 400 → 96% occupied
+    const flat = generateAnnualLines(coaList, { ...inputs, utilities: { ...(inputs.utilities || {}), billing: 'flat' }, vacancyPct: Array(12).fill(0.05) as Months }, src);
+    const u = L(flat, '5170');
+    expect((u.driver as any).method).toBe('flatFee');
+    expect((u.driver as any).occLast).toBeCloseTo(0.96, 4);
+    // 800 × (1 − 5%) ÷ 96% = 791.67 in every month — ties to the vacancy assumption, no GPR growth
+    u.months.forEach((v) => expect(v).toBeCloseTo(791.67, 2));
+    // a steeper budgeted vacancy in one month lowers that month alone
+    const vac = Array(12).fill(0.05) as Months; vac[5] = 0.10;
+    const dip = L(generateAnnualLines(coaList, { ...inputs, utilities: { billing: 'flat' }, vacancyPct: vac }, src), '5170');
+    expect(dip.months[5]).toBeCloseTo(750, 2);
+    expect(dip.months[4]).toBeCloseTo(791.67, 2);
+    // a typed per-GL % is a fee increase
+    const up = L(generateAnnualLines(coaList, { ...inputs, utilities: { billing: 'flat' }, vacancyPct: Array(12).fill(0.05) as Months, baseline: { ...inputs.baseline!, glGrowth: { '5170': 0.1 } } }, src), '5170');
+    expect(up.months[0]).toBeCloseTo(870.83, 2);
+    // RUBS / default: history as before (same month × factor)
+    expect((L(lines, '5170').driver as any).method).toBe('baseline');
+  });
   it('employee rent 6413 is not a % of wages: the last actual month carried flat, no raise', () => {
     const e = L(lines, '6413');
     expect((e.driver as any).method).toBe('baseline');

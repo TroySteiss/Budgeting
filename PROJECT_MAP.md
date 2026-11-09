@@ -2,7 +2,7 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-11-09 — payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
+> Last updated: 2026-11-09 — flat-fee utility billing (reimbursement income = last actual month × budgeted occupancy, `utilities.billing`), Enter on an assumption box moves to the next row; payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
 > Earlier: 2026-09-10 — actualized months (partial-month rule; section above Exports); 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
 > w/ per-unit basis + ND payroll model).
 
@@ -475,6 +475,21 @@ budgets' wage GLs. Modeled on the per-property sheets of the Payroll Budget Work
   green-tinted dark palette). The old `:root` palette survives only as the fallback under
   the overrides — don't restyle against it.
 - Remember `src/payroll.ts` + `shared/payroll.ts` in the esbuild entry list (done).
+
+## Flat-fee utility billing (Troy 2026-11-09)
+
+BCND bills residents an in-house flat utility fee per occupied unit; PHND and FHND moved off
+Conservice RUBS to the same model in fall 2026 (KB case 2026-08). On such a property the
+reimbursement income (pcode 4: 5164–5174, not 5122 HAP) is not history-shaped: set
+`inputs.utilities.billing = 'flat'` (Assumptions → "Utility reimbursements") and each line =
+the most recent actual month × (1 − budgeted vacancy that month) ÷ that month's actual
+occupancy (|5031| ÷ 4994, floored at 50%), flat, no GPR link — so it ties to the vacancy
+assumption. Driver `flatFee {base, lastMonth, occLast, pct}`, chip FLAT FEE; the row's box is a
+fee-increase % (`baseline.glGrowth`). Default stays RUBS / history: Troy picks it per budget.
+
+**Enter on an inline assumption box** (`input.fxp`) applies the value and lands on the next
+row's box (`focusFxpAfter`); an unchanged value just moves on. The Assumptions dialog's
+category % boxes hop the same way.
 
 ## Payroll template tie-out (Troy 2026-11-09)
 

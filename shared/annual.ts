@@ -757,6 +757,27 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     } else if (baseTotal(a.code)) baseline(a, 'flat', bl.glGrowth?.[a.code] ?? (raise - 1));
   }
 
+  /* ---- utility reimbursements at a FLAT-FEE property (Troy 2026-11-09): residents pay an
+     in-house flat utility fee per occupied unit (BCND; PHND / FHND since fall 2026 instead
+     of Conservice RUBS), so the income is flat — the most recent actual month, scaled
+     from that month's occupancy to each budget month's budgeted occupancy, so it ties
+     to the vacancy assumption. No GPR link; a typed per-GL % is a fee increase. HAP
+     utility allowance (5122) is not a fee and keeps its history. ---- */
+  if (inputs.utilities?.billing === 'flat') {
+    const act = src.actual || {};
+    const lastAct = (gl: string): number => (act[gl] || zero12())[lastMonth - 1] || 0;
+    const lastGprA = lastAct('4994');
+    const occLast = lastGprA > 0 ? Math.min(1, Math.max(0.5, 1 - Math.abs(lastAct('5031')) / lastGprA)) : 1;
+    for (const a of detail) {
+      if (a.pcode !== '4' || a.code === '5122' || isSet(a.code)) continue;
+      if (!act[a.code] || !act[a.code].some((v) => v)) continue;
+      const feeBase = lastAct(a.code);
+      const pct = bl.glGrowth?.[a.code] ?? 0;
+      const months = Array.from({ length: 12 }, (_, i) => r2(feeBase * (1 + pct) * (1 - (inputs.vacancyPct?.[i] || 0)) / occLast)) as Months;
+      mk(a.code, months, { method: 'flatFee', base: feeBase, lastMonth, occLast: Math.round(occLast * 10000) / 10000, pct } as any);
+    }
+  }
+
   /* ---- everything else with history: PY same month × factor (template default) ---- */
   for (const a of detail) {
     if (isSet(a.code) || BASELINE_SKIP_SECTIONS.has(a.section)) continue;
