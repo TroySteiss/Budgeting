@@ -127,6 +127,7 @@ table.grid td.note input { width: 100px; border: 1px solid transparent; backgrou
 table.grid td.note input:focus { border-color: var(--accent); background: var(--input); outline: none; color: var(--ink); }
 table.grid td.neg, .neg { color: var(--bad); }
 table.grid tr.dist td { background: color-mix(in srgb, var(--accent) 10%, var(--panel)); color: var(--accent); font-size: 10.5px; padding-top: 0; padding-bottom: 3px; border-top: none; }
+table.grid tr.qdist td.q { text-align: center; border-left: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); border-right: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
 
 /* driver fills — month cells + chip carry the row's formula colour */
 td.m.drv-rr { background: var(--drv-rr); }   td.m.drv-rr input { color: var(--drv-rr-ink); }
@@ -184,6 +185,13 @@ tr.badbills .warnflag { color: var(--bad); font-weight: 700; }
 .tie td { padding: 4px 6px; border-bottom: 1px solid var(--gridline); text-align: right; white-space: nowrap; }
 .tie td:first-child { text-align: left; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
 .tie td:last-child { text-align: right; min-width: 34px; }
+.tie td.t3 { color: var(--dim); }
+/* with the T3-annualized column the card carries three $ columns — tighten so Δ% / target / tie stay in view */
+.tie table.t3 { font-size: 11.4px; }
+.tie table.t3 th, .tie table.t3 td { padding-left: 3px; padding-right: 3px; }
+.tie table.t3 td:first-child { max-width: 86px; }
+.tie table.t3 td:last-child { min-width: 24px; }
+.tie table.t3 input[data-gt] { width: 38px !important; }
 .tie input[data-gt] { width: 44px; }
 .tie tr.big td { font-weight: 700; background: var(--total-bg); }
 .tie tr.sub td { font-weight: 650; background: var(--soft2); border-top: 1px solid var(--line); font-style: italic; }

@@ -399,7 +399,9 @@ router.post('/uploads/apply', h(async (req, res) => {
 }));
 
 /* ---------------- budgets ---------------- */
-interface RefCol { key: string; label: string; period: string; byGl: Record<string, number>; totals: Record<string, number> }
+interface RefCol { key: string; label: string; period: string; byGl: Record<string, number>; totals: Record<string, number>;
+  /** category totals (pcode → $) + EGI / TOE / NOI of this column — the tie card's comparison columns */
+  cat?: { y1: Record<string, number>; egi: number; toe: number; noi: number } }
 interface LoadedBudget {
   budget: any; lines: BudgetLine[]; coa: CoaAccount[]; coaMap: Map<string, CoaAccount>;
   uw: UwSnapshotData | null; comps: CompWeights | null; catShapes: Record<string, Months> | null;
@@ -548,6 +550,16 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     const units = Number(budget.inputs?.units) || 0;
     const t12Label = t12 && t12.dead.length ? `T12 actuals (${t12.liveMonths} mo annualized)` : 'T12 actuals';
     if (actualCal && t12) refs.push({ key: 'actual', label: t12Label, period: t12.period || sa?.period || '', ...refColumn(actualCal) });
+    // T3 annualized (Troy 2026-11-09): the last three actual months × 4, shown right after the T12
+    // in the grid and on the compare card — a reference column, never an input
+    if (actualCal && t12) {
+      const a3 = annualizedFromCal(actualCal, t12.lastMonth, 3);
+      if (Object.keys(a3).length) {
+        const mo = [2, 1, 0].map((j) => ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][(((t12.lastMonth - 1 - j) % 12) + 12) % 12]);
+        const c = refFromCalendar(coa, a3, units, 'T3 annualized');
+        refs.push({ key: 'ann3', label: 'T3 annualized', period: `${mo[0]}–${mo[2]} actuals × 4`, ...refColumn(a3), cat: { y1: c.y1, egi: c.egi, toe: c.toe, noi: c.noi } });
+      }
+    }
     if (budgetCal) refs.push({ key: 'budget', label: `${sb?.period?.match(/\d{4}/)?.[0] || 'CY'} budget`, period: sb?.period || '', ...refColumn(budgetCal) });
     if (actualCal && t12) { const a4 = annualizedFromCal(actualCal, t12.lastMonth, 4); if (Object.keys(a4).length) refs.push({ key: 'ann4', label: '4 mo annualized', period: '', ...refColumn(a4) }); }
     const src = budget.inputs?.refSource || 'actual';

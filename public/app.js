@@ -14,6 +14,7 @@ const S = {
   hiddenCols: new Set(JSON.parse(localStorage.getItem('bt-hidecols') || '[]')),
   undo: { budgetId: null, stack: [] },   // snapshots of {lines, inputs} before each change
   showDist: localStorage.getItem('bt-dist') === '1',
+  showQDist: localStorage.getItem('bt-qdist') === '1',   // the same % of the year, by quarter
   pendingRow: null,                      // in-progress row edit buffer {gl, months, dirty}
   gridScroll: null,
   // pay-rates tab: its own gate + working set (st = /payroll/state, cycle = /payroll/cycles/:id)
@@ -1005,7 +1006,8 @@ function renderEditor(el) {
       <button data-x="cols">▦ Columns…</button>
       <button data-x="side">${sideOn ? '⏵ Hide side panel' : '⏴ Show side panel'}</button>
       <label><input type="checkbox" data-x="zero" ${S.showZero ? 'checked' : ''}> Show zero rows</label>
-      <label title="Show each total row's monthly % of the year"><input type="checkbox" data-x="dist" ${S.showDist ? 'checked' : ''}> % distribution on totals</label>`, (menu) => {
+      <label title="Show each total row's monthly % of the year"><input type="checkbox" data-x="dist" ${S.showDist ? 'checked' : ''}> % distribution on totals — by month</label>
+      <label title="Show each total row's quarterly % of the year"><input type="checkbox" data-x="qdist" ${S.showQDist ? 'checked' : ''}> % distribution on totals — by quarter</label>`, (menu) => {
       menu.querySelector('[data-x="sp"]').addEventListener('click', () => openSavePoints(b));
       menu.querySelector('[data-x="round"]').addEventListener('click', () => openRoundDialog(b));
       menu.querySelector('[data-x="copy"]').addEventListener('click', () => openCopyFormulas(b));
@@ -1014,6 +1016,7 @@ function renderEditor(el) {
       menu.querySelector('[data-x="side"]').addEventListener('click', () => { localStorage.setItem('bt-side', sideOn ? '0' : '1'); render(); });
       menu.querySelector('[data-x="zero"]').addEventListener('change', (ev) => { S.showZero = ev.target.checked; render(); });
       menu.querySelector('[data-x="dist"]').addEventListener('change', (ev) => { S.showDist = ev.target.checked; localStorage.setItem('bt-dist', S.showDist ? '1' : '0'); render(); });
+      menu.querySelector('[data-x="qdist"]').addEventListener('change', (ev) => { S.showQDist = ev.target.checked; localStorage.setItem('bt-qdist', S.showQDist ? '1' : '0'); render(); });
     });
   });
   document.getElementById('imp-file').addEventListener('change', async (e) => {
@@ -1094,7 +1097,10 @@ function renderEditor(el) {
     dlg.showModal();
   });
 
-  /* Month-cell editing is ROW-BUFFERED for fast tabbing: focus selects the
+  /* Cells DISPLAY whole dollars (Troy 2026-11-09: no decimals); the stored months keep
+     their cents. Showing a rounded figure never edits or locks a line — only a typed
+     change marks the row dirty, and the untouched months are saved from the line data.
+     Month-cell editing is ROW-BUFFERED for fast tabbing: focus selects the
      cell's text (type to replace, no ctrl+a), Tab moves along the row with no
      server round-trip, and the row saves ONCE when focus leaves it (or on
      Enter). Hidden-column safe: the buffer starts from the line data. */
@@ -1323,15 +1329,18 @@ function gridHtml(bv, totals) {
   // annual: reference columns (T12 actuals, CY budget) beside the year total
   const refA = bv.annual ? (bv.refs || []).find((r) => r.key === 'actual') : null;
   const refB = bv.annual ? (bv.refs || []).find((r) => r.key === 'budget') : null;
-  const cols = { fx: !hide.has('fx'), annual: !hide.has('annual'), ref1: !!refA && !hide.has('ref1'), ref2: !!refB && !hide.has('ref2'), punit: !hide.has('punit'), note: !hide.has('note') };
-  const span = 2 + (cols.fx ? 1 : 0) + monthIdx.length + (cols.annual ? 1 : 0) + (cols.ref1 ? 1 : 0) + (cols.ref2 ? 1 : 0) + (cols.punit ? 1 : 0) + (cols.note ? 1 : 0);
+  const refT3 = bv.annual ? (bv.refs || []).find((r) => r.key === 'ann3') : null;   // last 3 actual months × 4, right after the T12
+  const cols = { fx: !hide.has('fx'), annual: !hide.has('annual'), ref1: !!refA && !hide.has('ref1'), ref3: !!refT3 && !hide.has('ref3'), ref2: !!refB && !hide.has('ref2'), punit: !hide.has('punit'), note: !hide.has('note') };
+  const nRef = (cols.ref1 ? 1 : 0) + (cols.ref3 ? 1 : 0) + (cols.ref2 ? 1 : 0);
+  const refBlank = '<td></td>'.repeat(nRef);   // the reference columns on rows that have no reference figure
+  const span = 2 + (cols.fx ? 1 : 0) + monthIdx.length + (cols.annual ? 1 : 0) + nRef + (cols.punit ? 1 : 0) + (cols.note ? 1 : 0);
   const actIdx = new Set((bv.actualMonths || []).filter((a) => a.index >= 0).map((a) => a.index));   // months locked to posted actuals (declared BEFORE the header row uses it)
   const refCell = (ref, code, kind) => {
     if (!ref) return '';
     const v = kind === 'total' ? ref.totals[code] : ref.byGl[code];
     return `<td class="ref ${v < 0 ? 'neg' : ''}">${v ? money(v) : ''}</td>`;
   };
-  const refCells = (code, kind) => `${cols.ref1 ? refCell(refA, code, kind) : ''}${cols.ref2 ? refCell(refB, code, kind) : ''}`;
+  const refCells = (code, kind) => `${cols.ref1 ? refCell(refA, code, kind) : ''}${cols.ref3 ? refCell(refT3, code, kind) : ''}${cols.ref2 ? refCell(refB, code, kind) : ''}`;
   // per-GL history (Troy 2026-11-04): the prior trailing-12 and the current-year budget by
   // month, unfolded under a GL on click — reference rows, never part of the budget
   if (!S.histOpenSet) S.histOpenSet = new Set(JSON.parse(localStorage.getItem('bt-hist') || '[]'));
@@ -1353,7 +1362,7 @@ function gridHtml(bv, totals) {
   })();
   const histOpen = (code) => S.histAll || S.histOpenSet.has(code);
   const rows = [];
-  rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th${actIdx.has(i) ? ' class="actcol" title="Locked to posted actuals — an edit here corrects the posted figure"' : ''}>${labels[i]}${actIdx.has(i) ? ' ✓' : ''}</th>`).join('')}${cols.annual ? `<th>${bv.annual ? bv.budget.year : 'Year 1'}</th>` : ''}${cols.ref1 ? `<th title="${esc(refA.period)}">T12</th>` : ''}${cols.ref2 ? `<th title="${esc(refB.period)}">${esc(refB.label.replace(/ budget$/i, ' bud'))}</th>` : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
+  rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th${actIdx.has(i) ? ' class="actcol" title="Locked to posted actuals — an edit here corrects the posted figure"' : ''}>${labels[i]}${actIdx.has(i) ? ' ✓' : ''}</th>`).join('')}${cols.annual ? `<th>${bv.annual ? bv.budget.year : 'Year 1'}</th>` : ''}${cols.ref1 ? `<th title="${esc(refA.period)}">T12</th>` : ''}${cols.ref3 ? `<th title="T3 annualized — ${esc(refT3.period)}">T3 ann</th>` : ''}${cols.ref2 ? `<th title="${esc(refB.period)}">${esc(refB.label.replace(/ budget$/i, ' bud'))}</th>` : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
   const units = Number(bv.budget.inputs?.units) || 1;
   const GRAND = new Set(['5500', '7279', '7280', '8200', '9000']);
   // condensed (collapsed) sections — locked via localStorage across renders
@@ -1391,17 +1400,32 @@ function gridHtml(bv, totals) {
         rows.push(`<tr class="hist paytie" title="Seth's Payroll Budget Workbook sheet for this property — reference only, never part of the budget">
           <td class="code"></td><td class="name"><span class="histtag">reference</span>${esc(bv.hist.payroll.label)} <span class="muted">${esc(bv.hist.payroll.period)}</span></td>
           ${cols.fx ? '<td></td>' : ''}${monthIdx.map((i) => `<td>${money(payTie.tplM[i])}</td>`).join('')}
-          ${cols.annual ? `<td>${money(payTie.tpl)}</td>` : ''}${cols.ref1 ? '<td></td>' : ''}${cols.ref2 ? '<td></td>' : ''}${cols.punit ? `<td>${money(payTie.tpl / units)}</td>` : ''}${cols.note ? '<td></td>' : ''}</tr>`);
+          ${cols.annual ? `<td>${money(payTie.tpl)}</td>` : ''}${refBlank}${cols.punit ? `<td>${money(payTie.tpl / units)}</td>` : ''}${cols.note ? '<td></td>' : ''}</tr>`);
         rows.push(`<tr class="hist paytie delta" title="Budget minus the payroll template, by month">
           <td class="code"></td><td class="name"><span class="histtag">Δ</span>budget − template <span class="muted">${payTie.tpl ? `${d >= 0 ? '+' : ''}${((d / Math.abs(payTie.tpl)) * 100).toFixed(1)}%` : ''}</span></td>
           ${cols.fx ? '<td></td>' : ''}${monthIdx.map((i) => `<td class="${payTie.deltaM[i] < 0 ? 'neg' : ''}">${money(payTie.deltaM[i])}</td>`).join('')}
-          ${cols.annual ? `<td class="${d < 0 ? 'neg' : ''}"><b>${money(d)}</b></td>` : ''}${cols.ref1 ? '<td></td>' : ''}${cols.ref2 ? '<td></td>' : ''}${cols.punit ? `<td>${money(d / units)}</td>` : ''}${cols.note ? '<td></td>' : ''}</tr>`);
+          ${cols.annual ? `<td class="${d < 0 ? 'neg' : ''}"><b>${money(d)}</b></td>` : ''}${refBlank}${cols.punit ? `<td>${money(d / units)}</td>` : ''}${cols.note ? '<td></td>' : ''}</tr>`);
       }
       if (S.showDist && ann) {
         rows.push(`<tr class="dist"><td></td><td class="name">% of ${bv.annual ? bv.budget.year : 'Year 1'}</td>
           ${cols.fx ? '<td></td>' : ''}
           ${monthIdx.map((i) => `<td>${((m[i] / ann) * 100).toFixed(1)}%</td>`).join('')}
-          ${cols.annual ? '<td>100%</td>' : ''}${cols.ref1 ? '<td></td>' : ''}${cols.ref2 ? '<td></td>' : ''}${cols.punit ? '<td></td>' : ''}${cols.note ? '<td></td>' : ''}</tr>`);
+          ${cols.annual ? '<td>100%</td>' : ''}${refBlank}${cols.punit ? '<td></td>' : ''}${cols.note ? '<td></td>' : ''}</tr>`);
+      }
+      // the same share of the year by QUARTER: one cell across each quarter's visible months
+      // (the % is always the whole quarter's, hidden months included)
+      if (S.showQDist && ann) {
+        const calYear = labels === MONTHS || /^Jan/i.test(labels[0]);
+        rows.push(`<tr class="dist qdist"><td></td><td class="name">% of ${bv.annual ? bv.budget.year : 'Year 1'} by quarter</td>
+          ${cols.fx ? '<td></td>' : ''}
+          ${[0, 1, 2, 3].map((q) => {
+            const vis = monthIdx.filter((i) => Math.floor(i / 3) === q).length;
+            if (!vis) return '';
+            const qs = m[q * 3] + m[q * 3 + 1] + m[q * 3 + 2];
+            const nm = calYear ? `Q${q + 1}` : `${labels[q * 3]}–${labels[q * 3 + 2]}`;
+            return `<td colspan="${vis}" class="q" title="${nm}: ${money(qs)} of ${money(ann)}">${nm} · ${((qs / ann) * 100).toFixed(1)}%</td>`;
+          }).join('')}
+          ${cols.annual ? '<td>100%</td>' : ''}${refBlank}${cols.punit ? '<td></td>' : ''}${cols.note ? '<td></td>' : ''}</tr>`);
       }
       continue;
     }
@@ -1422,8 +1446,8 @@ function gridHtml(bv, totals) {
       <td class="code">${a.code}</td>
       <td class="name${histFor(a.code).length ? ' hashist' : ''}" ${histFor(a.code).length ? `data-hist="${a.code}"` : ''} title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}${histFor(a.code).length ? ' — click for the prior T12 / CY budget by month' : ''}">${histFor(a.code).length ? `<span class="hx">${histOpen(a.code) ? '▾' : '▸'}</span>` : ''}${esc(a.name)}${smell ? ` <span class="warnflag" title="Seller billing looks NON-ACCRUAL: ${esc(smell.join('; '))}. Likely bad bills — review, or smooth via WAVG / flat / Minot seasonal.">⚠</span>` : ''}${a.active === false ? ' <span class="badge" title="Deactivated GL still carrying dollars — Recalc zeroes it">inactive — recalc to zero</span>' : ''}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
       ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? (prm.steps ? `<button class="fxp fxp-steps" data-steps="${a.code}" title="${esc(prm.label)} — click to place increases in specific months">${esc(prm.value)}</button>` : prm.multi ? `<button class="fxp fxp-steps" data-multi="${a.code}" title="${esc(prm.title || '')} — click to edit every input">${esc(prm.summary)}</button>` : `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">`) : ''}</td>` : ''}
-      ${monthIdx.map((i) => `<td class="m ${actIdx.has(i) ? 'drv-act' : sp ? '' : dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money2(m[i]) : ''}"></td>`).join('')}
-      ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}"><input data-ann="${a.code}" value="${ann ? money2(ann) : ''}" title="${bv.annual ? bv.budget.year : 'Year 1'} total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
+      ${monthIdx.map((i) => `<td class="m ${actIdx.has(i) ? 'drv-act' : sp ? '' : dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money(Math.round(m[i]) || 0) : ''}"></td>`).join('')}
+      ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}"><input data-ann="${a.code}" value="${ann ? money(Math.round(ann) || 0) : ''}" title="${bv.annual ? bv.budget.year : 'Year 1'} total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
       ${refCells(a.code, 'detail')}
       ${cols.punit ? `<td>${ann ? money(ann / units) : ''}</td>` : ''}
       ${cols.note ? `<td class="note"><input data-gl="${a.code}" value="${esc(l ? l.note : '')}" placeholder="note"></td>` : ''}
@@ -1434,7 +1458,7 @@ function gridHtml(bv, totals) {
         <td class="code"></td><td class="name"><span class="histtag">reference</span>${esc(h.label)}${h.period ? ` <span class="muted">${esc(h.period)}</span>` : ''}</td>
         ${cols.fx ? '<td></td>' : ''}
         ${monthIdx.map((i) => `<td class="${h.months[i] < 0 ? 'neg' : ''}">${h.months[i] ? money(h.months[i]) : ''}</td>`).join('')}
-        ${cols.annual ? `<td class="${hs < 0 ? 'neg' : ''}">${money(hs)}</td>` : ''}${cols.ref1 ? '<td></td>' : ''}${cols.ref2 ? '<td></td>' : ''}
+        ${cols.annual ? `<td class="${hs < 0 ? 'neg' : ''}">${money(hs)}</td>` : ''}${refBlank}
         ${cols.punit ? `<td>${money(hs / units)}</td>` : ''}${cols.note ? '<td></td>' : ''}</tr>`);
     }
   }
@@ -1463,14 +1487,20 @@ function trendSvg(bv) {
   const W = 396, H = 150, padL = 44, padR = 8, padT = 10, padB = 20;
   let body = '';
   if (series.length) {
-    // the axis always includes zero: a budget whose months all move together
-    // (flat payroll, a growth tie) must visibly move, not be re-zoomed into
-    // the same picture. The reference months (dashed) sit on the same scale.
+    // the axis is fitted to the plotted values on round gridlines — it does NOT start at
+    // zero (Troy 2026-11-09), so month-to-month movement fills the chart. The labelled
+    // gridlines carry the level; the reference months (dashed) sit on the same scale.
     const all = series.flatMap((s) => [...s.vals, ...((s.ref && s.ref.length === 12) ? s.ref : [])]);
-    let min = Math.min(0, ...all), max = Math.max(0, ...all);
-    if (max - min < 1) max = min + 1;
-    const span = max - min;
-    max += span * 0.08; if (min < 0) min -= span * 0.08;
+    const lo = Math.min(...all), hi = Math.max(...all);
+    const rough = Math.max(hi - lo, Math.abs(hi) * 0.02, 1) / 4;       // a flat line still gets a sensible band
+    const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+    const step = [1, 2, 2.5, 5, 10].map((k) => k * mag).find((s) => s >= rough);
+    let min = Math.floor(lo / step) * step, max = Math.ceil(hi / step) * step;
+    if (max === min) max = min + step;
+    if (lo - min < step * 0.1) min -= step / 2;                        // keep the lines off the frame
+    if (max - hi < step * 0.1) max += step / 2;
+    const gridY = [];
+    for (let v = Math.ceil(min / step) * step; v <= max + step * 1e-6; v += step) gridY.push(Math.abs(v) < step * 1e-6 ? 0 : v);
     const x = (i) => padL + (i * (W - padL - padR)) / 11;
     const y = (v) => padT + (H - padT - padB) * (1 - (v - min) / (max - min));
     const poly = (vals, color, dashed) => `<polyline fill="none" stroke="${color}" stroke-width="${dashed ? 1.2 : 2}" ${dashed ? 'stroke-dasharray="3 3" opacity=".6"' : ''} points="${vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}"/>`;
@@ -1479,10 +1509,15 @@ function trendSvg(bv) {
       poly(s.vals, s.color, false) +
       s.vals.map((v, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.4" fill="${s.color}"><title>${s.name} ${labels[i]}: ${money(v)}${s.ref && s.ref.length === 12 ? ` (${ref.label} ${money(s.ref[i])}, Δ ${money(v - s.ref[i])})` : ''}</title></circle>`).join('')
     ).join('');
-    const fmtAxis = (v) => Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : Math.abs(v) >= 1000 ? Math.round(v / 1000) + 'k' : Math.round(v);
-    const gridY = [0, (min + max) / 2, max - span * 0.08].filter((v, i, a) => a.indexOf(v) === i);
+    // labels carry just enough precision to tell neighbouring gridlines apart
+    const top = Math.max(Math.abs(min), Math.abs(max));
+    const fmtAxis = (v) => {
+      if (top >= 1e6) return (v / 1e6).toFixed(step >= 1e5 ? 1 : step >= 1e4 ? 2 : 3) + 'M';
+      if (top >= 1000) return (v / 1000).toFixed(step >= 1000 ? 0 : step >= 100 ? 1 : 2) + 'k';
+      return String(Math.round(v));
+    };
     const axis = gridY.map((v) =>
-      `<line x1="${padL}" y1="${y(v)}" x2="${W - padR}" y2="${y(v)}" stroke="var(--line)" stroke-dasharray="2 4"/>` +
+      `<line x1="${padL}" y1="${y(v)}" x2="${W - padR}" y2="${y(v)}" stroke="var(--line)" ${v === 0 ? '' : 'stroke-dasharray="2 4"'}/>` +
       `<text x="${padL - 4}" y="${y(v) + 3}" font-size="9" fill="var(--dim)" text-anchor="end">${fmtAxis(v)}</text>`).join('');
     const ticks = [0, 3, 6, 9, 11].map((i) => `<text x="${x(i)}" y="${H - 5}" font-size="9" fill="var(--dim)" text-anchor="middle">${labels[i]}</text>`).join('');
     body = `${axis}${lines}${ticks}`;
@@ -1702,7 +1737,7 @@ function openColsMenu(anchorBtn, labels) {
     ${item('fx', 'Fx (formula chip)')}
     ${labels.map((lb, i) => item('m' + i, lb)).join('')}
     ${item('annual', S.bv && S.bv.annual ? `${S.bv.budget.year} total` : 'Year 1 total')}
-    ${S.bv && S.bv.annual ? item('ref1', 'T12 actuals') + item('ref2', 'CY budget') : ''}
+    ${S.bv && S.bv.annual ? item('ref1', 'T12 actuals') + item('ref3', 'T3 annualized') + item('ref2', 'CY budget') : ''}
     ${item('punit', '$/Unit')}
     ${item('note', 'Note')}
     <button data-all="1" style="color:var(--accent)">Show all</button>`;
@@ -1736,10 +1771,20 @@ function tieGrowthHtml(bv) {
     '9': 'Admin & Acct', '10': 'Payroll', '11': 'Marketing', '12': 'Utilities', '13': 'R&M', '14': 'Rehab / Reserves',
   };
   const byP = Object.fromEntries(t.rows.map((r) => [r.pcode, r]));
-  const agg = (ps, label) => {
+  const t3 = ((bv.refs || []).find((r) => r.key === 'ann3') || {}).cat || null;
+  const agg =(ps, label) => {
     const budget = ps.reduce((a, p) => a + ((byP[p] || {}).budget || 0), 0);
     const uw = ps.reduce((a, p) => a + ((byP[p] || {}).uw || 0), 0);
-    return { pcode: label, label, budget, uw };
+    return { pcode: label, label, budget, uw, t3: t3 ? ps.reduce((a, p) => a + (t3.y1[p] || 0), 0) : null };
+  };
+  // T3 annualized (last 3 actual months × 4) beside the reference — display only, ties still use the reference
+  const t3ref = (bv.refs || []).find((r) => r.key === 'ann3');
+  const t3Of = (r) => (r.t3 !== undefined ? r.t3 : t3 ? (t3.y1[r.pcode] || 0) : null);
+  const t3Cell = (r) => {
+    if (!t3) return '';
+    const v = t3Of(r);
+    const g = v ? (r.budget - v) / v : null;
+    return `<td class="t3" title="T3 annualized (${esc(t3ref.period)}) — budget is ${g == null ? '—' : `${g > 0 ? '+' : ''}${(g * 100).toFixed(1)}%`} vs it (Δ ${money(r.budget - (v || 0))})">${money(v)}</td>`;
   };
   // growth of the SIGNED reference: a contra line shrinking 10% reads −10%, like its target
   const pctOf = (r) => (r.uw ? (r.budget - r.uw) / r.uw : null);
@@ -1751,7 +1796,7 @@ function tieGrowthHtml(bv) {
     const off = tgt != null && g != null ? Math.abs(g - tgt) : null;
     const vcls = off == null ? '' : off < 0.0015 ? 'good' : off > 0.01 ? 'bad' : '';
     return `<tr class="${cls || ''}"><td title="${esc(r.label)}">${esc(SHORT[r.pcode] || r.label)}</td>
-      <td>${money(r.uw)}</td><td>${money(r.budget)}</td>
+      <td>${money(r.uw)}</td>${t3Cell(r)}<td>${money(r.budget)}</td>
       <td class="var ${vcls}" title="Δ ${money(r.budget - r.uw)} vs ${esc(refLabel)}">${fmtPct(g)}</td>
       <td>${key != null ? `<input data-gt="${key}" value="${tgt != null ? (tgt * 100).toFixed(1) : ''}" placeholder="%" style="width:48px; font-size:11px; text-align:right" title="Growth target vs ${esc(refLabel)} (%)">` : ''}</td>
       <td>${key != null && tgt != null && (off == null || off >= 0.0015) ? `<button class="rb" data-tie="${key}" title="Shift this subtotal's growth factors so it lands at ${esc(refLabel)} ${fmtPct(tgt)}">tie</button>` : ''}</td></tr>`;
@@ -1759,18 +1804,18 @@ function tieGrowthHtml(bv) {
   const cat = (p) => (byP[p] ? row(byP[p], p) : '');
   const nTargets = Object.keys(gt).filter((k) => gt[k] != null).length;
   const refShort = inp.refSource === 'budget' ? 'CY bud' : 'T12';
-  return `<table>
-    <tr><th>Subtotal</th><th title="${esc(refLabel)}">${refShort}</th><th>Budget</th><th>Δ%</th><th>Target</th><th></th></tr>
+  return `<table${t3 ? ' class="t3"' : ''}>
+    <tr><th>Subtotal</th><th title="${esc(refLabel)}">${refShort}</th>${t3 ? `<th title="T3 annualized — ${esc(t3ref.period)}">T3 ann</th>` : ''}<th>Budget</th><th>Δ%</th><th>Target</th><th></th></tr>
     ${cat('1')}${byP.loss ? row(byP.loss, null) : ''}
     ${row(agg(['1', 'loss'], 'Net Gross Potential Rent'), null, 'sub')}
     ${cat('2')}${cat('3')}
     ${row(agg(['1', 'loss', '2', '3'], 'Total Rental Income'), null, 'sub')}
     ${cat('4')}${cat('5')}
     ${row(agg(['4', '5'], 'Total Other + Utility Inc'), null, 'sub')}
-    ${row({ ...t.egi, label: 'Total Income (EGI)' }, null, 'big')}
+    ${row({ ...t.egi, label: 'Total Income (EGI)', t3: t3 ? t3.egi : null }, null, 'big')}
     ${['6', '7', '8', '9', '10', '11', '12', '13', '14'].map((p) => (p === '7' ? (byP[p] ? row(byP[p], null) : '') : cat(p))).join('')}
-    ${row({ ...t.toe, label: 'Total OpEx' }, 'opex', 'big')}
-    ${row({ ...t.noi, label: 'NOI' }, 'noi', 'big')}
+    ${row({ ...t.toe, label: 'Total OpEx', t3: t3 ? t3.toe : null }, 'opex', 'big')}
+    ${row({ ...t.noi, label: 'NOI', t3: t3 ? t3.noi : null }, 'noi', 'big')}
   </table>
   <div class="row" style="margin-top:6px; justify-content:space-between; align-items:center">
     <span class="muted" style="font-size:11px">Δ% = budget vs ${esc(refLabel)}. Type a target, then <b>tie</b>.</span>

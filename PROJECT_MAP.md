@@ -2,7 +2,7 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-11-09 — flat-fee utility billing (reimbursement income = last actual month × budgeted occupancy, `utilities.billing`), Enter on an assumption box moves to the next row; payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
+> Last updated: 2026-11-09 — editor view pass (quarterly % rows on totals, trend chart axis fitted to the data instead of zero, T3-annualized reference column after the T12 in the grid and the compare card, whole-dollar cell display); flat-fee utility billing (reimbursement income = last actual month × budgeted occupancy, `utilities.billing`), Enter on an assumption box moves to the next row; payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
 > Earlier: 2026-09-10 — actualized months (partial-month rule; section above Exports); 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
 > w/ per-unit basis + ND payroll model).
 
@@ -490,6 +490,26 @@ fee-increase % (`baseline.glGrowth`). **Site default** (`FLAT_FEE_PROPERTIES`, `
 **Enter on an inline assumption box** (`input.fxp`) applies the value and lands on the next
 row's box (`focusFxpAfter`); an unchanged value just moves on. The Assumptions dialog's
 category % boxes hop the same way.
+
+## Editor view pass (Troy 2026-11-09)
+
+- **% by quarter**: More → "% distribution on totals — by quarter" (`S.showQDist`, localStorage
+  `bt-qdist`) adds a `tr.dist.qdist` row under every total: one cell spanning each quarter's
+  visible months (the % is the whole quarter's even when a month column is hidden). Independent of
+  the by-month row (`S.showDist`). Quarters are the budget's own month order (Q1–Q4 on a calendar
+  year, "Aug-26–Oct-26" style on an ownership year).
+- **Trend chart axis** (`trendSvg`): fitted to the plotted values on round gridlines (1 / 2 / 2.5 /
+  5 × 10ⁿ steps), NOT anchored at zero — this reverses the earlier "always includes zero" rule at
+  Troy's request. A zero gridline, when in range, draws solid.
+- **T3 annualized**: `loadBudget` adds ref `ann3` (`annualizedFromCal(actualCal, lastMonth, 3)`,
+  period "Aug–Oct actuals × 4", plus `cat {y1, egi, toe, noi}` from `refFromCalendar`). Grid column
+  "T3 ann" right after T12 (`cols.ref3`, column-picker key `ref3`; `refBlank` fills the reference
+  columns on rows without figures); compare card column after the reference (`table.t3` tightens
+  the card). Reference only — ties and Δ% still run against the chosen reference. Annual budgets
+  only (acquisition budgets have no own T12). `ann4` (4-mo, the workbook Summary) is unchanged.
+- **Whole dollars**: month cells and the year-total box DISPLAY rounded dollars; stored months keep
+  cents (CSV / workbook unchanged). Display never writes: only a typed change dirties a row, so
+  nothing gets overridden or locked by the rounding.
 
 ## Payroll template tie-out (Troy 2026-11-09)
 
