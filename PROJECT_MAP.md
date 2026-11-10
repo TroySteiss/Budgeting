@@ -2,7 +2,7 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-11-09 — loss to lease: market growth deepens every lease and a reset burns only the burnoff share (`ltlModel` growth); vacancy is an annual average shaped by lease expirations (`vacancyByMonth`); roster raises start in the cycle's effective month (editable on the Payroll tab); Δ% T12 column; annual budgets take wages from the Payroll tab by default (roster + raise entries, drafts included; `src/payroll-data.ts`, `inputs.wageSource`); 6310 corporate rate follows the budget year (2027 workbook rev2: $58.17/unit/yr + $513/mo), Minot sites are subjects with the role editable in Settings; editor view pass (quarterly % rows on totals, trend chart axis fitted to the data instead of zero, T3-annualized reference column after the T12 in the grid and the compare card, whole-dollar cell display); flat-fee utility billing (reimbursement income = last actual month × budgeted occupancy, `utilities.billing`), Enter on an assumption box moves to the next row; payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
+> Last updated: 2026-11-09 — reviewability pass (dropped lines, chip key, formula-version stamp, defaults-in-use card, export check), vacancy on a carry-over curve from the last actual month, prior-period collections capped at delinquency; loss to lease: market growth deepens every lease and a reset burns only the burnoff share (`ltlModel` growth); vacancy is an annual average shaped by lease expirations (`vacancyByMonth`); roster raises start in the cycle's effective month (editable on the Payroll tab); Δ% T12 column; annual budgets take wages from the Payroll tab by default (roster + raise entries, drafts included; `src/payroll-data.ts`, `inputs.wageSource`); 6310 corporate rate follows the budget year (2027 workbook rev2: $58.17/unit/yr + $513/mo), Minot sites are subjects with the role editable in Settings; editor view pass (quarterly % rows on totals, trend chart axis fitted to the data instead of zero, T3-annualized reference column after the T12 in the grid and the compare card, whole-dollar cell display); flat-fee utility billing (reimbursement income = last actual month × budgeted occupancy, `utilities.billing`), Enter on an assumption box moves to the next row; payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
 > Earlier: 2026-09-10 — actualized months (partial-month rule; section above Exports); 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
 > w/ per-unit basis + ND payroll model).
 
@@ -609,20 +609,75 @@ that reset before a later increase is below market again after it. `openMarket` 
 returned but the annual engine no longer uses it; acquisition budgets pass no growth (unchanged).
 The no-leases template path already behaved (burn share × remaining).
 
-## Vacancy: an annual average shaped by lease expirations (Troy 2026-11-09)
+## Vacancy: an annual average on a carry-over curve (Troy 2026-11-09)
 
-"The target/input should be more of an average/annual total. The lease expirations should
-dictate where we incur more or less vacancy." `vacancyByMonth(pcts, exp, gpr, weight)`
-(shared/annual.ts, tested): `inputs.vacancyPct` with one value (all twelve equal) is the ANNUAL
-AVERAGE; each month's % = average × ((1 − w) + w × turnover ÷ the GPR-weighted mean turnover),
-turnover = expirations lagged one month (the turn-cost lag). The year's 5031 always equals
-average × GPR (cent difference on the largest month). `inputs.vacancyExpWeight` (default 1;
-0 = flat) is the "Vacancy follows lease expirations %" box in Assumptions. Twelve DIFFERENT
-values = typed by month, used as they are. **Guard:** fewer than nine months with expirations
-(`VACANCY_MIN_EXP_MONTHS` — a template listing only the next few months, e.g. clnd 2026's
-[…2, 29…]) → flat, or the whole year would land on those months. Driver `{ method: 'vacancy',
-avg, shaped expirations|typed|flat, pcts, weight }`, chip VAC·EXP; the row box is the average.
-Flat-fee utility income reads the same shaped monthly %. Annual engine only.
+The input (`inputs.vacancyPct`, one value) is the ANNUAL AVERAGE; the year's 5031 always equals
+average × GPR. Where it lands by month is `vacancyByMonth(pcts, exp, gpr, weight, { startPct,
+lastMonth })` (shared/annual.ts, tested). The first cut copied the expiration curve 1:1 and Troy
+rejected it the same day: "very extreme… not 1:1 correlated. It normally hits the month after,
+and vacancy tends to compound and get spread across further when heavy periods are around… if we
+just posted 23K in vacancy cost most recently, we likely are not going to fill up over winter all
+the way down to 7K." So it is a carry-over chain:
+
+    vacancy[m] = vacancy[m-1] × carry[m] + k × move-outs[m]
+
+- move-outs[m] = the expirations of the month before (the turn-cost lag);
+- `VACANCY_CARRY` (calendar months) = the share of last month's vacancy still vacant: 0.85
+  Nov–Feb, 0.75 Mar–Apr and Sep–Oct, 0.65 May–Aug. **Judgment values** — the one place to tune;
+- the chain starts at the LAST ACTUAL month's vacancy % (|5031| ÷ 4994 posted) and runs through
+  the months before January; with no actual it uses its own steady state;
+- k is solved so the GPR-weighted average equals the input; an average below what the carry-over
+  alone leaves keeps the decay shape, scaled.
+
+With a normal starting point Q1 runs lighter than Q4 (clnd roll, 2.5% average: 1.7% in May to 3.4%
+in December). When the last actual month is far above the average, January starts high and the
+rest of the year must run low to hit the average — raise the average if that looks wrong.
+`inputs.vacancyExpWeight` (default 1; 0 = flat) blends the curve with the flat average
+("Vacancy follows move-outs & carry-over %" in Assumptions). Twelve DIFFERENT values = typed by
+month. Guard: fewer than nine months with expirations (`VACANCY_MIN_EXP_MONTHS`) → flat. Driver
+`{ method: 'vacancy', avg, shaped, pcts, weight, startPct }`, chip VAC·EXP. Annual engine only.
+
+## Prior-period collections ≤ delinquency (Troy 2026-11-09)
+
+"Prior period collections should not be more than overall DQ. Where would that money come
+from??" 5036 = T12 ratio × net GPR, then each month is capped at that month's budgeted |5035|
+(only when 5035 carries dollars). Driver gains `capped: true, uncapped: <year at the ratio>`; the
+chip tooltip says so.
+
+## Reviewability pass (devil's advocate 2026-11-09, day-one fixes)
+
+`DEVILS_ADVOCATE_2026-11-09.md` is the review. Built from it:
+
+- **Budget reference label** — `budgetRefLabel(period)`: a calendar year reads "2026 budget";
+  the template's T12-window budget reads "budget Nov-25–Oct-26" (it was labelled "2025 budget"
+  on 2027 budgets). Grid header "Bud Nov-25–Oct-26"; the compare-card option uses the same label.
+- **Dropped lines** — a `flatT12` line at or under $1,000 of T12 now carries driver
+  `{ method: 'dropped', t12, limit }` (still zero). Chip `<$1K`; legend chip "N lines dropped
+  under $1K · $X" → `openDroppedDialog` (tick lines → `baseline.glShape[gl] = 'flat'`); the row
+  menu has "Budget this line". A shape chosen on the row bypasses the threshold.
+- **Chips** renamed: RR→ROLL, T12→SAME MO, RATE→$/UNIT, RATIO→%WAGES, TURN→T12·TURNS,
+  PAY·draft→PAY·prelim; 5035 / 5036 read %NET RENT / %NET GPR. `TAG_KEY` + "? chip key" lists all.
+  Percent boxes on rows carry a % sign (`.fxu`).
+- **Formula version** — `ENGINE_VERSION` (shared/annual.ts; BUMP IT when a formula or default
+  changes results). `saveLines(id, lines, true)` on every full build stamps
+  `budgets.calc_version` / `calc_at` (migration 012); `budgetView.engineVersion`; the editor
+  shows a "calculated on older formulas — Recalc" bar when they differ.
+- **Defaults in use** card (`defaultsInUse` / `defaultsCardHtml`, annual): increase factors, loss
+  to lease, vacancy, GPR start vs last posted, wages, management fee (warns when the template's
+  tier table reads a different % at the budget's cash-on-cash), corporate rates, taxes, dropped
+  lines, special projects — each tagged default / set. "I have reviewed these" →
+  `POST /budgets/:id/ack-defaults { hash }` stores `inputs.defaultsAck { by, at, hash }` WITHOUT
+  regenerating; a changed fingerprint reads "changed since reviewed".
+- **Export check** — `okToExport`: a confirm listing stale formulas, preliminary raises,
+  unreviewed defaults, fee-tier and special-project warnings before a Yardi CSV / All exports.
+- KPI tiles: "Cash flow · no SP budgeted" / "Cash flow before SP"; cash-on-cash tooltip says what
+  it leaves out.
+- **WAVG row tool** (annual): uses the row's own statement line without asking for a source; the
+  picker only opens when the GL has no history. Acquisition budgets still pick (seller vs Minot).
+
+Still open from the review: management-fee tier (needs Troy's answer), turn costs never taking
+the "turns" shape while GRKS rules are loaded, full-staffing wages, 6310 vs what posts, January
+GPR step not reaching LTL, burden-ratio cap, expirations frozen at the template's counts.
 
 ## Payroll flow into the budget worksheet (Troy 2026-11-03)
 

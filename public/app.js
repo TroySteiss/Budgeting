@@ -45,7 +45,7 @@ function drvMetaBase(l) {
   switch (method) {
     case 't3avg': return { cls: 'drv-comp', tag: 'T3', label: `T3 avg of ${l.driver.srcName || 'this GL'} × ${(((l.driver || {}).pct || 0)).toFixed(1)}% → MROUND $250` };
     case 'wavg': return { cls: l.driver.srcType === 'seller' ? 'drv-t12' : 'drv-comp', tag: 'WAVG', label: `1-2-1 weighted distribution of ${l.driver.srcName || ''} × ${((l.driver.pct || 0)).toFixed(1)}%${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
-    case 'gpr': return { cls: 'drv-rr', tag: 'RR', label: `GPR — steps: ${gprStepsSummary(((S.bv && S.bv.budget && S.bv.budget.inputs) || {}).gpr ? S.bv.budget.inputs.gpr.growthPct : null)}` };
+    case 'gpr': return { cls: 'drv-rr', tag: 'ROLL', label: `GPR — steps: ${gprStepsSummary(((S.bv && S.bv.budget && S.bv.budget.inputs) || {}).gpr ? S.bv.budget.inputs.gpr.growthPct : null)}` };
     case 'ltl': {
       const lt = (S.bv && S.bv.budget && S.bv.budget.inputs && S.bv.budget.inputs.ltl) || {};
       const how = lt.mode === 'flat' ? 'held flat (no burnoff)' : lt.mode === 'ramp' ? 'ramp to a % of GPR' : (S.bv && S.bv.leaseCount) ? 'per-lease burnoff at each turnover' : 'burnoff on lease expirations';
@@ -53,16 +53,16 @@ function drvMetaBase(l) {
     }
     case 'vacancy': {
       const d = l.driver;
-      if (d.shaped === 'expirations') return { cls: 'drv-rr', tag: 'VAC·EXP', label: `Vacancy averages ${(d.avg * 100).toFixed(2)}% of GPR for the year; lease expirations (+1 month) decide the months — ${(Math.min(...d.pcts) * 100).toFixed(1)}% to ${(Math.max(...d.pcts) * 100).toFixed(1)}%${d.weight != null && d.weight < 1 ? ` (${Math.round(d.weight * 100)}% weight on expirations)` : ''}` };
+      if (d.shaped === 'expirations') return { cls: 'drv-rr', tag: 'VAC·EXP', label: `Vacancy averages ${(d.avg * 100).toFixed(2)}% of GPR for the year. Month by month it carries over: ${d.startPct != null ? `it starts from the last actual month (${(d.startPct * 100).toFixed(1)}%), ` : ''}move-outs land the month after a lease expires and empty units fill gradually (slowest in winter) — ${(Math.min(...d.pcts) * 100).toFixed(1)}% to ${(Math.max(...d.pcts) * 100).toFixed(1)}%${d.weight != null && d.weight < 1 ? ` (${Math.round(d.weight * 100)}% weight on expirations)` : ''}` };
       if (d.shaped === 'typed') return { cls: 'drv-rr', tag: '%GPR', label: `Vacancy % of GPR typed month by month (averages ${(d.avg * 100).toFixed(2)}%)` };
       return { cls: 'drv-rr', tag: '%GPR', label: d.avg != null ? `Vacancy ${(d.avg * 100).toFixed(2)}% of GPR every month (set flat, or the lease expirations on file cover fewer than nine months)` : '% of GPR' };
     }
     case 'flatFee': return { cls: 'drv-rr', tag: 'FLAT FEE', label: `Flat utility fee per occupied unit — ${MONTHS[(l.driver.lastMonth || 1) - 1]} actual $${money(l.driver.base || 0)} × budgeted occupancy ÷ ${((l.driver.occLast || 1) * 100).toFixed(1)}% occupied that month (ties to the vacancy assumption)${l.driver.pct ? ` × ${(l.driver.pct * 100).toFixed(1)}% fee increase` : ''}` };
     case 'catShare': return { cls: 'drv-uw', tag: 'UW', label: `UW category ${l.driver.pcode} share` };
     case 'perUnitComp': return { cls: 'drv-comp', tag: 'MINOT', label: `Minot $${l.driver.perUnit}/unit × units` };
-    case 'payrollModel': return { cls: 'drv-pay', tag: 'PAY', label: l.driver.live ? `Payroll tab wages — roster rates with each person's raise from "${l.driver.cycle || 'the raise cycle'}" — January at the current rate, half the increase in February, all of it from March${l.driver.draft ? ' · DRAFT raises (a region is not finalized yet) — Recalc picks up changes' : ' · finalized'}` : l.driver.roster ? 'Pay-rates roster wages (raises prorated — no March step)' : 'Payroll model wages', tag: l.driver.live && l.driver.draft ? 'PAY·draft' : 'PAY' };
+    case 'payrollModel': return { cls: 'drv-pay', tag: 'PAY', label: l.driver.live ? `Payroll tab wages — roster rates with each person's raise from "${l.driver.cycle || 'the raise cycle'}" — January at the current rate, half the increase in February, all of it from March${l.driver.draft ? ' · PRELIMINARY: raise entries are not finalized for every region feeding this property — Recalc picks up changes' : ' · finalized'}` : l.driver.roster ? 'Pay-rates roster wages (raises prorated — no March step)' : 'Payroll model wages', tag: l.driver.live && l.driver.draft ? 'PAY·prelim' : 'PAY' };
     case 'burdenRatio': { const bs = l.driver.basis === 'budget' ? 'CY budget ratio' : l.driver.basis === 'mix' ? 'avg of T12 actual & CY budget ratios' : 'T12 actual ratio';
-      return { cls: 'drv-pay', tag: 'RATIO', label: `${((l.driver.ratio || 0) * 100).toFixed(1)}% of wages (${S.bv && S.bv.annual ? `same-month ${bs} × that month's budgeted wages — keeps the quarterly / seasonal shape` : 'Minot ratio'})` }; }
+      return { cls: 'drv-pay', tag: '%WAGES', label: `${((l.driver.ratio || 0) * 100).toFixed(1)}% of wages (${S.bv && S.bv.annual ? `same-month ${bs} × that month's budgeted wages — keeps the quarterly / seasonal shape` : 'Minot ratio'})` }; }
     case 'mgmtPct': return { cls: 'drv-fee', tag: '%INC', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.priorMonth ? 'prior-month ' : ''}income` };
     case 'interest': return { cls: 'drv-int', tag: 'INT', label: 'Interest (loan × rate × days)' };
     case 'sellerUtil': return { cls: 'drv-t12', tag: 'SLR', label: 'Seller statement level (× growth)' };
@@ -70,6 +70,7 @@ function drvMetaBase(l) {
     case 'recovery': return { cls: 'drv-t12', tag: 'REC', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% of prior-month ${l.driver.src ? `← ${l.driver.src}` : 'billing'}` };
     case 'charges': return { cls: 'drv-rr', tag: 'CHG', label: 'Rent-roll charges × 12' };
     case 'zero': return { cls: 'drv-int', tag: 'ZERO', label: 'Zeroed out — this GL carries nothing' };
+    case 'dropped': return { cls: 'drv-drop', tag: '<$1K', label: `NOT budgeted: the trailing-12 was $${money(l.driver.t12 || 0)}, and the template drops lines at or under $${money(l.driver.limit || 1000)}. Click to budget it at T12 ÷ 12` };
     case 't12curve': return { cls: 'drv-t12', tag: 'T12C', label: `Seller ${l.driver.name || ''} T12 TOTAL × ${(l.driver.pct || 0).toFixed(1)}% on ${l.driver.shape === 'minot' ? 'the Minot' : l.driver.shape || 'flat'} curve${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
     case 'linkLine': return { cls: 'drv-fee', tag: 'LINK', label: `= ${l.driver.src || ''} ${l.driver.srcName || ''} × ${l.driver.weight ?? 1} — follows it live on every regeneration` };
     case 'yardiCsv': return { cls: 'drv-man', tag: 'YARDI', label: `Adopted from the Yardi budget CSV${l.driver.file ? ` (${l.driver.file})` : ''} — the month as it sits in Yardi` };
@@ -81,15 +82,15 @@ function drvMetaBase(l) {
       const d = l.driver;
       const shape = { actual: 'same calendar month', wavg: '1-2-1 weighted distribution', flat: 'T12 ÷ 12 flat', curve: 'T12 total on the GL curve', last: 'last actual month, flat', avgnz: 'average of active months, flat', turns: `T12 total on lease expirations + 1 mo lag${d.turns ? ` (${Math.round(d.turns)} expirations)` : ''}` }[d.shape] || d.shape;
       const factor = d.pcts ? `+ Conservice forecast ${(Math.min(...d.pcts) * 100).toFixed(0)}–${(Math.max(...d.pcts) * 100).toFixed(0)}% by month` : `× ${(1 + (d.pct || 0)).toFixed(3)}`;
-      const tag = d.src === 'budget' ? 'CYB' : d.shape === 'turns' ? 'TURNS' : d.shape === 'last' ? 'LAST' : d.pcts ? 'UTIL' : d.shape === 'wavg' ? 'WAVG' : d.shape === 'flat' ? 'T12/12' : 'T12';
+      const tag = d.src === 'budget' ? 'CYB' : d.shape === 'turns' ? 'TURNS' : d.shape === 'last' ? 'LAST' : d.pcts ? 'UTIL' : d.shape === 'wavg' ? 'WAVG' : d.shape === 'flat' ? 'T12/12' : 'SAME MO';
       const lastWarn = d.lastDev != null ? ` · ⚠ last actual month is ${d.lastDev > 0 ? '+' : ''}${Math.round(d.lastDev * 100)}% vs the T12 average — one month is setting the year (shape menu: T12 ÷ 12 flat)` : '';
-      return { cls: 'drv-base', tag: d.lastDev != null ? '⚠LAST' : tag, label: `${d.src === 'budget' ? 'CY budget' : 'Own trailing-12 actual'} — ${shape} ${factor}${d.mult ? ` → MROUND $${d.mult}` : ''} · T12 ${Math.round(d.base || 0).toLocaleString()}${d.rule ? ' · GRKS foundation rule' : ''}${lastWarn}` };
+      return { cls: 'drv-base', tag: d.lastDev != null ? '⚠LAST' : tag, label: `${d.src === 'budget' ? 'CY budget' : 'Own trailing-12 actual'} — ${shape} ${factor}${d.mult ? ` → MROUND $${d.mult}` : ''} · T12 ${Math.round(d.base || 0).toLocaleString()}${d.rule ? ' · default shape and factor from the 2026 GRKS draft (not set for this property)' : ''}${lastWarn}` };
     }
-    case 'pctGpr': return { cls: 'drv-base', tag: '%GPR', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.of === 'net' ? 'net rental income' : l.driver.of === 'netgpr' ? 'net GPR' : 'GPR'} (${l.driver.basis === 'last' ? 'last-month' : 'trailing-12'} ratio)` };
+    case 'pctGpr': return { cls: 'drv-base', tag: l.driver.of === 'net' ? '%NET RENT' : l.driver.of === 'netgpr' ? '%NET GPR' : '%GPR', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.of === 'net' ? 'net rental income' : l.driver.of === 'netgpr' ? 'net GPR' : 'GPR'} (${l.driver.basis === 'last' ? 'last-month' : 'trailing-12'} ratio)${l.driver.capped ? ` — CAPPED at each month's budgeted delinquency (the ratio alone gave ${money(l.driver.uncapped || 0)} for the year; collections cannot exceed what is delinquent)` : ''}` };
     case 'recapture': return { cls: 'drv-base', tag: 'RECAP', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% recapture of the other concession lines (T12 ratio)` };
-    case 'perTurn': return { cls: 'drv-base', tag: 'TURN', label: `$${money(l.driver.amount)} per new move-in × ${money(l.driver.turns)} projected move-ins (expirations × (1 − renewal %))` };
+    case 'perTurn': return { cls: 'drv-base', tag: 'T12·TURNS', label: `Last year's dollars placed on the months with projected move-ins (${money(l.driver.turns)} of them, $${money(l.driver.amount)} each). The YEAR total stays at the trailing-12 unless a $ per move-in is typed — it does not move with the renewal %` };
     case 'suggested': return { cls: 'drv-corp', tag: 'CORP', label: `Corporate budget suggestion${l.driver.note ? ` — ${l.driver.note}` : ''}` };
-    case 'corpRate': return { cls: 'drv-corp', tag: 'RATE', label: `Corporate rate${l.driver.perUnitYr ? ` $${l.driver.perUnitYr}/unit/yr` : ''}${l.driver.flatMo ? ` + $${l.driver.flatMo}/mo` : ''}` };
+    case 'corpRate': return { cls: 'drv-corp', tag: '$/UNIT', label: `Corporate rate${l.driver.perUnitYr ? ` $${l.driver.perUnitYr}/unit/yr` : ''}${l.driver.flatMo ? ` + $${l.driver.flatMo}/mo` : ''}` };
     case 'debtService': return { cls: 'drv-int', tag: 'DEBT', label: `Yardi amortization schedule — ${l.driver.kind}${l.driver.loan ? ` (${l.driver.loan})` : ''}` };
     default: return { cls: 'drv-none', tag: '—', label: 'No formula (zero / manual)' };
   }
@@ -933,13 +934,14 @@ function renderEditor(el) {
         <input type="file" id="imp-file" accept=".xlsx" style="display:none">
       </div>
     </div>
+    ${staleBannerHtml(bv)}
     <div class="kpis">
       ${kpiCard('Total income', k.income, prop.units)}
       ${kpiCard('Total expense', k.expense, prop.units)}
       ${kpiCard('NOI', k.noi, prop.units)}
       ${kpiCard('Interest', k.interest, prop.units)}
-      ${kpiCard('Cash flow', k.cashFlow, prop.units)}
-      <div class="kpi"><div class="lbl">Cash on cash</div><div class="val">${k.coc != null ? pctf(k.coc) : '—'}</div><div class="sub">${inp.capital ? 'on ' + money(inp.capital) : 'set capital'}</div></div>
+      ${kpiCard(k.sp ? 'Cash flow before SP' : 'Cash flow · no SP budgeted', k.cashFlow, prop.units)}
+      <div class="kpi" title="(NOI − interest − principal) ÷ capital. Special projects are NOT deducted${k.sp ? '' : ' and none are budgeted yet'}${k.principal ? '' : '; no principal is budgeted'}."><div class="lbl">Cash on cash${k.sp ? ' before SP' : ''}</div><div class="val">${k.coc != null ? pctf(k.coc) : '—'}</div><div class="sub">${inp.capital ? 'on ' + money(inp.capital) : 'set capital'}</div></div>
     </div>
     <div class="editor${localStorage.getItem('bt-side') === '0' ? ' noside' : ''}">
       <div>
@@ -947,11 +949,13 @@ function renderEditor(el) {
           ${(() => {
             const used = new Set(bv.lines.filter((l) => l.months && l.months.some((v) => v)).map((l) => drvMeta(l).cls));
             if (acts.length) used.add('drv-act');
-            const items = [['drv-rr', 'Rent roll / income'], ['drv-uw', 'UW tie'], ['drv-comp', 'Minot comps'], ['drv-pay', 'Payroll model'], ['drv-fee', '% of income'], ['drv-int', bv.annual ? 'Debt schedule / zero' : 'Interest'],
-              ['drv-base', 'Own T12 × factor (foundation rule)'], ['drv-corp', 'Corporate rate / suggestion'], ['drv-t12', 'Seller stmt / recovery'], ['drv-man', 'Manual override'], ['drv-act', 'Posted actuals (locked month)']];
+            const items = [['drv-rr', 'Rent roll / income'], ['drv-uw', 'UW tie'], ['drv-comp', 'Minot comps'], ['drv-pay', 'Payroll tab / model'], ['drv-fee', '% of income'], ['drv-int', bv.annual ? 'Debt schedule / zero' : 'Interest'],
+              ['drv-base', "This property's own history"], ['drv-corp', 'Corporate rate / suggestion'], ['drv-t12', 'Seller stmt / recovery'], ['drv-man', 'Manual override'], ['drv-act', 'Posted actuals (locked month)']];
             return items.filter(([c]) => used.has(c)).map(([c, lb]) => `<span><span class="dot ${c}"></span>${lb}</span>`).join('');
           })()}
           <span class="muted">· click a row's chip to change its formula</span>
+          <button class="chip" id="tag-key" title="What every chip on the grid means">? chip key</button>
+          ${droppedChipHtml(bv)}
           ${bv.hist && (bv.hist.t12 || bv.hist.budget) ? `<button class="chip hist-all" id="hist-all" title="Unfold the prior trailing-12 and current-year budget by month under every GL — reference rows, not part of the budget">${S.histAll ? '▾ hide history' : '▸ history under every GL'}</button>` : ''}
     ${bv.hist && bv.hist.payroll ? (() => { const tpl = Object.values(bv.hist.payroll.cal).reduce((a, m) => a + m.reduce((x, y) => x + y, 0), 0); const bud = (bv.categoryTotals && bv.categoryTotals['10']) ?? null; const d = bud == null ? null : bud - tpl; return `<button class="chip paytie-chip" id="paytie-open" title="${esc(bv.hist.payroll.label)} — Seth's payroll template for this property: budget payroll ${money(bud)} vs template ${money(tpl)}. Click to unfold the template under every payroll GL (reference rows; the budget is not changed).">payroll template Δ ${d == null ? '' : `${d >= 0 ? '+' : ''}${money(d)}`}${tpl && d != null ? ` (${((d / Math.abs(tpl)) * 100).toFixed(1)}%)` : ''}</button>`; })() : ''}
           ${(() => {
@@ -964,6 +968,7 @@ function renderEditor(el) {
         <div class="gridwrap">${gridHtml(bv, totals)}</div>
       </div>
       <div class="side">
+        ${defaultsCardHtml(bv)}
         <div class="card">
           <h2>Monthly trend</h2>
           ${trendSvg(bv)}
@@ -971,7 +976,7 @@ function renderEditor(el) {
         <div class="card tie">
           <h2>${bv.annual ? `Compare to <select data-refsrc style="font-size:12px; margin-left:4px">
               <option value="actual" ${(inp.refSource || 'actual') === 'actual' ? 'selected' : ''}>Trailing-12 actuals</option>
-              <option value="budget" ${inp.refSource === 'budget' ? 'selected' : ''} ${(bv.refs || []).some((r) => r.key === 'budget') ? '' : 'disabled'}>Current-year budget</option>
+              <option value="budget" ${inp.refSource === 'budget' ? 'selected' : ''} ${(bv.refs || []).some((r) => r.key === 'budget') ? '' : 'disabled'}>${esc((((bv.refs || []).find((r) => r.key === 'budget') || {}).label || 'Current-year budget').replace(/^budget /i, 'Budget '))}</option>
             </select>` : 'Tie-out vs UW'}</h2>
           ${acts.some((a) => a.index >= 0) ? `<p class="muted" style="margin:0 0 6px; font-size:11.5px">✓ ${acts.filter((a) => a.index >= 0).map((a) => esc(a.period)).join(', ')} locked to posted actuals — that month's actual-vs-plan gap shows here as variance.</p>` : ''}
           ${tieHtml(bv)}
@@ -993,8 +998,9 @@ function renderEditor(el) {
 
   // exports: cutoff (zero calendar months through) lives in the menu, remembered per session
   S.exCutoff = S.exCutoff || 0;
-  const exportCsv = (yr) => window.open(`/api/budgets/${b.id}/export.csv?calYear=${yr}&cutoff=${S.exCutoff}`, '_blank');
+  const exportCsv = (yr) => { if (okToExport(S.bv)) window.open(`/api/budgets/${b.id}/export.csv?calYear=${yr}&cutoff=${S.exCutoff}`, '_blank'); };
   const exportAll = async () => {
+    if (!okToExport(S.bv)) return;
     const urls = [
       `/api/budgets/${b.id}/export.csv?calYear=${b.year}&cutoff=${S.exCutoff}`,
       ...(start > 1 ? [`/api/budgets/${b.id}/export.csv?calYear=${b.year + 1}&cutoff=${S.exCutoff}`] : []),
@@ -1073,6 +1079,10 @@ function renderEditor(el) {
     e.target.value = '';
   });
   document.getElementById('recalc').addEventListener('click', async () => { pushUndo(); S.bv = await POST(`/budgets/${b.id}/recalc`); render(); });
+  { const sr = document.getElementById('stale-recalc'); if (sr) sr.addEventListener('click', async () => { pushUndo(); S.bv = await POST(`/budgets/${b.id}/recalc`); render(); }); }
+  { const tk = document.getElementById('tag-key'); if (tk) tk.addEventListener('click', openTagKey); }
+  { const dop = document.getElementById('dropped-open'); if (dop) dop.addEventListener('click', () => openDroppedDialog(b)); }
+  { const ak = document.getElementById('ack-defaults'); if (ak) ak.addEventListener('click', async () => { S.bv = await POST(`/budgets/${b.id}/ack-defaults`, { hash: defaultsHash(defaultsInUse(S.bv)) }); render(); }); }
   document.getElementById('undo-btn').addEventListener('click', () => doUndo(b.id));
   // condensed section headers: click toggles, choice is locked in localStorage
   el.querySelectorAll('tr.header[data-sec]').forEach((tr) => tr.addEventListener('click', () => {
@@ -1410,7 +1420,7 @@ function gridHtml(bv, totals) {
   })();
   const histOpen = (code) => S.histAll || S.histOpenSet.has(code);
   const rows = [];
-  rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th${actIdx.has(i) ? ' class="actcol" title="Locked to posted actuals — an edit here corrects the posted figure"' : ''}>${labels[i]}${actIdx.has(i) ? ' ✓' : ''}</th>`).join('')}${cols.annual ? `<th>${bv.annual ? bv.budget.year : 'Year 1'}</th>` : ''}${cols.refpct ? `<th title="Blended increase: the ${bv.budget.year} total vs the trailing-12 actual (${esc(refA.period)})">Δ% T12</th>` : ''}${cols.ref1 ? `<th title="${esc(refA.period)}">T12</th>` : ''}${cols.ref3 ? `<th title="T3 annualized — ${esc(refT3.period)}">T3 ann</th>` : ''}${cols.ref2 ? `<th title="${esc(refB.period)}">${esc(refB.label.replace(/ budget$/i, ' bud'))}</th>` : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
+  rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th${actIdx.has(i) ? ' class="actcol" title="Locked to posted actuals — an edit here corrects the posted figure"' : ''}>${labels[i]}${actIdx.has(i) ? ' ✓' : ''}</th>`).join('')}${cols.annual ? `<th>${bv.annual ? bv.budget.year : 'Year 1'}</th>` : ''}${cols.refpct ? `<th title="Blended increase: the ${bv.budget.year} total vs the trailing-12 actual (${esc(refA.period)})">Δ% T12</th>` : ''}${cols.ref1 ? `<th title="${esc(refA.period)}">T12</th>` : ''}${cols.ref3 ? `<th title="T3 annualized — ${esc(refT3.period)}">T3 ann</th>` : ''}${cols.ref2 ? `<th title="${esc(refB.period)}">${esc(refB.label.replace(/^budget /i, 'Bud ').replace(/ budget$/i, ' bud'))}</th>` : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
   const units = Number(bv.budget.inputs?.units) || 1;
   const GRAND = new Set(['5500', '7279', '7280', '8200', '9000']);
   // condensed (collapsed) sections — locked via localStorage across renders
@@ -1485,7 +1495,8 @@ function gridHtml(bv, totals) {
     const hasRef = (refA && refA.byGl[a.code]) || (refB && refB.byGl[a.code]) || (bv.hist && bv.hist.payroll && bv.hist.payroll.cal[a.code]);   // a payroll-template row (even a 0) keeps the GL visible
     const isZero = !ann && !m.some((v) => v) && !(l && l.note) && !hasRef;
     if (isZero && !S.showZero && !sp) continue;
-    const dm = drvMeta(l && (ann || l.override) ? l : null);
+    const isDropped = !!(l && l.driver && l.driver.method === 'dropped');
+    const dm = drvMeta(l && (ann || l.override || isDropped) ? l : null);
     const prm = cols.fx && l && !l.override ? paramFor(a.code, l, bv.budget.inputs || {}) : null;
     // seller-derived lines get a non-accrual flag when the billing looks bad
     const smell = sellerDerived(l) ? billingSmell(m) : null;
@@ -1493,7 +1504,7 @@ function gridHtml(bv, totals) {
     rows.push(`<tr${trCls ? ` class="${trCls}"` : ''}>
       <td class="code">${a.code}</td>
       <td class="name${histFor(a.code).length ? ' hashist' : ''}" ${histFor(a.code).length ? `data-hist="${a.code}"` : ''} title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}${histFor(a.code).length ? ' — click for the prior T12 / CY budget by month' : ''}">${histFor(a.code).length ? `<span class="hx">${histOpen(a.code) ? '▾' : '▸'}</span>` : ''}${esc(a.name)}${smell ? ` <span class="warnflag" title="Seller billing looks NON-ACCRUAL: ${esc(smell.join('; '))}. Likely bad bills — review, or smooth via WAVG / flat / Minot seasonal.">⚠</span>` : ''}${a.active === false ? ' <span class="badge" title="Deactivated GL still carrying dollars — Recalc zeroes it">inactive — recalc to zero</span>' : ''}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
-      ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? (prm.steps ? `<button class="fxp fxp-steps" data-steps="${a.code}" title="${esc(prm.label)} — click to place increases in specific months">${esc(prm.value)}</button>` : prm.multi ? `<button class="fxp fxp-steps" data-multi="${a.code}" title="${esc(prm.title || '')} — click to edit every input">${esc(prm.summary)}</button>` : `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">`) : ''}</td>` : ''}
+      ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? (prm.steps ? `<button class="fxp fxp-steps" data-steps="${a.code}" title="${esc(prm.label)} — click to place increases in specific months">${esc(prm.value)}</button>` : prm.multi ? `<button class="fxp fxp-steps" data-multi="${a.code}" title="${esc(prm.title || '')} — click to edit every input">${esc(prm.summary)}</button>` : `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">${/%/.test(prm.label) ? '<span class="fxu" title="percent">%</span>' : ''}`) : ''}</td>` : ''}
       ${monthIdx.map((i) => `<td class="m ${actIdx.has(i) ? 'drv-act' : sp ? '' : dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money(Math.round(m[i]) || 0) : ''}"></td>`).join('')}
       ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}"><input data-ann="${a.code}" value="${ann ? money(Math.round(ann) || 0) : ''}" title="${bv.annual ? bv.budget.year : 'Year 1'} total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
       ${refCells(a.code, 'detail', ann, !!(l && l.override))}
@@ -1747,7 +1758,7 @@ function paramFor(gl, line, inp) {
     const vac = inp.vacancyPct || [];
     // the box is the ANNUAL AVERAGE; the months follow lease expirations (engine: vacancyByMonth)
     const d = line.driver || {};
-    return { label: d.shaped === 'expirations' ? 'average vacancy % for the year — lease expirations decide the months' : 'vacancy % (annual average)', value: pct(d.avg != null ? d.avg : (vac[0] || 0)), patch: (v) => ({ vacancyPct: Array(12).fill(v / 100) }) };
+    return { label: d.shaped === 'expirations' ? 'average vacancy % for the year — the months follow move-outs and carry-over from the last actual month' : 'vacancy % (annual average)', value: pct(d.avg != null ? d.avg : (vac[0] || 0)), patch: (v) => ({ vacancyPct: Array(12).fill(v / 100) }) };
   }
   if (gl === '6112' && m === 'mgmtPct') {
     return { label: '% of prior-month income', value: pct(inp.mgmtPct || 0), patch: (v) => ({ mgmtPct: v / 100 }) };
@@ -1803,6 +1814,199 @@ function openColsMenu(anchorBtn, labels) {
     save();
   }));
   menu.querySelector('[data-all]').addEventListener('click', () => { S.hiddenCols.clear(); save(); });
+}
+
+
+/* ============================================================================
+   REVIEWABILITY (Troy 2026-11-09, devil's advocate day-one fixes): say what a
+   chip means, show lines the template dropped, flag a budget calculated on older
+   formulas, list the defaults a budget is running on, and check before export.
+   ========================================================================== */
+const TAG_KEY = [
+  ['ROLL', 'Gross potential rent from the rent roll market rents, with the month steps typed on the row.'],
+  ['LTL', 'Loss to lease: each lease keeps its rent until it resets; a reset burns the burnoff % of its gap.'],
+  ['VAC·EXP', 'Vacancy: an annual average. It starts at the last actual month, move-outs land a month after expirations, and empty units fill gradually.'],
+  ['%GPR', 'A % of gross potential rent (the trailing-12 ratio unless typed).'],
+  ['%NET RENT', 'A % of net rental income (GPR less loss to lease, concessions and vacancy).'],
+  ['%NET GPR', 'A % of net GPR (GPR, HAP and loss to lease).'],
+  ['RECAP', 'Concession recapture: a % of the other concession lines.'],
+  ['SAME MO', 'The same calendar month of the trailing-12 × the increase factor.'],
+  ['WAVG', '1-2-1 weighted average of the month before, the month and the month after × the factor.'],
+  ['T12/12', 'The trailing-12 total ÷ 12, the same every month × the factor.'],
+  ['LAST', 'The last actual month, the same every month. ⚠LAST = that month is far off the average.'],
+  ['TURNS', 'The trailing-12 total placed on lease expirations, one month later.'],
+  ['T12·TURNS', "Last year's dollars placed on the months with projected move-ins; the year total stays at the T12."],
+  ['<$1K', 'NOT budgeted: the trailing-12 was at or under $1,000 and the template drops it. Click to budget it.'],
+  ['CHG', 'Rent-roll charges (pet, garage, storage…) × 12.'],
+  ['FLAT FEE', 'Flat utility fee per occupied unit: last actual month × budgeted occupancy.'],
+  ['CORP', "Corporate budget suggestion from the Yardi template."],
+  ['$/UNIT', 'Corporate rate: $ per unit per year ÷ 12, plus a flat $ per month.'],
+  ['%INC', "Management fee: % of the prior month's total income."],
+  ['PAY', 'Wages from the Payroll tab roster (or a payroll model). PAY·prelim = raise entries are not finalized.'],
+  ['%WAGES', "A payroll line as a % of that month's budgeted wages (same-month historical ratio)."],
+  ['DEBT', 'Interest / principal from the Yardi amortization schedule.'],
+  ['ZERO', 'Zeroed on purpose.'],
+  ['MAN', 'Typed by hand; formulas do not touch it until it is unlocked.'],
+  ['TOTAL', 'A year total typed by hand, spread on the previous shape.'],
+  ['—', 'No formula and no dollars.'],
+  ['tag*', 'A formula line whose cells were then revised by hand.'],
+];
+function openTagKey() {
+  let dlg = document.getElementById('tagkey-dlg');
+  if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'tagkey-dlg'; document.body.appendChild(dlg); }
+  dlg.innerHTML = `<h2>Chip key</h2>
+    <table class="list" style="font-size:12.5px">${TAG_KEY.map(([t, d]) => `<tr><td style="white-space:nowrap"><span class="drv" style="background:var(--soft)">${esc(t)}</span></td><td>${esc(d)}</td></tr>`).join('')}</table>
+    <div class="row" style="justify-content:flex-end; margin-top:10px"><button class="btn" id="tagkey-x">Close</button></div>`;
+  dlg.querySelector('#tagkey-x').addEventListener('click', () => dlg.close());
+  dlg.showModal();
+}
+
+/* ---- lines the template dropped (T12 at or under $1,000) ---- */
+function droppedLines(bv) { return (bv.lines || []).filter((l) => !l.override && l.driver && l.driver.method === 'dropped'); }
+function droppedChipHtml(bv) {
+  const dr = droppedLines(bv);
+  if (!dr.length) return '';
+  const tot = dr.reduce((a, l) => a + Math.abs(l.driver.t12 || 0), 0);
+  return `<button class="chip dropped-chip" id="dropped-open" title="Lines with trailing-12 history at or under $1,000 — the template's rule budgets them at ZERO. Click to see them and budget the ones you want.">${dr.length} lines dropped under $1K · $${money(tot)} of T12</button>`;
+}
+async function budgetDroppedLines(b, gls) {
+  const inp = S.bv.budget.inputs || {};
+  const bl = inp.baseline || {};
+  const glShape = { ...(bl.glShape || {}) };
+  for (const gl of gls) glShape[gl] = 'flat';
+  pushUndo();
+  S.bv = await PUT(`/budgets/${b.id}`, { inputs: { baseline: { ...bl, glShape } } });
+  render();
+}
+function openDroppedDialog(b) {
+  const dr = droppedLines(S.bv);
+  const name = (gl) => ((S.state.coa.find((a) => a.code === gl) || {}).name || '');
+  let dlg = document.getElementById('dropped-dlg');
+  if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'dropped-dlg'; document.body.appendChild(dlg); }
+  dlg.innerHTML = `<h2>Lines dropped under $1,000</h2>
+    <p class="muted" style="font-size:12px; margin:0 0 8px">Monarch's template only budgets a "T12 ÷ 12" line when its trailing-12 is over $1,000. These had history under that, so they are at <b>zero</b>. Tick the ones to budget at their trailing-12 ÷ 12 (with the line's usual increase factor). Nothing changes unless you tick it.</p>
+    <div style="max-height:340px; overflow:auto"><table class="list" style="font-size:12.5px">
+      <tr><th></th><th>GL</th><th>Account</th><th style="text-align:right">T12</th></tr>
+      ${dr.map((l) => `<tr><td><input type="checkbox" data-dgl="${l.gl_code}"></td><td>${l.gl_code}</td><td>${esc(name(l.gl_code))}</td><td style="text-align:right">${money(l.driver.t12 || 0)}</td></tr>`).join('')}
+    </table></div>
+    <div class="row" style="justify-content:space-between; margin-top:10px">
+      <label><input type="checkbox" id="dr-all"> all ${dr.length}</label>
+      <span><button class="btn sub" id="dr-x">Close</button> <button class="btn" id="dr-go">Budget the ticked lines</button></span>
+    </div>`;
+  dlg.querySelector('#dr-all').addEventListener('change', (e) => dlg.querySelectorAll('[data-dgl]').forEach((c) => { c.checked = e.target.checked; }));
+  dlg.querySelector('#dr-x').addEventListener('click', () => dlg.close());
+  dlg.querySelector('#dr-go').addEventListener('click', async () => {
+    const gls = [...dlg.querySelectorAll('[data-dgl]:checked')].map((c) => c.dataset.dgl);
+    dlg.close();
+    if (gls.length) await budgetDroppedLines(b, gls);
+  });
+  dlg.showModal();
+}
+
+/* ---- calculated on older formulas? ---- */
+function staleCalc(bv) { return !!bv.engineVersion && bv.budget.calc_version !== bv.engineVersion; }
+function staleBannerHtml(bv) {
+  if (!staleCalc(bv)) return '';
+  const when = bv.budget.calc_at ? `last calculated ${new Date(bv.budget.calc_at).toLocaleString()}` : 'calculated before formula versions were tracked';
+  return `<div class="stalebar" title="Stored lines only move when a budget is recalculated. Formulas or defaults have changed since this one was built, so some lines would come out different today.">
+    ⚠ This budget was ${when}, on older formulas. Overrides are kept. <button class="btn sm" id="stale-recalc">↻ Recalc now</button></div>`;
+}
+
+/* ---- the defaults this budget is running on ---- */
+function defaultsInUse(bv) {
+  if (!bv.annual) return [];
+  const inp = bv.budget.inputs || {};
+  const tpl = bv.template || {};
+  const lines = new Map((bv.lines || []).map((l) => [l.gl_code, l]));
+  const t12 = ((bv.refs || []).find((r) => r.key === 'actual') || {}).byGl || {};
+  const tot = (gl) => sumM((lines.get(gl) || {}).months || []);
+  const pc = (v, d = 1) => `${(v * 100).toFixed(d)}%`;
+  const out = [];
+  const add = (key, label, value, isDefault, warn) => out.push({ key, label, value, isDefault, warn: warn || '' });
+  // growth
+  const gp = (inp.baseline || {}).growthPct || {};
+  const typed = Object.entries(gp).filter(([, v]) => v != null);
+  add('growth', 'Increase factors', typed.length ? `typed: ${typed.map(([k, v]) => `cat ${k} ${pc(v, 1)}`).join(', ')}; the rest per GL` : 'per GL, from the 2026 GRKS draft: admin +5%, supplies & contractors +10%, rehab +15%, utilities +5%, trash +7%, other income 0%', !typed.length);
+  // LTL
+  const l = inp.ltl || {};
+  const dR = tpl.renewalPct ?? 0.65, dBR = 0.75, dBN = 1;
+  const ltlDefault = Math.abs((l.renewalPct ?? dR) - dR) < 1e-9 && Math.abs((l.burnoffRenew ?? dBR) - dBR) < 1e-9 && Math.abs((l.burnoffNew ?? dBN) - dBN) < 1e-9;
+  add('ltl', 'Loss to lease', l.mode === 'flat' ? 'held flat' : l.mode === 'ramp' ? 'ramp' : `renew ${pc(l.renewalPct ?? dR, 0)}, burnoff ${pc(l.burnoffRenew ?? dBR, 0)} on renewal / ${pc(l.burnoffNew ?? dBN, 0)} on move-in`, ltlDefault && (l.mode || 'leases') === 'leases');
+  if (t12['5003']) out[out.length - 1].value += ` — year ${money(tot('5003'))} vs T12 ${money(t12['5003'])}`;
+  // vacancy
+  const vl = lines.get('5031') || {};
+  const vAvg = (inp.vacancyPct || [])[0] || 0;
+  const t12Vac = t12['4994'] ? Math.abs(t12['5031'] || 0) / t12['4994'] : null;
+  add('vac', 'Vacancy', vl.override ? `typed by hand on the row (${money(tot('5031'))}); the average and the expirations shape are off` : `${pc(vAvg, 2)} annual average${t12Vac != null ? ` (T12 was ${pc(t12Vac, 2)})` : ''}, ${Math.round((inp.vacancyExpWeight ?? 1) * 100)}% on the move-out / carry-over curve`, !vl.override && t12Vac != null && Math.abs(vAvg - t12Vac) < 0.0006 && inp.vacancyExpWeight == null);
+  // GPR base vs last posted
+  const lastM = (bv.lastMonth || 10) - 1;
+  const lastGpr = ((((bv.hist || {}).t12 || {}).cal || {})['4994'] || [])[lastM] || 0;
+  const jan = ((lines.get('4994') || {}).months || [])[0] || 0;
+  if (jan && lastGpr) add('gpr', 'GPR starting point', `${money(jan)} in ${(bv.monthLabels || MONTHS)[0]} vs ${money(lastGpr)} posted in the last actual month (${jan >= lastGpr ? '+' : ''}${pc(jan / lastGpr - 1, 1)})`, true, Math.abs(jan / lastGpr - 1) > 0.015 ? 'starts more than 1.5% away from what last posted' : '');
+  // wages
+  const w = lines.get('6402') || lines.get('6404') || {};
+  const wd = w.driver || {};
+  add('wages', 'Wages', wd.live ? `Payroll tab roster, every seat filled all year${wd.draft ? ' · raise entries NOT final' : ''}; half the raise in Feb, all from Mar` : inp.wageSource === 'manual' ? `own history × ${pc(inp.payrollRaisePct ?? 0.035, 1)}` : `no roster for this year: trailing-12 × ${pc(inp.payrollRaisePct ?? 0.035, 1)}`, !inp.wageSource, wd.draft ? 'raise entries are not finalized' : '');
+  // management fee + tier check
+  const fee = inp.mgmtPct || 0;
+  let tierWarn = '';
+  const mx = (tpl.mgmtFee || {}).matrix || {};
+  const coc = (bv.kpis || {}).coc;
+  if (coc != null && Object.keys(mx).length) {
+    const steps = Object.entries(mx).map(([k, v]) => [parseFloat(k) / 100, v]).filter(([k]) => Number.isFinite(k)).sort((a, c) => a[0] - c[0]);
+    let tier = null; for (const [k, v] of steps) if (coc + 1e-9 >= k) tier = v;
+    if (tier != null && Math.abs(tier - fee) > 0.0005) tierWarn = `the template's tier table reads ${pc(tier, 0)} at ${pc(coc, 1)} cash-on-cash — verify`;
+  }
+  add('fee', 'Management fee', `${pc(fee, 2)} of prior-month income, flat all year`, true, tierWarn);
+  // corporate rates
+  const cd = corpDefaults(bv.budget.year), cr = inp.corpRates || {};
+  add('corp', 'Corporate rates', `insurance $${(cr[6108] || cd[6108]).perUnitYr}/unit · 6310 $${(cr[6310] || cd[6310]).perUnitYr}/unit + $${(cr[6310] || cd[6310]).flatMo}/mo · legal $${(cr[6320] || cd[6320]).perUnitYr} · marketing $${(cr[6560] || cd[6560]).perUnitYr}`, !Object.keys(cr).length,
+    t12['6310'] && tot('6310') > 1.25 * t12['6310'] ? `6310 budgets ${money(tot('6310'))} vs ${money(t12['6310'])} posted` : '');
+  // taxes
+  if (t12['6116']) add('tax', 'Real estate taxes', `${money(tot('6116'))} (T12 ${money(t12['6116'])}, ${t12['6116'] ? pc(tot('6116') / t12['6116'] - 1, 1) : ''})`, Math.abs(tot('6116') - t12['6116']) < 1);
+  // dropped
+  const dr = droppedLines(bv);
+  if (dr.length) add('dropped', 'Lines dropped under $1,000', `${dr.length} lines, $${money(dr.reduce((a, x) => a + Math.abs(x.driver.t12 || 0), 0))} of T12 budgeted at zero`, true);
+  // special projects
+  const spT12 = Object.entries(t12).filter(([c]) => +c > 7315 && +c < 7500).reduce((a, [, v]) => a + v, 0);
+  const sp = (bv.kpis || {}).sp || 0;
+  add('sp', 'Special projects', `${money(sp)} budgeted${spT12 ? ` (T12 posted ${money(spT12)})` : ''} — cash flow and cash-on-cash are before special projects${(bv.kpis || {}).principal ? '' : ' and principal'}`, !sp, !sp && Math.abs(spT12) > 1000 ? 'none entered' : '');
+  return out;
+}
+const defaultsHash = (items) => items.map((x) => `${x.key}=${x.value}`).join('|');
+function defaultsCardHtml(bv) {
+  const items = defaultsInUse(bv);
+  if (!items.length) return '';
+  const ack = (bv.budget.inputs || {}).defaultsAck || null;
+  const current = !!ack && ack.hash === defaultsHash(items);
+  const nDef = items.filter((x) => x.isDefault).length, nWarn = items.filter((x) => x.warn).length;
+  return `<div class="card defaults">
+    <h2>Defaults in use <span class="badge">${nDef} not set for this property</span>${nWarn ? ` <span class="pill miss">${nWarn} to check</span>` : ''}</h2>
+    <p class="muted" style="margin:0 0 6px; font-size:11.5px">What decided the numbers where nobody typed one. <span class="dflt">default</span> = nobody chose it for this property.</p>
+    <table class="dfl">${items.map((x) => `<tr><td class="k">${esc(x.label)} ${x.isDefault ? '<span class="dflt">default</span>' : '<span class="set">set</span>'}</td><td>${esc(x.value)}${x.warn ? `<div class="warn">⚠ ${esc(x.warn)}</div>` : ''}</td></tr>`).join('')}</table>
+    <div class="row" style="margin-top:8px; justify-content:space-between; align-items:center">
+      <span class="muted" style="font-size:11.5px">${current ? `✓ reviewed by ${esc(ack.by)} · ${new Date(ack.at).toLocaleDateString()}` : ack ? `⚠ changed since ${esc(ack.by)} reviewed them on ${new Date(ack.at).toLocaleDateString()}` : 'not reviewed yet'}</span>
+      ${current ? '' : '<button class="btn sm" id="ack-defaults" title="Record that you have looked at these and accept them for this property. Nothing is recalculated.">I have reviewed these</button>'}
+    </div></div>`;
+}
+
+/* ---- before a Yardi export: say what is unfinished ---- */
+function exportIssues(bv) {
+  const issues = [];
+  if (staleCalc(bv)) issues.push('It was calculated on older formulas (Recalc first).');
+  if ((bv.lines || []).some((l) => l.driver && l.driver.draft)) issues.push('Wages use raise entries that are NOT finalized on the Payroll tab.');
+  if (bv.annual) {
+    const items = defaultsInUse(bv);
+    const ack = (bv.budget.inputs || {}).defaultsAck || null;
+    if (!ack) issues.push('The defaults in use have not been reviewed.');
+    else if (ack.hash !== defaultsHash(items)) issues.push('The defaults in use changed after they were reviewed.');
+    for (const x of items) if (x.warn && (x.key === 'fee' || x.key === 'sp')) issues.push(`${x.label}: ${x.warn}.`);
+  }
+  return issues;
+}
+function okToExport(bv) {
+  const issues = exportIssues(bv);
+  return !issues.length || confirm(`Before this goes to Yardi:\n\n• ${issues.join('\n• ')}\n\nExport anyway?`);
 }
 
 /* ANNUAL tie card: growth targets per subtotal vs the reference. Nothing
@@ -2200,7 +2404,7 @@ function fcWavgRows(bv, inp, gl) {
   const coaByCode = new Map(S.state.coa.map((a) => [a.code, a]));
   const rows = [];
   for (const r of fcSellerRows(bv)) {
-    rows.push({ srcType: 'seller', name: r.name, pcode: r.pcode, cal: fcSellerCal(r), scale: 1, total: r.total || fcSellerCal(r).reduce((a, x) => a + x, 0) });
+    rows.push({ srcType: 'seller', name: r.name, pcode: r.pcode, cal: fcSellerCal(r), scale: 1, total: r.total || fcSellerCal(r).reduce((a, x) => a + x, 0), own: !!bv.annual && String(r.gl) === String(gl) });
   }
   for (const k of Object.keys(bv.compShapes || {})) {
     if (!bv.compWeights || !bv.compWeights[k] || !bv.compUnits) continue;
@@ -2259,7 +2463,7 @@ function openRowTools(b, gl, anchorBtn) {
   const acc = S.state.coa.find((a) => a.code === gl) || {};
   const hasComp = S.bv.compWeights && S.bv.compUnits && S.bv.compWeights[gl];
   const line = S.bv.lines.find((l) => l.gl_code === gl);
-  const dm = drvMeta(line && (sumM(line.months) || line.override) ? line : null);
+  const dm = drvMeta(line && (sumM(line.months) || line.override || (line.driver || {}).method === 'dropped') ? line : null);
   const menu = document.createElement('div');
   menu.className = 'rowmenu';
   const dot = (cls) => `<span class="dot ${cls}" style="margin-right:6px"></span>`;
@@ -2267,6 +2471,7 @@ function openRowTools(b, gl, anchorBtn) {
     <div class="rm-head">${gl} ${esc(acc.name || '')}<br>
       <span class="drv ${dm.cls}" style="margin-top:3px; display:inline-block">${dm.tag}</span>
       <span style="margin-left:5px">${esc(dm.label)}</span></div>
+    ${line && (line.driver || {}).method === 'dropped' ? `<button data-act="undrop" title="The template dropped this line because its trailing-12 is at or under $1,000. This budgets it at T12 ÷ 12 with the line's usual increase factor."><b>${dot('drv-base')}Budget this line — T12 ÷ 12 ($${money(line.driver.t12 || 0)} a year before the factor)</b></button>` : ''}
     <button data-act="zero">${dot('drv-int')}Zero out row</button>
     <button data-act="flatAnnual">${dot('drv-man')}Flat — annual $ over the year…</button>
     <button data-act="flatMonthly">${dot('drv-man')}Flat — $ per month…</button>
@@ -2369,6 +2574,7 @@ function openRowTools(b, gl, anchorBtn) {
       const prev = line && line.driver && line.driver.method && line.driver.method !== 'manual' ? line.driver : null;
       return put(res.months, { method: 'smooth', passes: res.passes, of: prev ? prev.method : undefined, srcName: prev ? (prev.srcName || prev.name) : undefined });
     }
+    if (act === 'undrop') { await budgetDroppedLines(b, [gl]); return; }
     if (act === 'wavg') {
       openWavgMatch(b, gl, acc, anchorBtn, put, inp);
       return;
@@ -2652,6 +2858,21 @@ function openWavgMatch(b, gl, acc, anchorBtn, put, inp) {
     const rank = (r) => r.srcType === 'seller' && r.pcode === acc.pcode ? -2 : r.own ? -1 : r.pcode === acc.pcode ? 0 : 1;
     return rank(x) - rank(y) || Math.abs(y.total * y.scale) - Math.abs(x.total * x.scale);
   });
+  const applyWavg = async (r) => {
+    const g = parseFloat(String(prompt(`Increase factor % on "${r.name}" (the (1+$D)):`, '3') || '').replace(/,/g, ''));
+    if (!Number.isFinite(g)) return;
+    const estTotal = r.cal.reduce((a, x) => a + x, 0) * r.scale * (1 + g / 100);
+    const mult = parseFloat(String(prompt(`MROUND multiple ($, 0 = no rounding) — annual total lands at ≈ ${money(estTotal)}${r.scale !== 1 ? ` (Minot ${money(r.total)} scaled to ${inp.units || 0} units)` : ''}:`, '250') || '').replace(/,/g, ''));
+    if (!Number.isFinite(mult) || mult < 0) return;
+    const res = fcWavg(S.bv, inp, r, g, mult);
+    await put(res.months, res.driver);
+  };
+  // Troy 2026-11-09: "the WAVG should not need to ask what GL it should be tied to — it already
+  // has the GL". When this GL has its own history that IS the source; the picker only opens
+  // for a GL with no history of its own (it then has to borrow another line's shape).
+  // (annual budgets only: the row's own statement line. An acquisition budget still picks between the seller's lines and the Minot comps.)
+  const ownRow = S.bv.annual ? rows.find((r) => r.own && r.srcType === 'seller') : null;
+  if (ownRow) { applyWavg(ownRow); return; }
   const menu = document.createElement('div');
   menu.className = 'rowmenu';
   menu.style.maxHeight = '420px';
@@ -2680,13 +2901,7 @@ function openWavgMatch(b, gl, acc, anchorBtn, put, inp) {
   menu.querySelectorAll('button[data-wa]').forEach((btn) => btn.addEventListener('click', async () => {
     const r = rows[Number(btn.dataset.wa)];
     menu.remove();
-    const g = parseFloat(String(prompt(`Increase factor % on "${r.name}" (the (1+$D)):`, '3') || '').replace(/,/g, ''));
-    if (!Number.isFinite(g)) return;
-    const estTotal = r.cal.reduce((a, x) => a + x, 0) * r.scale * (1 + g / 100);
-    const mult = parseFloat(String(prompt(`MROUND multiple ($, 0 = no rounding) — annual total lands at ≈ ${money(estTotal)}${r.scale !== 1 ? ` (Minot ${money(r.total)} scaled to ${inp.units || 0} units)` : ''}:`, '250') || '').replace(/,/g, ''));
-    if (!Number.isFinite(mult) || mult < 0) return;
-    const res = fcWavg(S.bv, inp, r, g, mult);
-    await put(res.months, res.driver);
+    await applyWavg(r);
   }));
 }
 
@@ -3985,7 +4200,7 @@ function annualInputsHtml(inp) {
     <h3>Rental loss</h3>
     <div class="row">
       <div class="fld"><label>Vacancy % of GPR — the <b>annual average</b> (one value). Twelve values = typed month by month, used as they are.</label><input id="in-vac" value="${show12(inp.vacancyPct || [])}" style="width:220px"></div>
-      <div class="fld"><label title="100 = each month's vacancy follows that month's lease expirations (one month later); 0 = the average every month; in between blends the two. The year's vacancy $ equals the average either way.">Vacancy follows lease expirations %</label><input id="in-vacw" value="${Math.round(((inp.vacancyExpWeight ?? 1)) * 100)}" style="width:70px"></div>
+      <div class="fld"><label title="100 = the carry-over curve: vacancy starts at the last actual month's level, move-outs land the month after a lease expires, and empty units fill gradually (slowest in winter). 0 = the average every month; in between blends the two. The year's vacancy $ equals the average either way.">Vacancy follows move-outs &amp; carry-over %</label><input id="in-vacw" value="${Math.round(((inp.vacancyExpWeight ?? 1)) * 100)}" style="width:70px"></div>
       <span class="muted" style="align-self:center; font-size:11.5px">Delinquency, prior-period collections and concessions run at their trailing-12 / last-month ratios — change one on its row (%GPR chip) or via “% of GPR…” in the row menu.</span>
     </div>
     <h3>Baseline — every other GL = own history × increase factor</h3>

@@ -70,7 +70,8 @@ export type Driver = { revised?: boolean } & (
   | { method: 'debtService'; kind: 'interest' | 'principal'; loan?: string }  // amortization schedule from Yardi
   | { method: 'perTurn'; amount: number; turns: number }          // $ per new move-in × projected move-ins
   | { method: 'recapture'; pct: number }                          // concession recapture % of the other concessions
-  | { method: 'zero' });
+  | { method: 'zero' }
+  | { method: 'dropped'; t12: number; limit: number });   // annual: T12 at or under the template's $1,000 cut-off — budgeted at zero, shown as dropped
 
 /** 'actual' = same calendar month of the statement; 'wavg' = Troy's cyclic
     1-2-1 weighted distribution; 'flat' = annual total / 12; 'curve' = total on

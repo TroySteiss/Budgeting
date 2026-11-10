@@ -36,6 +36,23 @@ import {
   mergeFresh, overriddenWages, calMonthOf, calYearOf, daysInMonth, dateKey, leaseEndIndex,
 } from './domain.js';
 
+/** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
+    stamped with it on every full build (budgets.calc_version); the editor flags a budget
+    calculated on an older one, because stored lines only move on Recalc. */
+export const ENGINE_VERSION = '2026-11-09d';
+
+/** Header label for a budget statement used as a reference column: a calendar year reads
+    "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
+    template's budget covers the trailing-12 window, not a calendar year, and used to be
+    labelled with the first year it touched ("2025 budget" on a 2027 budget). */
+export function budgetRefLabel(period: string | null | undefined): string {
+  const m = String(period || '').match(/([A-Za-z]{3})[a-z]*\s+(\d{4})\s*[-–]\s*([A-Za-z]{3})[a-z]*\s+(\d{4})/);
+  if (!m) { const y = String(period || '').match(/\d{4}/); return y ? `${y[0]} budget` : 'CY budget'; }
+  const [, m1, y1, m2, y2] = m;
+  if (/^jan$/i.test(m1) && /^dec$/i.test(m2) && y1 === y2) return `${y1} budget`;
+  return `budget ${m1}-${y1.slice(2)}–${m2}-${y2.slice(2)}`;
+}
+
 /* ---------------- statements (own trailing-12 actuals / current budget) ---------------- */
 
 export interface StmtRow { gl: string; name: string; months: number[]; total: number }
@@ -310,31 +327,58 @@ export const TURN_EXPENSE_GLS = new Set(['6702', '6704', '6706', '6726', '6728',
 /** The expirations curve shifted one month forward: a lease ending in month i is a turn
     invoice in month i+1 (December's roll into January). */
 export function lagMonths(m: Months, lag = 1): Months { return m.map((_, i) => m[(i - lag + 12) % 12]) as Months; }
-/** Vacancy % by month (Troy 2026-11-09): the input is the ANNUAL AVERAGE; lease expirations
-    decide where it lands. Each month's % = average x ((1 - w) + w x that month's turnover /
-    the GPR-weighted mean turnover), turnover being the expirations lagged one month (a lease
-    that ends in June is a vacant unit in July — the same lag the turn costs use). The year's
-    vacancy $ still equals average x GPR. w = `weight` (1 = fully on expirations, 0 = flat).
-    Twelve DIFFERENT typed values are a by-month entry and are used as they are; with no
-    expirations on file — or a partial schedule (fewer than nine months with expirations) —
-    the average applies flat. */
+/** Vacancy % by month (Troy 2026-11-09). The input is the ANNUAL AVERAGE; where it lands is a
+    CARRY-OVER model, not a 1:1 copy of the expiration curve (first cut — "very extreme"):
+
+      vacancy[m] = vacancy[m-1] x carry[m]  +  k x move-outs[m]
+
+    - move-outs[m] = lease expirations of the month before (a lease ending in June is a vacant
+      unit in July — the same one-month lag the turn costs use);
+    - carry[m] (VACANCY_CARRY) = the share of last month's vacancy still vacant: units do not
+      fill at once, so a heavy stretch compounds and spreads into the following months, and
+      winter fills slowest (Q4 runs heavy, Q1 eases off instead of dropping);
+    - the chain STARTS at the last actual month's vacancy % and runs forward through the months
+      before the budget year ("if we just posted 23K, we are not at 7K by January");
+    - k is solved so the GPR-weighted average of the year is exactly the input average.
+
+    `weight` blends the curve with the flat average (1 = the curve, 0 = flat). Twelve DIFFERENT
+    typed values are a by-month entry and are used as they are. With no expirations on file, or
+    a partial schedule (fewer than nine months), the average applies flat. Calendar-year budgets. */
 export const VACANCY_MIN_EXP_MONTHS = 9;
-export function vacancyByMonth(pcts: number[] | undefined | null, exp: Months, gpr: Months, weight = 1): { pcts: Months; avg: number; shaped: 'expirations' | 'typed' | 'flat' } {
+/** Share of a month's vacancy that is still vacant the next month, by CALENDAR month:
+    winter (Nov–Feb) fills slowest, summer (May–Aug) fastest. Judgment values — tune here. */
+export const VACANCY_CARRY: number[] = [0.85, 0.85, 0.75, 0.75, 0.65, 0.65, 0.65, 0.65, 0.75, 0.75, 0.85, 0.85];
+export function vacancyByMonth(
+  pcts: number[] | undefined | null, exp: Months, gpr: Months, weight = 1,
+  opts: { startPct?: number | null; lastMonth?: number | null } = {}
+): { pcts: Months; avg: number; shaped: 'expirations' | 'typed' | 'flat'; startPct?: number | null } {
   const p = Array.from({ length: 12 }, (_, i) => Number(pcts?.[i]) || 0) as Months;
   const avg = p[0];
-  if (p.some((v) => Math.abs(v - avg) > 1e-9)) {
-    const g = sum(gpr);
-    return { pcts: p, avg: g ? p.reduce((a, v, i) => a + v * gpr[i], 0) / g : p.reduce((a, v) => a + v, 0) / 12, shaped: 'typed' };
-  }
-  const w = Math.min(1, Math.max(0, Number.isFinite(weight) ? weight : 1));
-  const turn = lagMonths(exp, 1);
   const gSum = sum(gpr);
-  const mean = gSum ? turn.reduce((a, v, i) => a + v * gpr[i], 0) / gSum : turn.reduce((a, v) => a + v, 0) / 12;
-  // a PARTIAL expiration schedule (a template that only lists the next few months, a roll that
-  // predates most of the year) would pile the whole year's vacancy onto those months — the
-  // shape applies only when at least nine months carry expirations; otherwise the average is flat
-  if (!avg || !w || !(mean > 0) || turn.filter((v) => v > 0).length < VACANCY_MIN_EXP_MONTHS) return { pcts: p, avg, shaped: 'flat' };
-  return { pcts: turn.map((v) => Math.round(avg * ((1 - w) + (w * v) / mean) * 1e6) / 1e6) as Months, avg, shaped: 'expirations' };
+  const wmean = (v: number[]) => (gSum ? v.reduce((a, x, i) => a + x * gpr[i], 0) / gSum : v.reduce((a, x) => a + x, 0) / 12);
+  if (p.some((v) => Math.abs(v - avg) > 1e-9)) return { pcts: p, avg: wmean(p), shaped: 'typed' };
+  const w = Math.min(1, Math.max(0, Number.isFinite(weight) ? weight : 1));
+  const out = lagMonths(exp, 1);                                   // move-outs landing in each calendar month
+  if (!avg || !w || !out.some((v) => v > 0) || out.filter((v) => v > 0).length < VACANCY_MIN_EXP_MONTHS) return { pcts: p, avg, shaped: 'flat' };
+  const start = opts.startPct != null && opts.startPct >= 0 && Number.isFinite(opts.startPct) ? opts.startPct : null;
+  const last = Math.min(12, Math.max(1, Math.round(opts.lastMonth || 12)));   // last actual calendar month (1-12)
+  // one pass of the chain: `v0` after the last actual month, inflow scaled by k
+  const run = (v0: number, k: number): number[] => {
+    let v = v0;
+    for (let c = last; c < 12; c++) v = v * VACANCY_CARRY[c] + k * out[c];       // the months between the last actual and January
+    const yr: number[] = [];
+    for (let c = 0; c < 12; c++) { v = v * VACANCY_CARRY[c] + k * out[c]; yr.push(v); }
+    return yr;
+  };
+  // no starting point on file: the chain's own steady state (run it round until it repeats)
+  const steady = (k: number): number[] => { let v = 0, yr: number[] = []; for (let n = 0; n < 6; n++) { yr = []; for (let c = 0; c < 12; c++) { v = v * VACANCY_CARRY[c] + k * out[c]; yr.push(v); } } return yr; };
+  const A = start != null ? run(start, 0) : Array(12).fill(0);     // what the starting vacancy alone leaves behind
+  const B = start != null ? run(0, 1) : steady(1);                 // what one unit of move-outs builds
+  const mA = wmean(A), mB = wmean(B);
+  let curve: number[];
+  if (mB > 0 && avg >= mA) { const k = (avg - mA) / mB; curve = A.map((x, i) => x + k * B[i]); }
+  else curve = mA > 0 ? A.map((x) => (x * avg) / mA) : Array(12).fill(avg);   // the average is below what the carry-over alone gives: keep its shape, scaled
+  return { pcts: curve.map((v) => Math.round((avg * (1 - w) + w * v) * 1e6) / 1e6) as Months, avg, shaped: 'expirations', startPct: start };
 }
 /** Average of the non-zero months, flat. */
 export const AVG_NZ_GLS = new Set(['5110']);
@@ -533,8 +577,14 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const ruleShape = rule ? RULE_SHAPE[rule.method] : undefined;
     const sh: BaselineShape = bl.glShape?.[a.code] ?? shape ?? ruleShape ?? (LAST_MONTH_FLAT_GLS.has(a.code) ? 'last' : FIXED_ANNUAL_GLS.has(a.code) || FLAT_T12_GLS.has(a.code) ? 'flat' : AVG_NZ_GLS.has(a.code) ? 'avgnz' : TURN_EXPENSE_GLS.has(a.code) && turnCurve.some((v) => v > 0) ? 'turns' : bl.shape);
     // T12/12 flat only when the trailing-12 exceeds $1,000 (RMC's IF(T12>1000, …, 0))
-    const threshold = sh === 'flat' && !shape && (rule ? rule.method === 'flatT12' && !rule.noThreshold : FLAT_T12_GLS.has(a.code));
-    if (threshold && Math.abs(baseTotal(a.code)) <= 1000) return false;
+    // …unless the user picked the shape on the row: that is a decision to budget the line
+    const threshold = sh === 'flat' && !shape && !bl.glShape?.[a.code] && (rule ? rule.method === 'flatT12' && !rule.noThreshold : FLAT_T12_GLS.has(a.code));
+    if (threshold && Math.abs(baseTotal(a.code)) <= 1000) {
+      // dropped, not forgotten: the line stays at zero but says why and how much (the chip
+      // reads "<$1K"; one click budgets it). It used to stay an unexplained blank.
+      mk(a.code, zero12(), { method: 'dropped', t12: r2(baseTotal(a.code)), limit: 1000 } as any);
+      return false;
+    }
     const mult = bl.glMround?.[a.code] ?? (bl.mround || rule?.mround || 0);
     let months = annualBaseline(cal, { pct, pcts, shape: sh, startMonth, lastMonth, curve: CURVES[a.curve || 'flat'], mult, turns: turnCurve });
     if (rule?.method === 'wavg' && sh === 'wavg' && !bl.glShape?.[a.code] && startMonth === 1) {
@@ -624,7 +674,10 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
 
   /* ---- vacancy: the input is the annual average % of GPR; lease expirations (+1 month)
      decide which months carry more or less of it (vacancyByMonth) ---- */
-  const vac = vacancyByMonth(inputs.vacancyPct, exp, gpr as Months, inputs.vacancyExpWeight ?? 1);
+  // the chain starts from the last ACTUAL month's vacancy % (posted, not the budget base)
+  const actLastGpr = (src.actual?.['4994'] || zero12())[lastMonth - 1] || 0;
+  const vacStart = actLastGpr > 0 ? Math.abs((src.actual?.['5031'] || zero12())[lastMonth - 1] || 0) / actLastGpr : null;
+  const vac = vacancyByMonth(inputs.vacancyPct, exp, gpr as Months, inputs.vacancyExpWeight ?? 1, { startPct: vacStart, lastMonth });
   const vacPct = vac.pcts;
   {
     const months = gpr.map((v, i) => -r2(vacPct[i] * v)) as Months;
@@ -633,7 +686,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       const drift = r2(-r2(vac.avg * sum(gpr)) - sum(months));
       if (drift) { const bi = months.reduce((mi, v, i) => (Math.abs(v) > Math.abs(months[mi]) ? i : mi), 0); months[bi] = r2(months[bi] + drift); }
     }
-    mk('5031', months, { method: 'vacancy', avg: Math.round(vac.avg * 1e6) / 1e6, shaped: vac.shaped, pcts: vacPct, weight: inputs.vacancyExpWeight ?? 1 } as any);
+    mk('5031', months, { method: 'vacancy', avg: Math.round(vac.avg * 1e6) / 1e6, shaped: vac.shaped, pcts: vacPct, weight: inputs.vacancyExpWeight ?? 1, ...(vac.startPct != null ? { startPct: Math.round(vac.startPct * 1e6) / 1e6 } : {}) } as any);
   }
 
   /* ---- concessions & other rental loss: TRAILING-12 ratio to GPR × GPR (Troy:
@@ -687,7 +740,18 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     if (a) {
       const denom = ['4994', '4995', '4996', '5003'].reduce((s, g) => s + baseTotal(g), 0);
       const pct = inputs.pctGpr?.['5036'] ?? (denom ? baseTotal('5036') / denom : 0);
-      if (pct) mk('5036', netGpr.map((v) => r2(pct * v)), { method: 'pctGpr', pct: Math.round(pct * 100000) / 100000, of: 'netgpr', basis: 't12' });
+      if (pct) {
+        // Troy 2026-11-09: "Prior period collections should not be more than overall DQ.
+        // Where would that money come from??" — each month's collections are capped at that
+        // month's budgeted delinquency (5035). The T12 ratio can exceed it when last year
+        // collected older balances.
+        const dq = lines.get('5035')?.months || zero12();
+        const hasDq = dq.some((v) => v);
+        const raw = netGpr.map((v) => r2(pct * v));
+        const months = raw.map((v, i) => (hasDq && v > 0 ? r2(Math.min(v, Math.abs(dq[i]))) : v)) as Months;
+        const capped = months.some((v, i) => v !== raw[i]);
+        mk('5036', months, { method: 'pctGpr', pct: Math.round(pct * 100000) / 100000, of: 'netgpr', basis: 't12', ...(capped ? { capped: true, uncapped: r2(sum(raw)) } : {}) } as any);
+      }
     }
   }
   // any other cat-3 GL with history: T12 ratio to GPR × GPR

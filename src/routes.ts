@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, budgetRefLabel, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
@@ -264,7 +264,7 @@ router.post('/uploads/apply', h(async (req, res) => {
           await query('update budgets set rent_snapshot_id=$2, updated_at=now() where id=$1', [b.id, c.id]);
           const lb = (await loadBudget(b.id))!;
           const built = buildLines(lb, lb.budget.inputs, lb.lines);
-          await saveLines(b.id, built.lines);
+          await saveLines(b.id, built.lines, true);
           relinked++;
         }
       }
@@ -323,7 +323,7 @@ router.post('/uploads/apply', h(async (req, res) => {
           await query('update budgets set payroll_model_id=$2, updated_at=now() where id=$1', [b.id, row.id]);
           const lb = (await loadBudget(b.id))!;
           const built = buildLines(lb, lb.budget.inputs, lb.lines);
-          await saveLines(b.id, built.lines);
+          await saveLines(b.id, built.lines, true);
           relinked++;
         }
       }
@@ -389,7 +389,7 @@ router.post('/uploads/apply', h(async (req, res) => {
           );
           const lb = (await loadBudget(b.id))!;
           const built = buildLines(lb, lb.budget.inputs, lb.lines);
-          await saveLines(b.id, built.lines);
+          await saveLines(b.id, built.lines, true);
           relinked++;
         }
       }
@@ -570,7 +570,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
         refs.push({ key: 'ann3', label: 'T3 annualized', period: `${mo[0]}–${mo[2]} actuals × 4`, ...refColumn(a3), cat: { y1: c.y1, egi: c.egi, toe: c.toe, noi: c.noi } });
       }
     }
-    if (budgetCal) refs.push({ key: 'budget', label: `${sb?.period?.match(/\d{4}/)?.[0] || 'CY'} budget`, period: sb?.period || '', ...refColumn(budgetCal) });
+    if (budgetCal) refs.push({ key: 'budget', label: budgetRefLabel(sb?.period), period: sb?.period || '', ...refColumn(budgetCal) });
     if (actualCal && t12) { const a4 = annualizedFromCal(actualCal, t12.lastMonth, 4); if (Object.keys(a4).length) refs.push({ key: 'ann4', label: '4 mo annualized', period: '', ...refColumn(a4) }); }
     const src = budget.inputs?.refSource || 'actual';
     if (src === 'budget' && budgetCal) { ref = refFromCalendar(coa, budgetCal, units, 'CY budget'); refLabel = refs.find((r) => r.key === 'budget')?.label || 'CY budget'; }
@@ -596,7 +596,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
            annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, ref, refLabel, refs };
 }
 
-export async function saveLines(budgetId: number, lines: BudgetLine[]): Promise<void> {
+export async function saveLines(budgetId: number, lines: BudgetLine[], fullBuild = false): Promise<void> {
   await tx(async (c) => {
     await c.query('delete from budget_lines where budget_id=$1', [budgetId]);
     for (const l of lines) {
@@ -606,6 +606,9 @@ export async function saveLines(budgetId: number, lines: BudgetLine[]): Promise<
       );
     }
     await c.query('update budgets set updated_at=now() where id=$1', [budgetId]);
+    // a FULL build (generate / regenerate / recalc) stamps the formula version it ran on;
+    // single-line edits, restores and rounding leave the stamp alone
+    if (fullBuild) await c.query('update budgets set calc_version=$2, calc_at=now() where id=$1', [budgetId, ENGINE_VERSION]);
   });
 }
 
@@ -626,6 +629,8 @@ function budgetView(lb: LoadedBudget) {
   return {
     savePoints: lb.savePoints || [],
     budget: lb.budget,
+    // the formula version in force now; budget.calc_version is the one this budget was last built on
+    engineVersion: ENGINE_VERSION,
     lines,
     planLines: lb.lines,
     actualMonths,
@@ -928,7 +933,7 @@ router.post('/budgets', h(async (req, res) => {
 
   const lb = await loadBudget(id);
   const built = buildLines(lb!, inputs);
-  await saveLines(id, built.lines);
+  await saveLines(id, built.lines, true);
   logChange(req.session.username || '', 'create budget', { id, propertyCode, year });
   res.json(budgetView((await loadBudget(id))!));
 }));
@@ -987,7 +992,7 @@ router.put('/budgets/:id', h(async (req, res) => {
     const merged: BudgetInputs = { ...lb2.budget.inputs, ...inputs };
     const built = buildLines(lb2, merged, lb2.lines);
     await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(merged)]);
-    await saveLines(id, built.lines);
+    await saveLines(id, built.lines, true);
     logChange(req.session.username || '', 'update budget inputs', { id });
   }
   res.json(budgetView((await loadBudget(id))!));
@@ -1158,7 +1163,22 @@ router.post('/budgets/:id/recalc', h(async (req, res) => {
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
   const built = buildLines(lb, lb.budget.inputs, lb.lines);
-  await saveLines(id, built.lines);
+  await saveLines(id, built.lines, true);
+  res.json(budgetView((await loadBudget(id))!));
+}));
+
+/* Sign-off on the defaults a budget is running on (Troy 2026-11-09, devil's advocate #4):
+   records who reviewed them and a fingerprint of what they were, WITHOUT regenerating —
+   the editor shows "changed since reviewed" when the fingerprint no longer matches. */
+router.post('/budgets/:id/ack-defaults', h(async (req, res) => {
+  const id = Number(req.params.id);
+  const lb = await loadBudget(id);
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  const hash = String(req.body?.hash || '').slice(0, 4000);
+  const ack = req.body?.clear ? null : { by: req.session.username || '', at: new Date().toISOString(), hash };
+  const inputs = { ...(lb.budget.inputs || {}), defaultsAck: ack };
+  await query('update budgets set inputs=$2 where id=$1', [id, JSON.stringify(inputs)]);
+  logChange(req.session.username || '', ack ? 'review budget defaults' : 'clear defaults review', { id });
   res.json(budgetView((await loadBudget(id))!));
 }));
 
@@ -1224,7 +1244,7 @@ router.post('/budgets/:id/round', h(async (req, res) => {
     await saveLines(id, lines);
     const lb2 = (await loadBudget(id))!;
     const built = buildLines(lb2, lb2.budget.inputs, lb2.lines);
-    await saveLines(id, built.lines);
+    await saveLines(id, built.lines, true);
   } else {
     lines = applyRounding(lines);
     await saveLines(id, lines);
@@ -1348,7 +1368,7 @@ router.post('/budgets/:id/tie-growth', h(async (req, res) => {
     }
   }
   await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(inputs)]);
-  await saveLines(id, lines);
+  await saveLines(id, lines, true);
   logChange(user, 'tie growth target', { id, pcode: key, pct, target, how });
   res.json(budgetView((await loadBudget(id))!));
 }));
@@ -1444,7 +1464,7 @@ router.put('/payroll-models/:id', requireAdmin, h(async (req, res) => {
   for (const bid of affected) {
     const lb = (await loadBudget(bid))!;
     const built = buildLines(lb, lb.budget.inputs, lb.lines);
-    await saveLines(bid, built.lines);
+    await saveLines(bid, built.lines, true);
   }
   logChange(req.session.username || '', 'edit payroll model', { id, regenerated: affected.length, linkAll: !!req.body?.linkAll });
   res.json({ ok: true, regenerated: affected.length });
@@ -1483,7 +1503,7 @@ router.delete('/uploads/data/:kind/:id', requireAdmin, h(async (req, res) => {
     if (replacement) repointed++;
     const lb = (await loadBudget(b.id))!;
     const built = buildLines(lb, lb.budget.inputs, lb.lines);
-    await saveLines(b.id, built.lines);
+    await saveLines(b.id, built.lines, true);
   }
   logChange(req.session.username || '', `delete ${req.params.kind} snapshot`, { id, budgets: affected.length, repointed });
   res.json({ ok: true, unlinked: affected.length, repointed });
@@ -1688,7 +1708,7 @@ router.post('/budgets/:id/import-draft', upload.single('file'), h(async (req, re
   }
   await query('update budgets set inputs=$2, updated_at=now() where id=$1', [lb.budget.id, JSON.stringify(inputs)]);
   const built = buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lb.lines);
-  await saveLines(lb.budget.id, built.lines);
+  await saveLines(lb.budget.id, built.lines, true);
   logChange(user, 'import draft workbook', { id: lb.budget.id, file: req.file.originalname, changed, capitalChanged });
   const view: any = budgetView((await loadBudget(lb.budget.id))!);
   view.importResult = { changed, capitalChanged, capital: parsed.capital };
@@ -1853,7 +1873,7 @@ router.post('/actualize-csv', upload.fields([{ name: 'comparison', maxCount: 1 }
         }
         await query('update budgets set inputs=$2, updated_at=now() where id=$1', [b.id, JSON.stringify(inputs)]);
         const built = buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lb.lines);
-        await saveLines(b.id, built.lines);
+        await saveLines(b.id, built.lines, true);
         logChange(user, 'actualize month (Yardi CSV)', { id: b.id, key, file: f.originalname, adopted: adopted?.changed ?? null, appended: rev.appended.length });
         r.adopted = adopted;
       } catch (e: any) {

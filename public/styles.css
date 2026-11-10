@@ -401,3 +401,19 @@ tr.paytie td { font-style: italic; color: var(--dim); }
 tr.paytie.delta td { font-style: normal; color: var(--ink); border-bottom: 2px solid var(--line); }
 tr.paytie.delta td.neg { color: var(--bad); }
 .paytie-chip { border-style: dashed; }
+
+/* ---- reviewability (2026-11-09): chip key, dropped lines, stale banner, defaults card ---- */
+button.chip { font-size: 11px; margin-left: 8px; padding: 2px 9px; border: 1px dashed var(--dim); border-radius: 10px; background: none; color: var(--dim); cursor: pointer; }
+button.chip:hover { color: var(--accent); border-color: var(--accent); }
+button.chip.dropped-chip { border-style: solid; border-color: var(--warn, #b7791f); color: var(--warn, #b7791f); font-weight: 600; }
+.drv.drv-drop { background: transparent; color: var(--warn, #b7791f); border: 1px solid var(--warn, #b7791f); font-weight: 700; }
+td.m.drv-drop input { color: var(--dim); }
+.fxu { font-size: 11px; color: var(--dim); margin-left: 1px; }
+.stalebar { margin: 0 0 10px; padding: 7px 12px; border: 1px solid var(--warn, #b7791f); border-left-width: 4px; border-radius: 6px; background: color-mix(in srgb, var(--warn, #b7791f) 10%, var(--panel)); font-size: 12.5px; }
+.card.defaults table.dfl { width: 100%; border-collapse: collapse; font-size: 11.8px; }
+.card.defaults table.dfl td { padding: 4px 4px; border-bottom: 1px solid var(--gridline); vertical-align: top; }
+.card.defaults table.dfl td.k { white-space: nowrap; font-weight: 600; width: 1%; padding-right: 10px; }
+.card.defaults .dflt { font-size: 9.5px; font-weight: 700; text-transform: uppercase; color: var(--warn, #b7791f); border: 1px solid currentColor; border-radius: 8px; padding: 0 5px; margin-left: 3px; }
+.card.defaults .set { font-size: 9.5px; font-weight: 700; text-transform: uppercase; color: var(--good); border: 1px solid currentColor; border-radius: 8px; padding: 0 5px; margin-left: 3px; }
+.card.defaults .warn { color: var(--bad); margin-top: 2px; }
+#tagkey-dlg, #dropped-dlg { max-width: 640px; }

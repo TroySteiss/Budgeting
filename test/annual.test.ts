@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, type TemplateData, type AnnualSources,
+  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, type TemplateData, type AnnualSources,
 } from '../shared/annual.js';
 import { sum, zero12, rollup, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
 import { parseYardiBudgetTemplate, parseRentRoll, parseMonarchStatement, detectUploadKind } from '../src/importers.js';
@@ -720,26 +720,48 @@ describe('turn costs follow lease expirations with a one-month lag (Troy 2026-11
   });
 });
 
-describe('vacancy: an annual average shaped by lease expirations (Troy 2026-11-09)', () => {
+describe('vacancy: an annual average on a carry-over curve (Troy 2026-11-09)', () => {
   const gpr = Array(12).fill(100000) as Months;
   // expirations by calendar month: heavy in summer
   const exp = [2, 2, 4, 6, 10, 14, 16, 12, 6, 4, 2, 2] as Months;
   const flat5 = Array(12).fill(0.05);
+  const wmean = (p: number[], g: number[]) => p.reduce((a, v, i) => a + v * g[i], 0) / sum(g);
 
-  it('months follow expirations one month later; the year still totals average x GPR', () => {
-    const v = vacancyByMonth(flat5, exp, gpr);
-    expect(v.shaped).toBe('expirations');
-    expect(v.avg).toBe(0.05);
-    // July leases (16) vacate in August: August is the peak; December expirations land in January
-    expect(v.pcts.indexOf(Math.max(...v.pcts))).toBe(7);
-    expect(v.pcts[0]).toBeCloseTo(v.pcts[2], 6);                 // Jan <- Dec (2), Mar <- Feb (2)
-    expect(v.pcts[7] / v.pcts[1]).toBeCloseTo(16 / 2, 4);
-    expect(v.pcts.reduce((a, p, i) => a + p * gpr[i], 0)).toBeCloseTo(0.05 * sum(gpr), 0);
+  it('the year always averages the input, whatever the starting point', () => {
+    for (const startPct of [null, 0.02, 0.05, 0.09]) {
+      const v = vacancyByMonth(flat5, exp, gpr, 1, { startPct, lastMonth: 10 });
+      expect(v.shaped).toBe('expirations');
+      expect(wmean(v.pcts, gpr)).toBeCloseTo(0.05, 5);
+    }
+  });
+  it('not 1:1 with expirations: vacancy carries over, so the peak is later and far flatter than the expiration curve', () => {
+    const v = vacancyByMonth(flat5, exp, gpr, 1, { startPct: 0.05, lastMonth: 10 });
+    // expirations swing 8:1 (16 vs 2); vacancy must swing far less
+    expect(Math.max(...v.pcts) / Math.min(...v.pcts)).toBeLessThan(3);
+    // July's 16 expirations vacate in August and keep weighing on the following months:
+    // the peak is August or later, never before
+    expect(v.pcts.indexOf(Math.max(...v.pcts))).toBeGreaterThanOrEqual(7);
+    // every month carries some vacancy — none drops to zero
+    expect(Math.min(...v.pcts)).toBeGreaterThan(0.01);
+  });
+  it('starts from the last actual month: a high recent vacancy does not vanish by January', () => {
+    const low = vacancyByMonth(flat5, exp, gpr, 1, { startPct: 0.03, lastMonth: 10 });
+    const high = vacancyByMonth(flat5, exp, gpr, 1, { startPct: 0.10, lastMonth: 10 });
+    expect(high.pcts[0]).toBeGreaterThan(low.pcts[0]);
+    // 10% posted in October, 85% carried each winter month: January is still well above half of it
+    expect(high.pcts[0]).toBeGreaterThan(0.05);
+    expect(high.startPct).toBe(0.10);
+  });
+  it('with a normal starting point Q1 runs lighter than Q4 (winter fills slowly after the fall move-outs)', () => {
+    const real = [10, 10, 13, 20, 35, 45, 42, 43, 39, 31, 24, 8] as Months;
+    const v = vacancyByMonth(Array(12).fill(0.0229), real, gpr, 1, { startPct: 0.023, lastMonth: 10 });
+    const q = (i: number) => (v.pcts[i] + v.pcts[i + 1] + v.pcts[i + 2]) / 3;
+    expect(q(0)).toBeLessThan(q(9));
   });
   it('weight blends toward flat; 0 is flat; no expirations is flat; twelve typed values are kept', () => {
-    const half = vacancyByMonth(flat5, exp, gpr, 0.5).pcts;
-    const full = vacancyByMonth(flat5, exp, gpr, 1).pcts;
-    expect(half[7]).toBeCloseTo((full[7] + 0.05) / 2, 6);
+    const full = vacancyByMonth(flat5, exp, gpr, 1, { startPct: 0.05, lastMonth: 10 }).pcts;
+    const half = vacancyByMonth(flat5, exp, gpr, 0.5, { startPct: 0.05, lastMonth: 10 }).pcts;
+    expect(half[7]).toBeCloseTo((full[7] + 0.05) / 2, 5);
     expect(vacancyByMonth(flat5, exp, gpr, 0)).toMatchObject({ shaped: 'flat', pcts: flat5 });
     expect(vacancyByMonth(flat5, zero12(), gpr)).toMatchObject({ shaped: 'flat', pcts: flat5 });
     const typed = [0.03, 0.03, 0.04, 0.05, 0.06, 0.07, 0.07, 0.06, 0.05, 0.04, 0.03, 0.03];
@@ -749,21 +771,63 @@ describe('vacancy: an annual average shaped by lease expirations (Troy 2026-11-0
     const partial = [0, 0, 0, 0, 0, 0, 0, 0, 2, 29, 0, 0] as Months;
     expect(vacancyByMonth(flat5, partial, gpr)).toMatchObject({ shaped: 'flat', pcts: flat5 });
   });
+  it('an average below what the carry-over alone leaves keeps the decay shape, scaled to the average', () => {
+    const v = vacancyByMonth(Array(12).fill(0.005), exp, gpr, 1, { startPct: 0.10, lastMonth: 10 });
+    expect(wmean(v.pcts, gpr)).toBeCloseTo(0.005, 5);
+    expect(v.pcts[0]).toBeGreaterThan(v.pcts[11]);
+  });
   it('rising GPR: the average is GPR-weighted, so vacancy $ ties to average x the year GPR', () => {
     const g = Array.from({ length: 12 }, (_, i) => 100000 + i * 1000) as Months;
-    const v = vacancyByMonth(flat5, exp, g);
+    const v = vacancyByMonth(flat5, exp, g, 1, { startPct: 0.04, lastMonth: 10 });
     expect(v.pcts.reduce((a, p, i) => a + p * g[i], 0)).toBeCloseTo(0.05 * sum(g), 0);
   });
-  it('engine: 5031 follows the shape and totals the average to the cent', () => {
+  it('engine: 5031 follows the curve from the last actual month and totals the average to the cent', () => {
     const actual = synthetic();
     const inputs = { ...defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10), vacancyPct: flat5 as Months, expirations: exp };
     const ls = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10 });
     const vacL = L(ls, '5031'), gprL = L(ls, '4994');
     expect((vacL.driver as any).shaped).toBe('expirations');
     expect(sum(vacL.months)).toBeCloseTo(-0.05 * sum(gprL.months), 2);
-    expect(Math.abs(vacL.months[7])).toBeGreaterThan(Math.abs(vacL.months[1]) * 3);
+    expect(vacL.months.every((v) => v < 0)).toBe(true);
     const flat = L(generateAnnualLines(coaList, { ...inputs, vacancyExpWeight: 0 }, { actual, budget: null, lastMonth: 10 }), '5031');
     expect((flat.driver as any).shaped).toBe('flat');
     expect(sum(flat.months)).toBeCloseTo(sum(vacL.months), 0);
+  });
+});
+
+describe('prior-period collections never exceed delinquency (Troy 2026-11-09)', () => {
+  it('5036 is capped month by month at the budgeted 5035; an uncapped line is untouched', () => {
+    const actual = synthetic();
+    const f = (v: number) => cal(Array(12).fill(v));
+    const inputs = defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10);
+    // last year collected 800 a month of older balances against 300 of delinquency
+    const over = generateAnnualLines(coaList, inputs, { actual: { ...actual, '5035': f(-300), '5036': f(800) }, budget: null, lastMonth: 10 });
+    const dq = L(over, '5035').months, pp = L(over, '5036').months;
+    expect(dq.some((v) => v < 0)).toBe(true);
+    pp.forEach((v, i) => expect(v).toBeLessThanOrEqual(Math.abs(dq[i]) + 0.005));
+    expect((L(over, '5036').driver as any).capped).toBe(true);
+    expect((L(over, '5036').driver as any).uncapped).toBeGreaterThan(sum(pp));
+    // collections below delinquency: nothing is capped
+    const under = generateAnnualLines(coaList, inputs, { actual: { ...actual, '5035': f(-800), '5036': f(300) }, budget: null, lastMonth: 10 });
+    expect((L(under, '5036').driver as any).capped).toBeUndefined();
+    expect(sum(L(under, '5036').months)).toBeGreaterThan(0);
+  });
+});
+
+describe('reviewability (2026-11-09): budget column label, dropped lines', () => {
+  it('budgetRefLabel names the real window: a calendar year reads "2026 budget", a T12-window budget names its months', () => {
+    expect(budgetRefLabel('Jan 2026-Dec 2026')).toBe('2026 budget');
+    expect(budgetRefLabel('Nov 2025-Oct 2026')).toBe('budget Nov-25–Oct-26');     // was "2025 budget" on a 2027 budget
+    expect(budgetRefLabel('')).toBe('CY budget');
+  });
+  it('a line the $1,000 rule drops stays at zero but carries a "dropped" driver with its T12; choosing a shape on the row budgets it', () => {
+    const actual = { ...synthetic(), '6736': cal(Array(12).fill(50)) };   // $600 of windows a year
+    const inputs = defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10);
+    const rules = { '6736': { method: 'flatT12' as const, factor: 0.1 } };
+    const l = L(generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10, rules }), '6736');
+    expect(sum(l.months)).toBe(0);
+    expect(l.driver).toMatchObject({ method: 'dropped', t12: 600, limit: 1000 });
+    const picked = L(generateAnnualLines(coaList, { ...inputs, baseline: { ...inputs.baseline!, glShape: { '6736': 'flat' } } }, { actual, budget: null, lastMonth: 10, rules }), '6736');
+    expect(sum(picked.months)).toBeCloseTo(660, 0);
   });
 });

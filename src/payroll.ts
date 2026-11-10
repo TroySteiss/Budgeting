@@ -660,7 +660,7 @@ payrollRouter.post('/iterations/:id/apply', requireAdmin, h(async (req, res) => 
     await query('update budgets set inputs=$2, updated_at=now() where id=$1', [budget.id, JSON.stringify(inputs)]);
     const lb = (await loadBudget(budget.id))!;
     const built = buildLines(lb, lb.budget.inputs, lb.lines);
-    await saveLines(budget.id, built.lines);
+    await saveLines(budget.id, built.lines, true);
     applied.push({ code, budgetId: budget.id, wages, unmappedPositions });
   }
   logChange(user, 'apply raises to budgets', { iterationId: it.id, region: it.region, year, applied: applied.map((a) => a.code), skipped });
