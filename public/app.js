@@ -18,7 +18,7 @@ const S = {
   pendingRow: null,                      // in-progress row edit buffer {gl, months, dirty}
   gridScroll: null,
   // pay-rates tab: its own gate + working set (st = /payroll/state, cycle = /payroll/cycles/:id)
-  pay: { st: null, cycle: null, cycleId: null, region: '', iterId: null, compare: true, loading: false, err: '', msg: '', newCycle: false },
+  pay: { st: null, cycle: null, cycleId: null, region: '*', iterId: null, compare: true, loading: false, err: '', msg: '', newCycle: false },
 };
 
 function applyTheme() {
@@ -3591,7 +3591,8 @@ async function loadPayCycle(id) {
   S.pay.cycleId = id; S.pay.err = '';
   try {
     S.pay.cycle = await GET(`/payroll/cycles/${id}`);
-    if (!S.pay.cycle.regions.includes(S.pay.region)) S.pay.region = S.pay.cycle.regions[0] || '';
+    // the tab opens on All regions (Troy 2026-11-10); a region picked by hand is kept while it exists
+    if (S.pay.region !== '*' && !S.pay.cycle.regions.includes(S.pay.region)) S.pay.region = '*';
     S.pay.iterId = null;   // re-defaults to the region's latest
   } catch (e) { S.pay.cycle = null; S.pay.err = e.message; }
 }
@@ -3836,8 +3837,8 @@ function payCycleHtml(c) {
     </div>`;
   return `<div class="card">
     <div class="row" style="align-items:center; gap:8px; flex-wrap:wrap">
-      ${c.regions.map((r) => `<button class="paypill payreg ${!all && r === P.region ? 'on' : ''}" data-reg="${esc(r)}">${esc(r)}</button>`).join('')}
       <button class="paypill payreg ${all ? 'on' : ''}" data-reg="*" title="Everyone, once — edits land on each person's home-region chain">All regions</button>
+      ${c.regions.map((r) => `<button class="paypill payreg ${!all && r === P.region ? 'on' : ''}" data-reg="${esc(r)}">${esc(r)}</button>`).join('')}
       <span class="spacer"></span>
       ${its.map((i) => `<button class="paypill payit ${iter && i.id === iter.id ? 'on' : ''}" data-it="${i.id}">Iteration ${i.num}${i.finalizedAt ? ' ✓' : ''}</button>`).join('')}
       ${prior ? `<label class="muted" style="font-size:12px"><input type="checkbox" id="pay-cmp" ${P.compare ? 'checked' : ''}> changes vs #${prior.num}</label>` : ''}
@@ -3854,6 +3855,18 @@ function payCycleHtml(c) {
       ${cardHtml(`${all ? 'All regions' : P.region} · ${props.length} properties`, totPct, totCur, totNew, totDyr, null, props.reduce((a, p) => a + (p.units || 0), 0), '')}
       ${props.map((p) => cardHtml(p.code.toUpperCase(), calc[p.code].pct, calc[p.code].curMo, calc[p.code].newMo, calc[p.code].dYrB, payIncomeGrowth(p.code, year), p.units, statusHtml(p.code))).join('')}
     </div>
+    ${all ? (() => {
+      // every region's latest iteration and whether it is final; admins finalize the drafts from here
+      const latest = {};
+      for (const i of c.iterations) { const cur = latest[i.region]; if (!cur || i.num > cur.num) latest[i.region] = i; }
+      const list = Object.values(latest).sort((a, b) => String(a.region).localeCompare(String(b.region)));
+      const drafts = list.filter((i) => !i.finalizedAt);
+      return `<div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap; align-items:center">
+        ${list.map((i) => `<span class="paypill" style="cursor:default" title="${i.finalizedAt ? `finalized by ${esc(i.finalizedBy || '')} ${fmtd(i.finalizedAt)}` : 'draft — entries can still change'}">${esc(i.region)} · iteration ${i.num} ${i.finalizedAt ? '✓ final' : 'draft'}</span>`).join('')}
+        ${c.viewer.isAdmin && drafts.length ? `<button class="btn paygold" id="pay-final-all" title="Locks every raise entry in each region's draft iteration. A region that is already final is left alone.">Finalize ${drafts.length === list.length ? 'all' : 'the'} ${drafts.length} draft region${drafts.length === 1 ? '' : 's'}</button>` : ''}
+        ${!drafts.length && list.length ? '<span class="muted" style="font-size:12px">every region is final</span>' : ''}
+      </div>`;
+    })() : ''}
     ${c.viewer.isAdmin && iter ? `<div class="row" style="margin-top:10px; gap:8px; flex-wrap:wrap">
       ${!iter.finalizedAt ? `<button class="btn paygold" id="pay-final">Finalize iteration ${iter.num} (${esc(P.region)})</button>` : ''}
       ${iter.finalizedAt && iter.id === its[its.length - 1].id ? `<button class="btn paygreen" id="pay-next">Start iteration ${iter.num + 1} from #${iter.num}</button>` : ''}
@@ -3994,6 +4007,18 @@ function wirePayCycle(el, c) {
       } catch (e) { P.err = e.message; render(); }
     });
   }
+  const finAll = el.querySelector('#pay-final-all');
+  if (finAll) finAll.addEventListener('click', async () => {
+    const latest = {};
+    for (const i of c.iterations) { const cur = latest[i.region]; if (!cur || i.num > cur.num) latest[i.region] = i; }
+    const drafts = Object.values(latest).filter((i) => !i.finalizedAt);
+    if (!confirm(`Finalize ${drafts.map((i) => `${i.region} iteration ${i.num}`).join(', ')}?\n\nEvery raise entry in those iterations locks. To change one afterwards, start that region's next iteration.`)) return;
+    try {
+      const r = await POST(`/payroll/cycles/${c.cycle.id}/finalize-all`, {});
+      P.err = ''; P.msg = r.finalized.length ? `Finalized ${r.finalized.map((x) => `${x.region} #${x.num}`).join(', ')} — recalc the budgets to drop the "prelim" flag` : 'Every region was already final';
+      await loadPayCycle(c.cycle.id); render();
+    } catch (e) { P.err = e.message; render(); }
+  });
   const fin = el.querySelector('#pay-final');
   if (fin) fin.addEventListener('click', async () => {
     if (!confirm(`Finalize ${P.region} iteration ${iter.num}? Every raise entry locks; the next iteration starts from this one.`)) return;

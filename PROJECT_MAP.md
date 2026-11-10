@@ -469,6 +469,11 @@ budgets' wage GLs. Modeled on the per-property sheets of the Payroll Budget Work
   import, allowlist or not — files travel**; masked slices ride as per-region aggregate
   rows. Import reads Key + Raise % from EVERY sheet, typed values beating Combined's
   cached formulas; "no entry yet" counts as 0% so re-imports don't restamp authors.
+- **All regions is the landing view (Troy 2026-11-10)**: `S.pay.region` starts at `'*'` and
+  `loadPayCycle` falls back to it; the All regions pill is first. The view shows each region's
+  latest iteration and state, and admins get **Finalize the N draft regions** →
+  `POST /payroll/cycles/:id/finalize-all` (finalizes every region's latest un-finalized
+  iteration; already-final regions untouched). Apply / start-next-iteration stay per region.
 - **Import rules from the first real RM round (2026-11-10)** — `parseRaiseImportDetailed`
   (payroll-xlsx.ts) returns `{ pairs, zeroSkipped, fromNewRate }`; both import routes report the
   two counts. (1) **A 0 / blank Raise % is "not filled in"** and is left out: every exported file

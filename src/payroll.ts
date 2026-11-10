@@ -595,6 +595,25 @@ payrollRouter.post('/iterations/:id/finalize', requireAdmin, h(async (req, res) 
   res.json({ ok: true, ...row });
 }));
 
+/* Finalize EVERY region's latest draft iteration in one go (Troy 2026-11-10: "I should be
+   able to finalize all the iterations from" the All regions view). Regions already finalized
+   are left alone; returns what was finalized. */
+payrollRouter.post('/cycles/:id/finalize-all', requireAdmin, h(async (req, res) => {
+  const cycleId = Number(req.params.id);
+  const cycle = (await query('select id from raise_cycles where id=$1', [cycleId])).rows[0];
+  if (!cycle) return res.status(404).json({ error: 'No such cycle' });
+  const user = req.session.username || '';
+  const latest = await latestIterByRegion(cycleId);
+  const done: { region: string; num: number }[] = [];
+  for (const [region, it] of latest) {
+    if (it.finalized) continue;
+    await query('update raise_iterations set finalized_by=$2, finalized_at=now() where id=$1 and finalized_at is null', [it.id, user]);
+    logChange(user, 'finalize raise iteration', { iterationId: it.id, region, num: it.num, via: 'all regions' });
+    done.push({ region, num: it.num });
+  }
+  res.json({ ok: true, finalized: done, alreadyFinal: latest.size - done.length });
+}));
+
 payrollRouter.post('/cycles/:id/regions/:region/iterations', requireAdmin, h(async (req, res) => {
   const cycleId = Number(req.params.id);
   const region = String(req.params.region);
