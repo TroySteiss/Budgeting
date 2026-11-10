@@ -39,7 +39,7 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-09f';
+export const ENGINE_VERSION = '2026-11-09g';
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -840,23 +840,29 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       }
     }
   }
-  // 5036 prior period collections: T12 ratio to net GPR × net GPR
+  // 5036 prior period collections (Troy 2026-11-09): "should be based on the previous month's
+  // DQ. Higher DQ = higher potential collections in future months" — and never more than that
+  // delinquency ("where would that money come from??"). Each month = collection rate × the
+  // PREVIOUS month's budgeted delinquency (5035); January collects against the last actual
+  // month's delinquency. Rate = the trailing-12's collections ÷ its delinquency, capped at 100%
+  // (inputs.collectPct when typed). With no delinquency to collect against it falls back to the
+  // old T12 ratio to net GPR.
   {
     const a = coaByCode.get('5036');
-    if (a) {
-      const denom = ['4994', '4995', '4996', '5003'].reduce((s, g) => s + baseTotal(g), 0);
-      const pct = inputs.pctGpr?.['5036'] ?? (denom ? baseTotal('5036') / denom : 0);
-      if (pct) {
-        // Troy 2026-11-09: "Prior period collections should not be more than overall DQ.
-        // Where would that money come from??" — each month's collections are capped at that
-        // month's budgeted delinquency (5035). The T12 ratio can exceed it when last year
-        // collected older balances.
-        const dq = lines.get('5035')?.months || zero12();
-        const hasDq = dq.some((v) => v);
-        const raw = netGpr.map((v) => r2(pct * v));
-        const months = raw.map((v, i) => (hasDq && v > 0 ? r2(Math.min(v, Math.abs(dq[i]))) : v)) as Months;
-        const capped = months.some((v, i) => v !== raw[i]);
-        mk('5036', months, { method: 'pctGpr', pct: Math.round(pct * 100000) / 100000, of: 'netgpr', basis: 't12', ...(capped ? { capped: true, uncapped: r2(sum(raw)) } : {}) } as any);
+    if (a && !isSet('5036')) {
+      const dq = lines.get('5035')?.months || zero12();
+      const t12Dq = Math.abs(sum(src.actual?.['5035'] || zero12()));
+      const t12Col = sum(src.actual?.['5036'] || zero12());
+      const histRate = t12Dq > 0 && t12Col > 0 ? Math.min(1, t12Col / t12Dq) : null;
+      const rate = inputs.collectPct != null ? Math.min(1, Math.max(0, inputs.collectPct)) : histRate;
+      if (rate != null && dq.some((v) => v)) {
+        const startDq = Math.abs((src.actual?.['5035'] || zero12())[lastMonth - 1] || 0) || Math.abs(dq[0]);
+        const months = dq.map((_, i) => r2(rate * (i === 0 ? startDq : Math.abs(dq[i - 1])))) as Months;
+        mk('5036', months, { method: 'collections', pct: Math.round(rate * 100000) / 100000, startDq: r2(startDq), ...(histRate != null && t12Col / t12Dq > 1 ? { capped: true, t12Rate: Math.round((t12Col / t12Dq) * 1000) / 1000 } : {}) } as any);
+      } else {
+        const denom = ['4994', '4995', '4996', '5003'].reduce((x, g) => x + baseTotal(g), 0);
+        const pct = inputs.pctGpr?.['5036'] ?? (denom ? baseTotal('5036') / denom : 0);
+        if (pct) mk('5036', netGpr.map((v) => r2(pct * v)), { method: 'pctGpr', pct: Math.round(pct * 100000) / 100000, of: 'netgpr', basis: 't12' });
       }
     }
   }

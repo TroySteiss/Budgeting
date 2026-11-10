@@ -71,6 +71,7 @@ export type Driver = { revised?: boolean } & (
   | { method: 'perTurn'; amount: number; turns: number }          // $ per new move-in × projected move-ins
   | { method: 'recapture'; pct: number }                          // concession recapture % of the other concessions
   | { method: 'zero' }
+  | { method: 'collections'; pct: number; startDq: number }   // prior-period collections = rate x the previous month's delinquency
   | { method: 'dropped'; t12: number; limit: number });   // annual: T12 at or under the template's $1,000 cut-off — budgeted at zero, shown as dropped
 
 /** 'actual' = same calendar month of the statement; 'wavg' = Troy's cyclic
@@ -100,6 +101,8 @@ export interface BudgetInputs {
   wagesFromRoster?: boolean;
   /** annual budgets: 'payroll' (default) = wages follow the Pay-rates tab's roster + raise entries whenever a cycle is effective in the budget year; 'manual' = never (payroll model / own trailing-12 x raise %) */
   wageSource?: 'payroll' | 'manual';
+  /** annual: share of the previous month's delinquency (5035) collected as prior-period collections (5036); unset = the trailing-12 rate, capped at 100% */
+  collectPct?: number;
   /** annual budgets: the per-GL formula rules this budget runs on — a COPY of the saved formula
       set it was given (or {} for the template's built-in defaults). Absent = the old silent
       default (the 2026 GRKS draft's rules), kept only for budgets created before sets existed. */

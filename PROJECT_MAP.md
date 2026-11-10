@@ -637,12 +637,15 @@ rest of the year must run low to hit the average — raise the average if that l
 month. Guard: fewer than nine months with expirations (`VACANCY_MIN_EXP_MONTHS`) → flat. Driver
 `{ method: 'vacancy', avg, shaped, pcts, weight, startPct }`, chip VAC·EXP. Annual engine only.
 
-## Prior-period collections ≤ delinquency (Troy 2026-11-09)
+## Prior-period collections follow the previous month's delinquency (Troy 2026-11-09)
 
-"Prior period collections should not be more than overall DQ. Where would that money come
-from??" 5036 = T12 ratio × net GPR, then each month is capped at that month's budgeted |5035|
-(only when 5035 carries dollars). Driver gains `capped: true, uncapped: <year at the ratio>`; the
-chip tooltip says so.
+"Prior period collections should be based on the previous month's DQ. Higher DQ = higher potential
+collections in future months" — and never more than that delinquency ("where would that money
+come from??"). 5036[m] = collection rate × |5035[m−1]|; January collects against the LAST ACTUAL
+month's delinquency. Rate = trailing-12 collections ÷ trailing-12 delinquency, capped at 100%
+(`inputs.collectPct` when typed — the row's box). Driver `{ method: 'collections', pct, startDq,
+capped?, t12Rate? }`, chip %PRIOR DQ. With no delinquency budgeted it falls back to the old T12
+ratio to net GPR (`pctGpr`). Growth ties no longer scale 5036 directly; it follows 5035.
 
 ## Saved formula sets — no silent GRKS default (Troy 2026-11-09)
 
@@ -701,11 +704,12 @@ test/annual.test.ts) because they assert the template's / GRKS draft's own month
 - **Chips** renamed: RR→ROLL, T12→SAME MO, RATE→$/UNIT, RATIO→%WAGES, TURN→T12·TURNS,
   PAY·draft→PAY·prelim; 5035 / 5036 read %NET RENT / %NET GPR. `TAG_KEY` + "? chip key" lists all.
   Percent boxes on rows carry a % sign (`.fxu`).
+- Undo carries `calcVersion` in its snapshot and the restore route puts it back (null for older snapshots), so undoing a recalc does not leave the newer stamp.
 - **Formula version** — `ENGINE_VERSION` (shared/annual.ts; BUMP IT when a formula or default
   changes results). `saveLines(id, lines, true)` on every full build stamps
   `budgets.calc_version` / `calc_at` (migration 012); `budgetView.engineVersion`; the editor
   shows a "calculated on older formulas — Recalc" bar when they differ.
-- **Defaults in use** card (`defaultsInUse` / `defaultsCardHtml`, annual): increase factors, loss
+- **Defaults in use** (`defaultsInUse` / `defaultsCardHtml`, annual) — NOT in the side panel (Troy: its placement was in the way): a small "defaults · N to check" chip beside the chip key opens it in a dialog (`defaultsChipHtml` / `openDefaultsDialog`). It lists: increase factors, loss
   to lease, vacancy, GPR start vs last posted, wages, management fee (warns when the template's
   tier table reads a different % at the budget's cash-on-cash), corporate rates, taxes, dropped
   lines, special projects — each tagged default / set. "I have reviewed these" →

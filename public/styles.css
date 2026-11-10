@@ -417,3 +417,6 @@ td.m.drv-drop input { color: var(--dim); }
 .card.defaults .set { font-size: 9.5px; font-weight: 700; text-transform: uppercase; color: var(--good); border: 1px solid currentColor; border-radius: 8px; padding: 0 5px; margin-left: 3px; }
 .card.defaults .warn { color: var(--bad); margin-top: 2px; }
 #tagkey-dlg, #dropped-dlg { max-width: 640px; }
+
+#defaults-dlg { max-width: 620px; padding: 0 14px 12px; }
+#defaults-dlg .card.defaults { border: none; box-shadow: none; padding: 12px 0 0; margin: 0; }

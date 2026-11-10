@@ -117,7 +117,7 @@ describe('generateAnnualLines — template rules on own history', () => {
   });
   it('delinquency / prior-period collections / PEP run at their ratios', () => {
     expect((L(lines, '5035').driver as any).method).toBe('pctGpr');
-    expect((L(lines, '5036').driver as any).of).toBe('netgpr');
+    expect((L(lines, '5036').driver as any).method).toBe('collections');   // a rate on the previous month's delinquency
     expect(L(lines, '5019').months[0]).toBe(-60);          // last-month ratio × same GPR
   });
   it('mgmt fee = actual % of the PRIOR month\'s income, whole dollars; LTL starts at the last actual month', () => {
@@ -798,22 +798,44 @@ describe('vacancy: an annual average on a carry-over curve (Troy 2026-11-09)', (
   });
 });
 
-describe('prior-period collections never exceed delinquency (Troy 2026-11-09)', () => {
-  it('5036 is capped month by month at the budgeted 5035; an uncapped line is untouched', () => {
-    const actual = synthetic();
-    const f = (v: number) => cal(Array(12).fill(v));
-    const inputs = baseInputs(2026, 10, actual, null, coaList, null, 10);
-    // last year collected 800 a month of older balances against 300 of delinquency
-    const over = generateAnnualLines(coaList, inputs, { actual: { ...actual, '5035': f(-300), '5036': f(800) }, budget: null, lastMonth: 10 });
-    const dq = L(over, '5035').months, pp = L(over, '5036').months;
-    expect(dq.some((v) => v < 0)).toBe(true);
-    pp.forEach((v, i) => expect(v).toBeLessThanOrEqual(Math.abs(dq[i]) + 0.005));
-    expect((L(over, '5036').driver as any).capped).toBe(true);
-    expect((L(over, '5036').driver as any).uncapped).toBeGreaterThan(sum(pp));
-    // collections below delinquency: nothing is capped
-    const under = generateAnnualLines(coaList, inputs, { actual: { ...actual, '5035': f(-800), '5036': f(300) }, budget: null, lastMonth: 10 });
-    expect((L(under, '5036').driver as any).capped).toBeUndefined();
-    expect(sum(L(under, '5036').months)).toBeGreaterThan(0);
+describe('prior-period collections follow the previous month\'s delinquency (Troy 2026-11-09)', () => {
+  const actual = synthetic();
+  const f = (v: number) => cal(Array(12).fill(v));
+  const inputs = baseInputs(2026, 10, actual, null, coaList, null, 10);
+
+  it('each month = the collection rate x the PREVIOUS month\'s budgeted delinquency; January uses the last actual month', () => {
+    // history: 800 of delinquency and 300 collected a month -> a 37.5% collection rate
+    const ls = generateAnnualLines(coaList, inputs, { actual: { ...actual, '5035': f(-800), '5036': f(300) }, budget: null, lastMonth: 10 });
+    const dq = L(ls, '5035').months, pp = L(ls, '5036').months, d = L(ls, '5036').driver as any;
+    expect(d.method).toBe('collections');
+    expect(d.pct).toBeCloseTo(0.375, 4);
+    expect(pp[0]).toBeCloseTo(0.375 * 800, 1);                       // against October's actual delinquency
+    for (let i = 1; i < 12; i++) expect(pp[i]).toBeCloseTo(0.375 * Math.abs(dq[i - 1]), 1);
+  });
+  it('higher delinquency one month means higher collections the NEXT month', () => {
+    // loss to lease held (not following GPR), so a GPR step in June raises net rent and with it delinquency
+    const held = { ...inputs, ltl: { ...inputs.ltl, mode: 'flat' as const, followGpr: false } };
+    const base = generateAnnualLines(coaList, held, { actual: { ...actual, '5035': f(-800), '5036': f(300) }, budget: null, lastMonth: 10 });
+    const stepped = generateAnnualLines(coaList, { ...held, gpr: { ...held.gpr, growthPct: [0, 0, 0, 0, 0, 0.5, 0, 0, 0, 0, 0, 0] as Months } }, { actual: { ...actual, '5035': f(-800), '5036': f(300) }, budget: null, lastMonth: 10 });
+    const dq = L(stepped, '5035').months, pp = L(stepped, '5036').months;
+    const dq0 = L(base, '5035').months, pp0 = L(base, '5036').months;
+    expect(Math.abs(dq[5])).toBeGreaterThan(Math.abs(dq0[5]) * 1.2);   // June delinquency is well above the no-step budget…
+    expect(pp[6]).toBeGreaterThan(pp0[6] * 1.2);                       // …and July collections rise with it
+    expect(pp[6] / pp0[6]).toBeCloseTo(Math.abs(dq[5]) / Math.abs(dq0[5]), 3);
+  });
+  it('never more than the delinquency it collects against: a trailing-12 that collected more is capped at 100%', () => {
+    const ls = generateAnnualLines(coaList, inputs, { actual: { ...actual, '5035': f(-300), '5036': f(800) }, budget: null, lastMonth: 10 });
+    const dq = L(ls, '5035').months, pp = L(ls, '5036').months, d = L(ls, '5036').driver as any;
+    expect(d.pct).toBe(1);
+    expect(d.capped).toBe(true);
+    for (let i = 1; i < 12; i++) expect(pp[i]).toBeLessThanOrEqual(Math.abs(dq[i - 1]) + 0.005);
+    expect(sum(pp)).toBeLessThanOrEqual(Math.abs(sum(dq)) + 300 + 0.01);
+  });
+  it('a typed collection rate wins; with no delinquency budgeted the old ratio to net GPR still applies', () => {
+    const typed = generateAnnualLines(coaList, { ...inputs, collectPct: 0.5 }, { actual: { ...actual, '5035': f(-800), '5036': f(300) }, budget: null, lastMonth: 10 });
+    expect((L(typed, '5036').driver as any).pct).toBe(0.5);
+    const none = generateAnnualLines(coaList, inputs, { actual: { ...actual, '5035': f(0), '5036': f(300) }, budget: null, lastMonth: 10 });
+    expect((L(none, '5036').driver as any).method).toBe('pctGpr');
   });
 });
 

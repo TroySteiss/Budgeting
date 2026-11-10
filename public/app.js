@@ -87,6 +87,7 @@ function drvMetaBase(l) {
       return { cls: 'drv-base', tag: d.lastDev != null ? '⚠LAST' : tag, label: `${d.src === 'budget' ? 'CY budget' : 'Own trailing-12 actual'} — ${shape} ${factor}${d.mult ? ` → MROUND $${d.mult}` : ''} · T12 ${Math.round(d.base || 0).toLocaleString()}${d.drift ? ` · tilted ${(d.drift * 100).toFixed(1)}% January to December (costs drift up through the year; year total unchanged)` : ''}${d.rule ? ' · default shape and factor from the 2026 GRKS draft (not set for this property)' : ''}${lastWarn}` };
     }
     case 'pctGpr': return { cls: 'drv-base', tag: l.driver.of === 'net' ? '%NET RENT' : l.driver.of === 'netgpr' ? '%NET GPR' : '%GPR', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.of === 'net' ? 'net rental income' : l.driver.of === 'netgpr' ? 'net GPR' : 'GPR'} (${l.driver.basis === 'last' ? 'last-month' : 'trailing-12'} ratio)${l.driver.capped ? ` — CAPPED at each month's budgeted delinquency (the ratio alone gave ${money(l.driver.uncapped || 0)} for the year; collections cannot exceed what is delinquent)` : ''}` };
+    case 'collections': return { cls: 'drv-base', tag: '%PRIOR DQ', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% of the PREVIOUS month's delinquency is collected (January collects against the last actual month's $${money(l.driver.startDq || 0)}). Higher delinquency one month means higher collections the next; it can never exceed that delinquency${l.driver.capped ? ` — the trailing-12 collected ${((l.driver.t12Rate || 0) * 100).toFixed(0)}% of its delinquency (older balances), capped here at 100%` : ''}` };
     case 'recapture': return { cls: 'drv-base', tag: 'RECAP', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% recapture of the other concession lines (T12 ratio)` };
     case 'perTurn': return { cls: 'drv-base', tag: 'T12·TURNS', label: `Last year's dollars placed on the months with projected move-ins (${money(l.driver.turns)} of them, $${money(l.driver.amount)} each). The YEAR total stays at the trailing-12 unless a $ per move-in is typed — it does not move with the renewal %` };
     case 'suggested': return { cls: 'drv-corp', tag: 'CORP', label: `Corporate budget suggestion${l.driver.note ? ` — ${l.driver.note}` : ''}` };
@@ -102,6 +103,7 @@ function pushUndo() {
   S.undo.stack.push({
     lines: JSON.parse(JSON.stringify(S.bv.planLines || S.bv.lines)),   // the PLAN — actualized months overlay on read
     inputs: JSON.parse(JSON.stringify(S.bv.budget.inputs || {})),
+    calcVersion: S.bv.budget.calc_version || null,   // so Undo also puts back which formula version the lines were built on
   });
   if (S.undo.stack.length > 25) S.undo.stack.shift();
 }
@@ -961,6 +963,7 @@ function renderEditor(el) {
           })()}
           <span class="muted">· click a row's chip to change its formula</span>
           <button class="chip" id="tag-key" title="What every chip on the grid means">? chip key</button>
+          ${defaultsChipHtml(bv)}
           ${droppedChipHtml(bv)}
           ${bv.hist && (bv.hist.t12 || bv.hist.budget) ? `<button class="chip hist-all" id="hist-all" title="Unfold the prior trailing-12 and current-year budget by month under every GL — reference rows, not part of the budget">${S.histAll ? '▾ hide history' : '▸ history under every GL'}</button>` : ''}
     ${bv.hist && bv.hist.payroll ? (() => { const tpl = Object.values(bv.hist.payroll.cal).reduce((a, m) => a + m.reduce((x, y) => x + y, 0), 0); const bud = (bv.categoryTotals && bv.categoryTotals['10']) ?? null; const d = bud == null ? null : bud - tpl; return `<button class="chip paytie-chip" id="paytie-open" title="${esc(bv.hist.payroll.label)} — Seth's payroll template for this property: budget payroll ${money(bud)} vs template ${money(tpl)}. Click to unfold the template under every payroll GL (reference rows; the budget is not changed).">payroll template Δ ${d == null ? '' : `${d >= 0 ? '+' : ''}${money(d)}`}${tpl && d != null ? ` (${((d / Math.abs(tpl)) * 100).toFixed(1)}%)` : ''}</button>`; })() : ''}
@@ -974,7 +977,6 @@ function renderEditor(el) {
         <div class="gridwrap">${gridHtml(bv, totals)}</div>
       </div>
       <div class="side">
-        ${defaultsCardHtml(bv)}
         <div class="card">
           <h2>Monthly trend</h2>
           ${trendSvg(bv)}
@@ -1092,7 +1094,7 @@ function renderEditor(el) {
   { const sr = document.getElementById('stale-recalc'); if (sr) sr.addEventListener('click', async () => { pushUndo(); S.bv = await POST(`/budgets/${b.id}/recalc`); render(); }); }
   { const tk = document.getElementById('tag-key'); if (tk) tk.addEventListener('click', openTagKey); }
   { const dop = document.getElementById('dropped-open'); if (dop) dop.addEventListener('click', () => openDroppedDialog(b)); }
-  { const ak = document.getElementById('ack-defaults'); if (ak) ak.addEventListener('click', async () => { S.bv = await POST(`/budgets/${b.id}/ack-defaults`, { hash: defaultsHash(defaultsInUse(S.bv)) }); render(); }); }
+  { const dfo = document.getElementById('defaults-open'); if (dfo) dfo.addEventListener('click', () => openDefaultsDialog(b)); }
   document.getElementById('undo-btn').addEventListener('click', () => doUndo(b.id));
   // condensed section headers: click toggles, choice is locked in localStorage
   el.querySelectorAll('tr.header[data-sec]').forEach((tr) => tr.addEventListener('click', () => {
@@ -1764,6 +1766,9 @@ function paramFor(gl, line, inp) {
     const bl = inp.baseline || {};
     return { label: 'fee increase % (on the last actual month)', value: pct(line.driver.pct || 0), patch: (v) => ({ baseline: { ...bl, glGrowth: { ...(bl.glGrowth || {}), [gl]: v / 100 } } }) };
   }
+  if (gl === '5036' && m === 'collections') {
+    return { label: "% of the previous month's delinquency collected", value: +(((line.driver.pct || 0) * 100).toFixed(2)), patch: (v) => ({ collectPct: Math.min(100, Math.max(0, v)) / 100 }) };
+  }
   if (gl === '5031' && m === 'vacancy') {
     const vac = inp.vacancyPct || [];
     // the box is the ANNUAL AVERAGE; the months follow lease expirations (engine: vacancyByMonth)
@@ -1840,6 +1845,7 @@ const TAG_KEY = [
   ['%NET RENT', 'A % of net rental income (GPR less loss to lease, concessions and vacancy).'],
   ['%NET GPR', 'A % of net GPR (GPR, HAP and loss to lease).'],
   ['RECAP', 'Concession recapture: a % of the other concession lines.'],
+  ['%PRIOR DQ', "Prior-period collections: a % of the PREVIOUS month's delinquency."],
   ['SAME MO', 'The same calendar month of the trailing-12 × the increase factor.'],
   ['WAVG', '1-2-1 weighted average of the month before, the month and the month after × the factor.'],
   ['T12/12', 'The trailing-12 total ÷ 12, the same every month × the factor.'],
@@ -2041,6 +2047,27 @@ function defaultsInUse(bv) {
   return out;
 }
 const defaultsHash = (items) => items.map((x) => `${x.key}=${x.value}`).join('|');
+/* One quiet chip on the legend row; the list itself opens in a dialog on click. */
+function defaultsChipHtml(bv) {
+  const items = defaultsInUse(bv);
+  if (!items.length) return '';
+  const nWarn = items.filter((x) => x.warn).length;
+  const ack = (bv.budget.inputs || {}).defaultsAck || null;
+  const current = !!ack && ack.hash === defaultsHash(items);
+  return `<button class="chip${nWarn ? ' dropped-chip' : ''}" id="defaults-open" title="What decided the numbers where nobody typed one — formula set, increase factors, loss to lease, vacancy, wages, fee, corporate rates. Click to see the list${current ? ' (reviewed)' : ''}.">defaults${nWarn ? ` · ${nWarn} to check` : ''}${current ? ' ✓' : ''}</button>`;
+}
+function openDefaultsDialog(b) {
+  let dlg = document.getElementById('defaults-dlg');
+  if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'defaults-dlg'; document.body.appendChild(dlg); }
+  const draw = () => {
+    dlg.innerHTML = `${defaultsCardHtml(S.bv)}<div class="row" style="justify-content:flex-end; margin-top:8px"><button class="btn sub" id="dfl-x">Close</button></div>`;
+    dlg.querySelector('#dfl-x').addEventListener('click', () => dlg.close());
+    const ak = dlg.querySelector('#ack-defaults');
+    if (ak) ak.addEventListener('click', async () => { S.bv = await POST(`/budgets/${b.id}/ack-defaults`, { hash: defaultsHash(defaultsInUse(S.bv)) }); draw(); render(); });
+  };
+  draw();
+  dlg.showModal();
+}
 function defaultsCardHtml(bv) {
   const items = defaultsInUse(bv);
   if (!items.length) return '';

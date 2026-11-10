@@ -1158,6 +1158,9 @@ router.post('/budgets/:id/restore', h(async (req, res) => {
     await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(inputs)]);
   }
   await saveLines(id, restored);
+  // the restored lines were built on whatever formula version the snapshot carried (unknown for
+  // older snapshots) — never leave the stamp of the calculation that was just undone
+  await query('update budgets set calc_version=$2 where id=$1', [id, typeof req.body?.calcVersion === 'string' ? req.body.calcVersion : null]);
   logChange(req.session.username || '', 'undo (restore snapshot)', { id, lines: restored.length });
   res.json(budgetView((await loadBudget(id))!));
 }));
