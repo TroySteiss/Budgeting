@@ -1931,6 +1931,9 @@ function openApplyFormulaSet(b) {
   dlg.showModal();
 }
 
+/* the trailing-12 total on file for a GL (annual budgets) */
+function rowT12(gl) { return ((((S.bv || {}).refs || []).find((r) => r.key === 'actual') || {}).byGl || {})[gl] || 0; }
+
 /* ---- lines the template dropped (T12 at or under $1,000) ---- */
 function droppedLines(bv) { return (bv.lines || []).filter((l) => !l.override && l.driver && l.driver.method === 'dropped'); }
 function droppedChipHtml(bv) {
@@ -2569,6 +2572,8 @@ function openRowTools(b, gl, anchorBtn) {
       <span class="drv ${dm.cls}" style="margin-top:3px; display:inline-block">${dm.tag}</span>
       <span style="margin-left:5px">${esc(dm.label)}</span></div>
     ${line && (line.driver || {}).method === 'dropped' ? `<button data-act="undrop" title="The template dropped this line because its trailing-12 is at or under $1,000. This budgets it at T12 ÷ 12 with the line's usual increase factor."><b>${dot('drv-base')}Budget this line — T12 ÷ 12 ($${money(line.driver.t12 || 0)} a year before the factor)</b></button>` : ''}
+    ${S.bv.annual && rowT12(gl) ? `<button data-act="flatGrow" title="This line = its trailing-12 total ÷ 12, the same every month, × (1 + the growth % you type). Works on ANY line with history — rent, loss to lease, vacancy, payroll, the fee, corporate lines included. It replaces the line's own formula until you put it back."><b>${dot('drv-base')}Flat + growth over T12… (T12 ${money(rowT12(gl))})</b></button>` : ''}
+    ${S.bv.annual && ((inp.baseline || {}).glShape || {})[gl] ? `<button data-act="ownFormula" title="Drop the shape chosen on this row; the line goes back to its usual formula">${dot('drv-uw')}Back to this line's own formula</button>` : ''}
     <button data-act="zero">${dot('drv-int')}Zero out row</button>
     <button data-act="flatAnnual">${dot('drv-man')}Flat — annual $ over the year…</button>
     <button data-act="flatMonthly">${dot('drv-man')}Flat — $ per month…</button>
@@ -2672,6 +2677,24 @@ function openRowTools(b, gl, anchorBtn) {
       return put(res.months, { method: 'smooth', passes: res.passes, of: prev ? prev.method : undefined, srcName: prev ? (prev.srcName || prev.name) : undefined });
     }
     if (act === 'undrop') { await budgetDroppedLines(b, [gl]); return; }
+    if (act === 'flatGrow' || act === 'ownFormula') {
+      const bl = inp.baseline || {};
+      const glShape = { ...(bl.glShape || {}) }, glGrowth = { ...(bl.glGrowth || {}) };
+      if (act === 'flatGrow') {
+        const cur = glGrowth[gl] != null ? glGrowth[gl] * 100 : 3;
+        const t12 = rowT12(gl);
+        const ans = prompt(`${gl} ${acc.name || ''}\nFlat + growth over T12: every month = T12 ${money(t12)} ÷ 12 × (1 + growth).\n\nGrowth % over the trailing-12 (0 = hold it flat):`, String(+cur.toFixed(2)));
+        if (ans == null) return;
+        const g = parseFloat(String(ans).replace(/[%,]/g, ''));
+        if (!Number.isFinite(g)) return;
+        glShape[gl] = 'flat'; glGrowth[gl] = g / 100;
+      } else { delete glShape[gl]; delete glGrowth[gl]; }
+      pushUndo();
+      if (line && line.override) S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { override: false });
+      S.bv = await PUT(`/budgets/${b.id}`, { inputs: { baseline: { ...bl, glShape, glGrowth } } });
+      render();
+      return;
+    }
     if (act === 'wavg') {
       openWavgMatch(b, gl, acc, anchorBtn, put, inp);
       return;

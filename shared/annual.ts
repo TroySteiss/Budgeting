@@ -39,7 +39,7 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-09i';
+export const ENGINE_VERSION = '2026-11-09j';
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -747,7 +747,8 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     }
     // within-year cost drift: history-based expense lines cost a little more late in the year
     // than early (total unchanged). Not on contract-flat ("last month") or fixed-annual lines.
-    const drift = COST_DRIFT_PCODES.has(a.pcode || '') && sh !== 'last' && !FIXED_ANNUAL_GLS.has(a.code) && rule?.method !== 'fixedAnnual'
+    // (a shape chosen on the row is taken literally — "flat" stays flat)
+    const drift = COST_DRIFT_PCODES.has(a.pcode || '') && sh !== 'last' && !bl.glShape?.[a.code] && !FIXED_ANNUAL_GLS.has(a.code) && rule?.method !== 'fixedAnnual'
       ? (bl.costDrift ?? COST_DRIFT_DEFAULT) : 0;
     if (drift) months = tiltMonths(months, drift, mult);
     // a "last actual month" line whose last month is far off its own average: one odd
@@ -762,10 +763,28 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     return true;
   };
 
+  /* ---- A SHAPE CHOSEN ON THE ROW WINS ON ANY LINE (Troy 2026-11-09: "Flat + growth over T12
+     needs to be an option for all lines"). `baseline.glShape[gl]` used to work only on lines
+     that were history-based anyway; GPR, loss to lease, vacancy, the % of GPR lines, payroll,
+     the fee, corporate rates, charges and debt ignored it. Those lines are built here first,
+     from the property's own history on the chosen shape × the row's growth %, and every engine
+     formula below leaves a line that is already set alone. Lines with no history keep their
+     engine formula. ---- */
+  const userShaped = new Set<string>();
+  for (const a of coaList) {
+    if (a.kind !== 'detail' || !bl.glShape?.[a.code] || isSet(a.code)) continue;
+    // growth: the % typed on the row; a payroll line with none typed takes the raise % (as before)
+    const g = a.pcode === '10' && bl.glGrowth?.[a.code] == null ? (BURDEN_LAST_GLS.has(a.code) ? 0 : (inputs.payrollRaisePct ?? 0.035)) : undefined;
+    if (baseline(a, undefined, g)) userShaped.add(a.code);
+  }
+
   /* ---- GPR: rent roll market rents (Troy) or the last actual month (template) × monthly % changes ---- */
   const gprBase = inputs.gpr?.baseMonthly > 0 ? inputs.gpr.baseMonthly : lastOf('4994');
   const gpr = zero12();
-  if (gprBase > 0) {
+  if (userShaped.has('4994')) {
+    // GPR itself on a chosen shape: everything that reads GPR below reads these months
+    lines.get('4994')!.months.forEach((v, i) => { gpr[i] = v; });
+  } else if (gprBase > 0) {
     let cum = gprBase;
     for (let i = 0; i < 12; i++) {
       cum = i === 0 ? gprBase * (1 + (inputs.gpr?.growthPct?.[0] || 0)) : cum * (1 + (inputs.gpr?.growthPct?.[i] || 0));
@@ -785,7 +804,9 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   /* ---- loss to lease ---- */
   const ltl = inputs.ltl || ({} as BudgetInputs['ltl']);
   const followGpr = ltl.followGpr !== false;
-  if (ltl.mode === 'flat') {
+  if (isSet('5003')) {
+    // a shape chosen on the row: already built above
+  } else if (ltl.mode === 'flat') {
     // Troy: hold the loss to lease — no burnoff. Start = typed $/mo, else the
     // rent roll's current gap, else the last actual month; market growth
     // still deepens it when "follows GPR" is on
@@ -836,7 +857,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   const vacStart = actLastGpr > 0 ? Math.abs((src.actual?.['5031'] || zero12())[lastMonth - 1] || 0) / actLastGpr : null;
   const vac = vacancyByMonth(inputs.vacancyPct, exp, gpr as Months, inputs.vacancyExpWeight ?? 1, { startPct: vacStart, lastMonth });
   const vacPct = vac.pcts;
-  {
+  if (!isSet('5031')) {
     const months = gpr.map((v, i) => -r2(vacPct[i] * v)) as Months;
     if (vac.shaped === 'expirations') {
       // rounding: the year still totals average x GPR — the cent difference goes on the largest month
@@ -878,7 +899,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   // 5035 current delinquency: T12 ratio to (GPR..5035) × net rental income so far
   {
     const a = coaByCode.get('5035');
-    if (a) {
+    if (a && !isSet('5035')) {
       const denom = detail.filter((x) => Number(x.code) >= 4994 && Number(x.code) <= 5035).reduce((s, x) => s + baseTotal(x.code), 0);
       const pct = inputs.pctGpr?.['5035'] ?? (denom ? baseTotal('5035') / denom : 0);
       if (pct) {
@@ -995,6 +1016,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   if (wages) {
     for (const [gl, annual] of Object.entries(wages)) {
       if (!coaByCode.has(gl)) continue;
+      if (userShaped.has(gl)) continue;                             // built above on the row's own shape; added to the wage base below
       if (!annual) {
         // the roster is authoritative for every wage GL: one it books NOTHING to is a set
         // zero, so the trailing-12 fallback below cannot refill it (rovers and grounds are
@@ -1026,7 +1048,9 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   for (const gl of WAGE_GLS) {
     // wage GLs the model doesn't carry: own trailing-12 ÷ 12 flat × (1 + raise)
     const a = coaByCode.get(gl);
-    if (!a || isSet(gl)) continue;
+    if (!a) continue;
+    if (userShaped.has(gl)) { addWages(lines.get(gl)!.months); continue; }   // the row's shape is the wage line; burden follows it
+    if (isSet(gl)) continue;
     if (baseline(a, 'flat', bl.glGrowth?.[gl] ?? (raise - 1))) addWages(lines.get(gl)!.months);
   }
   const wagesTotal = sum(wagesMonthly);
@@ -1114,7 +1138,9 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   for (const [gl, ln] of lines) monthsMap.set(gl, ln.months);
   const totalIncome = rollup(monthsMap).get('5500') || zero12();
   const feePct = inputs.mgmtPct || tpl?.mgmtFee?.actualPct || 0;
-  if (feePct) {
+  if (isSet('6112')) {
+    // a shape chosen on the row: already built above
+  } else if (feePct) {
     const prevCal = (startMonth + 10) % 12;                                   // calendar index of the month before the budget starts
     const budIncome = src.budget && Object.keys(src.budget).length ? rollup(new Map(Object.entries(src.budget) as [string, Months][])).get('5500') : null;
     const before = budIncome && budIncome[prevCal] ? budIncome[prevCal] : totalIncome[0];
@@ -1128,7 +1154,11 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   else if (coaByCode.has('6112')) baseline(coaByCode.get('6112')!);
 
   /* ---- debt service: the Yardi amortization schedule; else loan × rate; else history ---- */
-  if (tpl?.debt && tpl.debt.interest.some((v) => v)) {
+  if (isSet('7300')) {
+    // a shape chosen on the row: already built above (principal still follows the schedule)
+    const pGl = tpl?.debt?.principalGl || '3080';
+    if (tpl?.debt && coaByCode.has(pGl) && !isSet(pGl) && tpl.debt.principal.some((v) => v)) mk(pGl, rotate12(tpl.debt.principal, startMonth), { method: 'debtService', kind: 'principal', loan: tpl.debt.loans.join('+') });
+  } else if (tpl?.debt && tpl.debt.interest.some((v) => v)) {
     mk('7300', rotate12(tpl.debt.interest, startMonth), { method: 'debtService', kind: 'interest', loan: tpl.debt.loans.join('+') });
     const pGl = tpl.debt.principalGl || '3080';
     if (coaByCode.has(pGl) && tpl.debt.principal.some((v) => v)) mk(pGl, rotate12(tpl.debt.principal, startMonth), { method: 'debtService', kind: 'principal', loan: tpl.debt.loans.join('+') });

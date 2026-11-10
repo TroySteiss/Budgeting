@@ -1036,3 +1036,53 @@ describe('first-year management fee (Troy 2026-11-09): 3% for the first 12 month
     expect((off.driver as any).firstYear).toBeUndefined();
   });
 });
+
+describe('a shape chosen on the row works on ANY line (Troy 2026-11-09: "Flat + growth over T12 needs to be an option for all lines")', () => {
+  const actual: Record<string, Months> = { ...synthetic(), '6332': cal(Array(12).fill(400)) };
+  const base = baseInputs(2026, 10, actual, null, coaList, null, 10);
+  const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
+  const flatOn = (gl: string, g: number, extra: Partial<AnnualSources> = {}) => {
+    const inp = { ...base, baseline: { ...base.baseline!, glShape: { [gl]: 'flat' as const }, glGrowth: { [gl]: g } } };
+    return generateAnnualLines(coaList, inp, { ...src, ...extra });
+  };
+  const t12 = (gl: string) => sum(actual[gl] || zero12());
+  const isFlatAt = (l: BudgetLine, total: number) => {
+    expect((l.driver as any).method).toBe('baseline');
+    expect((l.driver as any).shape).toBe('flat');
+    expect(sum(l.months)).toBeCloseTo(total, 0);
+    expect(Math.max(...l.months) - Math.min(...l.months)).toBeLessThan(0.02);
+  };
+
+  it('engine-driven lines take it: GPR, loss to lease, vacancy, delinquency, the fee, a corporate-rate line, interest', () => {
+    for (const gl of ['4994', '5003', '5031', '5035', '6112', '6108', '7300']) {
+      if (!t12(gl)) continue;
+      isFlatAt(L(flatOn(gl, 0.04), gl), t12(gl) * 1.04);
+    }
+    expect(t12('4994')).toBeGreaterThan(0);
+    expect(t12('6112')).not.toBe(0);
+  });
+  it('GPR on a chosen shape is what the % of GPR lines and vacancy read', () => {
+    const ls = flatOn('4994', 0.10);
+    const gpr = L(ls, '4994').months;
+    expect(gpr[0]).toBeCloseTo((t12('4994') / 12) * 1.10, 1);
+    const vacPct = (base.vacancyPct || [])[0] || 0;
+    expect(sum(L(ls, '5031').months)).toBeCloseTo(-vacPct * sum(gpr), 0);
+  });
+  it('a wage line on a chosen shape still drives the payroll burden lines', () => {
+    const roster = { payrollWages: { '6402': 30000 }, wagesLive: { label: 'c', effective: '2026-01', draft: false } };
+    const plain = generateAnnualLines(coaList, base, { ...src, ...roster });
+    const shaped = flatOn('6402', 0, roster);
+    isFlatAt(L(shaped, '6402'), t12('6402'));                         // the row's T12, not the roster's 30,000
+    const ratio = sum(L(plain, '6418').months) / sum(L(plain, '6402').months);
+    expect(sum(L(shaped, '6418').months) / sum(L(shaped, '6402').months)).toBeCloseTo(ratio, 3);
+  });
+  it('flat means flat: no cost drift on a line whose shape was chosen on the row; removing the choice restores the formula', () => {
+    const drifting = { ...defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10) };
+    const auto = L(generateAnnualLines(coaList, drifting, src), '6332');
+    expect((auto.driver as any).drift).toBe(0.03);
+    const chosen = L(generateAnnualLines(coaList, { ...drifting, baseline: { ...drifting.baseline!, glShape: { '6332': 'flat' as const }, glGrowth: { '6332': 0.05 } } }, src), '6332');
+    expect((chosen.driver as any).drift).toBeUndefined();
+    isFlatAt(chosen, 4800 * 1.05);
+    expect((L(generateAnnualLines(coaList, base, src), '4994').driver as any).method).toBe('gpr');
+  });
+});
