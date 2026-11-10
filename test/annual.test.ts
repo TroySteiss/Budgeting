@@ -1165,16 +1165,17 @@ describe('payroll ratios from another property (Troy 2026-11-10): the % of wages
 
 describe('Summary panel (Troy 2026-11-10): the budget-comps rows, labels and T12 trend windows', () => {
   it('summaryColumn lays the Monarch totals out as the workbook does and ties to NOI', () => {
-    const T: Record<string, number> = { '5070': 9440763, '5190': 1272775, '6170': 1765929, '6370': 230000, '6399': 11785, '6470': 1292809, '6570': 137849, '6670': 714387, '6770': 145501, '6870': 20573, '6970': 604821, '7070': 339212 };
-    const G: Record<string, number> = { '6116': 1208572, '6112': 339416, '7300': 2803966, '3080': 50000 };
+    // made-up round figures
+    const T: Record<string, number> = { '5070': 900000, '5190': 100000, '6170': 180000, '6370': 20000, '6399': 1000, '6470': 120000, '6570': 15000, '6670': 70000, '6770': 14000, '6870': 2000, '6970': 60000, '7070': 30000 };
+    const G: Record<string, number> = { '6116': 120000, '6112': 40000, '7300': 250000, '3080': 5000 };
     const c = summaryColumn((k) => T[k] || 0, (k) => G[k] || 0);
-    expect(c.fixedLess).toBe(217941);                                  // fixed admin LESS taxes and the fee
-    expect(c.admin).toBe(241785);                                      // admin + corporate events
-    expect(c.income).toBe(10713538);
-    expect(c.expense).toBe(5262866);
-    expect(c.noi).toBe(5450672);
-    expect(c.mtg1).toBe(-50000);                                       // principal reduces cash flow
-    expect(c.cashFlow).toBe(5450672 - 2803966 - 50000);
+    expect(c.fixedLess).toBe(20000);                                   // fixed admin LESS taxes and the fee
+    expect(c.admin).toBe(21000);                                       // admin + corporate events
+    expect(c.income).toBe(1000000);
+    expect(c.expense).toBe(512000);
+    expect(c.noi).toBe(488000);
+    expect(c.mtg1).toBe(-5000);                                        // principal reduces cash flow
+    expect(c.cashFlow).toBe(488000 - 250000 - 5000);
     const twice = sumSummaryCols([c, c, null])!;
     expect(twice.noi).toBe(2 * c.noi);
     expect(sumSummaryCols([null])).toBeNull();
