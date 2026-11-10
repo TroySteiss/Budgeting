@@ -1706,6 +1706,10 @@ function reviewArgs(lb: LoadedBudget, prop: any, compName: string): ReviewArgs {
       t12: lb.actualCal, t12Label: lb.refs.find((r) => r.key === 'actual')?.label || 'T12 actuals',
       budget: lb.budgetCal, budgetLabel: lb.refs.find((r) => r.key === 'budget')?.label || 'CY budget',
     } : null,
+    // the Budget Comps sheet: its column headers, the property's region, the T12 NOI windows on file
+    summaryLabels: summaryLabels(lb.t12End?.month, lb.t12End?.year, lb.budget.inputs?.summaryLabels),
+    region: String(prop?.market || '').trim() || 'Other',
+    noiTrend: lb.noiTrend.map((t) => ({ label: t.label, noi: t.noi })),
   };
 }
 

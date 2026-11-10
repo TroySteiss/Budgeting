@@ -4730,42 +4730,66 @@ async function loadSummary(year) {
   catch (e) { S.sum = { data: null, loading: false, err: e.message, open: {} }; }
   render();
 }
+/* The workbook's conditional formatting on the Schedule sheet: a 3-colour scale down each growth
+   column, over the property rows only — lowest value green (#63BE7B), the median yellow
+   (#FFEB84), highest red (#F8696B). Returns a colour per value (null for blanks). */
+function xsColorScale(vals) {
+  const nums = vals.filter((v) => v != null && Number.isFinite(v)).slice().sort((x, y) => x - y);
+  if (nums.length < 2) return vals.map(() => null);
+  const lo = nums[0], hi = nums[nums.length - 1];
+  const pos = (nums.length - 1) * 0.5, base = Math.floor(pos);
+  const mid = nums[base] + (nums[Math.min(base + 1, nums.length - 1)] - nums[base]) * (pos - base);   // Excel's 50th percentile
+  const G = [0x63, 0xBE, 0x7B], Y = [0xFF, 0xEB, 0x84], R = [0xF8, 0x69, 0x6B];
+  const mix = (c1, c2, t) => `rgb(${c1.map((x, i) => Math.round(x + (c2[i] - x) * Math.min(1, Math.max(0, t)))).join(',')})`;
+  return vals.map((v) => {
+    if (v == null || !Number.isFinite(v)) return null;
+    if (hi === lo) return mix(Y, Y, 0);
+    return v <= mid ? mix(G, Y, mid === lo ? 1 : (v - lo) / (mid - lo)) : mix(Y, R, hi === mid ? 1 : (v - mid) / (hi - mid));
+  });
+}
 function scheduleTableHtml(region, props) {
-  // the three trend windows are the same months for every property that has them
-  const withT = props.find((p) => (p.noiTrend || []).length === 3);
-  const tl = withT ? withT.noiTrend.map((t) => t.label) : ['', '', ''];
   const year = S.sum.data.year;
   const cyLabel = (props.find((p) => p.cyBudgetLabel) || {}).cyBudgetLabel || `${year - 1} budget`;
+  const cyHead = /^\d{4} budget$/i.test(cyLabel) ? `NOI Growth over ${cyLabel.replace(/ budget$/i, '')}'s Budget` : `NOI Growth over the ${String(cyLabel).replace(/^budget /i, '')} Budget`;
   const tr = (p) => {
     const noi = p.bud ? p.bud.noi : null;
     const t = [0, 1, 2].map((i) => ((p.noiTrend || [])[i] || {}).noi ?? null);
     const taxInc = p.bud && p.t12 ? p.bud.tax - p.t12.tax : null, feeInc = p.bud && p.t12 ? p.bud.fee - p.t12.fee : null;
     const adj = (base) => (base && noi != null && taxInc != null ? ((noi + taxInc + feeInc) - base) / base : null);
-    return { p, units: p.units || 0, t, noi, g: t.map((x) => (x && noi != null ? (noi - x) / x : null)), overBud: p.cyBudgetNoi && noi != null ? (noi - p.cyBudgetNoi) / p.cyBudgetNoi : null,
-             incT4: p.bud && p.t4 && p.t4.income ? (p.bud.income - p.t4.income) / p.t4.income : null, taxInc, feeInc, adj: t.map(adj) };
+    return { p, units: p.units || 0, t, noi, taxInc, feeInc, g: t.map((x) => (x && noi != null ? (noi - x) / x : null)), overBud: p.cyBudgetNoi && noi != null ? (noi - p.cyBudgetNoi) / p.cyBudgetNoi : null,
+             incT4: p.bud && p.t4 && p.t4.income ? (p.bud.income - p.t4.income) / p.t4.income : null, adj: t.map(adj) };
   };
   const rows = props.map(tr);
-  const sumOf = (f) => { const vals = rows.map(f).filter((x) => x != null); return vals.length ? vals.reduce((a, b) => a + b, 0) : null; };
+  // a trend window is a column only when at least one property has it on file (blank columns are dropped)
+  const withT = props.find((p) => (p.noiTrend || []).length === 3);
+  const tl = withT ? withT.noiTrend.map((t) => t.label) : ['', '', ''];
+  const win = [0, 1, 2].filter((i) => rows.some((r) => r.t[i] != null));
+  const sumOf = (f, only) => { const vals = rows.filter((r) => !only || only(r)).map(f).filter((x) => x != null); return vals.length ? vals.reduce((a, b) => a + b, 0) : null; };
   const avgOf = (f) => { const vals = rows.map(f).filter((x) => x != null); return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null; };
-  const T = [0, 1, 2].map((i) => sumOf((r) => r.t[i])), NOI = sumOf((r) => r.noi), TAX = sumOf((r) => r.taxInc), FEE = sumOf((r) => r.feeInc);
-  const cell = (html, cls = '') => `<td class="${cls}">${html}</td>`;
-  const body = rows.map((r, i) => `<tr class="${i === rows.length - 1 ? 'sch-last' : ''}">
+  // the Average row's growth is on the summed dollars of the properties that HAVE that window
+  const tot = win.map((i) => {
+    const has = (r) => r.t[i] != null && r.noi != null;
+    const T = sumOf((r) => r.t[i], has), N = sumOf((r) => r.noi, has), X = sumOf((r) => (r.taxInc || 0) + (r.feeInc || 0), has);
+    return { T: sumOf((r) => r.t[i]), g: T ? (N - T) / T : null, adj: T ? ((N + X) - T) / T : null };
+  });
+  const scale = (f) => xsColorScale(rows.map(f));
+  const cs = { g: win.map((i) => scale((r) => r.g[i])), overBud: scale((r) => r.overBud), incT4: scale((r) => r.incT4), adj: win.map((i) => scale((r) => r.adj[i])) };
+  const cell = (html, bg) => `<td${bg ? ` style="background:${bg}"` : ''}>${html}</td>`;
+  const body = rows.map((r, n) => `<tr class="${n === rows.length - 1 ? 'sch-last' : ''}">
       ${cell(xsNum(r.units))}<td class="sch-prop" data-sumopen="${r.p.id}" title="Open this budget's summary${r.p.stale ? ' — calculated on older formulas, recalc it' : ''}">${esc(String(r.p.code).toUpperCase())}${r.p.stale ? ' <span class="sch-stale">⚠</span>' : ''}</td>
-      ${r.t.map((x) => cell(xsNum(x))).join('')}${cell(xsNum(r.noi))}
-      ${r.g.map((x) => cell(xsPct(x, 2))).join('')}${cell(xsPct(r.overBud, 2))}${cell(xsPct(r.incT4, 2))}
-      ${r.adj.map((x) => cell(xsPct(x, 2))).join('')}</tr>`).join('');
-  const totG = T.map((x) => (x && NOI != null ? (NOI - x) / x : null));
-  const totAdj = T.map((x) => (x && NOI != null && TAX != null ? ((NOI + TAX + FEE) - x) / x : null));
+      ${win.map((i) => cell(xsNum(r.t[i]))).join('')}${cell(xsNum(r.noi))}
+      ${win.map((i, k) => cell(xsPct(r.g[i], 2), cs.g[k][n])).join('')}${cell(xsPct(r.overBud, 2), cs.overBud[n])}${cell(xsPct(r.incT4, 2), cs.incT4[n])}
+      ${win.map((i, k) => cell(xsPct(r.adj[i], 2), cs.adj[k][n])).join('')}</tr>`).join('');
   return `<div class="xsum sch"><table>
     <tr class="sch-h"><td>Unit count</td><td>Property</td>
-      ${tl.map((l) => `<td>${esc(l)} T12 NOI Trend</td>`).join('')}<td>${year} NOI Budget</td>
-      ${tl.map((l) => `<td>${esc(l)} T12 NOI Growth</td>`).join('')}<td>NOI Growth over ${esc(String(cyLabel).replace(/ budget$/i, ''))}'s Budget</td><td>Income Growth over T4</td>
-      ${tl.map((l) => `<td>NOI Increase Tax and MGMT Fee Adjusted ${esc(l)} T12</td>`).join('')}</tr>
+      ${win.map((i) => `<td>${esc(tl[i])} T12 NOI Trend</td>`).join('')}<td>${year} NOI Budget</td>
+      ${win.map((i) => `<td>${esc(tl[i])} T12 NOI Growth</td>`).join('')}<td>${esc(cyHead)}</td><td>Income Growth over T4</td>
+      ${win.map((i) => `<td>NOI Increase Tax and MGMT Fee Adjusted ${esc(tl[i])} T12</td>`).join('')}</tr>
     ${body}
     <tr class="sch-avg"><td>${xsNum(sumOf((r) => r.units))}</td><td>Average</td>
-      ${T.map((x) => cell(xsNum(x))).join('')}${cell(xsNum(NOI))}
-      ${totG.map((x) => cell(xsPct(x, 2))).join('')}${cell(xsPct(avgOf((r) => r.overBud), 2))}${cell(xsPct(avgOf((r) => r.incT4), 2))}
-      ${totAdj.map((x) => cell(xsPct(x, 2))).join('')}</tr>
+      ${tot.map((x) => cell(xsNum(x.T))).join('')}${cell(xsNum(sumOf((r) => r.noi)))}
+      ${tot.map((x) => cell(xsPct(x.g, 2))).join('')}${cell(xsPct(avgOf((r) => r.overBud), 2))}${cell(xsPct(avgOf((r) => r.incT4), 2))}
+      ${tot.map((x) => cell(xsPct(x.adj, 2))).join('')}</tr>
   </table></div>`;
 }
 function regionAvgSummary(region, props) {
@@ -4786,7 +4810,7 @@ function renderSummary(el) {
         <div class="row" style="align-items:center; gap:8px"><label class="muted" style="font-size:12px">Budget year</label><select id="sum-year">${[...new Set([d.year, ...d.years])].sort((a, b) => b - a).map((y) => `<option value="${y}" ${y === d.year ? 'selected' : ''}>${y}</option>`).join('')}</select>
           <button class="btn sub sm" id="sum-refresh" title="Reload from the budgets as they stand now">↻ Refresh</button></div>
       </div>
-      <p class="muted" style="font-size:12px; margin:6px 0 0">Each property's latest ${d.year} budget, by region, in the layout of the budget-comps workbook's Schedule sheet. The T12 NOI trend columns are the trailing-12 that ended in each of the last three posted months (blank where that window is not fully on file). Click a property to open its summary.</p>
+      <p class="muted" style="font-size:12px; margin:6px 0 0">Each property's latest ${d.year} budget, by region, in the layout of the budget-comps workbook's Schedule sheet. A T12 NOI trend column appears for each of the last three month-ends that a full trailing-12 is on file for (most properties have only the latest until an earlier statement is uploaded). Growth columns carry the workbook's colour scale. Click a property to open its own summary; the same panel is in every budget (Grid | Summary) and in the Excel exports.</p>
     </div>
     ${regions.map((rg) => {
       const props = d.properties.filter((p) => p.region === rg).sort((a, b) => a.code.localeCompare(b.code));

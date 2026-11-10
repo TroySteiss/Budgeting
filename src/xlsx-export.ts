@@ -6,6 +6,9 @@
    Sheets: Budget (PHNDBudget-style), Summary (SummaryPHND-style), Raw Data
    (org rule: show the work — formulas + raw inputs). */
 import ExcelJS from 'exceljs';
+import { summaryColumn, sumSummaryCols, type SummaryCol } from '../shared/annual.js';
+import { fillSummaryPanel, fillSchedule, PANEL_ROW, type ScheduleRow } from './xlsx-summary.js';
+import { fillCachedResults } from './xlsx-calc.js';
 import {
   CoaAccount, BudgetLine, UwSnapshotData, BudgetInputs, PCODES, PCODE_LABELS,
   sum, zero12, r2, Months, monthLabels, WAGE_GLS,
@@ -146,7 +149,15 @@ export interface ReviewArgs {
   /** ANNUAL: the payroll historicals laid out on the Payroll sheet — the
       trailing-12 actual and CY budget calendars by GL (Jan..Dec). */
   payrollHist?: { t12: Record<string, Months> | null; t12Label: string; budget: Record<string, Months> | null; budgetLabel: string } | null;
+  /** ANNUAL: the budget-comps summary sheet — its column headers, the region the property sits in,
+      and the NOI of the trailing-12 windows on file (oldest first; the last is the linked T12) */
+  summaryLabels?: { t12: string; t4: string; draft: string };
+  region?: string;
+  noiTrend?: { label: string; noi: number | null }[];
 }
+/** What a property's "Budget Comps" sheet holds, for the portfolio panel and the Schedule. */
+interface CompsInfo { site: ReviewArgs; sheet: string; t12: SummaryCol | null; t4: SummaryCol | null; bud: SummaryCol; capital: number; units: number; cyBudgetNoi: number | null; cyBudgetLabel: string | null; cyRef: string | null; trendRefs: (string | null)[] }
+const compsByWorkbook = new WeakMap<ExcelJS.Workbook, CompsInfo[]>();
 
 /** Where a property's Payroll sheet keeps its rows (the portfolio's Payroll
     Summary references them). */
@@ -180,6 +191,7 @@ export async function buildReviewWorkbook(args: ReviewArgs): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'nd-budget-tool';
   addReviewSheets(wb, args, '');
+  fillCachedResults(wb);   // every formula carries its value, so nothing is blank in Protected View / previews
   const buf = await wb.xlsx.writeBuffer();
   return Buffer.from(buf as ArrayBuffer);
 }
@@ -189,6 +201,10 @@ export async function buildReviewWorkbook(args: ReviewArgs): Promise<Buffer> {
 export async function buildPortfolioWorkbook(sites: ReviewArgs[], portfolioLabel: string): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'nd-budget-tool';
+  // the budget-comps sheets for the whole set come first: the portfolio panel and the Schedule
+  const anyComps = sites.some((s) => s.annual);
+  const wsCompsP = anyComps ? wb.addWorksheet('Portfolio Comps', { properties: { tabColor: { argb: 'FF70AD47' } } }) : null;
+  const wsSched = anyComps ? wb.addWorksheet('Schedule', { properties: { tabColor: { argb: 'FF70AD47' } }, views: [{ state: 'normal', showGridLines: false, zoomScale: 80 }] }) : null;
   const wsP = wb.addWorksheet('Portfolio', { properties: { tabColor: { argb: 'FFFFC000' } }, views: [{ state: 'frozen', ySplit: 4, xSplit: 2 }] });
   // the payroll rollup sits right behind the Portfolio tab (annual budgets only)
   const anyAnnual = sites.some((s) => s.annual);
@@ -199,6 +215,37 @@ export async function buildPortfolioWorkbook(sites: ReviewArgs[], portfolioLabel
     if (info) payInfos.push({ site, info });
   }
   if (wsPS) fillPayrollSummary(wsPS, payInfos, portfolioLabel, sites[0]?.year);
+  // Portfolio Comps = the property panels added together (live sums); Schedule = one row per property, by region
+  const comps = compsByWorkbook.get(wb) || [];
+  if (wsCompsP && wsSched && comps.length) {
+    const q = (sheet: string) => `'${sheet.replace(/'/g, "''")}'!`;
+    const sumOf = (cell: string) => comps.map((c) => `${q(c.sheet)}${cell}`).join('+');
+    const first = comps.find((c) => c.t12) || comps[0];
+    fillSummaryPanel(wsCompsP, {
+      title: `${portfolioLabel} Portfolio`,
+      labels: first.site.summaryLabels || { t12: 'T12', t4: 'T4 Ann.', draft: 'Draft #1' },
+      capital: comps.reduce((a, c) => a + c.capital, 0), units: comps.reduce((a, c) => a + c.units, 0),
+      t12: sumSummaryCols(comps.map((c) => c.t12)), t4: sumSummaryCols(comps.map((c) => c.t4)), bud: sumSummaryCols(comps.map((c) => c.bud)),
+      src: (col, key) => `+${sumOf(`${col}${PANEL_ROW[key]}`)}`,
+    });
+    const year = sites[0]?.year || 0;
+    const regions = [...new Set(comps.map((c) => c.site.region || 'Other'))].sort();
+    let top = 2;
+    for (const rg of regions) {
+      const set = comps.filter((c) => (c.site.region || 'Other') === rg).sort((a, b) => a.site.propertyCode.localeCompare(b.site.propertyCode));
+      const withT = set.find((c) => (c.site.noiTrend || []).length) || set[0];
+      const labels = (withT.site.noiTrend || []).map((t) => t.label);
+      const cyLabel = (set.find((c) => c.cyBudgetLabel) || {}).cyBudgetLabel || `${year - 1} budget`;
+      const cyHead = /^\d{4} budget$/i.test(cyLabel) ? `NOI Growth over ${cyLabel.replace(/ budget$/i, '')}'s Budget` : `NOI Growth over the ${cyLabel.replace(/^budget /i, '')} Budget`;
+      const rows: ScheduleRow[] = set.map((c) => ({
+        code: c.site.propertyCode, units: c.units, sheet: c.sheet,
+        trend: labels.length ? labels.map((_, i) => (c.site.noiTrend || [])[i]?.noi ?? null) : [c.t12 ? c.t12.noi : null],
+        noi: c.bud.noi, cyBudgetNoi: c.cyBudgetNoi, cyRef: c.cyRef, trendRefs: labels.length ? c.trendRefs : [], t4Income: c.t4 ? c.t4.income : null, budIncome: c.bud.income,
+        taxInc: c.t12 ? r2(c.bud.tax - c.t12.tax) : null, feeInc: c.t12 ? r2(c.bud.fee - c.t12.fee) : null,
+      }));
+      top = fillSchedule(wsSched, top, rg, year, labels.length ? labels : ['T12'], cyHead, rows);
+    }
+  }
 
   // ----- Portfolio tab: same Summary rows, one column per site + Total -----
   wsP.getColumn(1).width = 3; wsP.getColumn(2).width = 34;
@@ -302,6 +349,7 @@ export async function buildPortfolioWorkbook(sites: ReviewArgs[], portfolioLabel
   cocT.value = { formula: `IF(${LT}${S_CAP_ROW}>0,${LT}${S_CASH_ROW}/${LT}${S_CAP_ROW},"")` } as any;
   cocT.numFmt = PCT; cocT.font = { size: 11, bold: true, color: { argb: RED } };
 
+  fillCachedResults(wb);   // every formula carries its value, so nothing is blank in Protected View / previews
   const buf = await wb.xlsx.writeBuffer();
   return Buffer.from(buf as ArrayBuffer);
 }
@@ -334,6 +382,10 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     const v = kind === 'detail' ? ref.byGl[code] : ref.totals[code];
     return v != null && v !== 0 ? v : undefined;
   };
+
+  // the budget-comps summary (annual budgets): created first so it is the property's first tab;
+  // filled at the end, once the Budget rows and the Raw Data sheet it reads exist
+  const wsX = args.annual ? wb.addWorksheet(`${prefix}Budget Comps`, { properties: { tabColor: { argb: 'FF70AD47' } } }) : null;
 
   /* ================= Budget sheet ================= */
   const ws = wb.addWorksheet(`${prefix}Budget`, {
@@ -818,8 +870,83 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     const t = sum(l.months);
     if (t || l.override) rawRow([l.gl_code, t, l.override ? 'Y' : '', JSON.stringify(l.driver)]);
   }
+  /* ================= Budget Comps sheet (the summary panel) ================= */
+  if (wsX) {
+    const monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
+    const totalsOf = (code: string): number => {
+      // a Monarch total = the sum of its detail range; the chain mirrors domain.rollup
+      const RNG: Record<string, [number, number]> = { '5070': [4994, 5069], '5190': [5100, 5189], '6170': [6100, 6169], '6370': [6300, 6369], '6399': [6371, 6398], '6470': [6400, 6469], '6570': [6500, 6569], '6670': [6600, 6669], '6770': [6700, 6769], '6870': [6800, 6869], '6970': [6900, 6969], '7070': [7000, 7069] };
+      const rg = RNG[code]; if (!rg) return 0;
+      let acc = 0;
+      for (const [gl, m] of monthsMap) { const n = parseInt(gl, 10); if (n >= rg[0] && n <= rg[1]) acc += sum(m); }
+      return r2(acc);
+    };
+    const bud = summaryColumn(totalsOf, (g) => sum(monthsMap.get(g) || zero12()));
+    const refCol = (key: string): SummaryCol | null => { const r = refs.find((x) => x.key === key); return r ? summaryColumn((c) => r.totals[c] || 0, (g) => r.byGl[g] || 0) : null; };
+    const t12 = refCol('actual');
+    let t4 = refCol('ann4');
+    if (t4 && t12) t4 = { ...t4, interest: t12.interest, cashFlow: r2(t4.noi - t12.interest + t4.mtg1 + t4.mtg2) };
+    const capital = Number(inputs.capital) || 0;
+    // the T4-annualized inputs live on the Raw Data sheet (show the work); the panel reads them from there
+    const RQ = `'${prefix}Raw Data'!`;
+    rrw += 1;
+    rawRow(['Budget Comps sheet — inputs', 'the last four posted months x 3 (annualized), by summary line; the Budget Comps sheet reads column B'], true);
+    const t4Row: Record<string, number> = {};
+    const T4KEYS: [string, string][] = [['rental', '5070 Total Rental Income'], ['other', '5190 Total Other Income'], ['fixedLess', '6170 Fixed Admin less RE taxes & mgmt fee'], ['tax', '6116 Real Estate Taxes'], ['fee', '6112 Management Fee'], ['admin', '6370 + 6399 Admin'], ['payroll', '6470 Payroll'], ['marketing', '6570 Marketing'], ['utilities', '6670 Utilities'], ['inHouse', '6770 In-House'], ['exterior', '6870 Exterior / CAM'], ['contract', '6970 Contract Services'], ['rehab', '7070 Rehab / Replace']];
+    for (const [k, label] of T4KEYS) { t4Row[k] = rrw; rawRow([label, t4 ? (t4 as any)[k] : 0]); }
+    // Schedule inputs: the current-year budget NOI and the trailing-12 NOI windows on file (the Schedule sheet reads column B)
+    const cyb = refs.find((x) => x.key === 'budget');
+    const cyNoi = cyb ? r2(cyb.totals['7280'] || 0) : null;
+    let cyRef: string | null = null;
+    if (cyNoi) { cyRef = `${RQ}B${rrw}`; rawRow([`NOI, ${cyb!.label}`, cyNoi]); }
+    const trendRefs: (string | null)[] = (args.noiTrend || []).map((t) => {
+      if (t.noi == null) return null;
+      const at = `${RQ}B${rrw}`; rawRow([`T12 NOI, window ending ${t.label}`, t.noi]); return at;
+    });
+    const rowB = (code: string) => rowOf.get(code);
+    const ref = (col: number, code: string): string => (rowB(code) ? `${BQ}${colLetter(col)}${rowB(code)}` : '0');
+    const fromBudget = (col: number, key: string): string | null => {
+      switch (key) {
+        case 'rental': return `+${ref(col, '5070')}`;
+        case 'other': return `+${ref(col, '5190')}`;
+        case 'fixedLess': return `${ref(col, '6170')}-${col === C.uw ? 'C' : 'E'}13-${col === C.uw ? 'C' : 'E'}14`;
+        case 'tax': return `+${ref(col, '6116')}`;
+        case 'fee': return `+${ref(col, '6112')}`;
+        case 'admin': return `${ref(col, '6370')}+${ref(col, '6399')}`;
+        case 'payroll': return `+${ref(col, '6470')}`;
+        case 'marketing': return `+${ref(col, '6570')}`;
+        case 'utilities': return `+${ref(col, '6670')}`;
+        case 'inHouse': return `+${ref(col, '6770')}`;
+        case 'exterior': return `+${ref(col, '6870')}`;
+        case 'contract': return `+${ref(col, '6970')}`;
+        case 'rehab': return `+${ref(col, '7070')}`;
+        case 'interest': return `+${ref(col, '7300')}`;
+        case 'mtg1': return `-ABS(${ref(col, '3080')})`;
+        case 'mtg2': return `-ABS(${ref(col, '3090')})`;
+        default: return null;
+      }
+    };
+    fillSummaryPanel(wsX, {
+      title: args.propertyCode.toUpperCase() + (args.propertyName && args.propertyName.toUpperCase() !== args.propertyCode.toUpperCase() ? ` — ${args.propertyName}` : ''),
+      labels: args.summaryLabels || { t12: 'T12', t4: 'T4 Ann.', draft: 'Draft #1' },
+      capital, units, t12, t4, bud,
+      src: (col, key) => {
+        if (key === 'capital' || key === 'units') return col === 'C' ? null : '+C' + PANEL_ROW[key];
+        if (col === 'C') return t12 ? fromBudget(C.uw, key) : null;
+        if (col === 'E') return fromBudget(C.annual, key);
+        // D: four months annualized from the Raw Data block; interest follows the T12, as in the workbook
+        if (key === 'interest') return '+C28';
+        if (key === 'mtg1' || key === 'mtg2') return null;
+        return t4 && t4Row[key] ? `+${RQ}B${t4Row[key]}` : null;
+      },
+    });
+    const list = compsByWorkbook.get(wb) || [];
+    list.push({ site: args, sheet: `${prefix}Budget Comps`, t12, t4, bud, capital, units, cyBudgetNoi: cyNoi, cyBudgetLabel: cyb ? cyb.label : null, cyRef, trendRefs });
+    compsByWorkbook.set(wb, list);
+  }
   return payInfo;
 }
+const colLetter = (n: number): string => { let s = ''; while (n > 0) { s = String.fromCharCode(65 + ((n - 1) % 26)) + s; n = Math.floor((n - 1) / 26); } return s; };
 
 /* ================= Payroll sheet =================
    Troy 2026-11-03, modelled on the per-property tabs of the Payroll Budget
