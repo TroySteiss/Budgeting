@@ -62,7 +62,7 @@ function drvMetaBase(l) {
     case 'perUnitComp': return { cls: 'drv-comp', tag: 'MINOT', label: `Minot $${l.driver.perUnit}/unit × units` };
     case 'payrollModel': return { cls: 'drv-pay', tag: 'PAY', label: l.driver.live ? `Payroll tab wages — roster rates with each person's raise from "${l.driver.cycle || 'the raise cycle'}" — January at the current rate, half the increase in February, all of it from March${l.driver.draft ? ' · PRELIMINARY: raise entries are not finalized for every region feeding this property — Recalc picks up changes' : ' · finalized'}` : l.driver.roster ? 'Pay-rates roster wages (raises prorated — no March step)' : 'Payroll model wages', tag: l.driver.live && l.driver.draft ? 'PAY·prelim' : 'PAY' };
     case 'burdenRatio': { const bs = l.driver.basis === 'budget' ? 'CY budget ratio' : l.driver.basis === 'mix' ? 'avg of T12 actual & CY budget ratios' : 'T12 actual ratio';
-      return { cls: 'drv-pay', tag: '%WAGES', label: `${((l.driver.ratio || 0) * 100).toFixed(1)}% of wages (${S.bv && S.bv.annual ? `same-month ${bs} × that month's budgeted wages — keeps the quarterly / seasonal shape` : 'Minot ratio'})` }; }
+      return { cls: 'drv-pay', tag: l.driver.from ? `%WAGES·${String(l.driver.from).toUpperCase()}` : '%WAGES', label: `${((l.driver.ratio || 0) * 100).toFixed(1)}% of wages (${S.bv && S.bv.annual ? `same-month ${bs} × that month's budgeted wages — keeps the quarterly / seasonal shape` : 'Minot ratio'})${l.driver.from ? ` — the % and the monthly shape are taken from ${String(l.driver.from).toUpperCase()}'s history, applied to this property's own wages` : ''}` }; }
     case 'mgmtPct': { const fy = l.driver.firstYear;
       return { cls: 'drv-fee', tag: fy ? '%INC·Y1' : '%INC', label: fy ? `Management fee: ${((fy.pct || 0) * 100).toFixed(2)}% for the first 12 months of ownership (income through ${fy.through}; ${fy.months} fee month${fy.months === 1 ? '' : 's'} of this budget), then ${((l.driver.pct || 0) * 100).toFixed(2)}% — on the prior month's income` : `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.priorMonth ? 'prior-month ' : ''}income` }; }
     case 'interest': return { cls: 'drv-int', tag: 'INT', label: 'Interest (loan × rate × days)' };
@@ -2064,6 +2064,7 @@ function defaultsInUse(bv) {
   const w = lines.get('6402') || lines.get('6404') || {};
   const wd = w.driver || {};
   add('wages', 'Wages', wd.live ? `Payroll tab roster, every seat filled all year${wd.draft ? ' · raise entries NOT final' : ''}; half the raise in Feb, all from Mar` : inp.wageSource === 'manual' ? `own history × ${pc(inp.payrollRaisePct ?? 0.035, 1)}` : `no roster for this year: trailing-12 × ${pc(inp.payrollRaisePct ?? 0.035, 1)}`, !inp.wageSource, wd.draft ? 'raise entries are not finalized' : '');
+  if (inp.burdenFrom && String(inp.burdenFrom).toLowerCase() !== String(bv.budget.property_code).toLowerCase()) add('burdenfrom', 'Payroll ratios', `non-wage payroll lines take their % of wages and monthly shape from ${String(inp.burdenFrom).toUpperCase()}${bv.burdenSrc && bv.burdenSrc.period ? ` (${bv.burdenSrc.period})` : ''}`, false, bv.burdenSrc && !bv.burdenSrc.found ? `no statements on file for ${String(inp.burdenFrom).toUpperCase()} — using this property's own` : '');
   // management fee + tier check
   const fee = inp.mgmtPct || 0;
   let tierWarn = '';
@@ -4437,6 +4438,14 @@ function annualInputsHtml(inp) {
       <div class="fld"><label>Fallback raise % — used only when wages are NOT on the Payroll tab: wages flat × (1 + raise), model wages step up in March${S.bv.rosterLink && inp.wageSource !== 'manual' ? ' <b>(not in use on this budget — raises come from the Payroll tab)</b>' : ''}</label><input id="in-raise" value="${((inp.payrollRaisePct ?? 0.035) * 100).toFixed(1)}" style="width:70px"></div>
       <div class="fld"><label>Utility reimbursements (5164–5174)</label><select id="in-utilbill" title="Flat fee: residents pay an in-house flat utility fee per occupied unit (BCND; PHND / FHND since fall 2026), so the income is the most recent actual month scaled to each month's budgeted occupancy — flat, no GPR link. RUBS / history: each GL's own trailing-12 × factor (Conservice billing)."><option value="rubs" ${((inp.utilities && inp.utilities.billing) || (S.bv.flatFeeSite ? 'flat' : 'rubs')) === 'flat' ? '' : 'selected'}>RUBS / history (T12 × factor)${S.bv.flatFeeSite ? '' : ' — site default'}</option><option value="flat" ${((inp.utilities && inp.utilities.billing) || (S.bv.flatFeeSite ? 'flat' : 'rubs')) === 'flat' ? 'selected' : ''}>Flat fee — last month × budgeted occupancy${S.bv.flatFeeSite ? ' — site default' : ''}</option></select></div>
       <div class="fld"><label>Other payroll lines (taxes, benefits, bonus, OT …) = % of wages from</label><select id="in-burden"><option value="t12" ${(inp.burdenBasis || 't12') === 't12' ? 'selected' : ''}>T12 actual ratio</option><option value="budget" ${inp.burdenBasis === 'budget' ? 'selected' : ''}>CY budget ratio</option><option value="mix" ${inp.burdenBasis === 'mix' ? 'selected' : ''}>Average of T12 actual &amp; CY budget</option></select></div>
+      ${(() => {
+        const own = String(S.bv.budget.property_code || '').toLowerCase();
+        const have = [...new Set(((S.state && S.state.stmtSnapshots) || []).filter((x) => x.kind === 'actual').map((x) => String(x.property_code).toLowerCase()))].filter((c) => c !== own).sort();
+        const cur = String(inp.burdenFrom || '').toLowerCase();
+        const bs = S.bv.burdenSrc;
+        const nameOf = (c) => ((S.state.properties.find((p) => p.code === c) || {}).name || '');
+        return `<div class="fld"><label title="Where the % of wages and its month-by-month shape come from for taxes, benefits, bonus, overtime and the other non-wage payroll lines. Borrowing from another property is for a site whose own history is thin or unusual (a new acquisition). Wages always stay this property's own; employee rent and any line with its own shape are not affected.">…ratio and monthly shape taken from${cur && bs && !bs.found ? ` <span style="color:var(--bad)">— no statements on file for ${esc(cur.toUpperCase())}; using this property's own</span>` : ''}</label><select id="in-burdenfrom"><option value="">this property's own history</option>${have.map((c) => `<option value="${esc(c)}" ${cur === c ? 'selected' : ''}>${esc(c.toUpperCase())}${nameOf(c) ? ' — ' + esc(nameOf(c)) : ''}</option>`).join('')}</select></div>`;
+      })()}
     </div>
     <h3>Ties to the reference (${esc(S.bv.refLabel || 'T12')}) — off by default</h3>
     <div class="row">
@@ -4500,6 +4509,7 @@ async function applyAnnualInputs(b, el) {
     wageSource: q('#in-wagesrc') ? q('#in-wagesrc').value : (cur.wageSource || 'payroll'),
     ...(q('#in-startup') ? { startupExclude: Number(q('#in-startup').value) } : {}),
     burdenBasis: q('#in-burden') ? q('#in-burden').value : (cur.burdenBasis || 't12'),
+    ...(q('#in-burdenfrom') ? { burdenFrom: q('#in-burdenfrom').value || null } : {}),
     utilities: { ...(cur.utilities || {}), billing: q('#in-utilbill') ? q('#in-utilbill').value : ((cur.utilities || {}).billing || 'rubs') },
     baseline: { ...(cur.baseline || {}), source: q('#in-blsrc').value, shape: q('#in-blshape').value, mround: num('#in-blmround'), costDrift: q('#in-drift') ? Math.max(0, num('#in-drift', 3)) / 100 : (cur.baseline || {}).costDrift, growthPct, useUtilForecast: q('#in-blutil').checked },
     turnFees, corpRates,

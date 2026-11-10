@@ -1128,3 +1128,37 @@ describe('section increase % (Troy 2026-11-10): typed on a section header, flows
     expect(target.baseline!.secGrowth).toEqual({});
   });
 });
+
+describe('payroll ratios from another property (Troy 2026-11-10): the % of wages AND its monthly shape are borrowed; wages stay your own', () => {
+  const f = (v: number) => cal(Array(12).fill(v));
+  // this property: thin, flat history — taxes 10% of wages every month, no bonus line at all
+  const own: Record<string, Months> = { ...synthetic(), '6402': f(2000), '6404': f(0), '6418': f(200), '6408': f(0) };
+  // the donor: taxes 12% of wages, and a quarterly bonus (Jan / Apr / Jul / Oct) worth 25% of that month's wages
+  const donorActual: Record<string, Months> = { '6402': f(5000), '6418': f(600), '6408': cal([1250, 0, 0, 1250, 0, 0, 1250, 0, 0, 1250, 0, 0]) };
+  const inputs = baseInputs(2027, 10, own, null, coaList, null, 10);
+  const roster = { payrollWages: { '6402': 36000 }, wagesLive: { label: 'c', effective: '2027-01', draft: false, monthly: { '6402': f(3000) } } };
+  const src: AnnualSources = { actual: own, budget: null, lastMonth: 10, ...roster };
+  const ownRun = generateAnnualLines(coaList, inputs, src);
+  const borrowed = generateAnnualLines(coaList, inputs, { ...src, burdenSrc: { code: 'clnd', actual: donorActual, budget: null } });
+
+  it('the ratio comes from the donor, applied to THIS property\'s wages', () => {
+    expect(sum(L(ownRun, '6418').months)).toBeCloseTo(0.10 * 36000, 0);
+    expect(sum(L(borrowed, '6418').months)).toBeCloseTo(0.12 * 36000, 0);
+    expect(L(borrowed, '6418').driver).toMatchObject({ method: 'burdenRatio', from: 'clnd' });
+    expect((L(ownRun, '6418').driver as any).from).toBeUndefined();
+    expect(sum(L(borrowed, '6402').months)).toBeCloseTo(36000, 0);     // wages untouched
+  });
+  it('the monthly shape comes with it: the donor\'s quarterly bonus lands in the same months here', () => {
+    expect(sum(L(ownRun, '6408').months)).toBe(0);                     // no bonus history of its own
+    const b = L(borrowed, '6408').months;
+    expect(b[0]).toBeCloseTo(0.25 * 3000, 0);                          // January: 25% of that month's wages
+    expect(b[1]).toBe(0);
+    expect([b[3], b[6], b[9]].every((v) => Math.abs(v - 750) < 0.5)).toBe(true);
+    expect(sum(b)).toBeCloseTo(3000, 0);
+  });
+  it('a saved formula set carries the choice', () => {
+    const set = formulaSetFromBudget(borrowed, { ...inputs, burdenFrom: 'clnd', rules: {} });
+    expect(set.settings.burdenFrom).toBe('clnd');
+    expect(applyFormulaSet(inputs, set, { id: 1, name: 's' }).burdenFrom).toBe('clnd');
+  });
+});

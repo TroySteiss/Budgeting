@@ -425,6 +425,8 @@ interface LoadedBudget {
   refs: RefCol[];
   /** the Pay-rates roster wages for this property + year (annual budgets) — the default wage source unless inputs.wageSource is 'manual' */
   rosterLink: RosterLink | null;
+  /** annual: another property's statements, when the non-wage payroll ratios are borrowed from it (inputs.burdenFrom) */
+  burdenSrc: { code: string; actual: Record<string, Months> | null; budget: Record<string, Months> | null; period: string; found: boolean } | null;
   /** annual: when ownership began + the acquisition budget's first-year management fee % */
   acquisition: { start: string | null; firstYearPct: number | null } | null;
   /** the latest Payroll Budget Workbook sheet for this property + year (stmt kind 'payroll_template') — a reference, never an input */
@@ -530,6 +532,16 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   // Always loaded for an annual budget; buildLines decides from the inputs it is GIVEN whether the
   // budget follows it (inputs.wageSource), so switching the source in one save works both ways.
   const rosterLink = annual ? await rosterWagesFor(String(budget.property_code), Number(budget.year)) : null;
+  // payroll ratios borrowed from another property: its trailing-12 (composed from every actual
+  // statement on file for it) and its latest budget statement. Property-level GL totals only.
+  let burdenSrc: LoadedBudget['burdenSrc'] = null;
+  const donorCode = String(budget.inputs?.burdenFrom || '').trim().toLowerCase();
+  if (annual && donorCode && donorCode !== String(budget.property_code || '').toLowerCase()) {
+    const rows = (await query(`select kind, data from stmt_snapshots where property_code=$1 and kind in ('actual','budget') order by created_at desc`, [donorCode])).rows as { kind: string; data: StmtData }[];
+    const t = trailing12(rows.filter((r) => r.kind === 'actual').map((r) => r.data));
+    const bud = rows.find((r) => r.kind === 'budget');
+    burdenSrc = { code: donorCode, actual: t?.cal || null, budget: bud ? stmtCalendar(bud.data) : null, period: t?.period || '', found: !!t };
+  }
   // when ownership began and the first-year management fee: the Yardi template's acquisition
   // date wins for the date; the rate comes from the property's own acquisition budget (UW Y1)
   let acquisition: { start: string | null; firstYearPct: number | null } | null = null;
@@ -611,7 +623,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
       }));
     }
   }
-  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, savePoints, payrollTpl, rosterLink, acquisition,
+  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, savePoints, payrollTpl, rosterLink, acquisition, burdenSrc,
            annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, ref, refLabel, refs };
 }
 
@@ -697,6 +709,8 @@ function budgetView(lb: LoadedBudget) {
     compUnits: lb.comps?.units || null,
     compShapes: lb.comps?.glShapes || null,
     payrollWages: lb.payrollWages,
+    // which property the payroll ratios are borrowed from, and whether it has statements on file
+    burdenSrc: lb.burdenSrc ? { code: lb.burdenSrc.code, period: lb.burdenSrc.period, found: lb.burdenSrc.found } : null,
     // ownership start + first-year management fee % on file (annual) — the Assumptions defaults
     acquisition: lb.acquisition,
     // where the wages come from: the Pay-rates link (cycle, draft / finalized by region) or null
@@ -869,7 +883,8 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   let lines: BudgetLine[];
   if (lb.annual) {
     // ANNUAL: the property's own statements + the Yardi template rules (shared/annual.ts)
-    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: (inputs.rules as any) ?? loadAnnualRules(), comps: lb.comps, payrollWages: wages, wagesLive: live ? { label: live.label, effective: live.effective, draft: live.draft, monthly: live.monthly as Record<string, Months> } : null, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code, acquisition: lb.acquisition };
+    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: (inputs.rules as any) ?? loadAnnualRules(), comps: lb.comps, payrollWages: wages, wagesLive: live ? { label: live.label, effective: live.effective, draft: live.draft, monthly: live.monthly as Record<string, Months> } : null, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code, acquisition: lb.acquisition,
+      burdenSrc: lb.burdenSrc && lb.burdenSrc.found && String(inputs.burdenFrom || '').toLowerCase() === lb.burdenSrc.code ? { code: lb.burdenSrc.code, actual: lb.burdenSrc.actual, budget: lb.burdenSrc.budget } : null };
     lines = existing ? regenerateAnnual(existing, lb.coa, inputs, src) : generateAnnualLines(lb.coa, inputs, src);
   } else {
     lines = existing

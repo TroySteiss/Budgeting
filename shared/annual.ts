@@ -39,7 +39,7 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-10a';
+export const ENGINE_VERSION = '2026-11-10b';
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -570,7 +570,7 @@ export interface FormulaSet {
   settings: {
     baseline?: Pick<NonNullable<BudgetInputs['baseline']>, 'source' | 'shape' | 'mround' | 'growthPct' | 'useUtilForecast' | 'costDrift'>;
     ltl?: { mode?: any; renewalPct?: number; burnoffRenew?: number; burnoffNew?: number; followGpr?: boolean };
-    vacancyExpWeight?: number; burdenBasis?: 't12' | 'budget' | 'mix'; wageSource?: 'payroll' | 'manual'; payrollRaisePct?: number;
+    vacancyExpWeight?: number; burdenBasis?: 't12' | 'budget' | 'mix'; burdenFrom?: string; wageSource?: 'payroll' | 'manual'; payrollRaisePct?: number;
   };
 }
 const SHAPE_RULE: Partial<Record<BaselineShape, AnnualRule['method']>> = { actual: 'same', wavg: 'wavg', flat: 'flatT12', last: 'last' };
@@ -601,6 +601,7 @@ export function formulaSetFromBudget(lines: BudgetLine[], inputs: BudgetInputs):
   };
   if (inputs.vacancyExpWeight != null) settings.vacancyExpWeight = inputs.vacancyExpWeight;
   if (inputs.burdenBasis) settings.burdenBasis = inputs.burdenBasis;
+  if (inputs.burdenFrom) settings.burdenFrom = inputs.burdenFrom;
   if (inputs.wageSource) settings.wageSource = inputs.wageSource;
   if (inputs.payrollRaisePct != null) settings.payrollRaisePct = inputs.payrollRaisePct;
   return { rules, settings };
@@ -619,6 +620,7 @@ export function applyFormulaSet(inputs: BudgetInputs, set: FormulaSet, from: { i
     ltl: { ...(inputs.ltl || ({} as any)), ...clean(st.ltl) },
     ...(st.vacancyExpWeight != null ? { vacancyExpWeight: st.vacancyExpWeight } : {}),
     ...(st.burdenBasis ? { burdenBasis: st.burdenBasis } : {}),
+    ...(st.burdenFrom ? { burdenFrom: st.burdenFrom } : {}),
     ...(st.wageSource ? { wageSource: st.wageSource } : {}),
     ...(st.payrollRaisePct != null ? { payrollRaisePct: st.payrollRaisePct } : {}),
   } as BudgetInputs;
@@ -646,6 +648,12 @@ export interface AnnualSources {
   charges?: Record<string, number> | null;
   /** lowercase Yardi code — site defaults (FLAT_FEE_PROPERTIES) key off it */
   propertyCode?: string | null;
+  /** PAYROLL RATIOS FROM ANOTHER PROPERTY (Troy 2026-11-10: "for payroll % allocations for non
+      wage GLs, I need to have an option to take the % and monthly curve shape from another
+      property"). When set (`inputs.burdenFrom`), the non-wage payroll lines take their % of
+      wages — the annual ratio AND each calendar month's own ratio — from this property's
+      statements instead of the budget's own. Wages stay the budget's own. */
+  burdenSrc?: { code: string; actual: Record<string, Months> | null; budget: Record<string, Months> | null } | null;
   /** when ownership began ('YYYY-MM': the Yardi template's acquisition date, else the start of
       the property's acquisition budget) and the first-year management fee % that budget ran on */
   acquisition?: { start?: string | null; firstYearPct?: number | null } | null;
@@ -1091,15 +1099,18 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     // raise on it), and any payroll line whose row menu picked a shape keeps it
     const ownShape = bl.glShape?.[a.code] ?? (BURDEN_LAST_GLS.has(a.code) ? 'last' : undefined);
     if (ownShape && baseline(a, ownShape, bl.glGrowth?.[a.code] ?? (BURDEN_LAST_GLS.has(a.code) ? 0 : raise - 1))) continue;
-    const t12Ratio = ratioIn(src.actual, a.code);
-    const budgetRatio = ratioIn(src.budget, a.code);
+    // the history the ratios are read from: this property's own, or the one picked to borrow from
+    const donor = src.burdenSrc || null;
+    const rAct = donor ? donor.actual : src.actual, rBud = donor ? donor.budget : src.budget;
+    const t12Ratio = ratioIn(rAct, a.code);
+    const budgetRatio = ratioIn(rBud, a.code);
     const ratio = pickRatio(t12Ratio, budgetRatio, (x, y) => (x + y) / 2);
-    const t12M = ratiosIn(src.actual, a.code), budM = ratiosIn(src.budget, a.code);
+    const t12M = ratiosIn(rAct, a.code), budM = ratiosIn(rBud, a.code);
     if (ratio != null && wagesTotal > 0) {
       const monthly = Array.from({ length: 12 }, (_, c) => pickRatio(t12M?.[c] ?? null, budM?.[c] ?? null, (x, y) => (x + y) / 2) ?? ratio);
       const months = wagesMonthly.map((w, i) => r2(monthly[(startMonth - 1 + i) % 12] * w)) as Months;
       mk(a.code, months, {
-        method: 'burdenRatio', ratio: r5(ratio), basis: burdenBasis, sameMonth: true, ratios: monthly.map(r5),
+        method: 'burdenRatio', ratio: r5(ratio), basis: burdenBasis, sameMonth: true, ratios: monthly.map(r5), ...(donor ? { from: donor.code } : {}),
         ...(t12Ratio != null ? { t12Ratio: r5(t12Ratio) } : {}), ...(budgetRatio != null ? { budgetRatio: r5(budgetRatio) } : {}),
       } as any);
     } else if (baseTotal(a.code)) baseline(a, 'flat', bl.glGrowth?.[a.code] ?? (raise - 1));

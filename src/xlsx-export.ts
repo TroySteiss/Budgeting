@@ -86,7 +86,7 @@ function driverLabel(d: any): string {
     case 'catShare': return `UW cat ${d.pcode} share`;
     case 'perUnitComp': return `Minot $${d.perUnit}/unit`;
     case 'payrollModel': return 'payroll model wages';
-    case 'burdenRatio': return `Minot ratio ${(d.ratio * 100).toFixed(1)}% of wages`;
+    case 'burdenRatio': return d.from ? `${(d.ratio * 100).toFixed(1)}% of wages — ratio and monthly shape from ${String(d.from).toUpperCase()}` : `Minot ratio ${(d.ratio * 100).toFixed(1)}% of wages`;
     case 'mgmtPct': return `${(d.pct * 100).toFixed(2)}% of ${d.priorMonth ? 'prior-month ' : ''}income`;
     case 'interest': return 'loan interest';
     case 'sellerUtil': return 'seller statement level';
@@ -881,7 +881,8 @@ function fillPayrollSheet(
     const d: any = ln?.driver || {};
     const months = ln?.months || zero12();
     const isWage = wageSet.has(a.code);
-    const asFormula = !!wagesRow && !isWage && d.method === 'burdenRatio' && !ln?.override;
+    // ratios borrowed from another property cannot be rebuilt from THIS sheet's T12 / budget columns: those rows are values
+    const asFormula = !!wagesRow && !isWage && d.method === 'burdenRatio' && !ln?.override && !d.from;
     const kind = driverKind(ln && (months.some((v) => v) || ln.override) ? ln : undefined);
     const fill = asFormula || d.method === 'payrollModel' ? DRIVER_FILLS.pay.fill : ln && (months.some((v) => v) || ln.override) ? DRIVER_FILLS[kind].fill : null;
     ws.getCell(r, PC.code).value = a.code;

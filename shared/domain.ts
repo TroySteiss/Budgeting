@@ -101,6 +101,9 @@ export interface BudgetInputs {
   wagesFromRoster?: boolean;
   /** annual budgets: 'payroll' (default) = wages follow the Pay-rates tab's roster + raise entries whenever a cycle is effective in the budget year; 'manual' = never (payroll model / own trailing-12 x raise %) */
   wageSource?: 'payroll' | 'manual';
+  /** annual: property code whose statements supply the non-wage payroll lines' % of wages and
+      monthly shape (blank / own code = this property's own history) */
+  burdenFrom?: string | null;
   /** annual, new acquisitions: how many start-up months of operations are left out of the
       trailing-12 history (default 1 — the first month; 0-3) */
   startupExclude?: number;
