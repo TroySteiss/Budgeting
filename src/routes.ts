@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, ENGINE_VERSION, budgetRefLabel, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
@@ -131,6 +131,8 @@ router.get('/state', h(async (_req, res) => {
     // which properties the Pay-rates tab feeds, per budget year (codes + draft flags only) — the dashboard's Payroll wages item
     rosterYears: await rosterCoverage().catch(() => ({})),
     stmtSnapshots: stmts.rows, templates: templates.rows,
+    // saved formula sets (name + size only) — picked when a budget is started
+    formulaSets: (await query(`select id, name, created_by, created_at, source, (select count(*)::int from jsonb_object_keys(coalesce(data->'rules','{}'::jsonb))) as rules from formula_sets order by created_at desc`)).rows,
     curves: CURVES,   // named seasonal shapes (Jan-Dec weights) for client-side spread tools
   });
 }));
@@ -845,7 +847,7 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   let lines: BudgetLine[];
   if (lb.annual) {
     // ANNUAL: the property's own statements + the Yardi template rules (shared/annual.ts)
-    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: loadAnnualRules(), comps: lb.comps, payrollWages: wages, wagesLive: live ? { label: live.label, effective: live.effective, draft: live.draft, monthly: live.monthly as Record<string, Months> } : null, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code };
+    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: (inputs.rules as any) ?? loadAnnualRules(), comps: lb.comps, payrollWages: wages, wagesLive: live ? { label: live.label, effective: live.effective, draft: live.draft, monthly: live.monthly as Record<string, Months> } : null, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code };
     lines = existing ? regenerateAnnual(existing, lb.coa, inputs, src) : generateAnnualLines(lb.coa, inputs, src);
   } else {
     lines = existing
@@ -879,7 +881,7 @@ async function stmtsForTemplate(templateId: number): Promise<{ pyStmtId: number 
 }
 
 router.post('/budgets', h(async (req, res) => {
-  let { propertyCode, year, label, uwSnapshotId, compSetId, rentSnapshotId, t12SnapshotId, payrollModelId, budgetType, pyStmtId, cyBudgetStmtId, templateId } = req.body || {};
+  let { propertyCode, year, label, uwSnapshotId, compSetId, rentSnapshotId, t12SnapshotId, payrollModelId, budgetType, pyStmtId, cyBudgetStmtId, templateId, formulaSet } = req.body || {};
   if (!propertyCode || !year) return res.status(400).json({ error: 'propertyCode and year are required' });
   // the Yardi template carries its own trailing-12 + current-year budget — fill
   // those in from the template unless the caller pointed at other statements
@@ -912,6 +914,8 @@ router.post('/budgets', h(async (req, res) => {
     const tpl = templateId ? (await query('select data from template_snapshots where id=$1', [templateId])).rows[0]?.data as TemplateData | undefined : undefined;
     const t12 = sa ? await composeT12(propertyCode, Number(pyStmtId), sa) : null;
     inputs = defaultAnnualInputs(Number(year), Number(prop.units) || tpl?.units || 0, t12?.cal || null, rent, coa, tpl || null, t12 ? t12.lastMonth : tpl?.lastActual?.month);
+    // the formula set the user PICKED for this budget (never a silent default)
+    if (formulaSet != null && formulaSet !== '') inputs = await withFormulaSet(inputs, formulaSet);
   } else inputs = uw
     ? { ...defaultInputs(Number(year), uw, rent), units: uw.units || prop.units }
     : {
@@ -1164,6 +1168,54 @@ router.post('/budgets/:id/recalc', h(async (req, res) => {
   if (!lb) return res.status(404).json({ error: 'Not found' });
   const built = buildLines(lb, lb.budget.inputs, lb.lines);
   await saveLines(id, built.lines, true);
+  res.json(budgetView((await loadBudget(id))!));
+}));
+
+/* ---------------- saved formula sets ----------------
+   A named recipe saved from a budget (formulaSetFromBudget) and given to another one. */
+async function withFormulaSet(inputs: BudgetInputs, pick: any): Promise<BudgetInputs> {
+  if (pick === 'template') return applyFormulaSet(inputs, { rules: {}, settings: {} }, { id: null, name: 'Template defaults (no saved set)' });
+  if (pick === 'grks') return applyFormulaSet(inputs, { rules: loadAnnualRules() as any, settings: {} }, { id: 'grks', name: 'GRKS 2026 draft (the old default)' });
+  const row = (await query('select id, name, data from formula_sets where id=$1', [Number(pick)])).rows[0];
+  if (!row) throw new Error('That formula set no longer exists');
+  return applyFormulaSet(inputs, row.data as FormulaSet, { id: row.id, name: row.name });
+}
+router.get('/formula-sets', h(async (_req, res) => {
+  res.json((await query(`select id, name, created_by, created_at, source, (select count(*)::int from jsonb_object_keys(coalesce(data->'rules','{}'::jsonb))) as rules from formula_sets order by created_at desc`)).rows);
+}));
+router.post('/formula-sets', h(async (req, res) => {
+  const name = String(req.body?.name || '').trim().slice(0, 80);
+  const lb = await loadBudget(Number(req.body?.budgetId));
+  if (!name) return res.status(400).json({ error: 'Give the formula set a name' });
+  if (!lb || !lb.annual) return res.status(400).json({ error: 'Formula sets are saved from an annual budget' });
+  const set = formulaSetFromBudget(lb.lines, lb.budget.inputs || {});
+  const source = `${lb.budget.property_code} ${lb.budget.year}`;
+  const exists = (await query('select id from formula_sets where lower(name)=lower($1)', [name])).rows[0];
+  if (exists && !req.body?.overwrite) return res.status(409).json({ error: `A formula set named "${name}" already exists`, exists: true });
+  const row = exists
+    ? (await query('update formula_sets set data=$2, source=$3, created_by=$4, created_at=now() where id=$1 returning id, name', [exists.id, JSON.stringify(set), source, req.session.username || ''])).rows[0]
+    : (await query('insert into formula_sets(name, data, source, created_by) values($1,$2,$3,$4) returning id, name', [name, JSON.stringify(set), source, req.session.username || ''])).rows[0];
+  logChange(req.session.username || '', 'save formula set', { id: row.id, name, from: source, rules: Object.keys(set.rules).length });
+  res.json({ ok: true, id: row.id, name: row.name, rules: Object.keys(set.rules).length });
+}));
+router.delete('/formula-sets/:id', requireAdmin, h(async (req, res) => {
+  await query('delete from formula_sets where id=$1', [Number(req.params.id)]);
+  logChange(req.session.username || '', 'delete formula set', { id: Number(req.params.id) });
+  res.json({ ok: true });
+}));
+/* Give an existing budget a saved formula set and regenerate. Overrides, dollars, GPR, the
+   vacancy average and expirations stay; the budget's own per-GL shape / factor choices are
+   replaced by the set's. */
+router.post('/budgets/:id/formula-set', h(async (req, res) => {
+  const id = Number(req.params.id);
+  const lb = await loadBudget(id);
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  if (!lb.annual) return res.status(400).json({ error: 'Formula sets apply to annual budgets' });
+  const inputs = await withFormulaSet(lb.budget.inputs || {}, req.body?.formulaSet);
+  const built = buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lb.lines);
+  await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(inputs)]);
+  await saveLines(id, built.lines, true);
+  logChange(req.session.username || '', 'apply formula set', { id, set: inputs.rulesFrom });
   res.json(budgetView((await loadBudget(id))!));
 }));
 

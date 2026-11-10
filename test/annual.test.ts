@@ -2,13 +2,16 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
+  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
   refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, type TemplateData, type AnnualSources,
 } from '../shared/annual.js';
 import { sum, zero12, rollup, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
 import { parseYardiBudgetTemplate, parseRentRoll, parseMonarchStatement, detectUploadKind } from '../src/importers.js';
 import { loadAnnualRules } from '../src/annual-rules.js';
 
+// The pre-drift inputs: existing tests check the template's / GRKS draft's own monthly cells, so
+// they switch the within-year cost drift OFF. The drift is tested on its own at the end.
+const baseInputs = (...a: Parameters<typeof defaultAnnualInputs>) => { const i = defaultAnnualInputs(...a); return { ...i, baseline: { ...i.baseline!, costDrift: 0 } }; };
 const coaList: CoaAccount[] = JSON.parse(readFileSync(join(process.cwd(), 'seed', 'coa.json'), 'utf8'));
 const detail = new Set(coaList.filter((a) => a.kind === 'detail').map((a) => a.code));
 const fx = (name: string): string => join(process.cwd(), 'test', 'fixtures', name);
@@ -69,7 +72,7 @@ describe('annualBaseline shapes', () => {
 
 describe('generateAnnualLines — template rules on own history', () => {
   const actual = synthetic();
-  const inputs = defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10);
+  const inputs = baseInputs(2026, 10, actual, null, coaList, null, 10);
   const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
   const lines = generateAnnualLines(coaList, inputs, src);
 
@@ -301,7 +304,7 @@ describe('lease expirations and turnover-driven lines', () => {
   });
   it('a lease ending between the roll date and the budget start resets in month 0 with the renewal mix (not MTM all year)', () => {
     const actual = synthetic();
-    const inputs = defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10);
+    const inputs = baseInputs(2026, 10, actual, null, coaList, null, 10);
     const noGrow = { ...inputs, ltl: { ...inputs.ltl, mode: 'leases' as const, renewalPct: 0, burnoffNew: 1, followGpr: false } };
     // 12 leases ending 15 Dec 2025 (gap $100 each), roll as of 30 Sep 2025, budget Jan 2026
     const leases = Array.from({ length: 12 }, () => ({ m: 1000, r: 900, e: '2025-12-15' }));
@@ -314,7 +317,7 @@ describe('lease expirations and turnover-driven lines', () => {
   });
   it('application fees = last year $ ÷ this year move-ins × each month\'s move-ins', () => {
     const actual = synthetic();
-    const inputs = { ...defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10), expirations: cal([0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0]) };
+    const inputs = { ...baseInputs(2026, 10, actual, null, coaList, null, 10), expirations: cal([0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0]) };
     inputs.ltl.renewalPct = 0.5;
     const lines = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10 });
     const l = L(lines, '5105');
@@ -414,7 +417,7 @@ describe('parseYardiBudgetTemplate — clnd 2026 template (real export)', () => 
   it('the engine reproduces the template\'s own Budget Worksheet values', () => {
     const actual = stmtCalendar({ monthCal: p.actual.monthCal, monthYear: p.actual.monthYear, rows: p.actual.rows });
     const budget = stmtCalendar({ monthCal: p.budget.monthCal, rows: p.budget.rows });
-    const inputs = defaultAnnualInputs(2026, t.units, actual, null, coaList, t, 10);
+    const inputs = baseInputs(2026, t.units, actual, null, coaList, t, 10);
     inputs.baseline!.useUtilForecast = true;   // the raw template applies Conservice's forecast (the GRKS foundation uses a flat factor)
     const lines = generateAnnualLines(coaList, inputs, { actual, budget, lastMonth: 10, template: t });
     expect(L(lines, '4994').months[0]).toBe(460704);                 // Oct actual
@@ -443,7 +446,7 @@ describe('parseYardiBudgetTemplate — GRKS RMC draft ties to its Summary', () =
   it('template-driven lines land where the RMC draft did', () => {
     const t = p.template;
     const actual = stmtCalendar({ monthCal: p.actual.monthCal, monthYear: p.actual.monthYear, rows: p.actual.rows });
-    const inputs = defaultAnnualInputs(2026, t.units, actual, null, coaList, t, 10);
+    const inputs = baseInputs(2026, t.units, actual, null, coaList, t, 10);
     const lines = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10, template: t });
     expect(sum(L(lines, '4994').months)).toBeCloseTo(1493914.18, 1);
     expect(sum(L(lines, '6116').months)).toBeCloseTo(101838.76, 1);   // RE tax: T12 flat, not RMC's typed 103,355 (October × 12)
@@ -467,7 +470,7 @@ describe('foundation rules (seed/annual-rules.json, extracted from the GRKS draf
   it('the engine applies them: shape, factor and MROUND per GL', () => {
     const actual = synthetic();
     actual['6702'] = cal(Array(12).fill(500));     // T12 6,000 > $1,000
-    const inputs = defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10);
+    const inputs = baseInputs(2026, 10, actual, null, coaList, null, 10);
     const lines = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10, rules });
     expect(L(lines, '6702').months[0]).toBe(550);                    // flatT12 × 1.10 / 12
     expect((L(lines, '6702').driver as any).rule).toBe('flatT12');
@@ -482,7 +485,7 @@ describe('foundation rules (seed/annual-rules.json, extracted from the GRKS draf
       const p = parseYardiBudgetTemplate(readFileSync(fx('yardi-template-grks-draft.xlsm')), detail);
       const t = p.template;
       const actual = stmtCalendar({ monthCal: p.actual.monthCal, monthYear: p.actual.monthYear, rows: p.actual.rows });
-      const inputs = defaultAnnualInputs(2026, t.units, actual, null, coaList, t, 10);
+      const inputs = baseInputs(2026, t.units, actual, null, coaList, t, 10);
       const lines = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10, template: t, rules });
       expect(L(lines, '6604').months[0]).toBe(800);                  // Jan: PY × 1.05 → MROUND 10 (RMC: 800)
       expect(sum(L(lines, '6702').months)).toBeCloseTo(2092.2, 0);   // flatT12 × 1.10 (RMC: 2,092)
@@ -496,7 +499,7 @@ describe('foundation rules (seed/annual-rules.json, extracted from the GRKS draf
       const p = parseYardiBudgetTemplate(readFileSync(fx('yardi-template-grks-draft.xlsm')), detail);
       const t = p.template;
       const actual = stmtCalendar({ monthCal: p.actual.monthCal, monthYear: p.actual.monthYear, rows: p.actual.rows });
-      const inputs = defaultAnnualInputs(2026, t.units, actual, null, coaList, t, 10);
+      const inputs = baseInputs(2026, t.units, actual, null, coaList, t, 10);
       const src: AnnualSources = { actual, budget: null, lastMonth: 10, template: t, rules };
       const catOf = (ls: BudgetLine[], pc: string) => ls.reduce((a, l) => a + (coaList.find((x) => x.code === l.gl_code)?.pcode === pc ? sum(l.months) : 0), 0);
       const base = generateAnnualLines(coaList, inputs, src);
@@ -583,7 +586,7 @@ describe('detectUploadKind — Data page auto-detect', () => {
 
 describe('payroll flow (Troy 2026-11-03): roster wages carry their raises; burden from a mix of historicals', () => {
   const actual = synthetic();
-  const inputs = defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10);
+  const inputs = baseInputs(2026, 10, actual, null, coaList, null, 10);
   const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
 
   it('roster wages get NO second March step — the Pay-rates apply already prorated each raise', () => {
@@ -692,7 +695,7 @@ describe('GPR increases in specific months (Troy 2026-11-03)', () => {
 
 describe('turn costs follow lease expirations with a one-month lag (Troy 2026-11-04)', () => {
   const actual = { ...synthetic(), '6926': cal(Array(12).fill(500)), '6728': cal(Array(12).fill(100)) };   // painting contractor 6,000/yr, paint 1,200/yr
-  const inputs = defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10);
+  const inputs = baseInputs(2026, 10, actual, null, coaList, null, 10);
   // 24 leases: 12 end in March, 12 in September
   const leases = [...Array(12).fill({ m: 1000, r: 950, e: '2026-03-31' }), ...Array(12).fill({ m: 1000, r: 950, e: '2026-09-30' })];
   it('lagMonths shifts the curve forward and wraps December into January', () => {
@@ -783,7 +786,7 @@ describe('vacancy: an annual average on a carry-over curve (Troy 2026-11-09)', (
   });
   it('engine: 5031 follows the curve from the last actual month and totals the average to the cent', () => {
     const actual = synthetic();
-    const inputs = { ...defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10), vacancyPct: flat5 as Months, expirations: exp };
+    const inputs = { ...baseInputs(2026, 10, actual, null, coaList, null, 10), vacancyPct: flat5 as Months, expirations: exp };
     const ls = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10 });
     const vacL = L(ls, '5031'), gprL = L(ls, '4994');
     expect((vacL.driver as any).shaped).toBe('expirations');
@@ -799,7 +802,7 @@ describe('prior-period collections never exceed delinquency (Troy 2026-11-09)', 
   it('5036 is capped month by month at the budgeted 5035; an uncapped line is untouched', () => {
     const actual = synthetic();
     const f = (v: number) => cal(Array(12).fill(v));
-    const inputs = defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10);
+    const inputs = baseInputs(2026, 10, actual, null, coaList, null, 10);
     // last year collected 800 a month of older balances against 300 of delinquency
     const over = generateAnnualLines(coaList, inputs, { actual: { ...actual, '5035': f(-300), '5036': f(800) }, budget: null, lastMonth: 10 });
     const dq = L(over, '5035').months, pp = L(over, '5036').months;
@@ -822,12 +825,110 @@ describe('reviewability (2026-11-09): budget column label, dropped lines', () =>
   });
   it('a line the $1,000 rule drops stays at zero but carries a "dropped" driver with its T12; choosing a shape on the row budgets it', () => {
     const actual = { ...synthetic(), '6736': cal(Array(12).fill(50)) };   // $600 of windows a year
-    const inputs = defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10);
+    const inputs = baseInputs(2026, 10, actual, null, coaList, null, 10);
     const rules = { '6736': { method: 'flatT12' as const, factor: 0.1 } };
     const l = L(generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10, rules }), '6736');
     expect(sum(l.months)).toBe(0);
     expect(l.driver).toMatchObject({ method: 'dropped', t12: 600, limit: 1000 });
     const picked = L(generateAnnualLines(coaList, { ...inputs, baseline: { ...inputs.baseline!, glShape: { '6736': 'flat' } } }, { actual, budget: null, lastMonth: 10, rules }), '6736');
     expect(sum(picked.months)).toBeCloseTo(660, 0);
+  });
+});
+
+describe('within-year cost drift (Troy 2026-11-09): expense lines cost a little more late in the year', () => {
+  it('tiltMonths: a straight-line tilt, December `drift` above January, year total unchanged to the cent', () => {
+    const flat = Array(12).fill(1000) as Months;
+    const t = tiltMonths(flat, 0.03);
+    expect(sum(t)).toBeCloseTo(12000, 2);
+    expect(t[0]).toBeCloseTo(985, 0);
+    expect(t[11]).toBeCloseTo(1015, 0);
+    for (let i = 1; i < 12; i++) expect(t[i]).toBeGreaterThanOrEqual(t[i - 1]);
+    // a seasonal line keeps its season and its total; only the balance shifts later
+    const seasonal = [3000, 2500, 1500, 800, 400, 300, 300, 300, 500, 1200, 2200, 2900] as Months;
+    const s2 = tiltMonths(seasonal, 0.03);
+    expect(sum(s2)).toBeCloseTo(sum(seasonal), 2);
+    expect(s2[0]).toBeLessThan(seasonal[0]);
+    expect(s2[11]).toBeGreaterThan(seasonal[11]);
+    expect(tiltMonths(flat, 0)).toEqual(flat);
+  });
+  it('engine: on by default (3%) for admin / marketing / utilities / R&M / rehab; totals match the no-drift budget', () => {
+    const actual = { ...synthetic(), '6332': cal(Array(12).fill(400)), '6622': cal(Array(12).fill(3000)), '6920': cal(Array(12).fill(2000)) };
+    const on = defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10);
+    const off = { ...on, baseline: { ...on.baseline!, costDrift: 0 } };
+    expect(COST_DRIFT_DEFAULT).toBe(0.03);
+    const a = generateAnnualLines(coaList, on, { actual, budget: null, lastMonth: 10 });
+    const b = generateAnnualLines(coaList, off, { actual, budget: null, lastMonth: 10 });
+    for (const gl of ['6332', '6622', '6920']) {
+      const x = L(a, gl), y = L(b, gl);
+      expect(sum(x.months)).toBeCloseTo(sum(y.months), 2);          // the year does not move
+      expect(x.months[11]).toBeGreaterThan(x.months[0]);            // it lands later
+      expect(x.months[11] / x.months[0]).toBeCloseTo(1.03 / 0.97 * 0.97 / 0.985 * 0.985 / 1, 1);   // roughly 3% end over start
+      expect((x.driver as any).drift).toBe(0.03);
+      expect((y.driver as any).drift).toBeUndefined();
+    }
+    // NOI for the year is identical with and without it
+    const noi = (ls: BudgetLine[]) => sum(rollup(new Map(ls.map((l) => [l.gl_code, l.months]))).get('7280')!);
+    expect(noi(a)).toBeCloseTo(noi(b), 0);
+  });
+  it('not applied to payroll, real estate taxes, corporate rates or contract-flat (last month) lines', () => {
+    const actual = { ...synthetic(), '6116': cal(Array(12).fill(10000)), '6616': cal(Array(12).fill(300)) };
+    const on = defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10);
+    const ls = generateAnnualLines(coaList, on, { actual, budget: null, lastMonth: 10 });
+    for (const gl of ['6116', '6616', '6402', '6418', '6108']) {
+      const l = L(ls, gl);
+      if (!l || !sum(l.months)) continue;
+      expect((l.driver as any).drift).toBeUndefined();
+    }
+    expect(new Set(L(ls, '6116').months).size).toBe(1);
+  });
+});
+
+describe('saved formula sets (Troy 2026-11-09): the recipe of a budget, without its hard codes', () => {
+  const actual = { ...synthetic(), '6332': cal(Array(12).fill(400)), '6622': cal(Array(12).fill(3000)), '6920': cal(Array(12).fill(2000)), '6736': cal(Array(12).fill(300)) };
+  const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
+  const base = defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10);
+  // the SOURCE budget: its own per-GL choices, a category factor, and one hand-typed line
+  const srcInputs = { ...base, rules: {}, baseline: { ...base.baseline!, growthPct: { '13': 0.08 }, costDrift: 0.02, glShape: { '6332': 'flat' as const, '6622': 'wavg' as const }, glGrowth: { '6332': 0.04 }, glMround: { '6622': 50 } }, ltl: { ...base.ltl, renewalPct: 0.9, burnoffRenew: 0.2 } };
+  const built = generateAnnualLines(coaList, srcInputs, src).map((l) => (l.gl_code === '6736' ? { ...l, override: true, months: cal(Array(12).fill(999)), driver: { method: 'manual' } as any } : l));
+  const set = formulaSetFromBudget(built, srcInputs);
+
+  it('saves each history-based line as shape / factor / MROUND, and the formula settings', () => {
+    expect(set.rules['6332']).toMatchObject({ method: 'flatT12', factor: 0.04, noThreshold: true });
+    expect(set.rules['6622']).toMatchObject({ method: 'wavg', mround: 50 });
+    expect(set.rules['6920']).toMatchObject({ method: 'same', factor: 0.08 });          // the category factor, resolved per line
+    expect(set.settings.baseline).toMatchObject({ costDrift: 0.02, growthPct: { '13': 0.08 } });
+    expect(set.settings.ltl).toMatchObject({ renewalPct: 0.9, burnoffRenew: 0.2 });
+  });
+  it('leaves out the hard codes: hand-typed lines, dollars, GPR, the vacancy average, expirations', () => {
+    expect(set.rules['6736']).toBeUndefined();                       // typed by hand
+    expect(set.rules['4994']).toBeUndefined();                       // engine lines carry no rule
+    const flat = JSON.stringify(set);
+    for (const k of ['baseMonthly', 'startMonthly', 'vacancyPct', 'expirations', 'corpRates', 'turnFees', 'units', 'capital', 'glShape']) expect(flat).not.toContain(k);
+  });
+  it('applied to another budget it reproduces the formulas on THAT property\'s history and keeps its own data', () => {
+    const other = { ...actual, '6332': cal(Array(12).fill(1000)), '6622': cal(Array(12).fill(5000)) };
+    const tBase = defaultAnnualInputs(2026, 20, other, null, coaList, null, 10);
+    const target = applyFormulaSet({ ...tBase, vacancyPct: Array(12).fill(0.07) as Months, baseline: { ...tBase.baseline!, glShape: { '6920': 'last' as const } } }, set, { id: 7, name: 'CLND 2027' });
+    expect(target.rulesFrom).toMatchObject({ id: 7, name: 'CLND 2027' });
+    expect(target.vacancyPct![0]).toBe(0.07);                        // the target's own assumption stays
+    expect(target.units).toBe(20);
+    expect(target.baseline!.glShape).toEqual({});                    // its old per-line choices are replaced by the set
+    expect(target.ltl!.renewalPct).toBe(0.9);
+    const ls = generateAnnualLines(coaList, target, { actual: other, budget: null, lastMonth: 10, rules: target.rules as any });
+    expect(sum(L(ls, '6332').months)).toBeCloseTo(12000 * 1.04, 0);  // flat x 4% on the TARGET's history
+    expect((L(ls, '6332').driver as any).shape).toBe('flat');
+    expect((L(ls, '6622').driver as any).shape).toBe('wavg');
+    expect((L(ls, '6622').driver as any).mult).toBe(50);
+    expect((L(ls, '6920').driver as any).pct).toBeCloseTo(0.08, 6);
+  });
+  it('a zero-out in the set stays zero on the target; "template defaults" is an empty rule set', () => {
+    const z = formulaSetFromBudget(built.map((l) => (l.gl_code === '6920' ? { ...l, months: zero12(), driver: { method: 'zero' } as any } : l)), srcInputs);
+    expect(z.rules['6920']).toEqual({ method: 'zero' });
+    const t = applyFormulaSet(base, z, { id: 1, name: 'z' });
+    const ls = generateAnnualLines(coaList, t, { ...src, rules: t.rules as any });
+    expect(sum(L(ls, '6920').months)).toBe(0);
+    expect((L(ls, '6920').driver as any).method).toBe('zero');
+    const tpl = applyFormulaSet(base, { rules: {}, settings: {} }, { id: null, name: 'Template defaults' });
+    expect(tpl.rules).toEqual({});
   });
 });

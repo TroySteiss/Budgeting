@@ -39,7 +39,7 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-09d';
+export const ENGINE_VERSION = '2026-11-09f';
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -380,6 +380,25 @@ export function vacancyByMonth(
   else curve = mA > 0 ? A.map((x) => (x * avg) / mA) : Array(12).fill(avg);   // the average is below what the carry-over alone gives: keep its shape, scaled
   return { pcts: curve.map((v) => Math.round((avg * (1 - w) + w * v) * 1e6) / 1e6) as Months, avg, shaped: 'expirations', startPct: start };
 }
+/** WITHIN-YEAR COST DRIFT (Troy 2026-11-09: "apply a very small gradual increase to expense
+    items, as things will tend to get more expensive over the course of the year. Should not be
+    massive, but should make a difference in distribution"). A history-based expense line is
+    tilted so its last month runs `drift` above its first, in a straight line, with the YEAR
+    TOTAL UNCHANGED — the increase factor still sets the level; this only moves when it lands.
+    Default 3% January to December (about -1.5% in January, +1.5% in December). */
+export const COST_DRIFT_DEFAULT = 0.03;
+/** Categories the drift applies to: admin, marketing, utilities, R&M, rehab. Not payroll
+    (its raises have their own timing), taxes, insurance, the fee or anything contract-flat. */
+export const COST_DRIFT_PCODES = new Set(['9', '11', '12', '13', '14']);
+export function tiltMonths(months: Months, drift: number, mult = 0): Months {
+  const total = sum(months);
+  if (!drift || !total) return months;
+  const tilted = months.map((v, i) => v * (1 + drift * (i / 11 - 0.5)));
+  const k = total / (sum(tilted) || total);                     // keep the year where it was
+  const out = tilted.map((v) => (mult > 0 ? Math.round((v * k) / mult) * mult : r2(v * k))) as Months;
+  if (!(mult > 0)) { const d = r2(total - sum(out)); if (d) out[11] = r2(out[11] + d); }   // cent fix on the last month
+  return out;
+}
 /** Average of the non-zero months, flat. */
 export const AVG_NZ_GLS = new Set(['5110']);
 /** Template zeroes these (corporate allocation credits; one-time concessions). */
@@ -496,8 +515,88 @@ export function gprStepsSummary(steps: Months | null | undefined): string {
       last     last actual month, flat
     Other methods (engine / corpRate / suggested / debt / payroll) leave the
     engine's own logic in charge. */
-export interface AnnualRule { method: 'same' | 'wavg' | 'flatT12' | 'last' | 'engine' | 'corpRate' | 'suggested' | 'debt' | 'payroll' | 'fixedAnnual'; mround?: number; factor?: number; noThreshold?: boolean; name?: string }
+export interface AnnualRule {
+  /** 'custom' carries its shape in `shape` (turns, avgnz, curve — saved formula sets); 'zero' = this GL is zeroed on purpose */
+  method: 'same' | 'wavg' | 'flatT12' | 'last' | 'engine' | 'corpRate' | 'suggested' | 'debt' | 'payroll' | 'fixedAnnual' | 'custom' | 'zero';
+  shape?: BaselineShape; mround?: number; factor?: number; noThreshold?: boolean; name?: string;
+}
 const RULE_SHAPE: Partial<Record<AnnualRule['method'], BaselineShape>> = { same: 'actual', wavg: 'wavg', flatT12: 'flat', last: 'last', fixedAnnual: 'flat' };
+const ruleShapeOf = (r: AnnualRule | null | undefined): BaselineShape | undefined => (r ? (r.shape ?? RULE_SHAPE[r.method]) : undefined);
+
+/* ---------------- saved formula sets (Troy 2026-11-09) ----------------
+   "We should not be using GRKS defaults. I need to be able to save all property formulas
+   applied minus hard codes with a name. Instead of just picking something random, it should
+   prompt to pick out a previous presave."
+
+   A formula set is the RECIPE of a budget, with nothing property-specific in it:
+     - per-GL rules: how each history-based line is built (shape, increase factor, MROUND), and
+       the GLs zeroed on purpose;
+     - the formula settings: category increase factors, cost drift, loss-to-lease method and
+       renewal / burnoff %, the vacancy curve weight, the payroll burden basis, the wage source
+       and fallback raise %.
+   Left OUT (the "hard codes"): every hand-typed cell and total, any dollar amount (GPR base,
+   LTL start, $ per move-in, corporate rates), GPR month steps, the vacancy average, lease
+   expirations, and ratios typed for one property. A budget carries a COPY of the set it was
+   given (`inputs.rules` + `inputs.rulesFrom`), so editing or deleting a set later never moves
+   a budget silently. */
+export interface FormulaSet {
+  rules: Record<string, AnnualRule>;
+  settings: {
+    baseline?: Pick<NonNullable<BudgetInputs['baseline']>, 'source' | 'shape' | 'mround' | 'growthPct' | 'useUtilForecast' | 'costDrift'>;
+    ltl?: { mode?: any; renewalPct?: number; burnoffRenew?: number; burnoffNew?: number; followGpr?: boolean };
+    vacancyExpWeight?: number; burdenBasis?: 't12' | 'budget' | 'mix'; wageSource?: 'payroll' | 'manual'; payrollRaisePct?: number;
+  };
+}
+const SHAPE_RULE: Partial<Record<BaselineShape, AnnualRule['method']>> = { actual: 'same', wavg: 'wavg', flat: 'flatT12', last: 'last' };
+/** The recipe of a budget as it stands: every non-overridden history-based line's shape /
+    factor / MROUND, the deliberate zero-outs, and the formula settings. Pure. */
+export function formulaSetFromBudget(lines: BudgetLine[], inputs: BudgetInputs): FormulaSet {
+  const rules: Record<string, AnnualRule> = {};
+  const bl = inputs.baseline || ({} as NonNullable<BudgetInputs['baseline']>);
+  for (const l of lines) {
+    if (l.override) continue;                                        // a hand-typed line is a hard code
+    const d = (l.driver || {}) as any;
+    if (d.method === 'zero') { rules[l.gl_code] = { method: 'zero' }; continue; }
+    if (d.method !== 'baseline') continue;                           // engine-driven lines (GPR, LTL, payroll, fee…) carry no per-GL rule
+    const sh = d.shape as BaselineShape;
+    const method = SHAPE_RULE[sh];
+    const r: AnnualRule = method ? { method } : { method: 'custom', shape: sh };
+    if (Number.isFinite(d.pct)) r.factor = Math.round(d.pct * 1e6) / 1e6;
+    if (d.mult) r.mround = d.mult;
+    // a flat line the user chose on the row is budgeted whatever its size; otherwise the
+    // template's $1,000 rule still applies on the property the set is given to
+    if (method === 'flatT12' && bl.glShape?.[l.gl_code]) r.noThreshold = true;
+    rules[l.gl_code] = r;
+  }
+  const lt = inputs.ltl || ({} as any);
+  const settings: FormulaSet['settings'] = {
+    baseline: { source: bl.source || 'actual', shape: bl.shape || 'actual', mround: bl.mround || 0, growthPct: { ...(bl.growthPct || {}) }, ...(bl.useUtilForecast != null ? { useUtilForecast: bl.useUtilForecast } : {}), ...(bl.costDrift != null ? { costDrift: bl.costDrift } : {}) },
+    ltl: { mode: lt.mode, renewalPct: lt.renewalPct, burnoffRenew: lt.burnoffRenew, burnoffNew: lt.burnoffNew, followGpr: lt.followGpr },
+  };
+  if (inputs.vacancyExpWeight != null) settings.vacancyExpWeight = inputs.vacancyExpWeight;
+  if (inputs.burdenBasis) settings.burdenBasis = inputs.burdenBasis;
+  if (inputs.wageSource) settings.wageSource = inputs.wageSource;
+  if (inputs.payrollRaisePct != null) settings.payrollRaisePct = inputs.payrollRaisePct;
+  return { rules, settings };
+}
+/** Give a budget a formula set: the set's rules and settings replace the budget's own per-GL
+    shape / factor / MROUND choices. Dollars, GPR, vacancy average, expirations and every
+    override on the budget are untouched. Pure — the caller regenerates. */
+export function applyFormulaSet(inputs: BudgetInputs, set: FormulaSet, from: { id: number | string | null; name: string }): BudgetInputs {
+  const st = set.settings || {};
+  const clean = <T extends object>(o: T | undefined): Partial<T> => Object.fromEntries(Object.entries(o || {}).filter(([, v]) => v !== undefined)) as Partial<T>;
+  return {
+    ...inputs,
+    rules: { ...(set.rules || {}) },
+    rulesFrom: { id: from.id, name: from.name, at: new Date().toISOString() },
+    baseline: { ...DEFAULT_BASELINE, ...(inputs.baseline || {}), ...clean(st.baseline), glShape: {}, glGrowth: {}, glMround: {} } as any,
+    ltl: { ...(inputs.ltl || ({} as any)), ...clean(st.ltl) },
+    ...(st.vacancyExpWeight != null ? { vacancyExpWeight: st.vacancyExpWeight } : {}),
+    ...(st.burdenBasis ? { burdenBasis: st.burdenBasis } : {}),
+    ...(st.wageSource ? { wageSource: st.wageSource } : {}),
+    ...(st.payrollRaisePct != null ? { payrollRaisePct: st.payrollRaisePct } : {}),
+  } as BudgetInputs;
+}
 
 export interface AnnualSources {
   actual: Record<string, Months> | null;    // trailing-12 posted actuals, calendar series by GL
@@ -546,7 +645,9 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   const baseTotal = (gl: string): number => sum(base[gl] || zero12());
   const lastOf = (gl: string): number => (base[gl] || zero12())[lastMonth - 1] || 0;
   const rules = src.rules || {};
-  const ruleOf = (gl: string): AnnualRule | null => { const r = rules[gl]; return r && RULE_SHAPE[r.method] ? r : null; };
+  const ruleOf = (gl: string): AnnualRule | null => { const r = rules[gl]; return r && ruleShapeOf(r) ? r : null; };
+  // GLs a saved formula set zeroes on purpose: set first, so nothing below refills them
+  for (const [gl, r] of Object.entries(rules)) if (r?.method === 'zero' && coaByCode.has(gl)) mk(gl, zero12(), { method: 'zero' });
   /** Precedence: the GL's own typed factor → a category % the user typed (it must
       move the whole category, or the Assumptions boxes are inert — the GRKS factors
       used to outrank them) → the GL's foundation rule → the template's per-GL %
@@ -574,7 +675,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     // foundation used a flat factor); never when the GL has its own factor
     const fc = tpl?.utilForecast?.[a.code];
     const pcts = bl.useUtilForecast && fc && fc.some((v) => v) && bl.glGrowth?.[a.code] == null ? fc : null;
-    const ruleShape = rule ? RULE_SHAPE[rule.method] : undefined;
+    const ruleShape = ruleShapeOf(rule);
     const sh: BaselineShape = bl.glShape?.[a.code] ?? shape ?? ruleShape ?? (LAST_MONTH_FLAT_GLS.has(a.code) ? 'last' : FIXED_ANNUAL_GLS.has(a.code) || FLAT_T12_GLS.has(a.code) ? 'flat' : AVG_NZ_GLS.has(a.code) ? 'avgnz' : TURN_EXPENSE_GLS.has(a.code) && turnCurve.some((v) => v > 0) ? 'turns' : bl.shape);
     // T12/12 flat only when the trailing-12 exceeds $1,000 (RMC's IF(T12>1000, …, 0))
     // …unless the user picked the shape on the row: that is a decision to budget the line
@@ -593,6 +694,11 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       const edge = (c: number) => { const v = cal[c] * (1 + pct); return r2(Math.round(v / 10) * 10); };
       months = [edge(0), ...months.slice(1, 11), edge(11)] as Months;
     }
+    // within-year cost drift: history-based expense lines cost a little more late in the year
+    // than early (total unchanged). Not on contract-flat ("last month") or fixed-annual lines.
+    const drift = COST_DRIFT_PCODES.has(a.pcode || '') && sh !== 'last' && !FIXED_ANNUAL_GLS.has(a.code) && rule?.method !== 'fixedAnnual'
+      ? (bl.costDrift ?? COST_DRIFT_DEFAULT) : 0;
+    if (drift) months = tiltMonths(months, drift, mult);
     // a "last actual month" line whose last month is far off its own average: one odd
     // month (a tax true-up, a zero) is setting the whole year — flag it for the chip
     let lastDev: number | undefined;
@@ -601,7 +707,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       const lastV = cal[lastMonth - 1] || 0;
       if (avg && Math.abs(lastV - avg) > LAST_DEV_WARN * Math.abs(avg)) lastDev = Math.round((lastV / avg - 1) * 1000) / 1000;
     }
-    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(lastDev != null ? { lastDev } : {}) });
+    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(lastDev != null ? { lastDev } : {}), ...(drift ? { drift } : {}) } as any);
     return true;
   };
 

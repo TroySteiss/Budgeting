@@ -84,7 +84,7 @@ function drvMetaBase(l) {
       const factor = d.pcts ? `+ Conservice forecast ${(Math.min(...d.pcts) * 100).toFixed(0)}–${(Math.max(...d.pcts) * 100).toFixed(0)}% by month` : `× ${(1 + (d.pct || 0)).toFixed(3)}`;
       const tag = d.src === 'budget' ? 'CYB' : d.shape === 'turns' ? 'TURNS' : d.shape === 'last' ? 'LAST' : d.pcts ? 'UTIL' : d.shape === 'wavg' ? 'WAVG' : d.shape === 'flat' ? 'T12/12' : 'SAME MO';
       const lastWarn = d.lastDev != null ? ` · ⚠ last actual month is ${d.lastDev > 0 ? '+' : ''}${Math.round(d.lastDev * 100)}% vs the T12 average — one month is setting the year (shape menu: T12 ÷ 12 flat)` : '';
-      return { cls: 'drv-base', tag: d.lastDev != null ? '⚠LAST' : tag, label: `${d.src === 'budget' ? 'CY budget' : 'Own trailing-12 actual'} — ${shape} ${factor}${d.mult ? ` → MROUND $${d.mult}` : ''} · T12 ${Math.round(d.base || 0).toLocaleString()}${d.rule ? ' · default shape and factor from the 2026 GRKS draft (not set for this property)' : ''}${lastWarn}` };
+      return { cls: 'drv-base', tag: d.lastDev != null ? '⚠LAST' : tag, label: `${d.src === 'budget' ? 'CY budget' : 'Own trailing-12 actual'} — ${shape} ${factor}${d.mult ? ` → MROUND $${d.mult}` : ''} · T12 ${Math.round(d.base || 0).toLocaleString()}${d.drift ? ` · tilted ${(d.drift * 100).toFixed(1)}% January to December (costs drift up through the year; year total unchanged)` : ''}${d.rule ? ' · default shape and factor from the 2026 GRKS draft (not set for this property)' : ''}${lastWarn}` };
     }
     case 'pctGpr': return { cls: 'drv-base', tag: l.driver.of === 'net' ? '%NET RENT' : l.driver.of === 'netgpr' ? '%NET GPR' : '%GPR', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.of === 'net' ? 'net rental income' : l.driver.of === 'netgpr' ? 'net GPR' : 'GPR'} (${l.driver.basis === 'last' ? 'last-month' : 'trailing-12'} ratio)${l.driver.capped ? ` — CAPPED at each month's budgeted delinquency (the ratio alone gave ${money(l.driver.uncapped || 0)} for the year; collections cannot exceed what is delinquent)` : ''}` };
     case 'recapture': return { cls: 'drv-base', tag: 'RECAP', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% recapture of the other concession lines (T12 ratio)` };
@@ -508,6 +508,8 @@ function newBudgetDialog() {
     <div class="row">
       <div class="fld"><label>Property</label><select id="nb-prop">${subjects.map((p) => `<option value="${p.code}">${p.code} — ${esc(p.name)}</option>`).join('')}</select></div>
       <div class="fld"><label>Budget year</label><input id="nb-year" type="number" value="${nb.year || yearNow}" style="width:90px"></div>
+      <div class="fld" style="flex:1; min-width:260px"><label title="How each history-based line is built: its shape, increase factor and rounding, plus the formula settings. Saved from a finished budget with More → Save formulas as…. Nothing is assumed — pick one.">Formula set <span class="muted">— which saved formulas this budget starts on</span></label>
+        <select id="nb-fset">${formulaSetOptions(nb.fset)}</select></div>
     </div>
     <div class="row" style="margin-top:8px">
       ${pick('nb-py', 'Trailing-12 actuals by GL', 'the PY base — Yardi 12 Month Statement export, Nov–Oct', 'statement')}
@@ -625,10 +627,13 @@ function newBudgetDialog() {
     };
     file.click();
   }));
+  if ($('nb-fset')) $('nb-fset').addEventListener('change', (e) => { nb.fset = e.target.value; });   // survives the re-render after an inline upload
   $('nb-go').addEventListener('click', async () => {
     try {
       const v = (id) => { const e = $(id); return e ? (Number(e.value) || null) : null; };
       if (annual && !v('nb-tpl') && !v('nb-py')) throw new Error('Pick or upload the Yardi budget template (or a trailing-12 statement) first — it is the PY base every line builds on.');
+      const fset = annual && $('nb-fset') ? $('nb-fset').value : null;
+      if (annual && !fset) throw new Error('Pick a formula set — a saved one, or the template defaults. Nothing is assumed for you.');
       const bv = await POST('/budgets', {
         propertyCode: $('nb-prop').value,
         year: Number($('nb-year').value),
@@ -636,6 +641,7 @@ function newBudgetDialog() {
         uwSnapshotId: v('nb-uw'), compSetId: v('nb-comp'), rentSnapshotId: v('nb-rent'),
         t12SnapshotId: v('nb-t12'), payrollModelId: v('nb-pay'),
         templateId: v('nb-tpl'), pyStmtId: v('nb-py'), cyBudgetStmtId: v('nb-cyb'),
+        formulaSet: fset,
       });
       dlg.close(); S.nb = null;
       await refreshState();
@@ -1045,6 +1051,8 @@ function renderEditor(el) {
     popMenu(anchor, `
       <button data-x="sp" title="Named, permanent save points for this budget — capture the current iteration, restore any earlier one">⎘ Save points${(bv.savePoints || []).length ? ` (${bv.savePoints.length})` : ''}</button>
       <button data-x="round" title="Round selected lines' months to a multiple">⌁ MROUND lines…</button>
+      ${bv.annual ? `<button data-x="fsave" title="Save every formula on this budget — each line's shape, increase factor and rounding, the zero-outs and the formula settings — under a name, to start other budgets from. Hand-typed cells and dollar amounts are NOT saved.">★ Save formulas as…</button>
+      <button data-x="fapply" title="Give this budget a saved formula set. Its own per-line shape / factor choices are replaced by the set's; overrides, dollars, GPR and the vacancy average stay.">☆ Apply a saved formula set…</button>` : ''}
       <button data-x="copy" title="Replay another budget's named formulas here, re-evaluated on this property's own data">⧉ Copy formulas from another budget…</button>
       ${ov.length ? `<button data-x="ovr" title="Audit this budget's overridden lines — release old MROUND-locks back to live formulas">🔓 Overrides: ${ov.length - fixed} formula · ${fixed} fixed</button>` : ''}
       <div class="rm-head" style="margin-top:4px">View</div>
@@ -1056,6 +1064,8 @@ function renderEditor(el) {
       menu.querySelector('[data-x="sp"]').addEventListener('click', () => openSavePoints(b));
       menu.querySelector('[data-x="round"]').addEventListener('click', () => openRoundDialog(b));
       menu.querySelector('[data-x="copy"]').addEventListener('click', () => openCopyFormulas(b));
+      { const fs1 = menu.querySelector('[data-x="fsave"]'); if (fs1) fs1.addEventListener('click', () => saveFormulaSet(b)); }
+      { const fs2 = menu.querySelector('[data-x="fapply"]'); if (fs2) fs2.addEventListener('click', () => openApplyFormulaSet(b)); }
       const o = menu.querySelector('[data-x="ovr"]'); if (o) o.addEventListener('click', () => openOverridesAudit(b));
       menu.querySelector('[data-x="cols"]').addEventListener('click', () => setTimeout(() => openColsMenu(anchor, labels), 0));
       menu.querySelector('[data-x="side"]').addEventListener('click', () => { localStorage.setItem('bt-side', sideOn ? '0' : '1'); render(); });
@@ -1861,6 +1871,59 @@ function openTagKey() {
   dlg.showModal();
 }
 
+
+/* ---- saved formula sets (Troy 2026-11-09): a named recipe saved from a budget and PICKED
+   when another is started — never a silent default ---- */
+function formulaSetOptions(cur) {
+  const sets = (S.state && S.state.formulaSets) || [];
+  const opt = (v, label) => `<option value="${esc(String(v))}" ${String(cur || '') === String(v) ? 'selected' : ''}>${esc(label)}</option>`;
+  return `<option value="">— pick a formula set —</option>`
+    + sets.map((x) => opt(x.id, `${x.name} · ${x.rules} lines · from ${x.source || '?'} · ${new Date(x.created_at).toLocaleDateString()}`)).join('')
+    + `<option disabled>──────────</option>`
+    + opt('template', 'Template defaults only (no saved set)')
+    + opt('grks', 'GRKS 2026 draft (the old default)');
+}
+async function saveFormulaSet(b) {
+  const lines = (S.bv.lines || []).filter((l) => !l.override && l.driver && (l.driver.method === 'baseline' || l.driver.method === 'zero'));
+  const hard = (S.bv.lines || []).filter((l) => l.override).length;
+  const name = (prompt(`Save this budget's formulas under a name.\n\nSaved: ${lines.length} line formulas (shape, increase factor, rounding, zero-outs) and the formula settings (category factors, cost drift, loss-to-lease renewal / burnoff, vacancy curve, payroll basis).\nNOT saved: ${hard} hand-typed line${hard === 1 ? '' : 's'}, any dollar amount, GPR steps, the vacancy average, expirations.\n\nName:`, `${b.property_code.toUpperCase()} ${b.year}`) || '').trim();
+  if (!name) return;
+  try {
+    let r;
+    try { r = await POST('/formula-sets', { name, budgetId: b.id }); }
+    catch (e) {
+      if (!/already exists/.test(e.message) || !confirm(`${e.message}. Replace it with this budget's formulas?`)) throw e;
+      r = await POST('/formula-sets', { name, budgetId: b.id, overwrite: true });
+    }
+    await refreshState();
+    alert(`Saved "${r.name}" — ${r.rules} line formulas. It is now a choice when a budget is started, and under More → Apply a saved formula set….`);
+  } catch (e) { alert(e.message); }
+}
+function openApplyFormulaSet(b) {
+  let dlg = document.getElementById('fset-dlg');
+  if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'fset-dlg'; document.body.appendChild(dlg); }
+  const cur = (S.bv.budget.inputs || {}).rulesFrom || null;
+  const sets = (S.state && S.state.formulaSets) || [];
+  dlg.innerHTML = `<h2>Apply a saved formula set</h2>
+    <p class="muted" style="font-size:12px; margin:0 0 8px">This budget is on: <b>${cur ? esc(cur.name) : 'no chosen set (the old GRKS default)'}</b>. Applying a set replaces this budget's per-line shape / increase factor / rounding choices and its formula settings with the set's, then recalculates. <b>Kept:</b> hand-typed lines, dollars, GPR, the vacancy average, expirations. One Undo reverses it.</p>
+    <select id="fs-pick" style="width:100%">${formulaSetOptions('')}</select>
+    ${S.auth && S.auth.isAdmin && sets.length ? `<div style="margin-top:8px; font-size:12px" class="muted">Saved sets: ${sets.map((x) => `${esc(x.name)} <button class="rb" data-fsdel="${x.id}" title="Delete this saved set — budgets already on it keep their copy">🗑</button>`).join(' · ')}</div>` : ''}
+    <div class="err" id="fs-err"></div>
+    <div class="row" style="justify-content:flex-end; margin-top:10px"><button class="btn sub" id="fs-x">Cancel</button> <button class="btn" id="fs-go">Apply &amp; recalculate</button></div>`;
+  dlg.querySelector('#fs-x').addEventListener('click', () => dlg.close());
+  dlg.querySelectorAll('[data-fsdel]').forEach((btn) => btn.addEventListener('click', async () => {
+    if (!confirm('Delete this saved formula set? Budgets already on it keep their own copy.')) return;
+    await DEL(`/formula-sets/${btn.dataset.fsdel}`); await refreshState(); dlg.close(); openApplyFormulaSet(b);
+  }));
+  dlg.querySelector('#fs-go').addEventListener('click', async () => {
+    const v = dlg.querySelector('#fs-pick').value;
+    if (!v) { dlg.querySelector('#fs-err').textContent = 'Pick a formula set.'; return; }
+    try { pushUndo(); S.bv = await POST(`/budgets/${b.id}/formula-set`, { formulaSet: v }); dlg.close(); render(); }
+    catch (e) { dlg.querySelector('#fs-err').textContent = e.message; }
+  });
+  dlg.showModal();
+}
+
 /* ---- lines the template dropped (T12 at or under $1,000) ---- */
 function droppedLines(bv) { return (bv.lines || []).filter((l) => !l.override && l.driver && l.driver.method === 'dropped'); }
 function droppedChipHtml(bv) {
@@ -1926,7 +1989,11 @@ function defaultsInUse(bv) {
   // growth
   const gp = (inp.baseline || {}).growthPct || {};
   const typed = Object.entries(gp).filter(([, v]) => v != null);
-  add('growth', 'Increase factors', typed.length ? `typed: ${typed.map(([k, v]) => `cat ${k} ${pc(v, 1)}`).join(', ')}; the rest per GL` : 'per GL, from the 2026 GRKS draft: admin +5%, supplies & contractors +10%, rehab +15%, utilities +5%, trash +7%, other income 0%', !typed.length);
+  const rf = inp.rulesFrom || null;
+  add('fset', 'Formula set', rf ? `${rf.name}${rf.at ? ` · given ${new Date(rf.at).toLocaleDateString()}` : ''}` : 'none picked — running on the 2026 GRKS draft rules, the old silent default (More → Apply a saved formula set…)', !rf || rf.id === 'grks', !rf ? 'no formula set was chosen for this property' : '');
+  add('growth', 'Increase factors', typed.length ? `typed: ${typed.map(([k, v]) => `cat ${k} ${pc(v, 1)}`).join(', ')}; the rest per GL from the formula set` : rf && rf.id !== 'grks' ? `per GL, from "${rf.name}"` : rf && rf.id == null ? 'template defaults: admin +5%, R&M +5%, rehab +5%, trash +7%, the rest 0%' : 'per GL, from the 2026 GRKS draft: admin +5%, supplies & contractors +10%, rehab +15%, utilities +5%, trash +7%, other income 0%', !typed.length && (!rf || rf.id === 'grks' || rf.id == null));
+  const drift = (inp.baseline || {}).costDrift;
+  add('drift', 'Cost drift in the year', (drift ?? 0.03) ? `${pc(drift ?? 0.03, 1)} January to December on history-based expense lines; year totals unchanged` : 'off', drift == null);
   // LTL
   const l = inp.ltl || {};
   const dR = tpl.renewalPct ?? 0.65, dBR = 0.75, dBN = 1;
@@ -4208,6 +4275,7 @@ function annualInputsHtml(inp) {
       <div class="fld"><label>History</label><select id="in-blsrc"><option value="actual" ${bl.source !== 'budget' ? 'selected' : ''}>Trailing-12 actuals${refT12 ? ` (${esc(refT12.period)})` : ''}</option><option value="budget" ${bl.source === 'budget' ? 'selected' : ''}>Current-year budget</option></select></div>
       <div class="fld"><label>Shape</label><select id="in-blshape">${['actual', 'wavg', 'flat', 'curve'].map((k) => `<option value="${k}" ${(bl.shape || 'actual') === k ? 'selected' : ''}>${SHAPE_LABELS[k]}</option>`).join('')}</select></div>
       <div class="fld"><label>MROUND $ (0 = each GL's foundation multiple)</label><input id="in-blmround" value="${bl.mround || 0}" style="width:80px"></div>
+      <div class="fld"><label title="History-based expense lines (admin, marketing, utilities, R&M, rehab) are tilted so December runs this much above January, in a straight line. The YEAR TOTAL does not change — only when the dollars land. 0 = off. Not applied to payroll, taxes, insurance, the fee or contract-flat lines.">Cost drift within the year % (Jan → Dec)</label><input id="in-drift" value="${+(((bl.costDrift ?? 0.03)) * 100).toFixed(2)}" style="width:70px"></div>
       <label style="align-self:center" title="The Yardi template carries Conservice's per-GL per-month utility % forecasts. The GRKS foundation used a flat 5% instead; tick to apply the forecast where one exists."><input type="checkbox" id="in-blutil" ${bl.useUtilForecast ? 'checked' : ''}> Use Conservice utility forecasts</label>
     </div>
     <p class="muted" style="font-size:11px; margin:4px 0 0">Per-GL defaults follow the <b>GRKS 2026 draft's formulas</b> (the foundation): same-month × factor with MROUND $10/$50, the 1-2-1 weighted average for utilities and volatile fees (MROUND $25–$250), trailing-12 ÷ 12 flat for small/erratic lines (only when the T12 exceeds $1,000), October actual flat for taxes, phones and HAP. Shape and factor set here apply where the GL has no rule; a line's own chip input or “Own T12 → shape × factor…” wins over both.</p>
@@ -4296,7 +4364,7 @@ async function applyAnnualInputs(b, el) {
     wageSource: q('#in-wagesrc') ? q('#in-wagesrc').value : (cur.wageSource || 'payroll'),
     burdenBasis: q('#in-burden') ? q('#in-burden').value : (cur.burdenBasis || 't12'),
     utilities: { ...(cur.utilities || {}), billing: q('#in-utilbill') ? q('#in-utilbill').value : ((cur.utilities || {}).billing || 'rubs') },
-    baseline: { ...(cur.baseline || {}), source: q('#in-blsrc').value, shape: q('#in-blshape').value, mround: num('#in-blmround'), growthPct, useUtilForecast: q('#in-blutil').checked },
+    baseline: { ...(cur.baseline || {}), source: q('#in-blsrc').value, shape: q('#in-blshape').value, mround: num('#in-blmround'), costDrift: q('#in-drift') ? Math.max(0, num('#in-drift', 3)) / 100 : (cur.baseline || {}).costDrift, growthPct, useUtilForecast: q('#in-blutil').checked },
     turnFees, corpRates,
     tieIncome: q('#in-tieinc').checked,
     tieNoi: q('#in-tienoi').checked,

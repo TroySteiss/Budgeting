@@ -2,7 +2,7 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-11-09 — reviewability pass (dropped lines, chip key, formula-version stamp, defaults-in-use card, export check), vacancy on a carry-over curve from the last actual month, prior-period collections capped at delinquency; loss to lease: market growth deepens every lease and a reset burns only the burnoff share (`ltlModel` growth); vacancy is an annual average shaped by lease expirations (`vacancyByMonth`); roster raises start in the cycle's effective month (editable on the Payroll tab); Δ% T12 column; annual budgets take wages from the Payroll tab by default (roster + raise entries, drafts included; `src/payroll-data.ts`, `inputs.wageSource`); 6310 corporate rate follows the budget year (2027 workbook rev2: $58.17/unit/yr + $513/mo), Minot sites are subjects with the role editable in Settings; editor view pass (quarterly % rows on totals, trend chart axis fitted to the data instead of zero, T3-annualized reference column after the T12 in the grid and the compare card, whole-dollar cell display); flat-fee utility billing (reimbursement income = last actual month × budgeted occupancy, `utilities.billing`), Enter on an assumption box moves to the next row; payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
+> Last updated: 2026-11-09 — saved formula sets (picked when a budget starts; GRKS rules are no longer a silent default), within-year cost drift on expense lines; reviewability pass (dropped lines, chip key, formula-version stamp, defaults-in-use card, export check), vacancy on a carry-over curve from the last actual month, prior-period collections capped at delinquency; loss to lease: market growth deepens every lease and a reset burns only the burnoff share (`ltlModel` growth); vacancy is an annual average shaped by lease expirations (`vacancyByMonth`); roster raises start in the cycle's effective month (editable on the Payroll tab); Δ% T12 column; annual budgets take wages from the Payroll tab by default (roster + raise entries, drafts included; `src/payroll-data.ts`, `inputs.wageSource`); 6310 corporate rate follows the budget year (2027 workbook rev2: $58.17/unit/yr + $513/mo), Minot sites are subjects with the role editable in Settings; editor view pass (quarterly % rows on totals, trend chart axis fitted to the data instead of zero, T3-annualized reference column after the T12 in the grid and the compare card, whole-dollar cell display); flat-fee utility billing (reimbursement income = last actual month × budgeted occupancy, `utilities.billing`), Enter on an assumption box moves to the next row; payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
 > Earlier: 2026-09-10 — actualized months (partial-month rule; section above Exports); 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
 > w/ per-unit basis + ND payroll model).
 
@@ -643,6 +643,49 @@ month. Guard: fewer than nine months with expirations (`VACANCY_MIN_EXP_MONTHS`)
 from??" 5036 = T12 ratio × net GPR, then each month is capped at that month's budgeted |5035|
 (only when 5035 carries dollars). Driver gains `capped: true, uncapped: <year at the ratio>`; the
 chip tooltip says so.
+
+## Saved formula sets — no silent GRKS default (Troy 2026-11-09)
+
+"We should not be using GRKS defaults. I need to be able to save all property formulas applied
+minus hard codes with a name. Instead of just picking something random, it should prompt to pick
+out a previous presave."
+
+- **What a set is** (`FormulaSet`, shared/annual.ts): per-GL rules — each non-overridden
+  history-based line's shape / increase factor / MROUND (`formulaSetFromBudget`; shapes the old
+  rule table could not express ride as `{ method: 'custom', shape }`), deliberate zero-outs
+  (`{ method: 'zero' }`) — plus the formula settings: category factors, cost drift, LTL mode and
+  renewal / burnoff %, vacancy curve weight, burden basis, wage source, fallback raise %.
+  **Left out (the hard codes):** hand-typed lines and totals, every dollar amount (GPR base, LTL
+  start, $ per move-in, corporate rates), GPR steps, the vacancy average, expirations.
+- **Storage**: `formula_sets` (migration 013; unique name, `source` = "clnd 2027"). Routes:
+  `GET/POST /formula-sets` (POST `{ name, budgetId, overwrite? }` derives the set server-side),
+  `DELETE /formula-sets/:id` (admin), `POST /budgets/:id/formula-set { formulaSet }`. `/state`
+  lists them (`formulaSets`).
+- **A budget carries a COPY**: `applyFormulaSet` writes `inputs.rules` + `inputs.rulesFrom
+  { id, name, at }` and clears the budget's own `baseline.glShape / glGrowth / glMround` (the set
+  replaces them); overrides and data inputs stay. Editing or deleting a set never moves a budget.
+  `buildLines` uses `inputs.rules ?? loadAnnualRules()` — the GRKS table is now ONLY the fallback
+  for budgets created before sets existed (the Defaults card flags them "none picked").
+- **Picking is required**: the New budget dialog (annual) has a "Formula set" select with no
+  default — saved sets, "Template defaults only" (`rules = {}`), or "GRKS 2026 draft (the old
+  default)" as an explicit choice; Create refuses until one is picked. `POST /budgets
+  { formulaSet }`.
+- **Editor**: More → "★ Save formulas as…" / "☆ Apply a saved formula set…" (one Undo reverses an
+  apply; admins can delete sets there).
+- Note: a GL that was DROPPED (<$1K) on the source budget carries no rule, so on the target it
+  falls to the built-in same-month default and is budgeted.
+
+## Within-year cost drift (Troy 2026-11-09)
+
+"Apply a very small gradual increase to expense items, as things will tend to get more expensive
+over the course of the year. Should not be massive, but should make a difference in
+distribution." `tiltMonths(months, drift, mult)`: a straight-line tilt so December runs `drift`
+above January, **year total unchanged** (cent fix on December; MROUND re-applied). Default
+`COST_DRIFT_DEFAULT` 3% (`inputs.baseline.costDrift`; 0 = off; Assumptions "Cost drift within
+the year %"). Applies to history-based (`baseline`) lines in categories 9, 11, 12, 13, 14; not
+to "last month" (contract-flat) lines, real estate taxes, payroll, corporate rates or the fee.
+Driver gains `drift`. The existing engine tests run with drift OFF (`baseInputs` in
+test/annual.test.ts) because they assert the template's / GRKS draft's own monthly cells.
 
 ## Reviewability pass (devil's advocate 2026-11-09, day-one fixes)
 

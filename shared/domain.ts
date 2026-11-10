@@ -100,6 +100,14 @@ export interface BudgetInputs {
   wagesFromRoster?: boolean;
   /** annual budgets: 'payroll' (default) = wages follow the Pay-rates tab's roster + raise entries whenever a cycle is effective in the budget year; 'manual' = never (payroll model / own trailing-12 x raise %) */
   wageSource?: 'payroll' | 'manual';
+  /** annual budgets: the per-GL formula rules this budget runs on — a COPY of the saved formula
+      set it was given (or {} for the template's built-in defaults). Absent = the old silent
+      default (the 2026 GRKS draft's rules), kept only for budgets created before sets existed. */
+  rules?: Record<string, any>;
+  /** which saved formula set `rules` came from, and when */
+  rulesFrom?: { id: number | string | null; name: string; at?: string };
+  /** sign-off on the defaults in use (who, when, a fingerprint of what they were) */
+  defaultsAck?: { by: string; at: string; hash: string } | null;
   /** annual budgets: how much of the vacancy average follows lease expirations month by month (1 = fully, the default; 0 = flat every month) */
   vacancyExpWeight?: number;
   /** which historical % of wages sizes every non-wage payroll line (taxes,
@@ -172,6 +180,8 @@ export interface BudgetInputs {
     glShape?: Record<string, BaselineShape>;
     /** per-GL MROUND override */
     glMround?: Record<string, number>;
+    /** within-year drift on history-based expense lines: December runs this much above January, year total unchanged (default 0.03; 0 = off) */
+    costDrift?: number;
     shape: BaselineShape;
     /** budget-wide MROUND (0 = each GL's foundation-rule multiple) */
     mround: number;
