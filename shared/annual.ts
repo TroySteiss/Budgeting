@@ -39,7 +39,7 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-09g';
+export const ENGINE_VERSION = '2026-11-09i';
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -104,9 +104,15 @@ export interface Trailing12 {
   dead: string[];
   /** months with operations in the window (12 when nothing is dead) */
   liveMonths: number;
+  /** the first month(s) of operations after an acquisition, LEFT OUT of the history like the dead months */
+  startup?: string[];
+  /** months 2-3 of operations still in the history — start-up noise is likely; review them */
+  early?: string[];
 }
+/** How many start-up months of a new acquisition are left out of its history by default. */
+export const STARTUP_EXCLUDE_DEFAULT = 1;
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-export function trailing12(stmts: (StmtData | null | undefined)[]): Trailing12 | null {
+export function trailing12(stmts: (StmtData | null | undefined)[], opts: { excludeStartup?: number } = {}): Trailing12 | null {
   const list = stmts.filter((s): s is StmtData => !!s?.rows?.length && !!s.monthCal?.length);
   if (!list.length) return null;
   // (year*12+month) → gl → value, first statement in the list wins
@@ -137,7 +143,7 @@ export function trailing12(stmts: (StmtData | null | undefined)[]): Trailing12 |
   if (last < 0) {
     // no dated columns at all: fall back to the preferred statement's own calendar
     const s = list[0];
-    return annualizeDead({ cal: stmtCalendar(s), lastMonth: stmtLastMonth(s), lastYear: 0, period: '', missing: [], dead: [], liveMonths: 12 }, 0);
+    return annualizeDead({ cal: stmtCalendar(s), lastMonth: stmtLastMonth(s), lastYear: 0, period: '', missing: [], dead: [], liveMonths: 12 }, 0, opts.excludeStartup);
   }
   const cal: Record<string, Months> = {};
   const missing: string[] = [];
@@ -150,7 +156,7 @@ export function trailing12(stmts: (StmtData | null | undefined)[]): Trailing12 |
   for (const gl of Object.keys(cal)) if (!cal[gl].some((v) => v)) delete cal[gl];
   const first = last - 11;
   const period = `${MON[((first % 12) + 12) % 12]} ${Math.floor(first / 12)}-${MON[last % 12]} ${Math.floor(last / 12)}`;
-  return annualizeDead({ cal, lastMonth: (last % 12) + 1, lastYear: Math.floor(last / 12), period, missing, dead: [], liveMonths: 12 }, first);
+  return annualizeDead({ cal, lastMonth: (last % 12) + 1, lastYear: Math.floor(last / 12), period, missing, dead: [], liveMonths: 12 }, first, opts.excludeStartup);
 }
 
 /** Troy (ECND, taken over Dec 2025): a window month with NO gross potential
@@ -158,28 +164,48 @@ export function trailing12(stmts: (StmtData | null | undefined)[]): Trailing12 |
     must not pull it. Each GL's dead months are filled with its average over the
     live months (so T12 totals are the live months annualized) and the months
     are named for the UI. Months nothing covers (`missing`) are left alone. */
-function annualizeDead(t: Trailing12, firstKey: number): Trailing12 {
+function annualizeDead(t: Trailing12, firstKey: number, excludeStartup = STARTUP_EXCLUDE_DEFAULT): Trailing12 {
   const gpr = t.cal['4994'];
   if (!gpr || !gpr.some((v) => v)) return t;
   const missingIdx = new Set(t.missing.map((s) => MON.indexOf(s.slice(0, 3))));
   const deadIdx: number[] = [];
   for (let m = 0; m < 12; m++) if (!gpr[m] && !missingIdx.has(m)) deadIdx.push(m);
   if (!deadIdx.length) return t;
-  const live = 12 - deadIdx.length - missingIdx.size;
-  if (live <= 0) return t;
-  for (const gl of Object.keys(t.cal)) {
-    const row = t.cal[gl];
-    const liveSum = row.reduce((a, v, m) => (deadIdx.includes(m) || missingIdx.has(m) ? a : a + v), 0);
-    const avg = r2(liveSum / live);
-    for (const m of deadIdx) row[m] = avg;
-  }
-  // name the dead months with their year inside the window
-  const dead = deadIdx.map((m) => {
+  const nameOf = (m: number): string => {
     let y = Math.floor(firstKey / 12);
     if (firstKey > 0) { for (let k = firstKey; k < firstKey + 12; k++) if (((k % 12) + 12) % 12 === m) { y = Math.floor(k / 12); break; } }
     return y ? `${MON[m]} ${y}` : MON[m];
-  });
-  return { ...t, dead, liveMonths: live, period: `${t.period} · ${live} mo annualized` };
+  };
+  /* START-UP MONTHS (Troy 2026-11-09: "for new acquisitions with only a partial year, we should
+     be excluding the first month, and being very careful about the second and potentially even
+     3rd month of ops"). When the window opens with pre-acquisition months, the live months in
+     calendar order are months 1, 2, 3… of operations. The first `excludeStartup` of them
+     (default 1: a partial month of rent, closing entries, catch-up bills) are LEFT OUT of the
+     history exactly like the dead months; the ones still inside months 2-3 are named in
+     `early` so the screen can say they are in and should be reviewed. At least two live months
+     are always kept. */
+  const startupIdx: number[] = [], earlyIdx: number[] = [];
+  if (firstKey > 0) {
+    const order = Array.from({ length: 12 }, (_, j) => (((firstKey + j) % 12) + 12) % 12);   // calendar index, oldest first
+    const firstLivePos = order.findIndex((m) => !deadIdx.includes(m) && !missingIdx.has(m));
+    const opensDead = firstLivePos > 0 && order.slice(0, firstLivePos).some((m) => deadIdx.includes(m));
+    if (opensDead) {
+      const ops = order.slice(firstLivePos).filter((m) => !deadIdx.includes(m) && !missingIdx.has(m));   // ops months 1..n
+      const n = Math.max(0, Math.min(Math.round(excludeStartup) || 0, 3, ops.length - 2));
+      startupIdx.push(...ops.slice(0, n));
+      earlyIdx.push(...ops.slice(n, 3));                                 // months 2-3 of operations that remain in
+    }
+  }
+  const out = new Set([...deadIdx, ...startupIdx]);                       // months filled with the average
+  const live = 12 - out.size - missingIdx.size;
+  if (live <= 0) return t;
+  for (const gl of Object.keys(t.cal)) {
+    const row = t.cal[gl];
+    const liveSum = row.reduce((x, v, m) => (out.has(m) || missingIdx.has(m) ? x : x + v), 0);
+    const avg = r2(liveSum / live);
+    for (const m of out) row[m] = avg;
+  }
+  return { ...t, dead: deadIdx.map(nameOf), startup: startupIdx.map(nameOf), early: earlyIdx.map(nameOf), liveMonths: live, period: `${t.period} · ${live} mo annualized` };
 }
 
 /** "N months annualized" off a trailing-12 calendar: the last n months ending at lastMonth × 12/n. */
@@ -620,6 +646,31 @@ export interface AnnualSources {
   charges?: Record<string, number> | null;
   /** lowercase Yardi code — site defaults (FLAT_FEE_PROPERTIES) key off it */
   propertyCode?: string | null;
+  /** when ownership began ('YYYY-MM': the Yardi template's acquisition date, else the start of
+      the property's acquisition budget) and the first-year management fee % that budget ran on */
+  acquisition?: { start?: string | null; firstYearPct?: number | null } | null;
+}
+
+/** FIRST-YEAR MANAGEMENT FEE (Troy 2026-11-09: "If Management fee is 3% for first year, it
+    should be 3% for first 12 months. It should not use 4% flat from the start."). The first
+    twelve months of ownership earn the first-year rate, the months after the regular rate.
+    The fee bills a month in arrears, so the rate follows the month the INCOME was earned: the
+    fee posted the month after ownership month 12 is still at the first-year rate.
+    Returns each budget month's rate, and how many of them are first-year. */
+export function mgmtFeeRates(year: number, startMonth: number, regular: number, first?: { pct?: number | null; start?: string | null } | null): { rates: Months; firstMonths: number; through: string | null } {
+  const rates = Array(12).fill(regular) as Months;
+  const m = /^(\d{4})-(\d{1,2})/.exec(String(first?.start || ''));
+  const pct = first?.pct;
+  if (!m || pct == null || !(pct > 0) || Math.abs(pct - regular) < 1e-9) return { rates, firstMonths: 0, through: null };
+  const acq = Number(m[1]) * 12 + (Number(m[2]) - 1);            // first month of ownership
+  const lastFirst = acq + 11;                                    // 12th month of ownership
+  let n = 0;
+  for (let i = 0; i < 12; i++) {
+    const incomeMonth = year * 12 + (startMonth - 1) + i - 1;     // the month this fee is billed on
+    if (incomeMonth >= acq && incomeMonth <= lastFirst) { rates[i] = pct; n++; }
+  }
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return { rates, firstMonths: n, through: `${MON[lastFirst % 12]} ${Math.floor(lastFirst / 12)}` };
 }
 
 export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs, src: AnnualSources): BudgetLine[] {
@@ -1068,7 +1119,11 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const budIncome = src.budget && Object.keys(src.budget).length ? rollup(new Map(Object.entries(src.budget) as [string, Months][])).get('5500') : null;
     const before = budIncome && budIncome[prevCal] ? budIncome[prevCal] : totalIncome[0];
     const basis = totalIncome.map((v, i) => (i === 0 ? before : totalIncome[i - 1])) as Months;
-    mk('6112', basis.map((v) => Math.round(v * feePct)) as Months, { method: 'mgmtPct', pct: feePct, priorMonth: true });
+    // first twelve months of ownership at the first-year rate (typed on the budget, else the
+    // property's acquisition budget), the regular rate after
+    const fy = { pct: inputs.mgmtFirstYear?.pct !== undefined ? inputs.mgmtFirstYear.pct : src.acquisition?.firstYearPct, start: inputs.mgmtFirstYear?.start || src.acquisition?.start };
+    const fr = mgmtFeeRates(inputs.year, startMonth, feePct, fy);
+    mk('6112', basis.map((v, i) => Math.round(v * fr.rates[i])) as Months, { method: 'mgmtPct', pct: feePct, priorMonth: true, ...(fr.firstMonths ? { firstYear: { pct: fy.pct, months: fr.firstMonths, through: fr.through } } : {}) } as any);
   }
   else if (coaByCode.has('6112')) baseline(coaByCode.get('6112')!);
 

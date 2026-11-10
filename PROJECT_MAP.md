@@ -2,7 +2,7 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-11-09 — saved formula sets (picked when a budget starts; GRKS rules are no longer a silent default), within-year cost drift on expense lines; reviewability pass (dropped lines, chip key, formula-version stamp, defaults-in-use card, export check), vacancy on a carry-over curve from the last actual month, prior-period collections capped at delinquency; loss to lease: market growth deepens every lease and a reset burns only the burnoff share (`ltlModel` growth); vacancy is an annual average shaped by lease expirations (`vacancyByMonth`); roster raises start in the cycle's effective month (editable on the Payroll tab); Δ% T12 column; annual budgets take wages from the Payroll tab by default (roster + raise entries, drafts included; `src/payroll-data.ts`, `inputs.wageSource`); 6310 corporate rate follows the budget year (2027 workbook rev2: $58.17/unit/yr + $513/mo), Minot sites are subjects with the role editable in Settings; editor view pass (quarterly % rows on totals, trend chart axis fitted to the data instead of zero, T3-annualized reference column after the T12 in the grid and the compare card, whole-dollar cell display); flat-fee utility billing (reimbursement income = last actual month × budgeted occupancy, `utilities.billing`), Enter on an assumption box moves to the next row; payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
+> Last updated: 2026-11-09 — first-year management fee for the first 12 months of ownership, start-up months of a new acquisition left out of its history; saved formula sets (picked when a budget starts; GRKS rules are no longer a silent default), within-year cost drift on expense lines; reviewability pass (dropped lines, chip key, formula-version stamp, defaults-in-use card, export check), vacancy on a carry-over curve from the last actual month, prior-period collections capped at delinquency; loss to lease: market growth deepens every lease and a reset burns only the burnoff share (`ltlModel` growth); vacancy is an annual average shaped by lease expirations (`vacancyByMonth`); roster raises start in the cycle's effective month (editable on the Payroll tab); Δ% T12 column; annual budgets take wages from the Payroll tab by default (roster + raise entries, drafts included; `src/payroll-data.ts`, `inputs.wageSource`); 6310 corporate rate follows the budget year (2027 workbook rev2: $58.17/unit/yr + $513/mo), Minot sites are subjects with the role editable in Settings; editor view pass (quarterly % rows on totals, trend chart axis fitted to the data instead of zero, T3-annualized reference column after the T12 in the grid and the compare card, whole-dollar cell display); flat-fee utility billing (reimbursement income = last actual month × budgeted occupancy, `utilities.billing`), Enter on an assumption box moves to the next row; payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
 > Earlier: 2026-09-10 — actualized months (partial-month rule; section above Exports); 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
 > w/ per-unit basis + ND payroll model).
 
@@ -646,6 +646,33 @@ month's delinquency. Rate = trailing-12 collections ÷ trailing-12 delinquency, 
 (`inputs.collectPct` when typed — the row's box). Driver `{ method: 'collections', pct, startDq,
 capped?, t12Rate? }`, chip %PRIOR DQ. With no delinquency budgeted it falls back to the old T12
 ratio to net GPR (`pctGpr`). Growth ties no longer scale 5036 directly; it follows 5035.
+
+## New acquisitions in annual budgets: first-year fee, start-up months (Troy 2026-11-09)
+
+- **First-year management fee** — "If Management fee is 3% for first year, it should be 3% for
+  first 12 months. It should not use 4% flat from the start." `mgmtFeeRates(year, startMonth,
+  regular, { pct, start })` (shared/annual.ts): the first 12 months of ownership earn the
+  first-year rate, later months the regular `inputs.mgmtPct`. The fee bills in arrears, so the
+  rate follows the INCOME month (ownership from Aug-26 → in a 2027 budget the fees posted Jan–Aug
+  are first-year, Sep on regular). Sources: `lb.acquisition { start, firstYearPct }` — start =
+  the Yardi template's `acquisitionDate`, else the property's acquisition budget (year +
+  startMonth); firstYearPct = that acquisition budget's `mgmtPct` (the UW Y1 rate). Typed on the
+  budget: `inputs.mgmtFirstYear { pct, start }` (Assumptions "First-year fee %" / "Ownership
+  began"; only stored when it differs from what is on file; pct null = none). A property with no
+  acquisition budget has no first-year rate until one is typed. Driver gains `firstYear { pct,
+  months, through }`, chip %INC·Y1.
+- **Start-up months** — "for new acquisitions with only a partial year, we should be excluding
+  the first month, and being very careful about the second and potentially even 3rd month of
+  ops." `trailing12(stmts, { excludeStartup })` → `annualizeDead`: when the window opens with
+  pre-acquisition (no-GPR) months, the first `excludeStartup` months of operations (default
+  `STARTUP_EXCLUDE_DEFAULT` = 1; `inputs.startupExclude` 0–3; at least two live months are always
+  kept) are left out exactly like the dead months — filled with each GL's average over the
+  remaining months. `Trailing12.startup` names them; `Trailing12.early` names months 2–3 of
+  operations that are still IN the history. Editor: badges "start-up Aug 2026 left out" and
+  "⚠ review Sep 2026, Oct 2026 (month 2-3 of operations)"; Assumptions "Start-up months left out
+  of the history" (shown only for a new acquisition); the defaults list and the export check
+  carry the review warning. Months 2–3 are flagged, not altered. `PUT /budgets/:id` now saves
+  the inputs and reloads before building, because this input changes what is loaded.
 
 ## Saved formula sets — no silent GRKS default (Troy 2026-11-09)
 

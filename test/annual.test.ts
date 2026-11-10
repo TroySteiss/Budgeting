@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
+  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, mgmtFeeRates, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
   refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, type TemplateData, type AnnualSources,
 } from '../shared/annual.js';
 import { sum, zero12, rollup, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
@@ -367,7 +367,7 @@ describe('stmt helpers', () => {
         { gl: '6604', name: 'Electric', months: [0, 500000, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100], total: 501000 },   // Nov: a closing entry, not operations
       ],
     };
-    const t = trailing12([ecnd])!;
+    const t = trailing12([ecnd], { excludeStartup: 0 })!;      // the dead-month rule on its own (start-up months tested below)
     expect(t.dead).toEqual(['Oct 2025', 'Nov 2025']);
     expect(t.liveMonths).toBe(10);
     expect(t.period).toBe('Oct 2025-Sep 2026 · 10 mo annualized');
@@ -375,6 +375,53 @@ describe('stmt helpers', () => {
     expect(t.cal['6604'][10]).toBe(100);                                                 // the closing entry is gone
     expect(sum(t.cal['6604'])).toBe(1200);                                               // 10 live months annualized
     expect(sum(t.cal['4994'])).toBe(12000);
+  });
+});
+
+describe('new acquisition start-up months (Troy 2026-11-09): the first month is left out; months 2-3 are flagged', () => {
+  const stmt = (gprs: number[], elec: number[]) => ({
+    monthCal: [11, 12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], monthYear: [2025, 2025, 2026, 2026, 2026, 2026, 2026, 2026, 2026, 2026, 2026, 2026],
+    rows: [{ gl: '4994', name: 'GPR', months: gprs, total: 0 }, { gl: '6604', name: 'Electric', months: elec, total: 0 }],
+  });
+  it('acquired mid-August: August (a partial month) is left out; September and October are the whole history and are flagged', () => {
+    //                      Nov Dec Jan Feb Mar Apr May Jun Jul  Aug   Sep   Oct
+    const s3 = stmt([0, 0, 0, 0, 0, 0, 0, 0, 0, 400, 1000, 1000], [0, 0, 0, 0, 0, 0, 0, 0, 0, 9000, 100, 120]);
+    const t = trailing12([s3])!;
+    expect(t.startup).toEqual(['Aug 2026']);
+    expect(t.early).toEqual(['Sep 2026', 'Oct 2026']);
+    expect(t.liveMonths).toBe(2);
+    expect(t.period).toContain('2 mo annualized');
+    // the partial rent month and the closing-month electric bill are gone: every month is the Sep/Oct average
+    expect(t.cal['4994'].every((v) => v === 1000)).toBe(true);
+    expect(sum(t.cal['6604'])).toBe(12 * 110);
+    // the old behaviour (nothing left out) would have averaged the 9,000 in
+    expect(sum(trailing12([s3], { excludeStartup: 0 })!.cal['6604'])).toBeGreaterThan(30000);
+  });
+  it('acquired last December: December is left out, January and February are flagged, the rest is trusted', () => {
+    const s11 = stmt([0, 500, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000], [0, 7000, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]);
+    const t = trailing12([s11])!;
+    expect(t.dead).toEqual(['Nov 2025']);
+    expect(t.startup).toEqual(['Dec 2025']);
+    expect(t.early).toEqual(['Jan 2026', 'Feb 2026']);
+    expect(t.liveMonths).toBe(10);
+    expect(sum(t.cal['6604'])).toBe(1200);
+    // leaving two or three months out is a setting; at least two months always remain
+    expect(trailing12([s11], { excludeStartup: 3 })!.startup).toEqual(['Dec 2025', 'Jan 2026', 'Feb 2026']);
+    expect(trailing12([s11], { excludeStartup: 3 })!.early).toEqual([]);
+  });
+  it('a property with a full year of operations is untouched', () => {
+    const full = stmt(Array(12).fill(1000), Array(12).fill(100));
+    const t = trailing12([full])!;
+    expect(t.startup || []).toEqual([]);
+    expect(t.dead).toEqual([]);
+    expect(t.liveMonths).toBe(12);
+  });
+  it('only two months of operations: nothing more can be left out', () => {
+    const s2 = stmt([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 600, 1000], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 50, 100]);
+    const t = trailing12([s2])!;
+    expect(t.startup).toEqual([]);
+    expect(t.early).toEqual(['Sep 2026', 'Oct 2026']);
+    expect(t.liveMonths).toBe(2);
   });
 });
 
@@ -952,5 +999,40 @@ describe('saved formula sets (Troy 2026-11-09): the recipe of a budget, without 
     expect((L(ls, '6920').driver as any).method).toBe('zero');
     const tpl = applyFormulaSet(base, { rules: {}, settings: {} }, { id: null, name: 'Template defaults' });
     expect(tpl.rules).toEqual({});
+  });
+});
+
+describe('first-year management fee (Troy 2026-11-09): 3% for the first 12 months of ownership, then the regular %', () => {
+  it('mgmtFeeRates: the rate follows the month the income was earned (the fee bills in arrears)', () => {
+    // ownership began Aug 2026 -> first 12 months Aug-26..Jul-27. In a 2027 budget the fees posted
+    // Jan..Aug are on Dec-26..Jul-27 income (first year); Sep onward is the regular rate.
+    const r = mgmtFeeRates(2027, 1, 0.04, { pct: 0.03, start: '2026-08' });
+    expect(r.rates).toEqual([0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.04, 0.04, 0.04, 0.04]);
+    expect(r.firstMonths).toBe(8);
+    expect(r.through).toBe('Jul 2027');
+    // ownership more than a year back, no first-year %, or the same % -> the regular rate all year
+    expect(mgmtFeeRates(2027, 1, 0.04, { pct: 0.03, start: '2025-12' }).rates.every((v) => v === 0.04)).toBe(true);
+    expect(mgmtFeeRates(2027, 1, 0.04, { pct: null, start: '2026-08' }).firstMonths).toBe(0);
+    expect(mgmtFeeRates(2027, 1, 0.04, null).firstMonths).toBe(0);
+    // bought in January of the budget year: January's fee is on December (before ownership) -> regular; Feb..Dec first year
+    expect(mgmtFeeRates(2027, 1, 0.04, { pct: 0.03, start: '2027-01' }).rates).toEqual([0.04, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03]);
+  });
+  it('engine: 6112 uses 3% while the income month is inside the first year, 4% after; a typed first-year wins; none typed = flat', () => {
+    const actual = synthetic();
+    const inputs = { ...baseInputs(2027, 10, actual, null, coaList, null, 10), mgmtPct: 0.04 };
+    const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
+    const incomeOf = (ls: BudgetLine[]) => rollup(new Map(ls.map((l) => [l.gl_code, l.months]))).get('5500')!;
+    const a = generateAnnualLines(coaList, inputs, { ...src, acquisition: { start: '2026-08', firstYearPct: 0.03 } });
+    const inc = incomeOf(a), fee = L(a, '6112');
+    expect(fee.months[1]).toBe(Math.round(inc[0] * 0.03));           // Feb fee on Jan income: first year
+    expect(fee.months[7]).toBe(Math.round(inc[6] * 0.03));           // Aug fee on Jul income: still first year
+    expect(fee.months[8]).toBe(Math.round(inc[7] * 0.04));           // Sep fee on Aug income: regular
+    expect((fee.driver as any).firstYear).toMatchObject({ pct: 0.03, months: 8, through: 'Jul 2027' });
+    const flat = L(generateAnnualLines(coaList, inputs, src), '6112');
+    expect(flat.months[1]).toBe(Math.round(inc[0] * 0.04));
+    expect((flat.driver as any).firstYear).toBeUndefined();
+    // typed on the budget: no first-year rate even though one is on file
+    const off = L(generateAnnualLines(coaList, { ...inputs, mgmtFirstYear: { pct: null, start: '2026-08' } }, { ...src, acquisition: { start: '2026-08', firstYearPct: 0.03 } }), '6112');
+    expect((off.driver as any).firstYear).toBeUndefined();
   });
 });

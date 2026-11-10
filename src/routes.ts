@@ -419,12 +419,14 @@ interface LoadedBudget {
   /* ---- annual (non-acquisition) mode ---- */
   annual: boolean;
   stmtActual: StmtData | null; stmtBudget: StmtData | null; template: TemplateData | null;
-  actualCal: Record<string, Months> | null; budgetCal: Record<string, Months> | null; lastMonth: number; t12Missing: string[]; t12Dead: string[]; t12Live: number;
+  actualCal: Record<string, Months> | null; budgetCal: Record<string, Months> | null; lastMonth: number; t12Missing: string[]; t12Dead: string[]; t12Startup: string[]; t12Early: string[]; t12Live: number;
   /** the tie-out reference (trailing-12 / CY budget / typed targets) — the annual budget's "UW" */
   ref: UwSnapshotData | null; refLabel: string;
   refs: RefCol[];
   /** the Pay-rates roster wages for this property + year (annual budgets) — the default wage source unless inputs.wageSource is 'manual' */
   rosterLink: RosterLink | null;
+  /** annual: when ownership began + the acquisition budget's first-year management fee % */
+  acquisition: { start: string | null; firstYearPct: number | null } | null;
   /** the latest Payroll Budget Workbook sheet for this property + year (stmt kind 'payroll_template') — a reference, never an input */
   payrollTpl: { id: number; label: string; period: string; total: number; cal: Record<string, Months> } | null;
 }
@@ -521,13 +523,26 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   let stmtActual: StmtData | null = null, stmtBudget: StmtData | null = null, template: TemplateData | null = null;
   let actualCal: Record<string, Months> | null = null, budgetCal: Record<string, Months> | null = null;
   let lastMonth = 10, ref: UwSnapshotData | null = null, refLabel = 'UW';
-  let t12Missing: string[] = [], t12Dead: string[] = [], t12Live = 12;
+  let t12Missing: string[] = [], t12Dead: string[] = [], t12Live = 12, t12Startup: string[] = [], t12Early: string[] = [];
   let payrollTpl: LoadedBudget['payrollTpl'] = null;
   // the default wage source for an annual budget: the Pay-rates tab's roster + raise entries
   // (Troy 2026-11-09). Aggregates by wage GL only; null = no cycle for the year / nobody booked here.
   // Always loaded for an annual budget; buildLines decides from the inputs it is GIVEN whether the
   // budget follows it (inputs.wageSource), so switching the source in one save works both ways.
   const rosterLink = annual ? await rosterWagesFor(String(budget.property_code), Number(budget.year)) : null;
+  // when ownership began and the first-year management fee: the Yardi template's acquisition
+  // date wins for the date; the rate comes from the property's own acquisition budget (UW Y1)
+  let acquisition: { start: string | null; firstYearPct: number | null } | null = null;
+  if (annual) {
+    const acqB = (await query(
+      `select year, inputs->>'startMonth' as sm, inputs->>'mgmtPct' as pct from budgets
+        where property_code=$1 and budget_type <> 'annual' and coalesce(inputs->>'mode','') <> 'annual' order by year desc, updated_at desc limit 1`, [budget.property_code]
+    )).rows[0];
+    const tplAcq = budget.template_id ? (await query(`select data->>'acquisitionDate' as d from template_snapshots where id=$1`, [budget.template_id])).rows[0]?.d : null;
+    const start = tplAcq || (acqB ? `${acqB.year}-${String(Number(acqB.sm) || 1).padStart(2, '0')}` : null);
+    const pct = acqB && Number(acqB.pct) > 0 ? Number(acqB.pct) : null;
+    if (start || pct != null) acquisition = { start, firstYearPct: pct };
+  }
   const refs: RefCol[] = [];
   if (annual) {
     const stmtRows = await query('select id, kind, period, data from stmt_snapshots where id = any($1)', [[budget.py_stmt_id, budget.cy_budget_stmt_id].filter(Boolean)]);
@@ -538,10 +553,12 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     // the trailing-12 window is composed across every actual statement on file
     // for the property (the linked one wins): a Jan–Dec export in November
     // carries empty Nov–Dec, and those come from last year's statement
-    const t12 = stmtActual ? await composeT12(budget.property_code, budget.py_stmt_id, stmtActual) : null;
+    const t12 = stmtActual ? await composeT12(budget.property_code, budget.py_stmt_id, stmtActual, budget.inputs?.startupExclude) : null;
     actualCal = t12?.cal || null;
     t12Missing = t12?.missing || [];
     t12Dead = t12?.dead || [];
+    t12Startup = t12?.startup || [];
+    t12Early = t12?.early || [];
     t12Live = t12?.liveMonths || 12;
     budgetCal = stmtBudget ? stmtCalendar(stmtBudget) : null;
     lastMonth = t12 ? t12.lastMonth : (template?.lastActual?.month || 10);
@@ -594,8 +611,8 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
       }));
     }
   }
-  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, savePoints, payrollTpl, rosterLink,
-           annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, ref, refLabel, refs };
+  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, savePoints, payrollTpl, rosterLink, acquisition,
+           annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, ref, refLabel, refs };
 }
 
 export async function saveLines(budgetId: number, lines: BudgetLine[], fullBuild = false): Promise<void> {
@@ -672,11 +689,16 @@ function budgetView(lb: LoadedBudget) {
     flatFeeSite: lb.annual ? FLAT_FEE_PROPERTIES.has(String(lb.budget.property_code || '').toLowerCase()) : false,
     t12Missing: lb.annual ? lb.t12Missing : [],
     t12Dead: lb.annual ? lb.t12Dead : [],
+    // new acquisition: start-up month(s) left out of the history, and months 2-3 of operations still in it
+    t12Startup: lb.annual ? lb.t12Startup : [],
+    t12Early: lb.annual ? lb.t12Early : [],
     t12Live: lb.annual ? lb.t12Live : 12,
     compWeights: lb.comps?.byGl || null,
     compUnits: lb.comps?.units || null,
     compShapes: lb.comps?.glShapes || null,
     payrollWages: lb.payrollWages,
+    // ownership start + first-year management fee % on file (annual) — the Assumptions defaults
+    acquisition: lb.acquisition,
     // where the wages come from: the Pay-rates link (cycle, draft / finalized by region) or null
     rosterLink: lb.rosterLink ? { label: lb.rosterLink.label, effective: lb.rosterLink.effective, draft: lb.rosterLink.draft, regions: lb.rosterLink.regions, wages: lb.rosterLink.wages } : null,
     leaseCount: lb.leases?.length || 0,
@@ -847,7 +869,7 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   let lines: BudgetLine[];
   if (lb.annual) {
     // ANNUAL: the property's own statements + the Yardi template rules (shared/annual.ts)
-    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: (inputs.rules as any) ?? loadAnnualRules(), comps: lb.comps, payrollWages: wages, wagesLive: live ? { label: live.label, effective: live.effective, draft: live.draft, monthly: live.monthly as Record<string, Months> } : null, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code };
+    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: (inputs.rules as any) ?? loadAnnualRules(), comps: lb.comps, payrollWages: wages, wagesLive: live ? { label: live.label, effective: live.effective, draft: live.draft, monthly: live.monthly as Record<string, Months> } : null, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code, acquisition: lb.acquisition };
     lines = existing ? regenerateAnnual(existing, lb.coa, inputs, src) : generateAnnualLines(lb.coa, inputs, src);
   } else {
     lines = existing
@@ -867,9 +889,9 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
 }
 
 /** The property's trailing-12 window across all of its actual statements, the linked one first. */
-async function composeT12(propertyCode: string, preferredId: number | null, preferred: StmtData) {
+async function composeT12(propertyCode: string, preferredId: number | null, preferred: StmtData, excludeStartup?: number) {
   const others = (await query(`select id, data from stmt_snapshots where property_code=$1 and kind='actual' and id <> coalesce($2, -1) order by created_at desc`, [propertyCode, preferredId])).rows;
-  return trailing12([preferred, ...others.map((r: any) => r.data as StmtData)]);
+  return trailing12([preferred, ...others.map((r: any) => r.data as StmtData)], excludeStartup != null ? { excludeStartup: Number(excludeStartup) } : {});
 }
 
 /** The actuals + budget statements parsed out of a Yardi template's PriorFinancials (same upload). */
@@ -992,10 +1014,13 @@ router.put('/budgets/:id', h(async (req, res) => {
     logChange(req.session.username || '', 'relink budget snapshots', { id });
   }
   if (inputs) {
-    const lb2 = (await loadBudget(id))!;   // reload — snapshots may have been relinked above
-    const merged: BudgetInputs = { ...lb2.budget.inputs, ...inputs };
-    const built = buildLines(lb2, merged, lb2.lines);
+    const lb1 = (await loadBudget(id))!;   // reload — snapshots may have been relinked above
+    const merged: BudgetInputs = { ...lb1.budget.inputs, ...inputs };
+    // save the inputs FIRST and load again: some inputs change what is loaded (the start-up
+    // months left out of the trailing-12), so the build must see the data as those inputs give it
     await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(merged)]);
+    const lb2 = (await loadBudget(id))!;
+    const built = buildLines(lb2, merged, lb2.lines);
     await saveLines(id, built.lines, true);
     logChange(req.session.username || '', 'update budget inputs', { id });
   }

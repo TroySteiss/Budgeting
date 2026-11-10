@@ -101,6 +101,13 @@ export interface BudgetInputs {
   wagesFromRoster?: boolean;
   /** annual budgets: 'payroll' (default) = wages follow the Pay-rates tab's roster + raise entries whenever a cycle is effective in the budget year; 'manual' = never (payroll model / own trailing-12 x raise %) */
   wageSource?: 'payroll' | 'manual';
+  /** annual, new acquisitions: how many start-up months of operations are left out of the
+      trailing-12 history (default 1 — the first month; 0-3) */
+  startupExclude?: number;
+  /** annual: the first-year management fee — `pct` for the first 12 months of ownership starting
+      `start` ('YYYY-MM'). Unset = the property's acquisition budget / the template's acquisition
+      date; pct null or 0 = no first-year rate. */
+  mgmtFirstYear?: { pct?: number | null; start?: string | null };
   /** annual: share of the previous month's delinquency (5035) collected as prior-period collections (5036); unset = the trailing-12 rate, capped at 100% */
   collectPct?: number;
   /** annual budgets: the per-GL formula rules this budget runs on — a COPY of the saved formula
