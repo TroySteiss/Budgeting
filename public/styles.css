@@ -420,3 +420,8 @@ td.m.drv-drop input { color: var(--dim); }
 
 #defaults-dlg { max-width: 620px; padding: 0 14px 12px; }
 #defaults-dlg .card.defaults { border: none; box-shadow: none; padding: 12px 0 0; margin: 0; }
+
+/* section increase % on a section header row */
+.secpct { margin-left: 14px; font-weight: 500; font-size: 11.5px; color: var(--dim); cursor: default; white-space: nowrap; }
+.secpct-in { width: 46px; text-align: right; font-size: 11.5px; padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px; background: var(--input); color: var(--ink); }
+.secpct-in:focus { border-color: var(--accent); outline: none; }

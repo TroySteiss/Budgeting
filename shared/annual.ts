@@ -39,7 +39,7 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-09j';
+export const ENGINE_VERSION = '2026-11-10a';
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -615,7 +615,7 @@ export function applyFormulaSet(inputs: BudgetInputs, set: FormulaSet, from: { i
     ...inputs,
     rules: { ...(set.rules || {}) },
     rulesFrom: { id: from.id, name: from.name, at: new Date().toISOString() },
-    baseline: { ...DEFAULT_BASELINE, ...(inputs.baseline || {}), ...clean(st.baseline), glShape: {}, glGrowth: {}, glMround: {} } as any,
+    baseline: { ...DEFAULT_BASELINE, ...(inputs.baseline || {}), ...clean(st.baseline), glShape: {}, glGrowth: {}, glMround: {}, secGrowth: {} } as any,
     ltl: { ...(inputs.ltl || ({} as any)), ...clean(st.ltl) },
     ...(st.vacancyExpWeight != null ? { vacancyExpWeight: st.vacancyExpWeight } : {}),
     ...(st.burdenBasis ? { burdenBasis: st.burdenBasis } : {}),
@@ -703,8 +703,14 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       move the whole category, or the Assumptions boxes are inert — the GRKS factors
       used to outrank them) → the GL's foundation rule → the template's per-GL %
       → the user's "everything else" → the template's category defaults. */
+  // SECTION % (Troy 2026-11-10: "put an increase % into the column subcategory and have it flow
+  // through… Should not overwrite overwritten formulas"): `baseline.secGrowth[section]`, typed on
+  // a section header in the grid, is the increase for every history-based line of that
+  // subsection (admin, utilities, in-house maintenance, exterior / CAM, contract services…). It
+  // sits UNDER a % typed on the row itself and never touches a hand-typed line; it outranks the
+  // category % and the formula set's own factor.
   const pctFor = (a: CoaAccount): number =>
-    bl.glGrowth?.[a.code] ?? userPct[a.pcode || ''] ?? ruleOf(a.code)?.factor ?? TEMPLATE_GL_PCT[a.code] ?? userPct['*'] ?? TEMPLATE_CAT_PCT[a.pcode || ''] ?? TEMPLATE_CAT_PCT['*'] ?? 0;
+    bl.glGrowth?.[a.code] ?? bl.secGrowth?.[a.section || ''] ?? userPct[a.pcode || ''] ?? ruleOf(a.code)?.factor ?? TEMPLATE_GL_PCT[a.code] ?? userPct['*'] ?? TEMPLATE_CAT_PCT[a.pcode || ''] ?? TEMPLATE_CAT_PCT['*'] ?? 0;
   const isSet = (gl: string): boolean => (lines.get(gl)?.driver as any)?.method !== 'manual';
   /** statement line × factor on a shape; false when the property has no history on the GL.
       Precedence: the budget's own per-GL overrides → the GL's foundation rule

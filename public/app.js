@@ -1094,6 +1094,24 @@ function renderEditor(el) {
   document.getElementById('recalc').addEventListener('click', async () => { pushUndo(); S.bv = await POST(`/budgets/${b.id}/recalc`); render(); });
   { const sr = document.getElementById('stale-recalc'); if (sr) sr.addEventListener('click', async () => { pushUndo(); S.bv = await POST(`/budgets/${b.id}/recalc`); render(); }); }
   { const tk = document.getElementById('tag-key'); if (tk) tk.addEventListener('click', openTagKey); }
+  // section increase %: stays out of the header row's collapse click; Enter / leaving the box applies
+  el.querySelectorAll('input.secpct-in').forEach((box) => {
+    box.parentElement.addEventListener('click', (e) => e.stopPropagation());
+    box.addEventListener('focus', () => box.select());
+    box.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); box.blur(); } });
+    box.addEventListener('change', async () => {
+      const bl = (S.bv.budget.inputs || {}).baseline || {};
+      const secGrowth = { ...(bl.secGrowth || {}) };
+      const raw = String(box.value || '').trim();
+      const v = parseFloat(raw.replace(/[%,]/g, ''));
+      if (raw === '') delete secGrowth[box.dataset.secpct];
+      else if (Number.isFinite(v)) secGrowth[box.dataset.secpct] = v / 100;
+      else { render(); return; }
+      pushUndo();
+      S.bv = await PUT(`/budgets/${b.id}`, { inputs: { baseline: { ...bl, secGrowth } } });
+      render();
+    });
+  });
   { const dop = document.getElementById('dropped-open'); if (dop) dop.addEventListener('click', () => openDroppedDialog(b)); }
   { const dfo = document.getElementById('defaults-open'); if (dfo) dfo.addEventListener('click', () => openDefaultsDialog(b)); }
   document.getElementById('undo-btn').addEventListener('click', () => doUndo(b.id));
@@ -1452,7 +1470,7 @@ function gridHtml(bv, totals) {
     if (a.kind === 'header') {
       secCollapsed = S.gridCollapsed.has(a.code);
       rows.push(`<tr class="header${sp ? ' sp' : ''}" data-sec="${a.code}" style="cursor:pointer" title="Click to condense / expand this section — stays condensed until you reopen it">
-        <td class="code">${a.code}</td><td class="name" colspan="${span - 1}">${secCollapsed ? '▸' : '▾'} ${esc(a.name)}${secCollapsed ? ' <span class="badge">condensed — totals still shown</span>' : ''}</td></tr>`);
+        <td class="code">${a.code}</td><td class="name" colspan="${span - 1}">${secCollapsed ? '▸' : '▾'} ${esc(a.name)}${secCollapsed ? ' <span class="badge">condensed — totals still shown</span>' : ''}${secPctBoxHtml(bv, a, linesByGl)}</td></tr>`);
       continue;
     }
     if (a.kind === 'total') {
@@ -1931,6 +1949,27 @@ function openApplyFormulaSet(b) {
   dlg.showModal();
 }
 
+/* ---- section increase % (Troy 2026-11-10): one box on a section header sets the increase for
+   every history-based line under it. A row with its own % and any hand-typed line keep theirs. ---- */
+const SEC_PCT_SECTIONS = new Set(['other_income', 'fixed_admin', 'admin', 'corporate_events', 'marketing', 'utilities', 'in_house_maint', 'exterior_cam', 'contract_services', 'rehab_replacement']);
+function secPctBoxHtml(bv, hdr, linesByGl) {
+  if (!bv.annual || !SEC_PCT_SECTIONS.has(hdr.section)) return '';
+  const bl = (bv.budget.inputs || {}).baseline || {};
+  const own = bl.glGrowth || {}, shaped = bl.glShape || {};
+  let follow = 0, keep = 0;
+  for (const a of S.state.coa) {
+    if (a.kind !== 'detail' || a.section !== hdr.section) continue;
+    const l = linesByGl.get(a.code);
+    if (!l || !l.driver) continue;
+    if (l.override) { if (l.months.some((v) => v)) keep++; continue; }
+    if (l.driver.method !== 'baseline') { if (l.months.some((v) => v)) keep++; continue; }   // corporate rate, fee, suggestion… their own formula
+    if (own[a.code] != null) keep++; else follow++;
+  }
+  if (!follow && !keep) return '';
+  const cur = (bl.secGrowth || {})[hdr.section];
+  return ` <span class="secpct" title="Increase % for every history-based line in ${esc(hdr.name)}: ${follow} line${follow === 1 ? '' : 's'} follow it${keep ? `; ${keep} keep their own (a % typed on the row, a hand-typed line, or a line with its own formula)` : ''}. Blank = each line's usual factor. Enter applies and recalculates.">increase <input class="secpct-in" data-secpct="${esc(hdr.section)}" value="${cur != null ? +(cur * 100).toFixed(2) : ''}" placeholder="—"> % <span class="muted">· ${follow} line${follow === 1 ? '' : 's'}${keep ? `, ${keep} keep their own` : ''}</span></span>`;
+}
+
 /* the trailing-12 total on file for a GL (annual budgets) */
 function rowT12(gl) { return ((((S.bv || {}).refs || []).find((r) => r.key === 'actual') || {}).byGl || {})[gl] || 0; }
 
@@ -1998,7 +2037,7 @@ function defaultsInUse(bv) {
   const add = (key, label, value, isDefault, warn) => out.push({ key, label, value, isDefault, warn: warn || '' });
   // growth
   const gp = (inp.baseline || {}).growthPct || {};
-  const typed = Object.entries(gp).filter(([, v]) => v != null);
+  const typed = [...Object.entries(gp).filter(([, v]) => v != null), ...Object.entries((inp.baseline || {}).secGrowth || {}).map(([k, v]) => [k.replace(/_/g, ' '), v])];
   const rf = inp.rulesFrom || null;
   add('fset', 'Formula set', rf ? `${rf.name}${rf.at ? ` · given ${new Date(rf.at).toLocaleDateString()}` : ''}` : 'none picked — running on the 2026 GRKS draft rules, the old silent default (More → Apply a saved formula set…)', !rf || rf.id === 'grks', !rf ? 'no formula set was chosen for this property' : '');
   add('growth', 'Increase factors', typed.length ? `typed: ${typed.map(([k, v]) => `cat ${k} ${pc(v, 1)}`).join(', ')}; the rest per GL from the formula set` : rf && rf.id !== 'grks' ? `per GL, from "${rf.name}"` : rf && rf.id == null ? 'template defaults: admin +5%, R&M +5%, rehab +5%, trash +7%, the rest 0%' : 'per GL, from the 2026 GRKS draft: admin +5%, supplies & contractors +10%, rehab +15%, utilities +5%, trash +7%, other income 0%', !typed.length && (!rf || rf.id === 'grks' || rf.id == null));

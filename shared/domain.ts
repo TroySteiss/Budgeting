@@ -190,6 +190,9 @@ export interface BudgetInputs {
     glShape?: Record<string, BaselineShape>;
     /** per-GL MROUND override */
     glMround?: Record<string, number>;
+    /** increase % typed on a SECTION header (chart `section`: admin, utilities, in_house_maint…) — every
+        history-based line of the subsection takes it unless the row has its own % or is hand-typed */
+    secGrowth?: Record<string, number>;
     /** within-year drift on history-based expense lines: December runs this much above January, year total unchanged (default 0.03; 0 = off) */
     costDrift?: number;
     shape: BaselineShape;

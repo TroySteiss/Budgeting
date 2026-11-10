@@ -1086,3 +1086,45 @@ describe('a shape chosen on the row works on ANY line (Troy 2026-11-09: "Flat + 
     expect((L(generateAnnualLines(coaList, base, src), '4994').driver as any).method).toBe('gpr');
   });
 });
+
+describe('section increase % (Troy 2026-11-10): typed on a section header, flows to its lines, never over a row\'s own choice', () => {
+  const actual: Record<string, Months> = { ...synthetic(), '6332': cal(Array(12).fill(400)), '6334': cal(Array(12).fill(200)), '6920': cal(Array(12).fill(2000)), '6728': cal(Array(12).fill(1000)) };
+  const base = baseInputs(2026, 10, actual, null, coaList, null, 10);
+  const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
+  const sectionOf = (gl: string) => coaList.find((a) => a.code === gl)!.section;
+  const pctOf = (ls: BudgetLine[], gl: string) => (L(ls, gl).driver as any).pct;
+  const withSec = (extra: object = {}) => ({ ...base, baseline: { ...base.baseline!, secGrowth: { [sectionOf('6332')]: 0.07 }, ...extra } });
+
+  it('every history-based line of the section takes it; other sections are untouched', () => {
+    expect(sectionOf('6332')).toBe(sectionOf('6334'));
+    expect(sectionOf('6920')).not.toBe(sectionOf('6332'));
+    const before = generateAnnualLines(coaList, base, src), after = generateAnnualLines(coaList, withSec(), src);
+    expect(pctOf(after, '6332')).toBe(0.07);
+    expect(pctOf(after, '6334')).toBe(0.07);
+    expect(sum(L(after, '6332').months)).toBeCloseTo(4800 * 1.07, 0);
+    expect(pctOf(after, '6920')).toBe(pctOf(before, '6920'));          // contract services: not this section
+    expect(sum(L(after, '6728').months)).toBeCloseTo(sum(L(before, '6728').months), 2);
+  });
+  it('a % typed on the row wins over the section; the section wins over the category % and the formula set', () => {
+    const rowTyped = generateAnnualLines(coaList, withSec({ glGrowth: { '6334': 0.02 } }), src);
+    expect(pctOf(rowTyped, '6334')).toBe(0.02);                        // the row keeps its own
+    expect(pctOf(rowTyped, '6332')).toBe(0.07);
+    const cat = coaList.find((a) => a.code === '6332')!.pcode!;
+    const overCat = generateAnnualLines(coaList, withSec({ growthPct: { [cat]: 0.01 } }), { ...src, rules: { '6332': { method: 'flatT12', factor: 0.25, noThreshold: true } } });
+    expect(pctOf(overCat, '6332')).toBe(0.07);
+  });
+  it('a hand-typed line is not touched when the section % is applied on a recalculation', () => {
+    const first = generateAnnualLines(coaList, base, src).map((l) => (l.gl_code === '6334' ? { ...l, override: true, months: cal(Array(12).fill(999)), driver: { method: 'manual' } as any } : l));
+    const again = regenerateAnnual(first, coaList, withSec(), src);
+    expect(L(again, '6334').months.every((v) => v === 999)).toBe(true);
+    expect(L(again, '6334').override).toBe(true);
+    expect(pctOf(again, '6332')).toBe(0.07);
+  });
+  it('a saved formula set carries the resulting per-line factors, and applying a set clears the target\'s own section %', () => {
+    const built = generateAnnualLines(coaList, { ...withSec(), rules: {} }, src);
+    const set = formulaSetFromBudget(built, { ...withSec(), rules: {} });
+    expect(set.rules['6332'].factor).toBe(0.07);
+    const target = applyFormulaSet(withSec(), set, { id: 1, name: 's' });
+    expect(target.baseline!.secGrowth).toEqual({});
+  });
+});
