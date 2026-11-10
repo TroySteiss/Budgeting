@@ -788,7 +788,9 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
         const drift = r2(r2(annual) - sum(months));               // penny-fix on the last month
         if (drift) months[11] = r2(months[11] + drift);
       } else {
-        months = spreadMonthly(r2(annual), CURVES.flat).map((v, i) => (!rosterWages && i >= iMarch ? r2(v * raise) : v)) as Months;
+        // payroll MODEL wages (no roster): the raise % phases in the same way — half in February, all of it from March
+        const iFeb = (2 - startMonth + 12) % 12;
+        months = spreadMonthly(r2(annual), CURVES.flat).map((v, i) => (rosterWages ? v : i === iFeb && iFeb < iMarch ? r2(v * (1 + (raise - 1) / 2)) : i >= iMarch ? r2(v * raise) : v)) as Months;
       }
       addWages(months);
       mk(gl, months, rosterDriver);

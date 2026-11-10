@@ -60,7 +60,7 @@ function drvMetaBase(l) {
     case 'flatFee': return { cls: 'drv-rr', tag: 'FLAT FEE', label: `Flat utility fee per occupied unit — ${MONTHS[(l.driver.lastMonth || 1) - 1]} actual $${money(l.driver.base || 0)} × budgeted occupancy ÷ ${((l.driver.occLast || 1) * 100).toFixed(1)}% occupied that month (ties to the vacancy assumption)${l.driver.pct ? ` × ${(l.driver.pct * 100).toFixed(1)}% fee increase` : ''}` };
     case 'catShare': return { cls: 'drv-uw', tag: 'UW', label: `UW category ${l.driver.pcode} share` };
     case 'perUnitComp': return { cls: 'drv-comp', tag: 'MINOT', label: `Minot $${l.driver.perUnit}/unit × units` };
-    case 'payrollModel': return { cls: 'drv-pay', tag: 'PAY', label: l.driver.live ? `Payroll tab wages — roster rates with each person's raise from "${l.driver.cycle || 'the raise cycle'}", effective ${l.driver.effective || ''}${l.driver.draft ? ' · DRAFT raises (a region is not finalized yet) — Recalc picks up changes' : ' · finalized'}` : l.driver.roster ? 'Pay-rates roster wages (raises prorated — no March step)' : 'Payroll model wages', tag: l.driver.live && l.driver.draft ? 'PAY·draft' : 'PAY' };
+    case 'payrollModel': return { cls: 'drv-pay', tag: 'PAY', label: l.driver.live ? `Payroll tab wages — roster rates with each person's raise from "${l.driver.cycle || 'the raise cycle'}" — January at the current rate, half the increase in February, all of it from March${l.driver.draft ? ' · DRAFT raises (a region is not finalized yet) — Recalc picks up changes' : ' · finalized'}` : l.driver.roster ? 'Pay-rates roster wages (raises prorated — no March step)' : 'Payroll model wages', tag: l.driver.live && l.driver.draft ? 'PAY·draft' : 'PAY' };
     case 'burdenRatio': { const bs = l.driver.basis === 'budget' ? 'CY budget ratio' : l.driver.basis === 'mix' ? 'avg of T12 actual & CY budget ratios' : 'T12 actual ratio';
       return { cls: 'drv-pay', tag: 'RATIO', label: `${((l.driver.ratio || 0) * 100).toFixed(1)}% of wages (${S.bv && S.bv.annual ? `same-month ${bs} × that month's budgeted wages — keeps the quarterly / seasonal shape` : 'Minot ratio'})` }; }
     case 'mgmtPct': return { cls: 'drv-fee', tag: '%INC', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.priorMonth ? 'prior-month ' : ''}income` };
@@ -3306,8 +3306,6 @@ function payHeaderHtml(st) {
       <select id="pay-cycle">${st.cycles.map((x) => `<option value="${x.id}" ${x.id === P.cycleId ? 'selected' : ''}>${esc(x.label)} · eff. ${esc(x.effective)}</option>`).join('')}</select>` : ''}
       ${st.isAdmin && P.cycleId && st.snapshots.length && (st.cycles.find((x) => x.id === P.cycleId) || {}).staffing_snapshot_id !== st.snapshots[0].id
         ? `<button class="btn sub" id="pay-relink-snap" title="Point this cycle at the newest staffing report — raises carry over (rows match by person)">↻ Use latest staffing</button>` : ''}
-      ${st.isAdmin && P.cycleId ? `<label class="muted" style="font-size:12px" title="The month the raises take effect. Budgets that follow the Payroll tab keep wages at the current rate until this month and step up from it — so a raise never shows in the months before it hits. Changing it does not touch the raise entries; recalc a budget to pick it up.">Raises effective</label>
-      <input id="pay-eff" value="${esc((st.cycles.find((x) => x.id === P.cycleId) || {}).effective || '')}" placeholder="YYYY-MM" style="width:86px" title="YYYY-MM — press Enter to save">` : ''}
       ${st.isAdmin ? `<button class="btn sub" id="pay-newcycle">＋ New cycle</button>` : ''}
     </div>
     ${P.newCycle && st.isAdmin ? `<div class="row" style="margin-top:10px; gap:10px; flex-wrap:wrap; align-items:flex-end">
@@ -3330,15 +3328,6 @@ function wirePayHeader(el, st) {
     try {
       await PUT(`/payroll/cycles/${S.pay.cycleId}`, { staffingSnapshotId: st.snapshots[0].id });
       S.pay.msg = 'Cycle now reads the latest staffing report'; S.pay.st = null; render();
-    } catch (e) { S.pay.err = e.message; render(); }
-  });
-  const eff = el.querySelector('#pay-eff');
-  if (eff) eff.addEventListener('change', async () => {
-    const v = eff.value.trim();
-    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(v)) { S.pay.err = 'Effective month must be YYYY-MM (e.g. 2027-03)'; render(); return; }
-    try {
-      await PUT(`/payroll/cycles/${S.pay.cycleId}`, { effective: v });
-      S.pay.err = ''; S.pay.msg = `Raises now take effect ${v} — recalc a budget to step its wages from that month`; S.pay.st = null; S.pay.cycle = null; render();
     } catch (e) { S.pay.err = e.message; render(); }
   });
   const go = el.querySelector('#nc-go');
@@ -4029,7 +4018,7 @@ function annualInputsHtml(inp) {
         const rl = S.bv.rosterLink, manual = inp.wageSource === 'manual';
         const stat = rl ? `"${esc(rl.label)}", effective ${esc(rl.effective)} — ${rl.regions.map((r) => `${esc(r.region)} ${r.num == null ? 'no iteration yet (0% raise)' : `iteration ${r.num} ${r.finalized ? 'finalized' : 'draft'}`}`).join(', ')}`
           : `no raise cycle effective in ${S.bv.budget.year} books staff to this property — using the fallback until one does`;
-        return `<div class="fld"><label>Wages come from <span class="muted">— ${stat}</span></label><select id="in-wagesrc" title="Payroll tab: wage lines = the roster's current rates with each person's raise from the raise cycle (latest entries, drafts included), prorated from its effective month. Fallback / own history: the payroll model if one is linked, else trailing-12 wages × the raise % below.">
+        return `<div class="fld"><label>Wages come from <span class="muted">— ${stat}</span></label><select id="in-wagesrc" title="Payroll tab: wage lines = the roster's current rates with each person's raise from the raise cycle (latest entries, drafts included), phased in the same way every year: half the increase in February, all of it from March. Fallback / own history: the payroll model if one is linked, else trailing-12 wages × the raise % below.">
           <option value="payroll" ${manual ? '' : 'selected'}>Payroll tab — roster + its raise % (default)</option>
           <option value="manual" ${manual ? 'selected' : ''}>This budget's own history × the raise % below</option></select></div>`;
       })()}

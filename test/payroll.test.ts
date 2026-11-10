@@ -3,7 +3,7 @@
 import { describe, it, expect } from 'vitest';
 import * as XLSX from 'xlsx';
 import {
-  seatMonthly, raisedMonthCount, annualWagesByGl, monthlyWagesByGl, maskPeople, hiddenAggregates,
+  seatMonthly, raisedMonthCount, annualWagesByGl, monthlyWagesByGl, raisePhase, RAISE_PHASE, maskPeople, hiddenAggregates,
   positionGl, isRmPosition, isSalariedPosition, normalizePayBasis, normalizeRmCorporateShare,
   marginalBurdenPct, homeRegionsOf, newRate, adjustedPct,
   sameName, applyStaffingDetail, type StaffingPerson,
@@ -46,12 +46,13 @@ describe('pay math', () => {
       person({ key: 'b', position: 'Maintenance Tech I', payMethod: 'Hourly', payRate: 20 }),        // 6404
       person({ key: 'c', position: 'Maint Rover I', payMethod: 'Hourly', payRate: 24, allocations: [{ code: 'spnd', pct: 0.4 }, { code: 'wynd', pct: 0.6 }] }), // 6407
     ];
-    // 4% raises effective Apr 2027 → 3 months old rate, 9 months new (MROUNDed)
+    // 4% raises in the 2027 cycle: January old rate, February half the increase, March-December
+    // the new rate (MROUNDed) — whatever month the cycle is labelled with
     const { wages } = annualWagesByGl(people, 'spnd', { a: 4, b: 4, c: 4 }, '2027-04', 2027);
     const annual = (rate: number, alloc: number) => {
       const cur = seatMonthly('Hourly', rate, alloc);
       const nxt = seatMonthly('Hourly', newRate('Hourly', rate, 4), alloc);
-      return cur * 3 + nxt * 9;
+      return cur + (cur + nxt) / 2 + nxt * 10;
     };
     expect(wages['6402']).toBeCloseTo(annual(18, 1), 1);
     // two buckets (Troy 2026-11-02): the rover is MAINT — joins the tech in 6404
@@ -63,21 +64,27 @@ describe('pay math', () => {
     const flat = annualWagesByGl(people, 'spnd', {}, '2027-04', 2027).wages;
     expect(flat['6404']).toBeCloseTo(seatMonthly('Hourly', 20, 1) * 12 + seatMonthly('Hourly', 24, 0.4) * 12, 1);
   });
-  it('monthlyWagesByGl: old rate until the effective month, raised from it on; sums to the annual figure', () => {
+  it('raises ALWAYS phase in the same way: January old rate, February half the increase, March on in full', () => {
     const people = [
       person({ key: 'a', position: 'Leasing Consultant', payMethod: 'Hourly', payRate: 18 }),
       person({ key: 'b', position: 'Maintenance Tech I', payMethod: 'Hourly', payRate: 20 }),
     ];
     const raises = { a: 4, b: 4 };
-    const m = monthlyWagesByGl(people, 'spnd', raises, '2027-04', 2027);
     const cur = seatMonthly('Hourly', 18, 1), nxt = seatMonthly('Hourly', newRate('Hourly', 18, 4), 1);
-    expect(m['6402'].slice(0, 3).every((v) => Math.abs(v - cur) < 0.01)).toBe(true);    // Jan-Mar: before the raise
-    expect(m['6402'].slice(3).every((v) => Math.abs(v - nxt) < 0.01)).toBe(true);       // Apr-Dec: raised
     expect(nxt).toBeGreaterThan(cur);
-    const { wages } = annualWagesByGl(people, 'spnd', raises, '2027-04', 2027);
-    for (const gl of ['6402', '6404']) expect(m[gl].reduce((x, y) => x + y, 0)).toBeCloseTo(wages[gl], 1);
-    // effective in January: raised all year; effective next year: not at all
-    expect(new Set(monthlyWagesByGl(people, 'spnd', raises, '2027-01', 2027)['6402']).size).toBe(1);
+    // the month on the cycle does not matter — only its year
+    for (const eff of ['2027-01', '2027-04', '2027-11']) {
+      const m = monthlyWagesByGl(people, 'spnd', raises, eff, 2027);
+      expect(m['6402'][0]).toBeCloseTo(cur, 2);                                          // Jan: old rate
+      expect(m['6402'][1]).toBeCloseTo((cur + nxt) / 2, 2);                              // Feb: half the increase
+      expect(m['6402'].slice(2).every((v) => Math.abs(v - nxt) < 0.01)).toBe(true);      // Mar-Dec: in full
+      const { wages } = annualWagesByGl(people, 'spnd', raises, eff, 2027);
+      for (const gl of ['6402', '6404']) expect(m[gl].reduce((x, y) => x + y, 0)).toBeCloseTo(wages[gl], 1);
+    }
+    expect(raisePhase('2027-01', 2027)).toEqual(RAISE_PHASE);
+    // a later year carries the raise all twelve months; an earlier year not at all
+    expect(new Set(monthlyWagesByGl(people, 'spnd', raises, '2027-01', 2028)['6402']).size).toBe(1);
+    expect(monthlyWagesByGl(people, 'spnd', raises, '2027-01', 2028)['6402'][0]).toBeCloseTo(nxt, 2);
     expect(monthlyWagesByGl(people, 'spnd', raises, '2028-01', 2027)['6402'][11]).toBeCloseTo(cur, 2);
   });
   it('positionGl: two buckets — office → 6402, maintenance (rovers included) → 6404', () => {

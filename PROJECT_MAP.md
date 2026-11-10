@@ -581,16 +581,20 @@ finalized iteration; everything else ran on own trailing-12 wages × a flat 3.5%
   that covers the property for the budget's year (budget or not yet, unless `wageSource` is
   'manual'), else it falls back to the old test (applied roster / linked payroll model).
 
-- **Raises start in their effective month** (Troy 2026-11-09, same day: the first cut spread the
-  roster's annual total flat, so the raise showed in months before it hit). `monthlyWagesByGl`
-  (shared/payroll.ts) gives each wage GL by calendar month — old rate until the cycle's effective
-  month, raised from it on; `RosterLink.monthly` → `AnnualSources.wagesLive.monthly`; the engine
-  lays wages on that shape (a typed / overridden wage total rides it, scaled, penny-fixed on
-  December). Burden lines follow each month's wages, so they step too. The step month is the
-  CYCLE's `effective` — a cycle effective in January is raised all year (new cycles default to
-  January). Admins change it on the Payroll tab header ("Raises effective", `#pay-eff` →
-  `PUT /payroll/cycles/:id { effective }`); entries are untouched. The older Apply path still
-  writes an annual figure spread flat.
+- **Raise timing is FIXED (Troy 2026-11-09: "Half of the increase should hit in Feb, and then
+  full increase in effect for March. Always.")**: `RAISE_PHASE` / `raisePhase(effective, year)`
+  in shared/payroll.ts — January at the old rate, February with half of each person's increase,
+  March–December in full. Only the YEAR of the cycle's `effective` matters (later years carry the
+  raise all twelve months, earlier ones none); the month on the cycle is ignored. Both
+  `annualWagesByGl` (so the Apply path too) and `monthlyWagesByGl` use it; `RosterLink.monthly` →
+  `AnnualSources.wagesLive.monthly` and the engine lays wages on that shape — never the annual
+  total spread flat (a typed / overridden wage total rides the shape, scaled, penny-fixed on
+  December). Burden lines follow each month's wages. Payroll-MODEL wages (no roster) phase
+  `payrollRaisePct` the same way in the annual engine. NOT changed: acquisition budgets
+  (domain.ts still steps the full raise in March) and wage GLs on the trailing-12 fallback
+  (T12 ÷ 12 × (1 + raise), flat). `PUT /payroll/cycles/:id { effective }` exists server-side but
+  has no UI — the month no longer drives anything. If the raise entries are 0 there is nothing
+  to phase and wages are flat.
 
 ## Loss to lease: market growth and the burnoff share (Troy 2026-11-09)
 

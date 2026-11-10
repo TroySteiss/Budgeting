@@ -610,6 +610,14 @@ describe('payroll flow (Troy 2026-11-03): roster wages carry their raises; burde
     expect((L(fin, '6402').driver as any).draft).toBe(false);
   });
 
+  it('payroll MODEL wages (no roster): the raise % is half in February and full from March', () => {
+    const ls = generateAnnualLines(coaList, { ...inputs, payrollRaisePct: 0.04 }, { ...src, payrollWages: { '6402': 30000 } });
+    const w = L(ls, '6402').months;
+    expect(w[0]).toBeCloseTo(2500, 2);
+    expect(w[1]).toBeCloseTo(2500 * 1.02, 2);
+    expect(w.slice(2).every((v) => Math.abs(v - 2500 * 1.04) < 0.01)).toBe(true);
+  });
+
   it('LIVE wages keep the raise step: months before the effective month stay at the old rate (never smeared flat)', () => {
     // raise effective April: Jan-Mar 2,400, Apr-Dec 2,500
     const monthly = { '6402': [2400, 2400, 2400, 2500, 2500, 2500, 2500, 2500, 2500, 2500, 2500, 2500] as Months };

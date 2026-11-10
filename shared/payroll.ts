@@ -174,11 +174,25 @@ export function raisedMonthCount(effective: string, year: number): number {
   return Math.max(0, Math.min(12, 12 - (effM - 1)));
 }
 
+/** HOW A RAISE PHASES IN — the same every year (Troy 2026-11-09: "Half of the increase should
+    hit in Feb, and then full increase in effect for March. Always."). By calendar month: the
+    share of each person's increase that is in pay. January runs at the old rate. */
+export const RAISE_PHASE: number[] = [0, 0.5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+/** The phase for budget `year` given the cycle's effective 'YYYY-MM': only the YEAR of the
+    cycle matters — its raises phase in during that year (Feb half, Mar full), are fully in
+    pay in later years and not at all in earlier ones. */
+export function raisePhase(effective: string, year: number): number[] {
+  const m = /^(\d{4})-(\d{2})$/.exec(String(effective || ''));
+  if (!m) return Array(12).fill(1);
+  const effY = Number(m[1]);
+  return effY > year ? Array(12).fill(0) : effY < year ? Array(12).fill(1) : RAISE_PHASE.slice();
+}
+
 /** Annual wages by wage GL for one property out of the roster + raises —
-    pre-raise months at the old rate, from the effective month at the new.
+    January at the old rate, half the increase in February, all of it from March (RAISE_PHASE).
     This is what lands in budgets.inputs.wages (annual $ per GL). */
 export function annualWagesByGl(people: StaffingPerson[], code: string, raises: RaiseMap, effective: string, year: number): { wages: Record<string, number>; unmappedPositions: string[] } {
-  const liveMonths = raisedMonthCount(effective, year);
+  const phase = raisePhase(effective, year);
   const wages: Record<string, number> = {};
   const unmapped = new Set<string>();
   for (const p of people) {
@@ -189,17 +203,17 @@ export function annualWagesByGl(people: StaffingPerson[], code: string, raises: 
     if (!p.gl && !fromMap.mapped) unmapped.add(p.position);
     const cur = seatMonthly(p.payMethod, p.payRate, alloc.pct);
     const next = seatMonthly(p.payMethod, newRate(p.payMethod, p.payRate, Number(raises[p.key]) || 0), alloc.pct);
-    wages[gl] = r2((wages[gl] || 0) + cur * (12 - liveMonths) + next * liveMonths);
+    wages[gl] = r2((wages[gl] || 0) + phase.reduce((a, f) => a + cur + f * (next - cur), 0));
   }
   for (const gl of Object.keys(wages)) wages[gl] = r2(wages[gl]);
   return { wages, unmappedPositions: [...unmapped] };
 }
 
 /** The same wages BY CALENDAR MONTH of `year` (Troy 2026-11-09: a raise must not show in the
-    months before it takes effect): each month is at the old rate until the cycle's effective
-    month and at the raised rate from it on. Sums to `annualWagesByGl`. */
+    months before it takes effect): January at the old rate, February with half the increase, March on with all of
+    it (RAISE_PHASE). Sums to `annualWagesByGl`. */
 export function monthlyWagesByGl(people: StaffingPerson[], code: string, raises: RaiseMap, effective: string, year: number): Record<string, number[]> {
-  const first = 12 - raisedMonthCount(effective, year);          // 0-based index of the first raised month (12 = none)
+  const phase = raisePhase(effective, year);
   const out: Record<string, number[]> = {};
   for (const p of people) {
     const alloc = (p.allocations || []).find((a) => a.code === code);
@@ -208,7 +222,7 @@ export function monthlyWagesByGl(people: StaffingPerson[], code: string, raises:
     const cur = seatMonthly(p.payMethod, p.payRate, alloc.pct);
     const next = seatMonthly(p.payMethod, newRate(p.payMethod, p.payRate, Number(raises[p.key]) || 0), alloc.pct);
     const m = out[gl] || (out[gl] = Array(12).fill(0));
-    for (let i = 0; i < 12; i++) m[i] += i >= first ? next : cur;
+    for (let i = 0; i < 12; i++) m[i] += cur + phase[i] * (next - cur);
   }
   for (const gl of Object.keys(out)) out[gl] = out[gl].map(r2);
   return out;
