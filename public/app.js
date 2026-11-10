@@ -197,6 +197,7 @@ function render() {
       <nav>
         <button data-v="dash" class="${S.view === 'dash' ? 'on' : ''}">Budgets</button>
         ${S.view === 'editor' && S.bv ? `<span class="crumb">›</span><button data-v="editor" class="on">${esc(S.bv.budget.property_code)} ${S.bv.budget.year}</button>` : ''}
+        <button data-v="summary" class="${S.view === 'summary' ? 'on' : ''}" title="Every budget for the year, by region, in the budget-comps layout">Summary</button>
         <button data-v="uploads" class="${S.view === 'uploads' ? 'on' : ''}">Data</button>
         <button data-v="payroll" class="${S.view === 'payroll' ? 'on' : ''}">Payroll</button>
         <button data-v="settings" class="${S.view === 'settings' ? 'on' : ''}">Settings</button>
@@ -205,15 +206,16 @@ function render() {
       <button class="theme" id="theme-toggle" title="Toggle dark mode">${S.theme === 'dark' ? '☀' : '🌙'}</button>
       <span class="who">${esc(S.auth.username)}${S.auth.isAdmin ? ' · admin' : ''}<button id="logout">Sign out</button></span>
     </div>
-    <div class="wrap${S.view === 'editor' || S.view === 'payroll' ? ' wide' : ''}" id="main"></div>`;
+    <div class="wrap${S.view === 'editor' || S.view === 'payroll' || S.view === 'summary' ? ' wide' : ''}" id="main"></div>`;
   document.querySelectorAll('.topbar nav button').forEach((b) =>
-    b.addEventListener('click', () => { S.view = b.dataset.v; render(); }));
+    b.addEventListener('click', () => { S.view = b.dataset.v; if (S.view === 'summary') S.sum = null;   /* always reload: budgets may have changed */ render(); }));
   document.getElementById('logout').addEventListener('click', async () => { await POST('/logout'); location.reload(); });
   document.getElementById('theme-toggle').addEventListener('click', () => { S.theme = S.theme === 'dark' ? 'light' : 'dark'; applyTheme(); render(); });
   const main = document.getElementById('main');
   if (S.view === 'dash') renderDash(main);
   else if (S.view === 'uploads') renderUploads(main);
-  else if (S.view === 'editor') renderEditor(main);
+  else if (S.view === 'summary') renderSummary(main);
+  else if (S.view === 'editor') { renderEditor(main); editorViewToggle(main); }
   else if (S.view === 'payroll') renderPayroll(main);
   else if (S.view === 'settings') renderSettings(main);
 }
@@ -4594,4 +4596,211 @@ function renderAnnualUploadPreview(el, parsed) {
     } catch (e) { S.upload.err = e.message; }
     await refreshState(); render();
   });
+}
+
+/* ============================================================================
+   SUMMARY (Troy 2026-11-10) — the budget-comps layout Troy keeps in Excel
+   ("Minot 2025 Budget Comps": the per-property / "Minot Avg." panel and the
+   "Schedule" table), reproduced on screen with the workbook's own fills, bold
+   rows and borders. Light-blue = the T12 column and growth over T12; light-green
+   = the T4-annualized column and growth over T4. The panel keeps the workbook's
+   colours in dark mode too.
+   ========================================================================== */
+const xsGr = (a, b) => (b ? (a - b) / b : null);
+const xsPct = (v, dp = 1) => (v == null || !Number.isFinite(v) ? '' : `${(v * 100).toFixed(dp)}%`);
+/* accounting format: "$" hard left, the number hard right, negatives in parentheses, zero as "-" */
+function xsAcct(v) {
+  if (v == null) return '';
+  const n = Math.round(v);
+  const body = n === 0 ? '-' : n < 0 ? `(${Math.abs(n).toLocaleString('en-US')})` : n.toLocaleString('en-US');
+  return `<span class="xs-d">$</span><span class="xs-n">${body}</span>`;
+}
+const xsNum = (v) => (v == null ? '' : Math.round(v).toLocaleString('en-US'));
+
+/* One summary panel. `s` = { labels, capital, units, t12, t4, bud }; `opts.budgetId` makes the
+   three column headers editable (they are saved on that budget, no recalculation). */
+function summaryPanelHtml(title, s, opts = {}) {
+  const C = s.t12, D = s.t4, E = s.bud;
+  const v = (col, k) => (col ? col[k] : null);
+  const cap = s.capital || 0;
+  const ret = (col) => (col && cap ? col.cashFlow / cap : null);
+  const maint = (col) => (col ? col.inHouse + col.exterior + col.contract + col.rehab : null);
+  // right-hand notes: label on one row, the green / blue figure on the next (the workbook's column G)
+  const G = {};
+  const note = (labelRow, text, valueRow, value, cls, dp = 1) => { G[labelRow] = `<td class="xs-g xs-glabel">${esc(text)}</td>`; G[valueRow] = `<td class="xs-g xs-gval ${cls}">${xsPct(value, dp)}</td>`; };
+  note(7, 'Rental Income Growth over T4', 8, E && D ? xsGr(E.rental, D.rental) : null, 'xs-green');
+  note(9, 'Total Income Growth over T4', 10, E && D ? xsGr(E.income, D.income) : null, 'xs-green');
+  note(15, 'Payroll Growth over T4', 16, E && D ? xsGr(E.payroll, D.payroll) : null, 'xs-green');
+  note(18, 'Maintenance Expense Growth over T4', 19, E && D ? xsGr(maint(E), maint(D)) : null, 'xs-green');
+  note(22, 'Total Expense Growth net of MGMT and RE Tax', 23, E && C && C.expense ? ((E.expense - (E.tax - C.tax + E.fee - C.fee)) - C.expense) / C.expense : null, 'xs-green');
+  note(25, 'Total NOI Growth over T4', 26, E && D ? xsGr(E.noi, D.noi) : null, 'xs-green');
+  note(31, 'NOI Growth Excluding RE Tax (T4)', 32, E && D && (D.noi + (D.tax - E.tax)) ? (E.noi - (D.noi + (D.tax - E.tax))) / (D.noi + (D.tax - E.tax)) : null, 'xs-green');
+  note(33, 'NOI Growth Excluding RE Tax & MGMT FEE (T12)', 34, E && C && C.noi ? ((E.noi + (E.tax - C.tax + E.fee - C.fee)) - C.noi) / C.noi : null, 'xs-blue', 2);
+  const g = (r) => G[r] || '<td class="xs-g"></td>';
+  const fpct = (k, extra = '') => `<td class="xs-f xs-blue ${extra}">${xsPct(E && C ? xsGr(E[k], C[k]) : null)}</td>`;
+  // a data row: T12 on light blue, T4 on light green, the draft plain
+  const line = (r, code, label, k, o = {}) => `<tr class="${o.tr || ''}">
+    <td class="xs-a">${code || ''}</td><td class="xs-b">${label}</td>
+    <td class="xs-c ${o.plain ? '' : 'xs-blue'} ${o.dbl ? 'xs-dbl' : ''} ${o.dtop ? 'xs-dtop' : ''}">${xsAcct(v(C, k))}</td>
+    <td class="xs-d2 ${o.plain ? '' : o.dBlue ? 'xs-blue' : 'xs-green'} ${o.dbl ? 'xs-dbl' : ''} ${o.dtop ? 'xs-dtop' : ''}">${o.noD ? '' : xsAcct(v(D, k))}</td>
+    <td class="xs-e ${o.dbl ? 'xs-dbl' : ''}">${xsAcct(v(E, k))}</td>
+    ${o.noF ? '<td class="xs-f0"></td>' : fpct(k, o.f || '')}${g(r)}</tr>`;
+  const blank = (r) => `<tr class="xs-blank"><td class="xs-a"></td><td class="xs-b"></td><td class="xs-c"></td><td class="xs-d2"></td><td class="xs-e"></td><td class="xs-f0"></td>${g(r)}</tr>`;
+  const hdr = (k, cls) => `<td class="${cls} xs-h" ${opts.budgetId ? `data-xslabel="${k}" title="Click to rename this column header — for example the T12 you are comparing to"` : ''}>${esc(s.labels[k])}</td>`;
+  return `<div class="xsum"><table>
+    <tr><td class="xs-a"></td><td class="xs-b xs-title" colspan="6">${esc(title)}</td></tr>
+    <tr class="xs-blank"><td colspan="7"></td></tr>
+    <tr class="xs-hrow"><td class="xs-a"></td><td class="xs-b"></td>${hdr('t12', 'xs-c')}${hdr('t4', 'xs-d2 xs-left')}${hdr('draft', 'xs-e')}<td class="xs-f0"></td><td class="xs-g"></td></tr>
+    <tr class="xs-blank"><td class="xs-a"></td><td class="xs-b"></td><td class="xs-c"></td><td class="xs-d2"></td><td class="xs-e"></td><td class="xs-f0"></td><td class="xs-g"></td></tr>
+    <tr><td class="xs-a"></td><td class="xs-b">Capital Contributed</td><td class="xs-c">${xsAcct(cap || null)}</td><td class="xs-d2">${xsAcct(cap || null)}</td><td class="xs-e">${xsAcct(cap || null)}</td><td class="xs-f0"></td><td class="xs-g"></td></tr>
+    <tr><td class="xs-a"></td><td class="xs-b">Unit Count</td><td class="xs-c xs-r">${xsNum(s.units)}</td><td class="xs-d2 xs-r">${xsNum(s.units)}</td><td class="xs-e xs-r">${xsNum(s.units)}</td><td class="xs-f xs-fhead" rowspan="2">GR% Over T12</td><td class="xs-g"></td></tr>
+    <tr class="xs-blank"><td class="xs-a"></td><td class="xs-b"></td><td class="xs-c"></td><td class="xs-d2"></td><td class="xs-e"></td>${g(7)}</tr>
+    ${line(8, '5070', 'Total Rental Income', 'rental', { f: 'xs-ftop' })}
+    ${line(9, '5190', 'Total Other Income', 'other', { dbl: true, f: 'xs-fbot' })}
+    ${line(10, '', 'Total Income', 'income', { plain: true, f: 'xs-fbox' })}
+    ${blank(11)}
+    ${line(12, '6170', 'Fixed Admin Less RE TAXES &amp; MGMT FEE', 'fixedLess', { f: 'xs-ftop xs-fl' })}
+    ${line(13, '6116', '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Real Estate Taxes', 'tax', { f: 'xs-fl' })}
+    ${line(14, '6112', '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Management Fee', 'fee', { f: 'xs-fl' })}
+    ${line(15, '6370', 'Admin', 'admin', { f: 'xs-fl' })}
+    ${line(16, '6470', 'Payroll', 'payroll', { f: 'xs-fl' })}
+    ${line(17, '6570', 'Marketing', 'marketing', { f: 'xs-fl' })}
+    ${line(18, '6670', 'Utilities', 'utilities', { f: 'xs-fl' })}
+    ${line(19, '6770', 'In-House', 'inHouse', { f: 'xs-fl' })}
+    ${line(20, '6870', 'Exterior / CAM', 'exterior', { f: 'xs-fl' })}
+    ${line(21, '6970', 'Contract Services', 'contract', { f: 'xs-fl' })}
+    ${line(22, '7070', 'Rehab / Replace', 'rehab', { dbl: true, f: 'xs-fl xs-fbot' })}
+    ${line(23, '', 'Total Expense', 'expense', { plain: true, dtop: true, f: 'xs-fbox' })}
+    ${blank(24)}
+    ${blank(25)}
+    ${line(26, '', 'NOI', 'noi', { plain: true, f: 'xs-fbox' })}
+    ${blank(27)}
+    ${line(28, '7300', 'Int Expense', 'interest', { dBlue: true, noF: true })}
+    ${line(29, '3080', '1st MTGE', 'mtg1', { dBlue: true, noF: true })}
+    ${line(30, '3090', '2nd MTGE', 'mtg2', { dBlue: true, noF: true })}
+    ${blank(31)}
+    ${line(32, '', 'Cash Flow', 'cashFlow', { plain: true, f: 'xs-fbox' })}
+    ${blank(33)}
+    <tr class="xs-ret"><td class="xs-a"></td><td class="xs-b">Return</td><td class="xs-c xs-bold xs-r">${xsPct(ret(C), 2)}</td><td class="xs-d2 xs-bold xs-r">${xsPct(ret(D), 2)}</td><td class="xs-e xs-bold xs-r">${xsPct(ret(E), 2)}</td><td class="xs-f0"></td>${g(34)}</tr>
+  </table></div>`;
+}
+function wireSummaryLabels(root, budgetId, after) {
+  root.querySelectorAll('[data-xslabel]').forEach((td) => td.addEventListener('click', async () => {
+    const k = td.dataset.xslabel;
+    const v = prompt(`Column header (${k === 't12' ? 'the trailing-12 you are comparing to, e.g. "Nov. 23 T12"' : k === 't4' ? 'the 4-month annualized column, e.g. "Nov. T4 Ann."' : 'this budget, e.g. "Draft #2"'}).\nLeave blank to go back to the automatic header:`, td.textContent.trim());
+    if (v == null) return;
+    const bv = await POST(`/budgets/${budgetId}/summary-labels`, { [k]: v });
+    if (after) after(bv);
+  }));
+}
+
+/* ---- in a budget: Grid | Summary switch ---- */
+function editorViewToggle(main) {
+  if (!S.bv) return;
+  if (!S.edView) S.edView = localStorage.getItem('bt-edview') || 'grid';
+  const bar = main.querySelector('#undo-btn');
+  if (bar && !main.querySelector('.edseg')) {
+    const seg = document.createElement('span');
+    seg.className = 'edseg';
+    seg.innerHTML = `<button data-ev="grid" class="${S.edView === 'grid' ? 'on' : ''}" title="The month-by-month budget grid">Grid</button><button data-ev="summary" class="${S.edView === 'summary' ? 'on' : ''}" title="The budget-comps summary: T12, T4 annualized and this budget side by side">Summary</button>`;
+    bar.parentElement.insertBefore(seg, bar);
+    seg.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => { S.edView = b.dataset.ev; localStorage.setItem('bt-edview', S.edView); render(); }));
+  }
+  if (S.edView !== 'summary') return;
+  const ed = main.querySelector('.editor');
+  if (!ed) return;
+  const b = S.bv.budget;
+  const prop = (S.state.properties.find((p) => p.code === b.property_code) || {});
+  const holder = document.createElement('div');
+  holder.className = 'xsum-holder';
+  holder.innerHTML = S.bv.summary
+    ? `${summaryPanelHtml(String(b.property_code).toUpperCase() + (prop.name && prop.name.toUpperCase() !== String(b.property_code).toUpperCase() ? ` — ${prop.name}` : ''), S.bv.summary, { budgetId: b.id })}
+       <p class="muted" style="font-size:11.5px; margin:8px 0 0">Click a column header to rename it. Blue = the trailing-12 and growth over it; green = the last four months annualized and growth over that. ${S.bv.summary.t12 ? '' : 'No trailing-12 statement is linked to this budget, so only the budget column is filled.'}</p>`
+    : '<p class="muted">No summary for this budget.</p>';
+  ed.replaceWith(holder);
+  // the legend row above the grid belongs to the grid view
+  main.querySelectorAll('.legend').forEach((x) => { x.style.display = 'none'; });
+  wireSummaryLabels(holder, b.id, (bv) => { S.bv = bv; render(); });
+}
+
+/* ---- the Summary tab: the workbook's "Schedule" table for every property, by region ---- */
+async function loadSummary(year) {
+  S.sum = { ...(S.sum || {}), loading: true, err: '' };
+  try { S.sum = { data: await GET(`/summary${year ? `?year=${year}` : ''}`), loading: false, err: '', open: (S.sum && S.sum.open) || {} }; }
+  catch (e) { S.sum = { data: null, loading: false, err: e.message, open: {} }; }
+  render();
+}
+function scheduleTableHtml(region, props) {
+  // the three trend windows are the same months for every property that has them
+  const withT = props.find((p) => (p.noiTrend || []).length === 3);
+  const tl = withT ? withT.noiTrend.map((t) => t.label) : ['', '', ''];
+  const year = S.sum.data.year;
+  const cyLabel = (props.find((p) => p.cyBudgetLabel) || {}).cyBudgetLabel || `${year - 1} budget`;
+  const tr = (p) => {
+    const noi = p.bud ? p.bud.noi : null;
+    const t = [0, 1, 2].map((i) => ((p.noiTrend || [])[i] || {}).noi ?? null);
+    const taxInc = p.bud && p.t12 ? p.bud.tax - p.t12.tax : null, feeInc = p.bud && p.t12 ? p.bud.fee - p.t12.fee : null;
+    const adj = (base) => (base && noi != null && taxInc != null ? ((noi + taxInc + feeInc) - base) / base : null);
+    return { p, units: p.units || 0, t, noi, g: t.map((x) => (x && noi != null ? (noi - x) / x : null)), overBud: p.cyBudgetNoi && noi != null ? (noi - p.cyBudgetNoi) / p.cyBudgetNoi : null,
+             incT4: p.bud && p.t4 && p.t4.income ? (p.bud.income - p.t4.income) / p.t4.income : null, taxInc, feeInc, adj: t.map(adj) };
+  };
+  const rows = props.map(tr);
+  const sumOf = (f) => { const vals = rows.map(f).filter((x) => x != null); return vals.length ? vals.reduce((a, b) => a + b, 0) : null; };
+  const avgOf = (f) => { const vals = rows.map(f).filter((x) => x != null); return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null; };
+  const T = [0, 1, 2].map((i) => sumOf((r) => r.t[i])), NOI = sumOf((r) => r.noi), TAX = sumOf((r) => r.taxInc), FEE = sumOf((r) => r.feeInc);
+  const cell = (html, cls = '') => `<td class="${cls}">${html}</td>`;
+  const body = rows.map((r, i) => `<tr class="${i === rows.length - 1 ? 'sch-last' : ''}">
+      ${cell(xsNum(r.units))}<td class="sch-prop" data-sumopen="${r.p.id}" title="Open this budget's summary${r.p.stale ? ' — calculated on older formulas, recalc it' : ''}">${esc(String(r.p.code).toUpperCase())}${r.p.stale ? ' <span class="sch-stale">⚠</span>' : ''}</td>
+      ${r.t.map((x) => cell(xsNum(x))).join('')}${cell(xsNum(r.noi))}
+      ${r.g.map((x) => cell(xsPct(x, 2))).join('')}${cell(xsPct(r.overBud, 2))}${cell(xsPct(r.incT4, 2))}
+      ${r.adj.map((x) => cell(xsPct(x, 2))).join('')}</tr>`).join('');
+  const totG = T.map((x) => (x && NOI != null ? (NOI - x) / x : null));
+  const totAdj = T.map((x) => (x && NOI != null && TAX != null ? ((NOI + TAX + FEE) - x) / x : null));
+  return `<div class="xsum sch"><table>
+    <tr class="sch-h"><td>Unit count</td><td>Property</td>
+      ${tl.map((l) => `<td>${esc(l)} T12 NOI Trend</td>`).join('')}<td>${year} NOI Budget</td>
+      ${tl.map((l) => `<td>${esc(l)} T12 NOI Growth</td>`).join('')}<td>NOI Growth over ${esc(String(cyLabel).replace(/ budget$/i, ''))}'s Budget</td><td>Income Growth over T4</td>
+      ${tl.map((l) => `<td>NOI Increase Tax and MGMT Fee Adjusted ${esc(l)} T12</td>`).join('')}</tr>
+    ${body}
+    <tr class="sch-avg"><td>${xsNum(sumOf((r) => r.units))}</td><td>Average</td>
+      ${T.map((x) => cell(xsNum(x))).join('')}${cell(xsNum(NOI))}
+      ${totG.map((x) => cell(xsPct(x, 2))).join('')}${cell(xsPct(avgOf((r) => r.overBud), 2))}${cell(xsPct(avgOf((r) => r.incT4), 2))}
+      ${totAdj.map((x) => cell(xsPct(x, 2))).join('')}</tr>
+  </table></div>`;
+}
+function regionAvgSummary(region, props) {
+  const add = (k) => { const cols = props.map((p) => p[k]).filter(Boolean); if (!cols.length) return null; const out = {}; for (const f of Object.keys(cols[0])) out[f] = cols.reduce((a, c) => a + (c[f] || 0), 0); return out; };
+  const first = props.find((p) => p.t12) || props[0];
+  return { labels: first.labels, capital: props.reduce((a, p) => a + (p.capital || 0), 0), units: props.reduce((a, p) => a + (p.units || 0), 0), t12: add('t12'), t4: add('t4'), bud: add('bud') };
+}
+function renderSummary(el) {
+  if (!S.sum || (!S.sum.data && !S.sum.loading && !S.sum.err)) { loadSummary(S.dashYear); el.innerHTML = '<div class="card"><p class="muted">Loading…</p></div>'; return; }
+  if (S.sum.loading && !S.sum.data) { el.innerHTML = '<div class="card"><p class="muted">Loading…</p></div>'; return; }
+  if (S.sum.err) { el.innerHTML = `<div class="card"><p class="err">${esc(S.sum.err)}</p></div>`; return; }
+  const d = S.sum.data;
+  const regions = [...new Set(d.properties.map((p) => p.region))].sort();
+  el.innerHTML = `
+    <div class="card">
+      <div class="row" style="justify-content:space-between; align-items:center">
+        <h2 style="margin:0">Summary <span class="badge">${d.properties.length} budgets</span></h2>
+        <div class="row" style="align-items:center; gap:8px"><label class="muted" style="font-size:12px">Budget year</label><select id="sum-year">${[...new Set([d.year, ...d.years])].sort((a, b) => b - a).map((y) => `<option value="${y}" ${y === d.year ? 'selected' : ''}>${y}</option>`).join('')}</select>
+          <button class="btn sub sm" id="sum-refresh" title="Reload from the budgets as they stand now">↻ Refresh</button></div>
+      </div>
+      <p class="muted" style="font-size:12px; margin:6px 0 0">Each property's latest ${d.year} budget, by region, in the layout of the budget-comps workbook's Schedule sheet. The T12 NOI trend columns are the trailing-12 that ended in each of the last three posted months (blank where that window is not fully on file). Click a property to open its summary.</p>
+    </div>
+    ${regions.map((rg) => {
+      const props = d.properties.filter((p) => p.region === rg).sort((a, b) => a.code.localeCompare(b.code));
+      const open = !!(S.sum.open || {})[rg];
+      return `<div class="card">
+        <h2 style="margin:0 0 8px">${esc(rg)} <span class="badge">${props.length}</span></h2>
+        ${scheduleTableHtml(rg, props)}
+        <div style="margin-top:10px"><button class="btn sub sm" data-sumavg="${esc(rg)}">${open ? '▾' : '▸'} ${esc(rg)} average breakdown</button></div>
+        ${open ? `<div style="margin-top:10px">${summaryPanelHtml(`${rg} Portfolio`, regionAvgSummary(rg, props))}</div>` : ''}
+      </div>`;
+    }).join('')}
+    ${d.properties.length ? '' : `<div class="card"><p class="muted">No ${d.year} budgets yet.</p></div>`}`;
+  el.querySelector('#sum-year').addEventListener('change', (e) => loadSummary(Number(e.target.value)));
+  el.querySelector('#sum-refresh').addEventListener('click', () => loadSummary(d.year));
+  el.querySelectorAll('[data-sumavg]').forEach((b) => b.addEventListener('click', () => { S.sum.open = { ...(S.sum.open || {}), [b.dataset.sumavg]: !(S.sum.open || {})[b.dataset.sumavg] }; render(); }));
+  el.querySelectorAll('[data-sumopen]').forEach((td) => td.addEventListener('click', async () => { S.edView = 'summary'; localStorage.setItem('bt-edview', 'summary'); await openBudget(Number(td.dataset.sumopen)); }));
 }

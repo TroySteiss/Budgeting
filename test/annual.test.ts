@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, mgmtFeeRates, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
+  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, mgmtFeeRates, summaryColumn, sumSummaryCols, summaryLabels, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
   refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, type TemplateData, type AnnualSources,
 } from '../shared/annual.js';
 import { sum, zero12, rollup, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
@@ -1160,5 +1160,41 @@ describe('payroll ratios from another property (Troy 2026-11-10): the % of wages
     const set = formulaSetFromBudget(borrowed, { ...inputs, burdenFrom: 'clnd', rules: {} });
     expect(set.settings.burdenFrom).toBe('clnd');
     expect(applyFormulaSet(inputs, set, { id: 1, name: 's' }).burdenFrom).toBe('clnd');
+  });
+});
+
+describe('Summary panel (Troy 2026-11-10): the budget-comps rows, labels and T12 trend windows', () => {
+  it('summaryColumn lays the Monarch totals out as the workbook does and ties to NOI', () => {
+    const T: Record<string, number> = { '5070': 9440763, '5190': 1272775, '6170': 1765929, '6370': 230000, '6399': 11785, '6470': 1292809, '6570': 137849, '6670': 714387, '6770': 145501, '6870': 20573, '6970': 604821, '7070': 339212 };
+    const G: Record<string, number> = { '6116': 1208572, '6112': 339416, '7300': 2803966, '3080': 50000 };
+    const c = summaryColumn((k) => T[k] || 0, (k) => G[k] || 0);
+    expect(c.fixedLess).toBe(217941);                                  // fixed admin LESS taxes and the fee
+    expect(c.admin).toBe(241785);                                      // admin + corporate events
+    expect(c.income).toBe(10713538);
+    expect(c.expense).toBe(5262866);
+    expect(c.noi).toBe(5450672);
+    expect(c.mtg1).toBe(-50000);                                       // principal reduces cash flow
+    expect(c.cashFlow).toBe(5450672 - 2803966 - 50000);
+    const twice = sumSummaryCols([c, c, null])!;
+    expect(twice.noi).toBe(2 * c.noi);
+    expect(sumSummaryCols([null])).toBeNull();
+  });
+  it('column headers default to the T12 window\'s last month and can be typed over', () => {
+    expect(summaryLabels(10, 2026)).toEqual({ t12: 'Oct. 26 T12', t4: 'Oct. T4 Ann.', draft: 'Draft #1' });
+    expect(summaryLabels(11, 2023, { t12: 'Nov. 23 T12', draft: 'Draft #2' })).toEqual({ t12: 'Nov. 23 T12', t4: 'Nov. T4 Ann.', draft: 'Draft #2' });
+    expect(summaryLabels(null, null).t12).toBe('T12');
+  });
+  it('trailing12 { back } gives the window that ended earlier — only when every month of it is on file', () => {
+    // 14 months on file: Sep 2025 .. Oct 2026, rent rising 100 a month
+    const months = Array.from({ length: 14 }, (_, i) => 1000 + i * 100);
+    const stmt = { monthCal: [9, 10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], monthYear: [2025, 2025, 2025, 2025, 2026, 2026, 2026, 2026, 2026, 2026, 2026, 2026, 2026, 2026], rows: [{ gl: '4994', name: 'GPR', months, total: 0 }] };
+    const now = trailing12([stmt])!, prev = trailing12([stmt], { back: 1 })!, prev2 = trailing12([stmt], { back: 2 })!;
+    expect(now.period).toBe('Nov 2025-Oct 2026');
+    expect(prev.period).toBe('Oct 2025-Sep 2026');
+    expect(prev2.period).toBe('Sep 2025-Aug 2026');
+    expect(sum(now.cal['4994'])).toBe(sum(months.slice(2)));
+    expect(sum(prev.cal['4994'])).toBe(sum(months.slice(1, 13)));
+    expect(sum(prev2.cal['4994'])).toBe(sum(months.slice(0, 12)));
+    expect(trailing12([stmt], { back: 3 })).toBeNull();                // Aug 2025 is not on file
   });
 });

@@ -112,7 +112,7 @@ export interface Trailing12 {
 /** How many start-up months of a new acquisition are left out of its history by default. */
 export const STARTUP_EXCLUDE_DEFAULT = 1;
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-export function trailing12(stmts: (StmtData | null | undefined)[], opts: { excludeStartup?: number } = {}): Trailing12 | null {
+export function trailing12(stmts: (StmtData | null | undefined)[], opts: { excludeStartup?: number; back?: number } = {}): Trailing12 | null {
   const list = stmts.filter((s): s is StmtData => !!s?.rows?.length && !!s.monthCal?.length);
   if (!list.length) return null;
   // (year*12+month) → gl → value, first statement in the list wins
@@ -144,6 +144,14 @@ export function trailing12(stmts: (StmtData | null | undefined)[], opts: { exclu
     // no dated columns at all: fall back to the preferred statement's own calendar
     const s = list[0];
     return annualizeDead({ cal: stmtCalendar(s), lastMonth: stmtLastMonth(s), lastYear: 0, period: '', missing: [], dead: [], liveMonths: 12 }, 0, opts.excludeStartup);
+  }
+  // `back` > 0: the window that ended that many months BEFORE the last posted month (the
+  // Summary tab's "Oct. / Nov. / Dec. T12 NOI Trend" columns). Only when every month of it is
+  // on file — a partly covered earlier window is not reported.
+  const back = Math.max(0, Math.round(opts.back || 0));
+  if (back > 0) {
+    last -= back;
+    for (let k = last - 11; k <= last; k++) if (!cell.has(k)) return null;
   }
   const cal: Record<string, Months> = {};
   const missing: string[] = [];
@@ -265,6 +273,50 @@ export function refColumn(cal: Record<string, Months | number>): { byGl: Record<
   const totals: Record<string, number> = {};
   for (const [code, m] of rollup(monthsMap)) totals[code] = sum(m);
   return { byGl, totals };
+}
+
+/* ---------------- the Summary panel (Troy 2026-11-10) ----------------
+   One column of the budget-comps summary Troy keeps in Excel ("Minot Avg." / the per-property
+   sheets of "Minot 2025 Budget Comps"): the Monarch total rows it lists, in its order.
+   `tot` reads a Monarch TOTAL row (5070, 6170…), `gl` a single GL. Pure. */
+export interface SummaryCol {
+  rental: number; other: number; income: number;
+  fixedLess: number; tax: number; fee: number; admin: number; payroll: number; marketing: number; utilities: number;
+  inHouse: number; exterior: number; contract: number; rehab: number; expense: number;
+  noi: number; interest: number; mtg1: number; mtg2: number; cashFlow: number;
+}
+export function summaryColumn(tot: (code: string) => number, gl: (code: string) => number): SummaryCol {
+  const n = (v: number) => r2(Number(v) || 0);
+  const rental = n(tot('5070')), other = n(tot('5190'));
+  const tax = n(gl('6116')), fee = n(gl('6112'));
+  const fixedLess = n(tot('6170') - tax - fee);                  // "Fixed Admin Less RE TAXES & MGMT FEE"
+  const admin = n(tot('6370') + tot('6399'));                    // admin + corporate events, as the workbook adds them
+  const payroll = n(tot('6470')), marketing = n(tot('6570')), utilities = n(tot('6670'));
+  const inHouse = n(tot('6770')), exterior = n(tot('6870')), contract = n(tot('6970')), rehab = n(tot('7070'));
+  const income = n(rental + other);
+  const expense = n(fixedLess + tax + fee + admin + payroll + marketing + utilities + inHouse + exterior + contract + rehab);
+  const noi = n(income - expense);
+  const interest = n(gl('7300'));
+  const mtg1 = -Math.abs(n(gl('3080'))), mtg2 = -Math.abs(n(gl('3090')));   // principal reduces cash flow
+  return { rental, other, income, fixedLess, tax, fee, admin, payroll, marketing, utilities, inHouse, exterior, contract, rehab, expense, noi, interest, mtg1, mtg2, cashFlow: n(noi - interest + mtg1 + mtg2) };
+}
+/** Add summary columns (a region's "Avg." sheet is the sum of its properties). */
+export function sumSummaryCols(cols: (SummaryCol | null | undefined)[]): SummaryCol | null {
+  const list = cols.filter((c): c is SummaryCol => !!c);
+  if (!list.length) return null;
+  const out = {} as any;
+  for (const k of Object.keys(list[0]) as (keyof SummaryCol)[]) out[k] = r2(list.reduce((a, c) => a + (c[k] || 0), 0));
+  return out as SummaryCol;
+}
+/** Default column headers for the summary, from the trailing-12 window's last month: "Oct. 26 T12", "Oct. T4 Ann." */
+export function summaryLabels(lastMonth: number | null | undefined, lastYear: number | null | undefined, typed?: { t12?: string; t4?: string; draft?: string } | null): { t12: string; t4: string; draft: string } {
+  const mon = lastMonth ? MON[(lastMonth - 1 + 12) % 12] : '';
+  const yy = lastYear ? String(lastYear).slice(2) : '';
+  return {
+    t12: typed?.t12 || (mon ? `${mon}. ${yy} T12`.replace('  ', ' ') : 'T12'),
+    t4: typed?.t4 || (mon ? `${mon}. T4 Ann.` : 'T4 Ann.'),
+    draft: typed?.draft || 'Draft #1',
+  };
 }
 
 /* ---------------- the Yardi budget template (everything but payroll) ---------------- */

@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, ENGINE_VERSION, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
@@ -14,7 +14,7 @@ import {
   CoaAccount, BudgetLine, BudgetInputs, UwSnapshotData, CompWeights, Months,
   generateLines, regenerate, rebalanceCategory, defaultInputs, computeTieout, PCODES,
   kpis, categoryTotals, t12CategoryShapes, tieNoiToUw, tieIncomeToUw, DEFAULT_NOI_FLEX,
-  calendarSlice, monthLabels, applyRounding, zero12, r2, sum, rotate12, CURVES, WAGE_GLS, type Lease, type SellerUtilRow,
+  calendarSlice, monthLabels, applyRounding, zero12, r2, sum, rollup, rotate12, CURVES, WAGE_GLS, type Lease, type SellerUtilRow,
   actualizeFromComparison, applyActuals, injectPreStartActuals, ownershipIndexOf, actualKey, parseActualKey, type ActualizedMonth,
   calYearOf, calMonthOf,
 } from '../shared/domain.js';
@@ -419,7 +419,9 @@ interface LoadedBudget {
   /* ---- annual (non-acquisition) mode ---- */
   annual: boolean;
   stmtActual: StmtData | null; stmtBudget: StmtData | null; template: TemplateData | null;
-  actualCal: Record<string, Months> | null; budgetCal: Record<string, Months> | null; lastMonth: number; t12Missing: string[]; t12Dead: string[]; t12Startup: string[]; t12Early: string[]; t12Live: number;
+  actualCal: Record<string, Months> | null; budgetCal: Record<string, Months> | null; lastMonth: number; t12Missing: string[]; t12Dead: string[]; t12Startup: string[]; t12Early: string[];
+  /** NOI of the T12 windows ending 2 / 1 / 0 months before the last posted month (null = not fully on file) */
+  noiTrend: { back: number; label: string; noi: number | null }[]; t12End: { month: number; year: number } | null; t12Live: number;
   /** the tie-out reference (trailing-12 / CY budget / typed targets) — the annual budget's "UW" */
   ref: UwSnapshotData | null; refLabel: string;
   refs: RefCol[];
@@ -526,6 +528,8 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   let actualCal: Record<string, Months> | null = null, budgetCal: Record<string, Months> | null = null;
   let lastMonth = 10, ref: UwSnapshotData | null = null, refLabel = 'UW';
   let t12Missing: string[] = [], t12Dead: string[] = [], t12Live = 12, t12Startup: string[] = [], t12Early: string[] = [];
+  const noiTrend: { back: number; label: string; noi: number | null }[] = [];
+  let t12End: { month: number; year: number } | null = null;
   let payrollTpl: LoadedBudget['payrollTpl'] = null;
   // the default wage source for an annual budget: the Pay-rates tab's roster + raise entries
   // (Troy 2026-11-09). Aggregates by wage GL only; null = no cycle for the year / nobody booked here.
@@ -568,6 +572,17 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     const t12 = stmtActual ? await composeT12(budget.property_code, budget.py_stmt_id, stmtActual, budget.inputs?.startupExclude) : null;
     actualCal = t12?.cal || null;
     t12Missing = t12?.missing || [];
+    // NOI of the trailing-12 windows that ended 2, 1 and 0 months before the last posted month
+    // (the Summary tab's trend columns) — only where every month of the window is on file
+    if (stmtActual && t12) {
+      for (const back of [2, 1, 0]) {
+        const w = back === 0 ? t12 : await composeT12(budget.property_code, budget.py_stmt_id, stmtActual, budget.inputs?.startupExclude, back);
+        const end = (t12.lastYear * 12 + (t12.lastMonth - 1)) - back;
+        const label = `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][((end % 12) + 12) % 12]}.`;
+        noiTrend.push({ back, label, noi: w ? r2(refColumn(w.cal).totals['7280'] || 0) : null });
+      }
+      t12End = { month: t12.lastMonth, year: t12.lastYear };
+    }
     t12Dead = t12?.dead || [];
     t12Startup = t12?.startup || [];
     t12Early = t12?.early || [];
@@ -624,7 +639,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     }
   }
   return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, savePoints, payrollTpl, rosterLink, acquisition, burdenSrc,
-           annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, ref, refLabel, refs };
+           annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs };
 }
 
 export async function saveLines(budgetId: number, lines: BudgetLine[], fullBuild = false): Promise<void> {
@@ -649,6 +664,32 @@ function effectiveLines(lb: LoadedBudget): BudgetLine[] {
   return applyActuals(lb.lines, lb.coa, lb.budget.inputs?.actuals, Number(lb.budget.year), lb.budget.inputs?.startMonth || 1);
 }
 
+/** The Summary panel's data for one budget: the T12 column, the 4-months-annualized column and
+    the budget itself, in the workbook's rows (shared/annual.ts summaryColumn). */
+function summaryOf(lb: LoadedBudget, lines: BudgetLine[]) {
+  const monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
+  const totals = rollup(monthsMap);
+  const bud = summaryColumn((c) => sum(totals.get(c) || zero12()), (g) => sum(monthsMap.get(g) || zero12()));
+  const colOf = (key: string): SummaryCol | null => {
+    const r = lb.refs.find((x) => x.key === key);
+    return r ? summaryColumn((c) => r.totals[c] || 0, (g) => r.byGl[g] || 0) : null;
+  };
+  const t12 = colOf('actual');
+  let t4 = colOf('ann4');
+  // the workbook carries the T12's interest in the T4 column (interest is not annualized off four months)
+  if (t4 && t12) t4 = { ...t4, interest: t12.interest, cashFlow: r2(t4.noi - t12.interest + t4.mtg1 + t4.mtg2) };
+  const cyb = lb.refs.find((x) => x.key === 'budget');
+  return {
+    labels: summaryLabels(lb.t12End?.month, lb.t12End?.year, lb.budget.inputs?.summaryLabels),
+    capital: Number(lb.budget.inputs?.capital) || 0,
+    units: Number(lb.budget.inputs?.units) || 0,
+    t12, t4, bud,
+    noiTrend: lb.noiTrend,
+    cyBudgetNoi: cyb ? r2(cyb.totals['7280'] || 0) : null,
+    cyBudgetLabel: cyb ? cyb.label : null,
+  };
+}
+
 function budgetView(lb: LoadedBudget) {
   const lines = effectiveLines(lb);
   const monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
@@ -660,6 +701,8 @@ function budgetView(lb: LoadedBudget) {
   return {
     savePoints: lb.savePoints || [],
     budget: lb.budget,
+    // the Summary panel (budget comps layout): T12 / T4 annualized / this budget
+    summary: summaryOf(lb, lines),
     // the formula version in force now; budget.calc_version is the one this budget was last built on
     engineVersion: ENGINE_VERSION,
     lines,
@@ -904,9 +947,9 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
 }
 
 /** The property's trailing-12 window across all of its actual statements, the linked one first. */
-async function composeT12(propertyCode: string, preferredId: number | null, preferred: StmtData, excludeStartup?: number) {
+async function composeT12(propertyCode: string, preferredId: number | null, preferred: StmtData, excludeStartup?: number, back = 0) {
   const others = (await query(`select id, data from stmt_snapshots where property_code=$1 and kind='actual' and id <> coalesce($2, -1) order by created_at desc`, [propertyCode, preferredId])).rows;
-  return trailing12([preferred, ...others.map((r: any) => r.data as StmtData)], excludeStartup != null ? { excludeStartup: Number(excludeStartup) } : {});
+  return trailing12([preferred, ...others.map((r: any) => r.data as StmtData)], { ...(excludeStartup != null ? { excludeStartup: Number(excludeStartup) } : {}), back });
 }
 
 /** The actuals + budget statements parsed out of a Yardi template's PriorFinancials (same upload). */
@@ -1259,6 +1302,41 @@ router.post('/budgets/:id/formula-set', h(async (req, res) => {
   await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(inputs)]);
   await saveLines(id, built.lines, true);
   logChange(req.session.username || '', 'apply formula set', { id, set: inputs.rulesFrom });
+  res.json(budgetView((await loadBudget(id))!));
+}));
+
+/* ---------------- Summary tab + panel headers ----------------
+   GET /summary?year= : every property's latest budget for the year, with its summary columns —
+   the "Schedule" table and the per-region "Avg." panel are assembled on the client. */
+router.get('/summary', h(async (req, res) => {
+  const year = Number(req.query.year) || new Date().getFullYear() + 1;
+  const rows = (await query(
+    `select distinct on (b.property_code) b.id, b.property_code, b.budget_type, b.status, b.updated_at, p.name, p.market, p.units
+       from budgets b join properties p on p.code = b.property_code
+      where b.year = $1 order by b.property_code, b.updated_at desc`, [year])).rows as any[];
+  const out: any[] = [];
+  for (const r of rows) {
+    const lb = await loadBudget(r.id);
+    if (!lb) continue;
+    out.push({ id: r.id, code: r.property_code, name: r.name, region: String(r.market || '').trim() || 'Other', type: r.budget_type, status: r.status, updatedAt: r.updated_at,
+               stale: lb.budget.calc_version !== ENGINE_VERSION, ...summaryOf(lb, effectiveLines(lb)), units: Number(lb.budget.inputs?.units) || Number(r.units) || 0 });
+  }
+  const years = (await query('select distinct year from budgets order by year desc')).rows.map((x: any) => Number(x.year));
+  res.json({ year, years, properties: out });
+}));
+/* Rename the Summary panel's column headers ("Nov. 23 T12" …) — no recalculation. */
+router.post('/budgets/:id/summary-labels', h(async (req, res) => {
+  const id = Number(req.params.id);
+  const lb = await loadBudget(id);
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  const cur = { ...((lb.budget.inputs?.summaryLabels as any) || {}) };
+  for (const k of ['t12', 't4', 'draft'] as const) {
+    if (req.body?.[k] === undefined) continue;
+    const v = String(req.body[k] || '').trim().slice(0, 40);
+    if (v) cur[k] = v; else delete cur[k];
+  }
+  const inputs = { ...(lb.budget.inputs || {}), summaryLabels: Object.keys(cur).length ? cur : null };
+  await query('update budgets set inputs=$2 where id=$1', [id, JSON.stringify(inputs)]);
   res.json(budgetView((await loadBudget(id))!));
 }));
 

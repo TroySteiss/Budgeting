@@ -2,7 +2,7 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-11-10 — payroll ratios and monthly shape can be borrowed from another property (`inputs.burdenFrom`); section increase % boxes on the grid's section headers (`baseline.secGrowth`); Payroll tab opens on All regions with finalize-all; raise import skips zeros and reads a typed New rate as a raise (RM files import in any order); 2026-11-09 — "Flat + growth over T12" (any row-chosen shape) now works on every line, engine-driven ones included; first-year management fee for the first 12 months of ownership, start-up months of a new acquisition left out of its history; saved formula sets (picked when a budget starts; GRKS rules are no longer a silent default), within-year cost drift on expense lines; reviewability pass (dropped lines, chip key, formula-version stamp, defaults-in-use card, export check), vacancy on a carry-over curve from the last actual month, prior-period collections capped at delinquency; loss to lease: market growth deepens every lease and a reset burns only the burnoff share (`ltlModel` growth); vacancy is an annual average shaped by lease expirations (`vacancyByMonth`); roster raises start in the cycle's effective month (editable on the Payroll tab); Δ% T12 column; annual budgets take wages from the Payroll tab by default (roster + raise entries, drafts included; `src/payroll-data.ts`, `inputs.wageSource`); 6310 corporate rate follows the budget year (2027 workbook rev2: $58.17/unit/yr + $513/mo), Minot sites are subjects with the role editable in Settings; editor view pass (quarterly % rows on totals, trend chart axis fitted to the data instead of zero, T3-annualized reference column after the T12 in the grid and the compare card, whole-dollar cell display); flat-fee utility billing (reimbursement income = last actual month × budgeted occupancy, `utilities.billing`), Enter on an assumption box moves to the next row; payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
+> Last updated: 2026-11-10 — Summary tab (Schedule table by region) and a per-budget Summary view in the budget-comps workbook's formatting, with renameable column headers; payroll ratios and monthly shape can be borrowed from another property (`inputs.burdenFrom`); section increase % boxes on the grid's section headers (`baseline.secGrowth`); Payroll tab opens on All regions with finalize-all; raise import skips zeros and reads a typed New rate as a raise (RM files import in any order); 2026-11-09 — "Flat + growth over T12" (any row-chosen shape) now works on every line, engine-driven ones included; first-year management fee for the first 12 months of ownership, start-up months of a new acquisition left out of its history; saved formula sets (picked when a budget starts; GRKS rules are no longer a silent default), within-year cost drift on expense lines; reviewability pass (dropped lines, chip key, formula-version stamp, defaults-in-use card, export check), vacancy on a carry-over curve from the last actual month, prior-period collections capped at delinquency; loss to lease: market growth deepens every lease and a reset burns only the burnoff share (`ltlModel` growth); vacancy is an annual average shaped by lease expirations (`vacancyByMonth`); roster raises start in the cycle's effective month (editable on the Payroll tab); Δ% T12 column; annual budgets take wages from the Payroll tab by default (roster + raise entries, drafts included; `src/payroll-data.ts`, `inputs.wageSource`); 6310 corporate rate follows the budget year (2027 workbook rev2: $58.17/unit/yr + $513/mo), Minot sites are subjects with the role editable in Settings; editor view pass (quarterly % rows on totals, trend chart axis fitted to the data instead of zero, T3-annualized reference column after the T12 in the grid and the compare card, whole-dollar cell display); flat-fee utility billing (reimbursement income = last actual month × budgeted occupancy, `utilities.billing`), Enter on an assumption box moves to the next row; payroll template tie-out (a Payroll Budget Workbook property sheet imports as a reference: rows under the payroll GLs, Δ rows under 6470, toolbar chip); 2027 template release reviewed (TEMPLATE_2027_REVIEW.md: take/skip per GL, payroll workbook imports as a staffing report, 2027 HRIS titles mapped); payroll burden ratio applied month by month, employee rent carries its last actual month; multi-input Fx chips open a GPR-style popover (LTL renewal % + burnoffs; corp rates, interest); 2026-11-05 engine fixes (RE tax off T12, typed category % precedence, roll as-of date for pre-start leases).
 > Earlier: 2026-09-10 — actualized months (partial-month rule; section above Exports); 2026-08-20 (initial build + seller-T12 shapes + monthly comp sets
 > w/ per-unit basis + ND payroll model).
 
@@ -661,6 +661,40 @@ month's delinquency. Rate = trailing-12 collections ÷ trailing-12 delinquency, 
 (`inputs.collectPct` when typed — the row's box). Driver `{ method: 'collections', pct, startDq,
 capped?, t12Rate? }`, chip %PRIOR DQ. With no delinquency budgeted it falls back to the old T12
 ratio to net GPR (`pctGpr`). Growth ties no longer scale 5036 directly; it follows 5035.
+
+## Summary tab + per-budget Summary view (Troy 2026-11-10)
+
+Modelled on Troy's "Minot 2025 Budget Comps" workbook: its per-property / "Minot Avg." sheet
+(the panel) and its "Schedule" sheet (the table). Formatting is copied from the workbook — light
+blue `#DDEBF7` for the T12 column and growth over T12, light green `#E2EFDA` for the
+T4-annualized column and growth over T4, bold labels, medium outer borders, double rules under
+Total Other Income and Rehab / Replace — and is kept in dark mode (`.xsum` forces its colours).
+
+- **Data** (`summaryColumn`, `sumSummaryCols`, `summaryLabels` in shared/annual.ts; `summaryOf`
+  in routes.ts → `budgetView.summary`): three columns — T12 (`refs.actual`), last four months
+  annualized (`refs.ann4`, carrying the T12's interest as the workbook does) and the budget.
+  Rows: 5070, 5190, Total Income; "Fixed Admin Less RE TAXES & MGMT FEE" = 6170 − 6116 − 6112;
+  6116; 6112; Admin = 6370 + 6399; 6470; 6570; 6670; 6770; 6870; 6970; 7070; Total Expense; NOI;
+  7300; 3080 / 3090 (principal, shown negative); Cash Flow = NOI − interest − principal;
+  Return = Cash Flow ÷ capital. The right-hand notes are the workbook's column-G formulas.
+- **Per budget**: a `Grid | Summary` switch in the editor header (`editorViewToggle`,
+  `S.edView`, localStorage `bt-edview`) swaps the grid for the panel (`summaryPanelHtml`).
+- **Column headers**: default "Oct. 26 T12" / "Oct. T4 Ann." / "Draft #1" from the T12 window's
+  last month; click a header to rename it (`POST /budgets/:id/summary-labels` →
+  `inputs.summaryLabels`, no recalculation) — e.g. to note which T12 is being compared to.
+- **Summary tab** (nav, `renderSummary`, `GET /summary?year=`): every property's latest budget
+  for the year, grouped by region (`properties.market`), each region as the Schedule table
+  (`scheduleTableHtml`): unit count, property, three "T12 NOI Trend" columns, the year's NOI
+  budget, growth over each T12, NOI growth over the current-year budget, income growth over T4,
+  and "NOI Increase Tax and MGMT Fee Adjusted" per T12; an Average row (sums for $, growth on the
+  sums, averages for the two single-column growths). The trend columns are the trailing-12 windows
+  that ended 2 / 1 / 0 months before the last posted month (`trailing12(…, { back })`,
+  `lb.noiTrend`) — blank where a window is not fully on file. Each region has a collapsible
+  "average breakdown" = the panel on the summed columns. Clicking a property opens its budget in
+  Summary view.
+- Not carried over from the workbook: the yellow "TPNDC … Budgeted NOI" row (Minot-specific),
+  the hidden RE-tax / fee increase columns (still used in the adjusted growth), and the side
+  boxes (historical distributions, cash position, per-unit costs, UW comparison).
 
 ## Payroll ratios from another property (Troy 2026-11-10)
 
