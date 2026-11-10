@@ -15,7 +15,7 @@ import { parseStaffingReport, parsePayrollModel, parsePayrollDetail } from './im
 import { loadBudget, buildLines, saveLines } from './routes.js';
 import { maskPeople, hiddenAggregates, annualWagesByGl, seatMonthly, homeRegionsOf, applyStaffingDetail, normalizePayBasis, normalizeRmCorporateShare, type StaffingPerson, type RaiseMap, type DetailPerson } from '../shared/payroll.js';
 import { loadSnapshotPeople, regionOf, marketOfCode, latestIterByRegion } from './payroll-data.js';
-import { buildRaiseWorkbook, parseRaiseImport, type RaiseExportRow, type RaiseSheetSpec } from './payroll-xlsx.js';
+import { buildRaiseWorkbook, parseRaiseImportDetailed, type RaiseExportRow, type RaiseSheetSpec } from './payroll-xlsx.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 export const payrollRouter = Router();
@@ -503,7 +503,7 @@ payrollRouter.post('/iterations/:id/import', upload.single('file'), h(async (req
   const people = await loadSnapshotPeople(it.staffing_snapshot_id);
   const byKey = new Map(people.map((p) => [p.key, p]));
   const homes = homeRegionsOf(people, await marketOfCode());
-  const pairs = parseRaiseImport(req.file.buffer);
+  const { pairs, zeroSkipped, fromNewRate } = parseRaiseImportDetailed(req.file.buffer);
   let applied = 0, unchanged = 0;
   const skipped: { name: string; reason: string }[] = [];
   for (const { key, pct } of pairs) {
@@ -524,7 +524,7 @@ payrollRouter.post('/iterations/:id/import', upload.single('file'), h(async (req
     applied++;
   }
   logChange(user, 'import raise workbook', { iterationId: it.id, region: it.region, applied, unchanged, skipped: skipped.length });
-  res.json({ ok: true, applied, unchanged, skipped });
+  res.json({ ok: true, applied, unchanged, skipped, zeroSkipped, fromNewRate });
 }));
 
 /* ---- whole-cycle round trip (the "All regions" view): each person once, in
@@ -558,7 +558,7 @@ payrollRouter.post('/cycles/:id/import', upload.single('file'), h(async (req, re
   const byKey = new Map(people.map((p) => [p.key, p]));
   const homes = homeRegionsOf(people, await marketOfCode());
   const latest = await latestIterByRegion(cycle.id);
-  const pairs = parseRaiseImport(req.file.buffer);
+  const { pairs, zeroSkipped, fromNewRate } = parseRaiseImportDetailed(req.file.buffer);
   let applied = 0, unchanged = 0;
   const skipped: { name: string; reason: string }[] = [];
   for (const { key, pct } of pairs) {
@@ -581,7 +581,7 @@ payrollRouter.post('/cycles/:id/import', upload.single('file'), h(async (req, re
     applied++;
   }
   logChange(user, 'import raise workbook (all regions)', { cycleId: cycle.id, applied, unchanged, skipped: skipped.length });
-  res.json({ ok: true, applied, unchanged, skipped });
+  res.json({ ok: true, applied, unchanged, skipped, zeroSkipped, fromNewRate });
 }));
 
 /* ---------------- iteration lifecycle (admin) ---------------- */

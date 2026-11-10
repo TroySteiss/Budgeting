@@ -9,7 +9,7 @@ import {
   sameName, applyStaffingDetail, type StaffingPerson,
 } from '../shared/payroll.js';
 import { parseStaffingReport, parsePayrollDetail, detectUploadKind } from '../src/importers.js';
-import { buildRaiseWorkbook, parseRaiseImport, type RaiseExportRow } from '../src/payroll-xlsx.js';
+import { buildRaiseWorkbook, parseRaiseImport, parseRaiseImportDetailed, type RaiseExportRow } from '../src/payroll-xlsx.js';
 
 const person = (over: Partial<StaffingPerson>): StaffingPerson => ({
   key: 'x1', name: 'A. Example', position: 'Maintenance Tech I', payMethod: 'Hourly',
@@ -302,6 +302,56 @@ describe('excel round trip (synthetic)', () => {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Name', 'Amount'], ['x', 1]]), 'Sheet1');
     expect(() => parseRaiseImport(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer)).toThrow(/Key/);
+  });
+});
+
+describe('raise import: zeros are "not filled in"; a typed New rate is read as a raise (2026-11-10, synthetic)', () => {
+  // one RM sheet the way the export lays it out: Key | Employee | Type | Current rate | Raise % | New rate
+  const sheet = (rows: { key: string; type: string; cur: number; pct?: number | null; newTyped?: number; pctFormula?: number }[]) => {
+    const ws = XLSX.utils.aoa_to_sheet([['Key', 'Employee', 'Type', 'Current rate', 'Raise %', 'New rate'], ...rows.map((r) => [r.key, 'Synthetic Person', r.type, r.cur, r.pct ?? 0, null])]);
+    rows.forEach((r, i) => {
+      const row = i + 1;
+      // New rate is a formula in the export; a manager who types over it leaves a plain number
+      ws[XLSX.utils.encode_cell({ r: row, c: 5 })] = r.newTyped != null ? { t: 'n', v: r.newTyped } : { t: 'n', v: r.cur * (1 + (r.pct || 0) / 100), f: `D${row + 1}*(1+E${row + 1}/100)` };
+      if (r.pctFormula != null) ws[XLSX.utils.encode_cell({ r: row, c: 4 })] = { t: 'n', v: r.pctFormula, f: `'Other'!E${row + 1}` };
+    });
+    return ws;
+  };
+  const book = (sheets: Record<string, XLSX.WorkSheet>) => { const wb = XLSX.utils.book_new(); for (const [n, ws] of Object.entries(sheets)) XLSX.utils.book_append_sheet(wb, ws, n); return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer; };
+
+  it('a 0 in the file is left alone, so one manager\'s file cannot wipe another manager\'s people', () => {
+    // the file "Gail" sent back: her own people filled, everyone else still at the exported 0
+    const gailsFile = book({ Gail: sheet([{ key: 'g1', type: 'Hourly', cur: 20, pct: 3 }, { key: 'g2', type: 'Hourly', cur: 22, pct: 0 }]), Holly: sheet([{ key: 'h1', type: 'Hourly', cur: 18, pct: 0 }]) });
+    const d = parseRaiseImportDetailed(gailsFile);
+    expect(d.pairs).toEqual([{ key: 'g1', pct: 3 }]);
+    expect(d.zeroSkipped).toBe(2);                                    // g2 and h1: not touched by an import
+    expect(d.fromNewRate).toBe(0);
+  });
+  it('a New rate typed over its formula becomes raise % = new / current - 1; a typed Raise % still wins', () => {
+    const f = book({ Holly: sheet([
+      { key: 'h1', type: 'Hourly', cur: 20, pct: 0, newTyped: 20.6 },      // 3%
+      { key: 'h2', type: 'Salary', cur: 60000, pct: 0, newTyped: 62400 },  // 4%
+      { key: 'h3', type: 'Hourly', cur: 20, pct: 2, newTyped: 25 },        // both typed: the Raise % wins
+      { key: 'h4', type: 'Hourly', cur: 20, pct: 0, newTyped: 20 },        // typed the same rate: no raise
+      { key: 'h5', type: 'Hourly', cur: 20, pct: 0 },                      // untouched
+    ]) });
+    const d = parseRaiseImportDetailed(f);
+    const by = Object.fromEntries(d.pairs.map((x) => [x.key, x.pct]));
+    expect(by.h1).toBeCloseTo(3, 4);
+    expect(by.h2).toBeCloseTo(4, 4);
+    expect(by.h3).toBe(2);
+    expect('h4' in by).toBe(false);
+    expect('h5' in by).toBe(false);
+    expect(d.fromNewRate).toBe(2);
+    expect(d.zeroSkipped).toBe(2);
+    // the hourly rate typed off the quarter lands on the nearest 25 cents when the raise is used
+    expect(newRate('Hourly', 20, by.h1)).toBe(20.5);
+  });
+  it('a typed value on a manager sheet beats the Combined sheet\'s mirrored formula; a file of only zeros imports nothing without failing', () => {
+    const f = book({ Combined: sheet([{ key: 'k1', type: 'Hourly', cur: 20, pctFormula: 3 }]), Gail: sheet([{ key: 'k1', type: 'Hourly', cur: 20, pct: 4.5 }]) });
+    expect(parseRaiseImportDetailed(f).pairs).toEqual([{ key: 'k1', pct: 4.5 }]);
+    const empty = book({ Gail: sheet([{ key: 'k1', type: 'Hourly', cur: 20, pct: 0 }]) });
+    expect(parseRaiseImportDetailed(empty)).toEqual({ pairs: [], zeroSkipped: 1, fromNewRate: 0 });
   });
 });
 

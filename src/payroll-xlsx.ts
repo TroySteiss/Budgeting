@@ -240,30 +240,44 @@ export async function buildRaiseWorkbook(a: RaiseExportArgs): Promise<Buffer> {
 /* ---------------- import ---------------- */
 const normHdr = (v: any): string => (v == null ? '' : String(v)).toLowerCase().replace(/[^a-z%]/g, '');
 
-/** Pull {key, pct} out of EVERY sheet with Key and Raise % columns — the
-    per-RM sheets and Combined both qualify. A typed value beats a formula's
-    cached result (Combined mirrors the RM sheets, so edits made on either
-    side win correctly); blanks and text are skipped. */
-export function parseRaiseImport(buf: Buffer): { key: string; pct: number }[] {
+/** Pull {key, pct} out of EVERY sheet with Key and Raise % columns — the per-RM sheets and
+    Combined both qualify. Precedence per person: a Raise % TYPED on a sheet, then a raise
+    worked back from a TYPED New rate, then a formula's cached Raise % (Combined mirrors the RM
+    sheets). Blanks and text are skipped.
+
+    Two rules added 2026-11-10 after the first real round of RM files (Troy):
+    - **A zero is "not filled in", not "set to 0%".** Every exported workbook carries 0 for
+      everyone, and each RM fills only their own sheet — so importing Gail's file after
+      Brittanee's used to write Brittanee's people back to 0. Zeros are now left out (counted in
+      `zeroSkipped`); to put someone back to 0%, type it in the app.
+    - **A New rate typed over its formula is read as a raise**: when Raise % is 0 / blank and the
+      New rate cell holds a typed number, raise % = New rate ÷ Current rate − 1 (4 decimals).
+      The 25-cent rounding on hourly rates still applies when the raise is used, so an hourly
+      rate typed off the quarter lands on the nearest one. Counted in `fromNewRate`. */
+export function parseRaiseImportDetailed(buf: Buffer): { pairs: { key: string; pct: number }[]; zeroSkipped: number; fromNewRate: number } {
   const wb = XLSX.read(buf, { type: 'buffer', cellFormula: true });
-  const typed = new Map<string, number>();
-  const cached = new Map<string, number>();
+  const typed = new Map<string, number>();     // Raise % typed, non-zero
+  const derived = new Map<string, number>();   // from a typed New rate
+  const cached = new Map<string, number>();    // Raise % formula result, non-zero
+  const seen = new Set<string>();
   let found = false;
   for (const name of wb.SheetNames) {
     const ws = wb.Sheets[name];
     if (!ws['!ref']) continue;
     const range = XLSX.utils.decode_range(ws['!ref']);
     // locate the header row
-    let hdrRow = -1, keyCol = -1, pctCol = -1;
+    let hdrRow = -1, keyCol = -1, pctCol = -1, newCol = -1, curCol = -1;
     for (let r = range.s.r; r <= Math.min(range.e.r, range.s.r + 11); r++) {
-      let k = -1, p = -1;
+      let k = -1, p = -1, n = -1, cu = -1;
       for (let c = range.s.c; c <= range.e.c; c++) {
         const cell = ws[XLSX.utils.encode_cell({ r, c })];
         const h = normHdr(cell ? cell.v : null);
         if (h === 'key') k = c;
         if (h === 'raise%' || h === 'raisepct' || h === 'raisepercent') p = c;
+        if (h === 'newrate') n = c;
+        if (h === 'currentrate') cu = c;
       }
-      if (k >= 0 && p >= 0) { hdrRow = r; keyCol = k; pctCol = p; break; }
+      if (k >= 0 && p >= 0) { hdrRow = r; keyCol = k; pctCol = p; newCol = n; curCol = cu; break; }
     }
     if (hdrRow < 0) continue;
     found = true;
@@ -271,15 +285,34 @@ export function parseRaiseImport(buf: Buffer): { key: string; pct: number }[] {
       const kc = ws[XLSX.utils.encode_cell({ r, c: keyCol })];
       const pc = ws[XLSX.utils.encode_cell({ r, c: pctCol })];
       const key = kc && kc.v != null ? String(kc.v).trim() : '';
+      if (!key) continue;
+      seen.add(key);
       const pct = pc && typeof pc.v === 'number' ? pc.v : parseFloat(String(pc && pc.v != null ? pc.v : ''));
-      if (!key || !Number.isFinite(pct)) continue;
-      if (pc && pc.f) { if (!cached.has(key)) cached.set(key, pct); }
-      else typed.set(key, pct);
+      if (Number.isFinite(pct) && pct !== 0) {
+        if (pc && pc.f) { if (!cached.has(key)) cached.set(key, pct); }
+        else typed.set(key, pct);
+        continue;
+      }
+      // Raise % is 0 / blank: was the New rate typed over its formula?
+      if (newCol >= 0 && curCol >= 0) {
+        const nc = ws[XLSX.utils.encode_cell({ r, c: newCol })], cc = ws[XLSX.utils.encode_cell({ r, c: curCol })];
+        if (nc && !nc.f && typeof nc.v === 'number' && cc && typeof cc.v === 'number' && cc.v > 0) {
+          const d = Math.round((nc.v / cc.v - 1) * 100 * 10000) / 10000;
+          if (Math.abs(d) >= 0.005) derived.set(key, d);
+        }
+      }
     }
   }
   if (!found) throw new Error('No sheet with "Key" and "Raise %" columns found — import the exported workbook (keep column A)');
+  if (!seen.size) throw new Error('No raise rows found under the Key / Raise % headers');
   const out = new Map(cached);
+  for (const [k, v] of derived) out.set(k, v);
   for (const [k, v] of typed) out.set(k, v);
-  if (!out.size) throw new Error('No raise rows found under the Key / Raise % headers');
-  return [...out.entries()].map(([key, pct]) => ({ key, pct }));
+  let fromNewRate = 0;
+  for (const k of derived.keys()) if (!typed.has(k)) fromNewRate++;
+  return { pairs: [...out.entries()].map(([key, pct]) => ({ key, pct })), zeroSkipped: [...seen].filter((k) => !out.has(k)).length, fromNewRate };
+}
+/** The {key, pct} pairs alone (see parseRaiseImportDetailed). */
+export function parseRaiseImport(buf: Buffer): { key: string; pct: number }[] {
+  return parseRaiseImportDetailed(buf).pairs;
 }

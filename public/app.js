@@ -3988,7 +3988,7 @@ function wirePayCycle(el, c) {
       const fd = new FormData(); fd.append('file', f);
       try {
         const r = await api(all ? `/payroll/cycles/${c.cycle.id}/import` : `/payroll/iterations/${iter.id}/import`, { method: 'POST', body: fd });
-        P.msg = `Imported ${r.applied} raise(s)${r.unchanged ? ` · ${r.unchanged} unchanged` : ''}`
+        P.msg = `Imported ${r.applied} raise(s)${r.unchanged ? ` · ${r.unchanged} unchanged` : ''}${r.fromNewRate ? ` · ${r.fromNewRate} worked back from a typed New rate` : ''}${r.zeroSkipped ? ` · ${r.zeroSkipped} left as they were (0 or blank in the file)` : ''}`
           + (r.skipped.length ? ` · skipped ${r.skipped.length}: ${r.skipped.slice(0, 4).map((s) => `${s.name} (${s.reason})`).join(', ')}${r.skipped.length > 4 ? '…' : ''}` : '');
         await loadPayCycle(c.cycle.id); render();
       } catch (e) { P.err = e.message; render(); }
