@@ -674,6 +674,10 @@ and its Summary tab. Nothing from that workbook's roster is read — only its la
   a statement whose period ends before `year-1`, or a template for another budget year,
   reads as **stale**, not on file. Buttons: Open budget / **+ Start {year} budget** (presets
   `S.nb = { prop, year }` for `newBudgetDialog`) / Upload data (the Data view).
+- **Row buttons (Troy 2026-11-09)**: each property row ends with **Open** (the chosen year's
+  budget, `data-rowopen` → `openBudget`) or **+ Start** (`data-rowstart` → the New budget dialog
+  preset to that property and year) — no need to unfold the row first. The unfolded detail keeps
+  its own buttons.
 - **See everything at once**: the editor and payroll views add `.wrap.wide` (no 1340px cap);
   `table.grid` pins the GL and Account columns (`th.l` / `td.code` / `td.name` sticky-left,
   row backgrounds carried); side pane 400px, month inputs 64px.

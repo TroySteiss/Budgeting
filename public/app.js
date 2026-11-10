@@ -400,15 +400,16 @@ function propertyListHtml(st) {
         <h2 style="margin:0">Properties <span class="badge">${rows.length}</span>${notStarted ? ` <span class="pill none" style="margin-left:6px">${notStarted} not started for ${year}</span>` : ''}</h2>
         <div class="row" style="align-items:center; gap:8px"><label class="muted" style="font-size:12px">Budget year</label><select id="dash-year">${years.map((y) => `<option value="${y}" ${y === year ? 'selected' : ''}>${y}</option>`).join('')}</select></div>
       </div>
-      <table class="list plist"><tr><th>Property</th><th>Units</th><th>Region</th><th>${year} budget</th><th>Reports</th><th>Updated</th></tr>
+      <table class="list plist"><tr><th>Property</th><th>Units</th><th>Region</th><th>${year} budget</th><th>Reports</th><th>Updated</th><th></th></tr>
         ${rows.map(({ p, b, others, missingReq, missingRec }) => {
           const reps = missingReq.length ? `<span class="pill miss">${missingReq.length} required missing</span>` : missingRec.length ? `<span class="pill rec">${missingRec.length} recommended missing</span>` : '<span class="pill ok">all on file</span>';
           const stat = b ? `<span class="pill ok">${esc(b.status || 'draft')}</span>${b.budget_type === 'annual' ? '' : ' <span class="muted">acquisition</span>'}`
             : `<span class="pill none">Not started</span>${others.length ? ` <span class="muted" style="font-size:11px">has ${others.join(', ')}</span>` : ''}`;
           return `<tr class="pclick" data-p="${esc(p.code)}" title="click for the reports on file">
             <td><b>${esc(p.code)}</b> · ${esc(p.name)}</td><td>${p.units || ''}</td><td class="muted">${esc(p.market || '')}</td>
-            <td class="st">${stat}</td><td class="st">${reps}</td><td class="muted">${b ? new Date(b.updated_at).toLocaleDateString() : ''}</td></tr>
-            <tr class="pdetail" data-pd="${esc(p.code)}" hidden><td colspan="6"></td></tr>`;
+            <td class="st">${stat}</td><td class="st">${reps}</td><td class="muted">${b ? new Date(b.updated_at).toLocaleDateString() : ''}</td>
+            <td class="go">${b ? `<button class="btn sm" data-rowopen="${b.id}" title="Open the ${year} budget">Open</button>` : `<button class="btn sub sm" data-rowstart="${esc(p.code)}" title="Start the ${year} budget for ${esc(p.code)}">+ Start</button>`}</td></tr>
+            <tr class="pdetail" data-pd="${esc(p.code)}" hidden><td colspan="7"></td></tr>`;
         }).join('')}
       </table>
     </div>`;
@@ -417,6 +418,9 @@ function propertyListHtml(st) {
 function wirePropertyList(el, pl) {
   const sel = el.querySelector('#dash-year');
   if (sel) sel.addEventListener('change', () => { S.dashYear = Number(sel.value); render(); });
+  // straight into the budget from the row (Troy 2026-11-09) — no need to unfold the property first
+  el.querySelectorAll('[data-rowopen]').forEach((b) => b.addEventListener('click', async (e) => { e.stopPropagation(); await openBudget(Number(b.dataset.rowopen)); }));
+  el.querySelectorAll('[data-rowstart]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); S.nb = { prop: b.dataset.rowstart, year: pl.year }; S.newType = 'annual'; newBudgetDialog(); }));
   el.querySelectorAll('tr.pclick').forEach((tr) => tr.addEventListener('click', () => {
     const code = tr.dataset.p;
     const det = el.querySelector(`tr.pdetail[data-pd="${code}"]`);
