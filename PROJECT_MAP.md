@@ -925,6 +925,23 @@ templates". (Clicking into a saved set to edit its items directly is NOT built y
   neither, and Shift-click. Row menu: **"CY budget × growth (this GL)"** (`ownBudget`). Budget-based
   drivers carry `basis: 'budget'` (`sellerLine` chip CY BUD, `t12curve`, `wavg`); the formula
   copier replays them on the TARGET line's own current-year budget.
+- **Default formulas** (Troy 2026-11-11: "If I am able to change default curves used, it is entirely
+  too difficult to find... those changes should flow through into anyone using default templates"):
+  ONE shared per-GL table, `app_meta.default_rules` (migration 014), edited on the **Default formulas**
+  screen (`openDefaultFormulas`; dashboard button, budget More menu, and the last option of every
+  section's formula pick). Per GL: default formula + seasonal curve (`gl_accounts.curve`); one pick per
+  section sets them all; search box. `GET/PUT /default-formulas` (PUT admin). `effectiveRules()` lays
+  the table over the base rules of every budget NOT on a named saved set (`followsDefaults`: no set,
+  "Template defaults", old GRKS). A named set is a deliberate copy and is untouched. Above the table:
+  `baseline.glShape` (row / section / Formula for lines) and `inputs.rulesOwn` (GLs given by Copy
+  section formulas). Engine-built GLs are never taken; the line keeps its own factor and MROUND.
+  Saving recalculates nothing: the screen opens Recalculate (NOI before / after) for those budgets.
+- **Section formula pick**: "Turnover curve (lease expirations + 1 month)" is shape `turns`; `dropped`
+  lines take a section pick too; a pick that changes no line says why; no expirations = a warning.
+- **Smooth is gentle** (Troy 2026-11-11: "too aggressive for many adjustments"): `smoothGentle` moves
+  only credit months and local spikes (> 1.5x the typical month AND both neighbours), excess into low
+  months within 3, filled to the typical month. Nothing wrong = asks before one half-strength pass.
+  The old multi-pass `smoothMonths` remains for the "smoothed seller months" curve shape only.
 - **Recalculate many** (dashboard Export menu -> "Recalculate..."; `openRecalcMany`, `POST
   /budgets-recalc { ids, dryRun }`): preview of lines that move and NOI before / after per budget,
   then save with a save point "Before recalculating all". This is how a changed default reaches

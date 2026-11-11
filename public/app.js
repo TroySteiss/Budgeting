@@ -291,6 +291,7 @@ function renderDash(el) {
       <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:10px">
         <h2 style="margin:0">Budgets</h2>
         <div class="row">
+          <button class="btn sub" id="dash-dform" title="The formula and seasonal curve every line uses by default, for all budgets on the defaults. One pick sets a whole section.">ƒ Default formulas</button>
           <button class="btn sub" id="dash-export" title="Exports for the ticked budgets (all if none ticked)">⬇ Export ▾</button>
           <button class="btn" id="newb">+ New budget</button>
         </div>
@@ -336,6 +337,7 @@ function renderDash(el) {
     e.stopPropagation();
     el.querySelectorAll('[data-sel]').forEach((c) => { c.checked = selAll.checked; });
   });
+  document.getElementById('dash-dform').addEventListener('click', () => openDefaultFormulas());
   document.getElementById('dash-export').addEventListener('click', (e) => {
     e.stopPropagation();
     const n = selectedIds().length;
@@ -1075,6 +1077,7 @@ function renderEditor(el) {
     popMenu(anchor, `
       <button data-x="sp" title="Named, permanent save points for this budget — capture the current iteration, restore any earlier one">⎘ Save points${(bv.savePoints || []).length ? ` (${bv.savePoints.length})` : ''}</button>
       <button data-x="round" title="Round selected lines' months to a multiple">⌁ MROUND lines…</button>
+      ${bv.annual ? `<button data-x="dform" title="The formula and seasonal curve every line uses by default, for ALL budgets on the defaults (this one ${bv.followsDefaults ? 'is' : 'is on a named saved set, so it is not'} among them). One pick sets a whole section.">ƒ Default formulas (all budgets)…</button>` : ''}
       ${bv.annual ? `<button data-x="bshape" title="Pick one formula (turn curve, 1-2-1 weighted, T12 ÷ 12…) and tick the lines it applies to, across any sections">∿ Formula for lines…</button>` : ''}
       ${bv.annual ? `<button data-x="fsave" title="Save every formula on this budget — each line's shape, increase factor and rounding, the zero-outs and the formula settings — under a name, to start other budgets from. Hand-typed cells and dollar amounts are NOT saved.">★ Save formulas as…</button>
       <button data-x="fapply" title="Give this budget a saved formula set. Its own per-line shape / factor choices are replaced by the set's; overrides, dollars, GPR and the vacancy average stay.">☆ Apply a saved formula set…</button>` : ''}
@@ -1090,6 +1093,7 @@ function renderEditor(el) {
       menu.querySelector('[data-x="sp"]').addEventListener('click', () => openSavePoints(b));
       menu.querySelector('[data-x="round"]').addEventListener('click', () => openRoundDialog(b));
       { const bs = menu.querySelector('[data-x="bshape"]'); if (bs) bs.addEventListener('click', () => openBulkFormula(b)); }
+      { const dfm = menu.querySelector('[data-x="dform"]'); if (dfm) dfm.addEventListener('click', () => openDefaultFormulas()); }
       menu.querySelector('[data-x="copy"]').addEventListener('click', () => openCopyFormulas(b));
       { const fs1 = menu.querySelector('[data-x="fsave"]'); if (fs1) fs1.addEventListener('click', () => saveFormulaSet(b)); }
       { const fs2 = menu.querySelector('[data-x="fapply"]'); if (fs2) fs2.addEventListener('click', () => openApplyFormulaSet(b)); }
@@ -2012,7 +2016,7 @@ function secPctBoxHtml(bv, hdr, linesByGl) {
 /* ---- section formula (Troy 2026-11-10): one pick on a section header sets how every history-based
    line under it is built (e.g. Contractor off "T12 / 12"). Hand-typed lines and lines with their own
    formula (corporate rate, fee, suggestion) are not touched. ---- */
-const SEC_SHAPES = [['actual', 'Same month last year'], ['wavg', '1-2-1 weighted months'], ['flat', 'T12 ÷ 12, flat'], ['curve', 'T12 on the seasonal curve'], ['avgnz', 'Average of active months'], ['last', 'Last actual month, flat'], ['turns', 'T12 on lease expirations']];
+const SEC_SHAPES = [['actual', 'Same month last year'], ['wavg', '1-2-1 weighted months'], ['flat', 'T12 ÷ 12, flat'], ['curve', 'T12 on the seasonal curve'], ['avgnz', 'Average of active months'], ['last', 'Last actual month, flat'], ['turns', 'Turnover curve (lease expirations + 1 month)']];
 function secShapeHtml(hdr, shapesNow) {
   const now = [...shapesNow].filter(Boolean);
   if (!now.length) return '';
@@ -2020,22 +2024,102 @@ function secShapeHtml(hdr, shapesNow) {
   return `<select class="secshape-in" data-secshape="${esc(hdr.section)}" title="How every history-based line in ${esc(hdr.name)} is built. Picking one sets it on all of them and recalculates; hand-typed lines and lines with their own formula keep theirs. Then More → Copy section formulas to other budgets… to give the same change to other properties.">
     <option value="" selected>${one ? 'formula: ' + esc((SEC_SHAPES.find((x) => x[0] === one) || [one, one])[1]) : 'formula: mixed'}</option>
     ${SEC_SHAPES.filter((x) => x[0] !== one).map(([k, t]) => `<option value="${k}">set all to: ${t}</option>`).join('')}
-    <option value="__clear">clear row choices (back to the formula set)</option></select>`;
+    <option value="__clear">clear row choices (back to the default)</option>
+    <option value="__defaults">change the DEFAULT for every budget…</option></select>`;
 }
 async function setSectionShape(b, section, shape) {
+  if (shape === '__defaults') { render(); return openDefaultFormulas(section); }
   const inp = S.bv.budget.inputs || {}, bl = inp.baseline || {};
   const lines = new Map((S.bv.lines || []).map((l) => [l.gl_code, l]));
-  const glShape = { ...(bl.glShape || {}) }; let n = 0;
+  const glShape = { ...(bl.glShape || {}) }; let n = 0, skipped = 0;
   for (const a of S.state.coa) {
     if (a.kind !== 'detail' || a.section !== section) continue;
     const l = lines.get(a.code);
-    if (!l || l.override || !l.driver || l.driver.method !== 'baseline') continue;
+    if (!l || l.override || !l.driver || !['baseline', 'dropped'].includes(l.driver.method)) { if (l && l.months.some((v) => v)) skipped++; continue; }
     if (shape === '__clear') { if (glShape[a.code] != null) { delete glShape[a.code]; n++; } } else { glShape[a.code] = shape; n++; }
   }
-  if (!n) return;
+  // never a silent nothing: say why no line took it
+  if (!n) { alert(shape === '__clear' ? 'No line in this section has a formula picked on this budget.' : `No line in this section could take that formula: ${skipped} line${skipped === 1 ? ' is' : 's are'} hand-typed or built by their own formula (corporate rate, fee, suggestion). Release a hand-typed line first (row menu: Reset to engine formula).`); render(); return; }
+  if (shape === 'turns' && !budgetHasExpirations()) alert('This budget has no lease expirations yet (rent roll, typed expirations or the Yardi template). The turnover curve has nothing to follow, so these lines stay flat until expirations are loaded.');
   pushUndo();
   S.bv = await PUT(`/budgets/${b.id}`, { inputs: { baseline: { ...bl, glShape } } });
   render();
+  toastMsg(`${n} line${n === 1 ? '' : 's'} set${skipped ? `, ${skipped} hand-typed / own-formula left alone` : ''}`);
+}
+function budgetHasExpirations() {
+  return (S.bv.lines || []).some((l) => l.driver && l.driver.shape === 'turns' && l.driver.turns > 0) || ((S.bv.budget.inputs || {}).expirations || []).some((v) => v) || (S.bv.leaseCount || 0) > 0 || ((S.bv.template || {}).leaseExpirations || []).some((v) => v);
+}
+function toastMsg(text) {
+  let t = document.getElementById('toast-msg');
+  if (!t) { t = document.createElement('div'); t.id = 'toast-msg'; t.style.cssText = 'position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#1f2937; color:#fff; padding:8px 14px; border-radius:8px; font-size:13px; z-index:9999; box-shadow:0 4px 14px rgba(0,0,0,.25)'; document.body.appendChild(t); }
+  t.textContent = text; t.style.display = 'block';
+  clearTimeout(toastMsg.h); toastMsg.h = setTimeout(() => { t.style.display = 'none'; }, 4000);
+}
+
+/* ---- DEFAULT FORMULAS (Troy 2026-11-11: "If I am able to change default curves used, it is entirely too
+   difficult to find... those changes should flow through into anyone using default templates as well").
+   One screen, opened from the dashboard, the budget toolbar, the More menu and every section's formula
+   pick. Per GL: the default formula and the seasonal curve; one pick per section sets them all. Saved for
+   everyone; budgets not on a named saved set take it at their next recalculation (offered right after). ---- */
+async function openDefaultFormulas(focusSection) {
+  let dlg = document.getElementById('dform-dlg');
+  if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'dform-dlg'; dlg.style.width = 'min(980px, 96vw)'; document.body.appendChild(dlg); }
+  dlg.innerHTML = '<h2>Default formulas</h2><span class="muted">Loading…</span>'; dlg.showModal();
+  let d;
+  try { d = await GET('/default-formulas'); } catch (e) { dlg.innerHTML = `<h2>Default formulas</h2><div class="err">${esc(e.message)}</div><div class="foot"><button class="btn sub" id="df-x">Close</button></div>`; dlg.querySelector('#df-x').addEventListener('click', () => dlg.close()); return; }
+  const admin = !!(S.auth && S.auth.isAdmin);
+  const label = (k) => (SEC_SHAPES.find((x) => x[0] === k) || [k, k])[1];
+  const secs = [];
+  for (const r of d.rows) { let s = secs.find((x) => x.key === r.section); if (!s) { s = { key: r.section, name: r.sectionName, rows: [] }; secs.push(s); } s.rows.push(r); }
+  const dis = admin ? '' : 'disabled';
+  const codes = (list) => list.map((x) => `${esc(String(x.code).toUpperCase())} ${x.year}`).join(', ');
+  dlg.innerHTML = `<h2>Default formulas <span class="muted" style="font-weight:400; font-size:13px">— how each line is built when nobody picked otherwise</span></h2>
+    <p class="muted" style="font-size:12px; margin:0 0 8px">Shared by everyone. <b>Applies to ${d.follow.length} budget${d.follow.length === 1 ? '' : 's'}</b> on the defaults${d.follow.length ? ` (${codes(d.follow)})` : ''} and to every budget started on them later. A formula picked on a budget itself (row, section or Formula for lines) still wins there, and hand-typed lines never move.${d.named.length ? ` <b>Not touched:</b> ${d.named.length} budget${d.named.length === 1 ? '' : 's'} on a named saved set (${d.named.map((x) => `${esc(String(x.code).toUpperCase())} ${x.year}`).join(', ')}).` : ''} ${admin ? 'Saving shows each budget\'s NOI before and after; nothing recalculates until you confirm.' : 'Only an admin can change these.'}</p>
+    <div class="row" style="margin-bottom:6px"><input id="df-q" placeholder="find a line or section…" style="flex:1; border:1px solid var(--line); border-radius:6px; padding:5px 8px">
+      <span class="muted" style="font-size:12px">Seasonal curve is used by “T12 on the seasonal curve”.</span></div>
+    <div id="df-body" style="max-height:56vh; overflow:auto; border:1px solid var(--line); border-radius:8px; padding:4px 10px">
+      ${secs.map((s) => `<div class="df-sec" data-sec="${esc(s.key)}">
+        <div style="display:flex; align-items:center; gap:8px; margin:10px 0 4px; position:sticky; top:0; background:var(--card, #fff); padding:3px 0"><b style="text-transform:uppercase; font-size:12px; color:var(--dim)">${esc(s.name)}</b> <span class="muted" style="font-size:11.5px">${s.rows.length} lines</span>
+          <select data-secset="${esc(s.key)}" ${dis} style="margin-left:auto"><option value="">set the whole section to…</option>${SEC_SHAPES.map(([k, t]) => `<option value="${k}">${t}</option>`).join('')}<option value="__none">not set (built-in)</option></select></div>
+        <table class="list" style="margin:0">${s.rows.map((r) => `<tr data-row="${r.gl}" data-find="${esc((r.gl + ' ' + r.name + ' ' + s.name).toLowerCase())}"><td style="width:46%">${r.gl} ${esc(r.name)}</td>
+          <td><select data-df="${r.gl}" data-was="${r.shape || ''}" ${dis}><option value="" ${r.shape ? '' : 'selected'}>not set — built-in: ${label(r.builtin)}${r.grks && r.grks !== r.builtin ? ` (old GRKS budgets: ${label(r.grks)})` : ''}</option>${SEC_SHAPES.map(([k, t]) => `<option value="${k}" ${r.shape === k ? 'selected' : ''}>${t}</option>`).join('')}</select></td>
+          <td style="width:130px"><select data-cv="${r.gl}" data-was="${esc(r.curve)}" ${dis} title="The seasonal curve of this GL">${d.curves.map((c) => `<option value="${c}" ${r.curve === c ? 'selected' : ''}>${c} curve</option>`).join('')}</select></td></tr>`).join('')}</table></div>`).join('')}
+    </div>
+    <div class="err" id="df-err"></div>
+    <div class="foot"><span class="muted" id="df-n" style="margin-right:auto; font-size:12px"></span><button class="btn sub" id="df-x">Close</button>${admin ? ' <button class="btn" id="df-go">Save defaults</button>' : ''}</div>`;
+  const q = (s) => dlg.querySelector(s);
+  const changed = () => ({
+    shapes: Object.fromEntries([...dlg.querySelectorAll('[data-df]')].filter((x) => x.value !== x.dataset.was).map((x) => [x.dataset.df, x.value])),
+    curves: Object.fromEntries([...dlg.querySelectorAll('[data-cv]')].filter((x) => x.value !== x.dataset.was).map((x) => [x.dataset.cv, x.value])),
+  });
+  const count = () => { const c = changed(); const n = Object.keys(c.shapes).length + Object.keys(c.curves).length; q('#df-n').textContent = n ? `${n} change${n === 1 ? '' : 's'} not saved yet` : ''; dlg.querySelectorAll('[data-df],[data-cv]').forEach((x) => { x.style.fontWeight = x.value !== x.dataset.was ? '700' : ''; }); };
+  dlg.querySelectorAll('[data-df],[data-cv]').forEach((x) => x.addEventListener('change', count));
+  dlg.querySelectorAll('[data-secset]').forEach((sel) => sel.addEventListener('change', () => {
+    const v = sel.value; if (!v) return;
+    dlg.querySelectorAll(`.df-sec[data-sec="${sel.dataset.secset}"] [data-df]`).forEach((x) => { if (x.closest('tr').style.display !== 'none') x.value = v === '__none' ? '' : v; });
+    sel.value = ''; count();
+  }));
+  q('#df-q').addEventListener('input', (e) => {
+    const w = e.target.value.trim().toLowerCase();
+    dlg.querySelectorAll('[data-row]').forEach((tr) => { tr.style.display = !w || tr.dataset.find.includes(w) ? '' : 'none'; });
+    dlg.querySelectorAll('.df-sec').forEach((sec) => { sec.style.display = [...sec.querySelectorAll('[data-row]')].some((tr) => tr.style.display !== 'none') ? '' : 'none'; });
+  });
+  q('#df-x').addEventListener('click', () => dlg.close());
+  if (focusSection) { const t = dlg.querySelector(`.df-sec[data-sec="${focusSection}"]`); if (t) t.scrollIntoView({ block: 'start' }); }
+  const go = q('#df-go');
+  if (go) go.addEventListener('click', async () => {
+    const c = changed();
+    if (!Object.keys(c.shapes).length && !Object.keys(c.curves).length) { q('#df-err').textContent = 'Nothing changed.'; return; }
+    go.disabled = true;
+    try {
+      const r = await PUT('/default-formulas', c);
+      await refreshState();
+      dlg.close();
+      const ids = (r.follow || []).map((x) => x.id);
+      if (ids.length) openRecalcMany(ids);
+      else alert('Saved. No budget is on the defaults right now; budgets started on them later will use this.');
+    } catch (e) { q('#df-err').textContent = e.message; go.disabled = false; }
+  });
 }
 
 /* ---- recalculate many budgets at once (dashboard): preview NOI before / after, then apply ---- */
@@ -2083,7 +2167,7 @@ function openBulkFormula(b) {
     <h2>Formula for lines</h2>
     <p class="muted" style="margin:0 0 8px; font-size:12px">Sets how the ticked lines are built from their own history, then recalculates. Each line keeps its increase %. Hand-typed lines are not listed. One Undo reverses it.</p>
     <div class="row">
-      <div class="fld"><label>Formula</label><select id="bs-shape">${SEC_SHAPES.map(([k, t]) => `<option value="${k}" ${k === 'turns' ? 'selected' : ''}>${t}${k === 'turns' ? ' + 1 month lag (turn curve)' : ''}</option>`).join('')}<option value="__clear">clear row choices (back to the formula set)</option></select></div>
+      <div class="fld"><label>Formula</label><select id="bs-shape">${SEC_SHAPES.map(([k, t]) => `<option value="${k}" ${k === 'turns' ? 'selected' : ''}>${t}</option>`).join('')}<option value="__clear">clear row choices (back to the formula set)</option></select></div>
       <span class="spacer" style="flex:1"></span>
       <button class="btn sub" id="bs-turn" title="The turn-cost lines: cleaning, painting, carpet, make-ready, appliance and flooring replacement">Turn lines</button>
       <button class="btn sub" id="bs-all">All</button>
@@ -2661,6 +2745,7 @@ function billingSmell(months) {
    are a real year boundary — reflective edges keep the annual total exact.
    Stops as soon as the series stops smelling like bad billing (max 12 passes). */
 function smoothMonths(months, opt) {
+  if (opt && opt.gl) return smoothGentle(months, opt);
   let m = months.slice();
   const total = Math.round(m.reduce((a, v) => a + v, 0) * 100) / 100;
   let passes = 0;
@@ -2700,6 +2785,56 @@ function smoothMonths(months, opt) {
     m = m.map((v) => Math.round(v / mult) * mult);
   }
   return { months: m, passes };
+}
+
+/* GENTLE smoothing for a budget line (Troy 2026-11-11: "Smooth tool also is too aggressive for many
+   adjustments"). The old pass ran 1-2-1 over EVERY month at least twice, flattening seasonality that was
+   real. Now only the months that are actually wrong move:
+     1. a month against the line's sign (a credit on an expense) is taken out of the nearest high month;
+     2. a spike (more than 1.5x the typical month AND 1.5x both months beside it) gives its EXCESS to the low months within three months
+        of it, nearest first and the months before it first (a catch-up bill follows the missed ones),
+        filling each only up to the typical month. What does not fit stays in the spike.
+   Months that were already ordinary are not touched. When nothing qualifies the line is left alone unless
+   the user says yes to one half-strength 1-2-1 pass. Total kept, then MROUND $5. */
+function smoothGentle(months, opt) {
+  const total = Math.round(months.reduce((a, v) => a + v, 0) * 100) / 100;
+  const sign = Number(opt.gl) >= 6000 || total >= 0 ? 1 : -1;
+  let w = months.map((v) => v * sign);
+  const pos = w.filter((v) => v > 0).sort((a, b) => a - b);
+  const med = pos.length ? pos[Math.floor((pos.length - 1) / 2)] : 0;
+  let moved = 0;
+  const near = (i, d) => [i - d, i + d].filter((j) => j >= 0 && j < 12);
+  // 1. credits
+  for (let i = 0; i < 12; i++) {
+    if (!(w[i] < 0)) continue;
+    let need = -w[i]; w[i] = 0;
+    for (const floor of [med, 0]) for (let d = 1; d < 12 && need > 0.005; d++) for (const j of near(i, d)) {
+      const take = Math.min(need, Math.max(0, w[j] - floor));
+      if (take > 0) { w[j] -= take; need -= take; moved += take; }
+    }
+    if (need > 0.005) w[i] = -need;   // the whole line is a credit: left for the sign guard below
+  }
+  // 2. spikes
+  if (med > 0) for (let i = 0; i < 12; i++) {
+    // a spike stands out from the months NEXT to it too: the top of a seasonal run is not one
+    const nb = Math.max(w[(i + 11) % 12], w[(i + 1) % 12]);
+    if (!(w[i] > 1.5 * med && w[i] - med >= 50 && w[i] > 1.5 * nb)) continue;
+    let excess = w[i] - med;
+    for (let d = 1; d <= 3 && excess > 0.005; d++) for (const j of near(i, d)) {
+      const give = Math.min(excess, Math.max(0, med - w[j]));
+      if (give > 0) { w[j] += give; w[i] -= give; excess -= give; moved += give; }
+    }
+  }
+  // nothing was wrong enough: one soft pass (half way to a 1-2-1), reflective edges keep the total
+  const soft = moved < 1;
+  if (soft) w = w.map((v, i) => 0.5 * v + 0.5 * ((2 * v + (i > 0 ? w[i - 1] : w[0]) + (i < 11 ? w[i + 1] : w[11])) / 4));
+  let m = w.map((v) => v * sign);
+  if (m.some((v) => v * sign < 0)) {
+    if (total * sign <= 0) m = m.map(() => 0);
+    else { const keep = m.map((v) => (v * sign > 0 ? v : 0)); const k = total / keep.reduce((a, v) => a + v, 0); m = keep.map((v) => v * k); }
+  }
+  const mult = opt.round || 5;
+  return { months: m.map((v) => Math.round(v / mult) * mult), passes: 1, soft };
 }
 
 function sellerDerived(l) {
@@ -2865,7 +3000,7 @@ function openRowTools(b, gl, anchorBtn) {
     ${S.bv.annual && fcBudgetRow(S.bv, gl) ? `<button data-act="ownBudget" title="This GL's own current-year budget, month by month, × growth. It is read from the Yardi template along with the T12: no GL to pick.">${dot('drv-t12')}CY budget × growth (this GL · ${money(fcBudgetRow(S.bv, gl).total)})</button>` : ''}
     ${(S.bv.sellerT12 || []).length ? `<button data-act="t12curve" title="${S.bv.annual ? 'Take a statement line\'s T12 total × growth and spread it on a clean seasonal curve' : 'For non-accrual seller billing (credits/gaps/spikes): the ANNUAL total is still right even when the months are garbage. Takes the seller line\'s T12 total × growth and spreads it on a clean seasonal curve.'}">${dot('drv-t12')}${S.bv.annual ? 'T12 TOTAL → seasonal curve… (this GL)' : 'Seller T12 TOTAL → seasonal curve… (bad bills)'}</button>` : ''}
     <button data-act="link" title="Set this GL equal to another budget line × a weight (e.g. sewer = water × 0.8). LIVE: re-follows the source on every regeneration.">${dot('drv-fee')}= another line × weight… (moves in conjunction)</button>
-    ${line && line.months.some((v) => v) ? `<button data-act="smooth" title="One click for missed bills: pulls catch-up spikes into the surrounding low months and soaks up credit months, repeating until the series looks like real monthly billing. No negative months; every month rounded to $5, so the total can move by a few dollars. The line keeps its formula chip and gains a SMOOTH chip.">${dot('drv-t12')}Smooth missed bills — spikes into surrounding months</button>` : ''}
+    ${line && line.months.some((v) => v) ? `<button data-act="smooth" title="Gentle: only the months that are wrong move. A spike gives its excess to the low months next to it and a credit month is netted against the nearest high month; ordinary months are not touched. A line with nothing wrong is left alone unless you ask for a light pass. No negative months; every month rounded to $5, so the total can move by a few dollars. The line keeps its formula chip and gains a SMOOTH chip.">${dot('drv-t12')}Smooth missed bills — spikes into surrounding months</button>` : ''}
     ${line && (line.driver || {}).method === 'recovery' ? `<button data-act="recmap" title="Pick exactly which utility expense lines this reimbursement recovers (recovery % × their prior month). Claims are exclusive — a line you take here is released by whichever reim had it.">${dot('drv-t12')}Edit what this reim recovers…</button>` : ''}
     ${((S.bv.sellerT12 || []).length || hasComp) ? `<button data-act="wavg" title="Troy's distribution formula: each month = (2×that month + prior + next)/4 of the source actuals, × (1+growth), MROUND to a multiple">${dot('drv-comp')}Weighted avg distribution (1-2-1) × growth → MROUND…</button>` : ''}
     <button data-act="reset">${dot('drv-uw')}Reset to engine formula (clear override)</button>`;
@@ -2961,6 +3096,11 @@ function openRowTools(b, gl, anchorBtn) {
     if (act === 'smooth') {
       const cur = line ? line.months : Array(12).fill(0);
       const res = smoothMonths(cur, { gl, round: 5 });
+      // nothing on the line looks wrong: leave it alone unless asked
+      if (res.soft && !confirm(`${gl} ${acc.name || ''}
+No spike or credit month stands out on this line, so Smooth would leave it as it is.
+
+Apply a light overall smoothing anyway? (each month moves half way toward the average of itself and its neighbours)`)) return;
       const prev = line && line.driver && line.driver.method && line.driver.method !== 'manual' ? line.driver : null;
       // the formula keeps its chip; smoothing rides along as a second one
       if (prev && prev.method !== 'smooth') { const { hard: _typed, ...p2 } = prev; return put(res.months, { ...p2, smooth: { passes: ((prev.smooth || {}).passes || 0) + res.passes, mult: 5 } }); }
@@ -4621,7 +4761,7 @@ function moveOutsHtml(tpl, exp) {
   return `<div class="fld" style="grid-column:1/-1"><label>PY move-outs (template MoveOuts sheet, reference only): ${sum(sch)} scheduled + ${sum(un)} unscheduled = ${sum(sch) + sum(un)} · colour = move-outs ÷ expirations (red over 40%, amber 30-40%)</label>
     <table style="font-size:11.5px;border-collapse:collapse"><tr>${MONTHS.map((m) => `<th style="text-align:right;font-weight:500;color:var(--muted);padding:1px 6px">${m}</th>`).join('')}</tr><tr>${cells}</tr></table></div>`;
 }
-const SHAPE_LABELS = { turns: 'T12 total on lease expirations, +1 month lag (turn costs)', actual: 'Same month × factor (template default)', wavg: '1-2-1 weighted distribution × factor', flat: 'T12 total ÷ 12, flat', curve: 'T12 total on the GL seasonal curve', last: 'Last actual month, flat', avgnz: 'Average of active months, flat' };
+const SHAPE_LABELS = { turns: 'Turnover curve: T12 total on lease expirations, +1 month lag', actual: 'Same month × factor (template default)', wavg: '1-2-1 weighted distribution × factor', flat: 'T12 total ÷ 12, flat', curve: 'T12 total on the GL seasonal curve', last: 'Last actual month, flat', avgnz: 'Average of active months, flat' };
 
 function annualInputsHtml(inp) {
   const g = inp.gpr || {};

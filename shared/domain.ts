@@ -123,6 +123,8 @@ export interface BudgetInputs {
   rules?: Record<string, any>;
   /** which saved formula set `rules` came from, and when */
   rulesFrom?: { id: number | string | null; name: string; at?: string };
+  /** GLs whose formula was copied INTO this budget on purpose (Copy section formulas): the shared default formulas never replace these */
+  rulesOwn?: string[];
   /** sign-off on the defaults in use (who, when, a fingerprint of what they were) */
   defaultsAck?: { by: string; at: string; hash: string } | null;
   /** annual budgets: how much of the vacancy average follows lease expirations month by month (1 = fully, the default; 0 = flat every month) */

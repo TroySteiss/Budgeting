@@ -603,7 +603,7 @@ export interface AnnualRule {
   shape?: BaselineShape; mround?: number; factor?: number; noThreshold?: boolean; name?: string;
 }
 const RULE_SHAPE: Partial<Record<AnnualRule['method'], BaselineShape>> = { same: 'actual', wavg: 'wavg', flatT12: 'flat', last: 'last', fixedAnnual: 'flat' };
-const ruleShapeOf = (r: AnnualRule | null | undefined): BaselineShape | undefined => (r ? (r.shape ?? RULE_SHAPE[r.method]) : undefined);
+export const ruleShapeOf = (r: AnnualRule | null | undefined): BaselineShape | undefined => (r ? (r.shape ?? RULE_SHAPE[r.method]) : undefined);
 
 /* ---------------- saved formula sets (Troy 2026-11-09) ----------------
    "We should not be using GRKS defaults. I need to be able to save all property formulas
@@ -712,6 +712,38 @@ export function sectionFormulaSource(rules: Record<string, AnnualRule>, coaList:
 }
 /** Rule methods that leave the engine's own logic in charge of a GL (never replaced by a section fill). */
 const ENGINE_RULE = new Set<AnnualRule['method']>(['engine', 'corpRate', 'suggested', 'debt', 'payroll', 'fixedAnnual', 'zero']);
+/* ---------------- default formulas (Troy 2026-11-11) ----------------
+   "If I am able to change default curves used, it is entirely too difficult to find. Note that those
+   changes should flow through into anyone using default templates as well."
+   ONE shared per-GL table (app_meta.default_rules), edited on the Default formulas screen. It applies to
+   every budget that is not on a NAMED saved formula set: "Template defaults", the old GRKS default, or no
+   set at all. A named set is a deliberate copy and is left alone. Above it: a formula picked on the budget
+   itself (row / section / Formula for lines) and a formula copied into the budget. It never takes a GL the
+   engine builds itself, and the line keeps its own increase % and rounding. */
+/** The formula a history-based GL gets when no rule names one. */
+export function builtinShape(code: string): BaselineShape {
+  return LAST_MONTH_FLAT_GLS.has(code) ? 'last' : FIXED_ANNUAL_GLS.has(code) || FLAT_T12_GLS.has(code) ? 'flat' : AVG_NZ_GLS.has(code) ? 'avgnz' : TURN_EXPENSE_GLS.has(code) ? 'turns' : 'actual';
+}
+export const shapeRule = (sh: BaselineShape): AnnualRule => (SHAPE_RULE[sh] ? { method: SHAPE_RULE[sh]! } : { method: 'custom', shape: sh });
+export function followsDefaults(inputs: BudgetInputs | null | undefined): boolean {
+  const rf = inputs?.rulesFrom;
+  return !rf || rf.id == null || rf.id === 'grks';
+}
+/** Is this GL's formula the engine's own business (corporate rate, fee, payroll, a deliberate zero)? */
+export const isEngineRule = (r: AnnualRule | null | undefined): boolean => !!r && ENGINE_RULE.has(r.method);
+export function effectiveRules(inputs: BudgetInputs, fallback: Record<string, AnnualRule> | null, defaults: Record<string, AnnualRule> | null | undefined): Record<string, AnnualRule> {
+  const base = ((inputs.rules as Record<string, AnnualRule> | undefined) ?? fallback ?? {});
+  if (!defaults || !Object.keys(defaults).length || !followsDefaults(inputs)) return base;
+  const own = new Set(inputs.rulesOwn || []);
+  const out: Record<string, AnnualRule> = { ...base };
+  for (const [gl, r] of Object.entries(defaults)) {
+    const prev = base[gl];
+    if (own.has(gl) || !ruleShapeOf(r) || isEngineRule(prev)) continue;
+    out[gl] = { method: r.method, ...(r.shape ? { shape: r.shape } : {}), ...(prev && Number.isFinite(prev.factor) ? { factor: prev.factor } : {}), ...(prev?.mround ? { mround: prev.mround } : {}) };
+  }
+  return out;
+}
+
 export function copyFormulas(
   target: BudgetInputs, src: { rules: Record<string, AnnualRule>; secGrowth?: Record<string, number> | null },
   gls: string[], sections: string[], opts: { pct?: boolean; fallbackRules?: Record<string, AnnualRule> | null; fill?: string[] } = {},
@@ -733,7 +765,9 @@ export function copyFormulas(
     rules[gl] = next; delete glShape[gl]; delete glMround[gl]; if (opts.pct) delete glGrowth[gl];
   }
   if (opts.pct) for (const s of sections) { const v = src.secGrowth?.[s]; if (v != null) secGrowth[s] = v; else delete secGrowth[s]; }
-  return { inputs: { ...target, rules, baseline: { ...bl, glShape, glMround, glGrowth, secGrowth } } as BudgetInputs, changed };
+  // these GLs now carry a formula given to this budget on purpose: the shared defaults stay off them
+  const rulesOwn = [...new Set([...(target.rulesOwn || []), ...gls.filter((gl) => src.rules[gl] && rules[gl] && JSON.stringify(rules[gl]).length && !(fillSet.has(gl) && isEngineRule(rules[gl])))])].sort();
+  return { inputs: { ...target, rules, rulesOwn, baseline: { ...bl, glShape, glMround, glGrowth, secGrowth } } as BudgetInputs, changed };
 }
 
 export interface AnnualSources {

@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, ENGINE_VERSION, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
@@ -416,6 +416,8 @@ interface LoadedBudget {
   sellerUtil: SellerUtilRow[] | null; charges: Record<string, number> | null;
   savePoints?: any[];
   sellerRows: any[] | null;
+  /** the shared default formulas (Default formulas screen); used only by a budget not on a named saved set */
+  defaultRules?: Record<string, AnnualRule> | null;
   /* ---- annual (non-acquisition) mode ---- */
   annual: boolean;
   stmtActual: StmtData | null; stmtBudget: StmtData | null; template: TemplateData | null;
@@ -571,6 +573,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
       }
     }
   }
+  const defaultRules: Record<string, AnnualRule> | null = annual ? await loadDefaultRules() : null;
   const refs: RefCol[] = [];
   if (annual) {
     const stmtRows = await query('select id, kind, period, data from stmt_snapshots where id = any($1)', [[budget.py_stmt_id, budget.cy_budget_stmt_id].filter(Boolean)]);
@@ -648,7 +651,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     // so every GL with T12 on the template is its own source and nothing has to be picked.
     if (stmtActual?.rows?.length || actualCal) sellerRows = ownT12Rows(stmtActual, actualCal, (gl) => coaMap.get(gl) || null);
   }
-  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, burdenSrc,
+  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, defaultRules, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, burdenSrc,
            annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs };
 }
 
@@ -776,6 +779,8 @@ function budgetView(lb: LoadedBudget) {
     hasSellerUtil: !!(lb.sellerUtil && lb.sellerUtil.length),
     charges: lb.charges,
     sellerT12: lb.sellerRows,
+    // does this budget take the shared Default formulas (it is not on a named saved set)?
+    followsDefaults: lb.annual ? followsDefaults(lb.budget.inputs) : false,
   };
 }
 
@@ -939,7 +944,7 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   let lines: BudgetLine[];
   if (lb.annual) {
     // ANNUAL: the property's own statements + the Yardi template rules (shared/annual.ts)
-    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: (inputs.rules as any) ?? loadAnnualRules(), comps: lb.comps, payrollWages: wages, wagesLive: live ? { label: live.label, effective: live.effective, draft: live.draft, monthly: live.monthly as Record<string, Months> } : null, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code, acquisition: lb.acquisition,
+    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: effectiveRules(inputs, loadAnnualRules() as any, lb.defaultRules) as any, comps: lb.comps, payrollWages: wages, wagesLive: live ? { label: live.label, effective: live.effective, draft: live.draft, monthly: live.monthly as Record<string, Months> } : null, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code, acquisition: lb.acquisition,
       burdenSrc: lb.burdenSrc && lb.burdenSrc.found && String(inputs.burdenFrom || '').toLowerCase() === lb.burdenSrc.code ? { code: lb.burdenSrc.code, actual: lb.burdenSrc.actual, budget: lb.burdenSrc.budget } : null };
     lines = existing ? regenerateAnnual(existing, lb.coa, inputs, src) : generateAnnualLines(lb.coa, inputs, src);
   } else {
@@ -1321,6 +1326,51 @@ router.post('/budgets/:id/recalc', h(async (req, res) => {
   const built = buildLines(lb, lb.budget.inputs, lb.lines);
   await saveLines(id, built.lines, true);
   res.json(budgetView((await loadBudget(id))!));
+}));
+
+/* ---------------- default formulas (Troy 2026-11-11) ----------------
+   One shared table: the formula (and the seasonal curve) each history-based GL uses when a budget is not
+   on a named saved formula set. Editing it changes nothing by itself: the screen then offers the
+   Recalculate preview for the budgets that follow it. */
+async function loadDefaultRules(): Promise<Record<string, AnnualRule>> {
+  try { return ((await query('select default_rules from app_meta where id=1')).rows[0]?.default_rules as any) || {}; } catch { return {}; }
+}
+const DEFAULT_SHAPES = new Set(['actual', 'wavg', 'flat', 'curve', 'avgnz', 'last', 'turns']);
+async function defaultFormulasView() {
+  const coa = await loadCoa();
+  const rules = await loadDefaultRules();
+  const grks = loadAnnualRules() as Record<string, AnnualRule>;
+  const skip = new Set(['special_projects', 'principal', 'below_noi']);
+  const hdr = new Map(coa.filter((a) => a.kind === 'header').map((a) => [a.section, a.name]));
+  const rows = coa
+    .filter((a) => a.kind === 'detail' && a.active !== false && Number(a.code) >= 5100 && !skip.has(a.section) && a.pcode !== '10' && !isEngineRule(grks[a.code]) && !CORP_RATES[a.code])
+    .map((a) => ({ gl: a.code, name: a.name, section: a.section, sectionName: hdr.get(a.section) || String(a.section || '').replace(/_/g, ' '), curve: a.curve || 'flat', builtin: builtinShape(a.code), grks: ruleShapeOf(grks[a.code]) || null, shape: ruleShapeOf(rules[a.code]) || null }));
+  const bud = (await query(`select id, property_code, year, inputs->'rulesFrom' as rf from budgets where budget_type='annual' or inputs->>'mode'='annual' order by year desc, property_code`)).rows as any[];
+  const follow = bud.filter((b) => followsDefaults({ rulesFrom: b.rf || undefined } as any)).map((b) => ({ id: b.id, code: b.property_code, year: b.year }));
+  const named = bud.filter((b) => !followsDefaults({ rulesFrom: b.rf || undefined } as any)).map((b) => ({ id: b.id, code: b.property_code, year: b.year, set: b.rf?.name || '' }));
+  return { rows, follow, named, curves: Object.keys(CURVES) };
+}
+router.get('/default-formulas', h(async (_req, res) => { res.json(await defaultFormulasView()); }));
+router.put('/default-formulas', requireAdmin, h(async (req, res) => {
+  const shapes = (req.body?.shapes || {}) as Record<string, string>;
+  const curves = (req.body?.curves || {}) as Record<string, string>;
+  const rules = { ...(await loadDefaultRules()) };
+  const allowed = new Set((await defaultFormulasView()).rows.map((r) => r.gl));
+  let n = 0;
+  for (const [gl, sh] of Object.entries(shapes)) {
+    if (!allowed.has(gl)) continue;
+    if (!sh) { if (rules[gl]) { delete rules[gl]; n++; } continue; }
+    if (!DEFAULT_SHAPES.has(sh)) return res.status(400).json({ error: `Unknown formula "${sh}"` });
+    rules[gl] = shapeRule(sh as any); n++;
+  }
+  await query('update app_meta set default_rules=$1 where id=1', [JSON.stringify(rules)]);
+  let c = 0;
+  for (const [gl, cv] of Object.entries(curves)) {
+    if (!allowed.has(gl) || !CURVES[cv]) continue;
+    await query('update gl_accounts set curve=$2 where code=$1', [gl, cv]); c++;
+  }
+  logChange(req.session.username || '', 'default formulas', { formulas: n, curves: c });
+  res.json({ ok: true, formulas: n, curvesChanged: c, ...(await defaultFormulasView()) });
 }));
 
 /* ---------------- saved formula sets ----------------

@@ -1339,3 +1339,25 @@ describe('real estate taxes grow 3% by default', () => {
     expect(tax(inputs, { '6116': { method: 'fixedAnnual', factor: 0.04 } })).toBeCloseTo(124800, 0);
   });
 });
+
+import { effectiveRules, followsDefaults, shapeRule, builtinShape } from '../shared/annual.js';
+describe('default formulas (shared table)', () => {
+  const defaults = { '6905': shapeRule('turns'), '6310': shapeRule('turns'), '6908': shapeRule('flat') } as any;
+  it('reach a budget on the defaults, never one on a named saved set', () => {
+    expect(followsDefaults({} as any)).toBe(true);
+    expect(followsDefaults({ rulesFrom: { id: null, name: 'Template defaults' } } as any)).toBe(true);
+    expect(followsDefaults({ rulesFrom: { id: 'grks', name: 'GRKS' } } as any)).toBe(true);
+    expect(followsDefaults({ rulesFrom: { id: 4, name: 'Mine' } } as any)).toBe(false);
+    const named = { rules: { '6905': { method: 'last' } }, rulesFrom: { id: 4, name: 'Mine' } } as any;
+    expect(effectiveRules(named, null, defaults)).toBe(named.rules);
+  });
+  it('keep the own increase % and rounding of the line, skip engine-built GLs and copied-in formulas', () => {
+    const inp = { rules: { '6905': { method: 'flatT12', factor: 0.04, mround: 10 }, '6310': { method: 'corpRate' }, '6908': { method: 'last' } }, rulesOwn: ['6908'] } as any;
+    const eff = effectiveRules(inp, null, defaults);
+    expect(eff['6905']).toEqual({ method: 'custom', shape: 'turns', factor: 0.04, mround: 10 });
+    expect(eff['6310']).toEqual({ method: 'corpRate' });
+    expect(eff['6908']).toEqual({ method: 'last' });
+    expect(effectiveRules({} as any, { '6905': { method: 'same' } } as any, defaults)['6905']).toEqual({ method: 'custom', shape: 'turns' });
+    expect(builtinShape('6905')).toBe('turns');
+  });
+});
