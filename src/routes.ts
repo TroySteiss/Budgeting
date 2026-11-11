@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, type BudgetGuidance } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
@@ -95,13 +95,23 @@ router.get('/state', h(async (_req, res) => {
              left join lateral (select id, period from stmt_snapshots s where s.upload_id = t.upload_id and s.property_code = t.property_code and s.kind = 'budget' order by id limit 1) b on true
             order by t.created_at desc`),
   ]);
+  const stateGuidance = await loadGuidance();
   for (const b of budgets.rows as any[]) {
     const ls = byBudget.get(b.id) || [];
     const monthsMap = new Map(ls.map((l: any) => [l.gl_code, l.months]));
     const k = kpis(monthsMap as any, Number(b.inputs?.capital) || 0);
     let uw: any = b.uw_snapshot_id ? uwById.get(b.uw_snapshot_id) : null;
     let refLabel = 'UW';
+    let guide: any = null;
     if (b.budget_type === 'annual') {
+      // the guidance scorecard always reads the October T12 and the current budget, whatever the tie reference
+      const py = stmtById.get(b.py_stmt_id);
+      const own = actualsByProp.get(b.property_code) || [];
+      const t12g = py ? trailing12([py, ...own.filter((r) => r.id !== b.py_stmt_id).map((r) => r.data)]) : null;
+      const cyd = stmtById.get(b.cy_budget_stmt_id);
+      const gr = t12g ? guidanceCheck({ lines: ls as any, coaList: coa, t12: t12g.cal, cyBudget: cyd ? stmtCalendar(cyd) : null, lastMonth: t12g.lastMonth || 10,
+        startMonth: Number(b.inputs?.startMonth) || 1, units: Number(b.inputs?.units) || Number(b.units) || 0, capital: Number(b.inputs?.capital) || 0, guidance: stateGuidance }) : null;
+      if (gr) guide = { growth: gr.growth, flags: gr.flags, bad: gr.bad, miss: gr.items.filter((i) => i.status === 'check' || i.status === 'bad').map((i) => i.label) };
       const useBudget = b.inputs?.refSource === 'budget';
       const sd = stmtById.get(useBudget ? b.cy_budget_stmt_id : b.py_stmt_id) || stmtById.get(b.py_stmt_id);
       if (sd && !(useBudget && stmtById.has(b.cy_budget_stmt_id))) {
@@ -123,6 +133,7 @@ router.get('/state', h(async (_req, res) => {
       startMonth: Number(b.inputs?.startMonth) || 1,
       ltlMode: b.inputs?.ltl?.mode === 'ramp' ? 'ramp' : 'leases',
       refLabel,
+      guide,
     };
     delete b.inputs;   // keep /state light
   }
@@ -138,7 +149,28 @@ router.get('/state', h(async (_req, res) => {
     curves: CURVES,   // named seasonal shapes (Jan-Dec weights) for client-side spread tools
     // lines every annual budget must carry (Troy 2026-11-11, KB 2027 notes: annual fire inspections...)
     requiredLines: await loadRequiredLines(),
+    guidance: stateGuidance,
   });
+}));
+
+/* ---- budget guidance ranges (per region; exec team 2027 guidance by default) ---- */
+async function loadGuidance(): Promise<BudgetGuidance> {
+  try {
+    const v = (await query('select guidance from app_meta where id=1')).rows[0]?.guidance;
+    return { ...DEFAULT_GUIDANCE, ...(v && typeof v === 'object' ? v : {}) };
+  } catch { return { ...DEFAULT_GUIDANCE }; }
+}
+router.put('/guidance', requireAdmin, h(async (req, res) => {
+  const body = req.body?.guidance || {};
+  const clean: Record<string, any> = {};
+  for (const k of Object.keys(DEFAULT_GUIDANCE) as (keyof BudgetGuidance)[]) {
+    if (body[k] === undefined) continue;
+    if (typeof DEFAULT_GUIDANCE[k] === 'boolean') clean[k] = !!body[k];
+    else if (Number.isFinite(Number(body[k]))) clean[k] = Number(body[k]);
+  }
+  await query('update app_meta set guidance=$1 where id=1', [JSON.stringify(clean)]);
+  logChange(req.session.username || '', 'budget guidance', clean);
+  res.json({ guidance: { ...DEFAULT_GUIDANCE, ...clean } });
 }));
 
 /* ---- required budget lines (per region): flagged in Defaults in use and before a Yardi export ---- */
@@ -457,6 +489,8 @@ interface LoadedBudget {
   y1Plan: (Y1Plan & { budgetId: number; uwNoi: number | null }) | null;
   /** the latest Payroll Budget Workbook sheet for this property + year (stmt kind 'payroll_template') — a reference, never an input */
   payrollTpl: { id: number; label: string; period: string; total: number; cal: Record<string, Months> } | null;
+  /** the region's budget guidance ranges (app_meta.guidance over DEFAULT_GUIDANCE) */
+  guidance: BudgetGuidance;
 }
 
 /** The tie-out reference: the UW snapshot for acquisitions, the chosen
@@ -671,7 +705,8 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     // so every GL with T12 on the template is its own source and nothing has to be picked.
     if (stmtActual?.rows?.length || actualCal) sellerRows = ownT12Rows(stmtActual, actualCal, (gl) => coaMap.get(gl) || null);
   }
-  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, defaultRules, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, burdenSrc,
+  const guidance = await loadGuidance();
+  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, defaultRules, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, burdenSrc, guidance,
            annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs };
 }
 
@@ -777,6 +812,11 @@ function budgetView(lb: LoadedBudget) {
     flatFeeSite: lb.annual ? FLAT_FEE_PROPERTIES.has(String(lb.budget.property_code || '').toLowerCase()) : false,
     // the recurring-journal split in force (site default TPND -> TPNDC, or the budget's own)
     allocOut: lb.annual ? allocOutFor(lb.budget.inputs, lb.budget.property_code) : null,
+    // the exec team's 2027 guidance as a scorecard: growth vs the October T12, NOI vs the current budget,
+    // March vs October rental income, insurance / taxes / payroll / SP (shared/annual.ts guidanceCheck)
+    guide: lb.annual ? guidanceCheck({ lines, coaList: lb.coa, t12: lb.actualCal, cyBudget: lb.budgetCal, lastMonth: lb.lastMonth || 10,
+      startMonth: start, units: Number(lb.budget.inputs?.units) || 0, capital: Number(lb.budget.inputs?.capital) || 0, guidance: lb.guidance }) : null,
+    guidance: lb.guidance,
     allocOutSite: lb.annual ? ALLOC_OUT_DEFAULTS[String(lb.budget.property_code || '').toLowerCase()] || null : null,
     t12Missing: lb.annual ? lb.t12Missing : [],
     t12Dead: lb.annual ? lb.t12Dead : [],
@@ -1648,6 +1688,63 @@ router.post('/budgets/:id/tie-growth', h(async (req, res) => {
   let members: string[];
   let target: number;
   const catOf = (lines: BudgetLine[], ps: string[]) => lines.reduce((a, l) => { const acc = lb.coaMap.get(l.gl_code); return acc?.kind === 'detail' && ps.includes(acc.pcode || '') ? r2(a + sum(l.months)) : a; }, 0);
+  if (key === 'rental' || key === 'income') {
+    // Total Rental Income / Total Income (exec team 2027: the totals that must hold). Troy picks the lever:
+    //  'vacancy' scales the monthly vacancy % (shape kept) — rental income moves almost 1:1 with it;
+    //  'gpr' solves the market-rent steps. With loss to lease following GPR (per-lease burnoff), most of
+    //  a market-rent change lands in loss to lease, so GPR alone often cannot reach the target.
+    // Secant passes on the measured response; a target the lever cannot reach is refused, not saved.
+    const lever: 'vacancy' | 'gpr' = req.body?.lever === 'vacancy' ? 'vacancy' : req.body?.lever === 'gpr' ? 'gpr' : (inputs.tieLevers?.[key] || 'vacancy');
+    const code = key === 'rental' ? '5070' : '5500';
+    const refTot = key === 'rental' ? ['1', 'loss', '2', '3'].reduce((a, p) => a + (ref.y1[p] || 0), 0) : ref.egi;
+    if (!refTot) return res.status(400).json({ error: 'No reference total to grow from' });
+    const want = r2(refTot * (1 + pct));
+    const totOf = (ls: BudgetLine[]) => sum(rollup(new Map(ls.map((l) => [l.gl_code, l.months]))).get(code) || zero12());
+    const lineOf = (ls: BudgetLine[], gl: string) => ls.find((l) => l.gl_code === gl);
+    const steps0 = (inputs.gpr?.growthPct || zero12()).slice() as Months;
+    const vac0 = (inputs.vacancyPct || zero12()).slice() as Months;
+    const base = inputs.gpr?.baseMonthly > 0 ? inputs.gpr.baseMonthly : (lb.actualCal?.['4994'] || zero12())[(lb.lastMonth || 10) - 1] || 0;
+    if (lever === 'gpr') {
+      if (lineOf(lb.lines, '4994')?.override) return res.status(400).json({ error: 'GPR is overridden — release it first' });
+      if (!base) return res.status(400).json({ error: 'No GPR base (rent roll or last actual month)' });
+    } else {
+      if (lineOf(lb.lines, '5031')?.override) return res.status(400).json({ error: 'Vacancy (5031) is overridden — release it first' });
+      if (!vac0.some((v) => v)) return res.status(400).json({ error: 'No vacancy % to scale — set it under Assumptions' });
+    }
+    let solved: ReturnType<typeof gprStepsForTarget> | null = null;
+    const build = (x: number): BudgetLine[] => {
+      if (lever === 'gpr') {
+        solved = gprStepsForTarget(base, steps0, x);
+        inputs.gpr = { ...(inputs.gpr || { baseMonthly: 0, growthPct: zero12() }), growthPct: solved.growthPct };
+      } else inputs.vacancyPct = vac0.map((v) => Math.max(0, Math.round(v * x * 1e6) / 1e6)) as Months;
+      return buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lb.lines).lines;
+    };
+    const tol = Math.max(1, Math.abs(want) * 0.0002);
+    let x = lever === 'gpr' ? sum(lineOf(lb.lines, '4994')?.months || zero12()) : 1;
+    let f = totOf(lb.lines);
+    const vacDollars = -sum(lineOf(lb.lines, '5031')?.months || zero12());
+    let slope = lever === 'gpr' ? (x ? f / x : 1) : -(vacDollars || 1);
+    let lines = lb.lines;
+    for (let pass = 0; pass < 12 && Math.abs(want - f) > tol; pass++) {
+      let nx = x + (want - f) / (slope || 1e-9);
+      if (lever === 'vacancy') nx = Math.max(0, nx);
+      const nl = build(nx);
+      const nf = totOf(nl);
+      if (Math.abs(nx - x) > 1e-12 && Math.abs(nf - f) > 1e-6) slope = (nf - f) / (nx - x);
+      x = nx; f = nf; lines = nl;
+      if (lever === 'vacancy' && x === 0 && f < want) break;              // vacancy is already zero
+    }
+    if (Math.abs(want - f) > Math.max(tol, Math.abs(want) * 0.001)) {
+      const reach = (f - refTot) / Math.abs(refTot);
+      return res.status(400).json({ error: `${lever === 'gpr' ? 'GPR' : 'Vacancy'} alone does not get ${key === 'rental' ? 'Total Rental Income' : 'Total Income'} to ${(pct * 100).toFixed(2)}% — it reaches ${(reach * 100).toFixed(2)}%.${lever === 'gpr' ? ' Loss to lease follows GPR, so most of a market-rent change lands there; try vacancy, or the loss-to-lease renewal / burnoff boxes.' : ''} Nothing was changed.` });
+    }
+    inputs.tieLevers = { ...(inputs.tieLevers || {}), [key]: lever };
+    const how = lever === 'gpr' ? `GPR to ${Math.round(x)}${solved ? ` — ${gprStepsSummary((solved as any).growthPct)}` : ''}` : `vacancy % scaled ×${x.toFixed(4)}`;
+    await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(inputs)]);
+    await saveLines(id, lines, true);
+    logChange(user, 'tie growth target', { id, pcode: key, pct, target: want, lever, how });
+    return res.json(budgetView((await loadBudget(id))!));
+  }
   if (key === 'opex') { members = GROWTH_EXPENSE_PCODES; target = r2(ref.toe * (1 + pct) - catOf(lb.lines, ['7'])); }
   else if (key === 'noi') {
     const tie = computeTieout(lb.lines, lb.coaMap, ref);

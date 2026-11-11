@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, mgmtFeeRates, summaryColumn, sumSummaryCols, summaryLabels, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, contractMonths, flatFeeFromSchedule, type TemplateData, type AnnualSources,
+  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, contractMonths, flatFeeFromSchedule, guidanceCheck, type TemplateData, type AnnualSources,
 } from '../shared/annual.js';
 import { sum, zero12, rollup, CURVES, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
 import { parseYardiBudgetTemplate, parseRentRoll, parseMonarchStatement, detectUploadKind } from '../src/importers.js';
@@ -1467,5 +1467,37 @@ describe('2027 notes pass', () => {
   });
   it('snowContract curve is flat Nov-Apr', () => {
     expect(CURVES.snowContract).toEqual([1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1]);
+  });
+});
+
+/* 2027 exec-team guidance scorecard (Troy 2026-11-11). Synthetic property only. */
+describe('guidanceCheck', () => {
+  const actual = synthetic();
+  const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
+  const lines = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10 });
+  const scale = (ls: BudgetLine[], pick: (gl: string) => boolean, k: number) => ls.map((l) => (pick(l.gl_code) ? { ...l, months: l.months.map((v) => v * k) as Months } : l));
+  it('reports income / expense / NOI growth against the T12 and the guidance ranges', () => {
+    const r = guidanceCheck({ lines, coaList, t12: actual, lastMonth: 10, units: 10, capital: 0 })!;
+    const T = (m: Record<string, Months>, c: string) => sum(rollup(new Map(Object.entries(m))).get(c) || zero12());
+    const B = (c: string) => sum(rollup(new Map(lines.map((l) => [l.gl_code, l.months]))).get(c) || zero12());
+    expect(r.growth.income).toBeCloseTo((B('5500') - T(actual, '5500')) / T(actual, '5500'), 6);
+    expect(r.growth.noi).toBeCloseTo((B('7280') - T(actual, '7280')) / Math.abs(T(actual, '7280')), 6);
+    expect(r.items[0].key).toBe('noi');                          // NOI first, the most important
+    expect(r.items.filter((i) => i.must).map((i) => i.key)).toEqual(expect.arrayContaining(['noi', 'income', 'expense', 'spread', 'march']));
+  });
+  it('flags NOI below the current budget as bad, and an expense spread over 50 bps', () => {
+    const cy = Object.fromEntries(Object.entries(actual).map(([g, m]) => [g, (Number(g) < 6000 ? m.map((v) => v * 1.5) : m) as Months]));
+    const r = guidanceCheck({ lines, coaList, t12: actual, cyBudget: cy, lastMonth: 10, units: 10, capital: 0 })!;
+    expect(r.items.find((i) => i.key === 'noicy')!.status).toBe('bad');
+    const hot = guidanceCheck({ lines: scale(lines, (g) => g >= '6000' && g < '7100', 1.2), coaList, t12: actual, lastMonth: 10, units: 10, capital: 0 })!;
+    expect(hot.items.find((i) => i.key === 'spread')!.status).toBe('check');
+  });
+  it('March rental income vs October, insurance per unit, SP vs capital, quarters', () => {
+    const r = guidanceCheck({ lines, coaList, t12: actual, lastMonth: 10, units: 10, capital: 100000 })!;
+    expect(r.items.find((i) => i.key === 'march')).toBeTruthy();
+    expect(r.items.find((i) => i.key === 'ins')!.status).toBe('ok');   // 2027 rate is the guidance $275
+    expect(r.items.find((i) => i.key === 'sp')!.status).toBe('check');  // nothing budgeted
+    expect(r.quarters.length).toBe(4);
+    expect(guidanceCheck({ lines, coaList, t12: null, lastMonth: 10, units: 10, capital: 0 })).toBeNull();
   });
 });

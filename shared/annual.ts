@@ -933,6 +933,122 @@ export function flatFeeFromSchedule(sch: FeeSchedule, opts: { lastIncome: number
   return { months, F: r2(F), R: r2(R), share };
 }
 
+/* ============================================================================
+   2027 BUDGET GUIDANCE (exec team, Troy 2026-11-11): "The ones we MUST more or less adhere to are
+   rental income, total income, total expenses, and any specific changes called out. NOI targets
+   are the most important of all." A scorecard only: nothing here changes a budget. Ranges are
+   per region (app_meta.guidance) and start at the exec team's numbers.
+   ========================================================================== */
+export interface BudgetGuidance {
+  incomeMin: number; incomeMax: number;         // total income vs October T12
+  expenseMin: number; expenseMax: number;       // total expenses vs October T12
+  spreadMax: number;                            // expense growth may exceed income growth by at most this
+  noiMin: number;                               // NOI vs October T12
+  noiVsCyBudget: boolean;                       // NOI must not be below the current (2026) budget
+  marchVsLastMin: number; marchVsLastMax: number; // March rental income vs the last actual month's (October)
+  insurancePerUnit: number;                     // 6108 $/unit/yr
+  reTaxPct: number;                             // 6116 vs T12
+  payrollMin: number; payrollMax: number;       // payroll category vs T12 (raises 3-4% on performing sites)
+  spPctCapital: number;                         // SP as a share of capital, a starting point
+}
+export const DEFAULT_GUIDANCE: BudgetGuidance = {
+  incomeMin: 0.03, incomeMax: 0.0325, expenseMin: 0.03, expenseMax: 0.035, spreadMax: 0.005,
+  noiMin: 0.025, noiVsCyBudget: true, marchVsLastMin: 0.015, marchVsLastMax: 0.02,
+  insurancePerUnit: 275, reTaxPct: 0.03, payrollMin: 0.03, payrollMax: 0.04, spPctCapital: 0.02,
+};
+export type GuideStatus = 'ok' | 'check' | 'bad' | 'info';
+export interface GuideItem { key: string; label: string; value: string; target: string; status: GuideStatus; must?: boolean }
+export interface GuideResult {
+  growth: { rental: number | null; income: number | null; expense: number | null; noi: number | null; noiVsCy: number | null };
+  items: GuideItem[];
+  /** rental income (5070) by calendar quarter of the budget, and Q4 vs Q1 */
+  quarters: number[]; q4VsQ1: number | null;
+  flags: number; bad: number;
+}
+const g2 = (a: number, b: number | null | undefined): number | null => (b ? (a - b) / Math.abs(b) : null);
+const pctTxt = (v: number | null, d = 1): string => { if (v == null) return '—'; const t = (v * 100).toFixed(d); return Number(t) === 0 ? `${(0).toFixed(d)}%` : `${v > 0 ? '+' : ''}${t}%`; };
+const rng = (a: number, b: number): string => `${(a * 100).toFixed(a * 1000 % 10 ? 2 : 1)}–${(b * 100).toFixed(b * 1000 % 10 ? 2 : 1)}%`;
+/** Budget lines (budget-month order) against the October T12 (calendar), the current-year budget
+    (calendar), and the guidance ranges. Pure. */
+export function guidanceCheck(a: {
+  lines: BudgetLine[]; coaList: CoaAccount[]; t12: Record<string, Months> | null | undefined; cyBudget?: Record<string, Months> | null;
+  lastMonth: number; startMonth?: number; units: number; capital: number; guidance?: Partial<BudgetGuidance> | null;
+}): GuideResult | null {
+  if (!a.t12 || !Object.keys(a.t12).length) return null;
+  const G: BudgetGuidance = { ...DEFAULT_GUIDANCE, ...(a.guidance || {}) };
+  const start = a.startMonth || 1;
+  const bud = rollup(new Map(a.lines.map((l) => [l.gl_code, l.months])));
+  const ref = rollup(new Map(Object.entries(a.t12)));
+  const T = (m: Map<string, Months>, c: string) => sum(m.get(c) || zero12());
+  const rental = g2(T(bud, '5070'), T(ref, '5070'));
+  const income = g2(T(bud, '5500'), T(ref, '5500'));
+  const expense = g2(T(bud, '7279'), T(ref, '7279'));
+  const noi = g2(T(bud, '7280'), T(ref, '7280'));
+  const cy = a.cyBudget && Object.keys(a.cyBudget).length ? rollup(new Map(Object.entries(a.cyBudget))) : null;
+  const cyNoi = cy ? T(cy, '7280') : null;
+  const noiVsCy = cyNoi ? g2(T(bud, '7280'), cyNoi) : null;
+  const items: GuideItem[] = [];
+  const add = (key: string, label: string, value: string, target: string, status: GuideStatus, must = false) => items.push({ key, label, value, target, status, must });
+  const inR = (v: number | null, lo: number, hi: number): GuideStatus => (v == null ? 'info' : v >= lo - 1e-9 && v <= hi + 1e-9 ? 'ok' : 'check');
+
+  // NOI first: the most important of all
+  add('noi', 'NOI vs October T12', pctTxt(noi), `${pctTxt(G.noiMin)} or better`, noi == null ? 'info' : noi < 0 ? 'bad' : noi >= G.noiMin - 1e-9 ? 'ok' : 'check', true);
+  if (G.noiVsCyBudget && cyNoi) add('noicy', 'NOI vs current (2026) budget', pctTxt(noiVsCy), 'not lower', noiVsCy != null && noiVsCy < -1e-9 ? 'bad' : 'ok', true);
+  add('income', 'Total income vs October T12', pctTxt(income), rng(G.incomeMin, G.incomeMax), inR(income, G.incomeMin, G.incomeMax), true);
+  add('expense', 'Total expenses vs October T12', pctTxt(expense), rng(G.expenseMin, G.expenseMax), inR(expense, G.expenseMin, G.expenseMax), true);
+  if (income != null && expense != null) {
+    const spread = expense - income;
+    add('spread', 'Expense growth over income growth', `${spread > 0 ? '+' : ''}${(spread * 10000).toFixed(0)} bps`, `at most +${Math.round(G.spreadMax * 10000)} bps`, spread > G.spreadMax + 1e-9 ? 'check' : 'ok', true);
+  }
+  add('rental', 'Rental income vs October T12', pctTxt(rental), 'Q1 aggressive; no hockey stick', 'info', true);
+  // March rental income vs the last actual month's (October)
+  const lastRental = (ref.get('5070') || zero12())[a.lastMonth - 1] || 0;
+  const iMar = (3 - start + 12) % 12;
+  const marRental = (bud.get('5070') || zero12())[iMar] || 0;
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  if (lastRental) {
+    const v = g2(marRental, lastRental);
+    add('march', `March rental income vs ${MON[a.lastMonth - 1]} actual`, pctTxt(v, 2), rng(G.marchVsLastMin, G.marchVsLastMax), inR(v, G.marchVsLastMin, G.marchVsLastMax), true);
+  }
+  // specific changes called out
+  const line = (gl: string) => a.lines.find((l) => l.gl_code === gl);
+  const ins = line('6108');
+  if (ins && a.units) {
+    const d: any = ins.driver || {};
+    const gross = d.allocOut ? d.allocOut.gross : sum(ins.months);
+    const perUnit = gross / a.units;
+    add('ins', 'Insurance per unit', `$${perUnit.toFixed(2)}${d.allocOut ? ' (before the journal split)' : ''}`, `$${G.insurancePerUnit}`, Math.abs(perUnit - G.insurancePerUnit) <= 1 ? 'ok' : 'check');
+  }
+  const taxT12 = sum(a.t12['6116'] || zero12());
+  if (taxT12) {
+    const tl = line('6116'); const d: any = tl?.driver || {};
+    const gross = d.allocOut ? d.allocOut.gross : sum(tl?.months || zero12());
+    const v = g2(gross, taxT12);
+    add('tax', 'RE taxes vs T12', pctTxt(v), `${pctTxt(G.reTaxPct)} unless documented`, v != null && v > G.reTaxPct + 0.0025 ? 'check' : 'ok');
+  }
+  const pay = (m: Map<string, Months>, ls: { gl: string; months: Months }[]) => ls.reduce((x, l) => { const acc = a.coaList.find((c) => c.code === l.gl); return acc?.pcode === '10' ? x + sum(l.months) : x; }, 0);
+  const payB = pay(bud, a.lines.map((l) => ({ gl: l.gl_code, months: l.months })));
+  const payT = pay(ref, Object.entries(a.t12).map(([gl, months]) => ({ gl, months })));
+  if (payT) {
+    const v = g2(payB, payT);
+    add('payroll', 'Payroll vs T12', pctTxt(v), `${rng(G.payrollMin, G.payrollMax)} on performing sites; lower where NOI growth is low`, v != null && v > G.payrollMax + 1e-9 ? 'check' : 'ok');
+  }
+  const sp = T(bud, '7500');
+  if (a.capital > 0) add('sp', 'Special projects', `$${Math.round(sp).toLocaleString('en-US')} (${pctTxt(sp / a.capital).replace('+', '')} of capital)`, `about ${pctTxt(G.spPctCapital).replace('+', '')} of capital, with detail`, sp ? 'info' : 'check');
+  else add('sp', 'Special projects', `$${Math.round(sp).toLocaleString('en-US')}`, 'proposed spend with detail (no capital on file)', sp ? 'info' : 'check');
+
+  // hockey stick: rental income by calendar quarter of the budget
+  const rm = bud.get('5070') || zero12();
+  const quarters = [0, 1, 2, 3].map((q) => r2([0, 1, 2].reduce((x, k) => x + (rm[(q * 3 + k - (start - 1) + 12) % 12] || 0), 0)));
+  const q4VsQ1 = quarters[0] ? (quarters[3] - quarters[0]) / Math.abs(quarters[0]) : null;
+  return {
+    growth: { rental, income, expense, noi, noiVsCy },
+    items, quarters, q4VsQ1,
+    flags: items.filter((i) => i.status === 'check').length,
+    bad: items.filter((i) => i.status === 'bad').length,
+  };
+}
+
 export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs, src: AnnualSources): BudgetLine[] {
   const lines = new Map<string, BudgetLine>();
   const mk = (gl: string, months: Months, driver: Driver, note = ''): void => {

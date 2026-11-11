@@ -503,3 +503,25 @@ body.monarch[data-region="kc"] .topbar { border-bottom-color: #4a90c2; }
 .mbox { display: inline-flex; gap: 1px; white-space: nowrap; }
 .mbox label { display: inline-flex; flex-direction: column; align-items: center; font-size: 10px; line-height: 1.1; color: var(--ink-2, inherit); }
 .mbox input { margin: 0; }
+
+/* 2027 guidance scorecard (editor side panel) and dashboard cell */
+.card.guide .gdt td { padding: 2px 4px; font-size: 12px; vertical-align: top; }
+.card.guide .gdt td.v { white-space: nowrap; font-weight: 700; text-align: right; }
+.card.guide .gdt td.t { font-size: 11px; }
+.card.guide .gdt tr.must td.k { font-weight: 700; }
+.gd { display: inline-block; width: 16px; height: 16px; line-height: 16px; border-radius: 50%; text-align: center; font-size: 11px; font-weight: 700; }
+.gd.ok { background: #dcefe2; color: #1f6b3a; }
+.gd.check { background: #fbecd0; color: #8a5a00; }
+.gd.bad { background: #f8d7d5; color: #a3201a; }
+.gd.info { color: var(--muted, #888); }
+.pill.warnp { background: #fbecd0; color: #8a5a00; }
+.pill.okp { background: #dcefe2; color: #1f6b3a; }
+td.gdash.gbad b { color: #a3201a; }
+td.gdash.gchk b { color: #8a5a00; }
+td.gdash.gok b { color: #1f6b3a; }
+[data-theme="dark"] .gd.ok, [data-theme="dark"] .pill.okp { background: #1f3a2a; color: #9fd9b0; }
+[data-theme="dark"] .gd.check, [data-theme="dark"] .pill.warnp { background: #3d3018; color: #f0c674; }
+[data-theme="dark"] .gd.bad { background: #43201e; color: #f2a29c; }
+[data-theme="dark"] td.gdash.gbad b { color: #f2a29c; }
+[data-theme="dark"] td.gdash.gchk b { color: #f0c674; }
+[data-theme="dark"] td.gdash.gok b { color: #9fd9b0; }

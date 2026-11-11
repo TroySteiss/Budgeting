@@ -215,6 +215,8 @@ export interface BudgetInputs {
       (TPND → TPNDC 41.11%). Applies to engine-built lines only (corporate rate, fee, contracts):
       history-based lines already post net of the journal. Unset = the site default (ALLOC_OUT_DEFAULTS). */
   allocOut?: { to: string; pct: number; gls: string[] } | null;
+  /** annual: the lever the Total Rental Income / Total Income ties move ('vacancy' | 'gpr'), last picked */
+  tieLevers?: Partial<Record<'rental' | 'income', 'vacancy' | 'gpr'>>;
   /** legacy field from the (removed) stub-proration design — ignored. */
   uwProration?: Record<string, number>;
 

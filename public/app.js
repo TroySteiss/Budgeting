@@ -318,10 +318,17 @@ function popMenu(anchorBtn, html, wire) {
 }
 
 /* ---------------- dashboard ---------------- */
+function guideDashCell(gd) {
+  if (!gd) return '<td class="muted">—</td>';
+  const p = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%`);
+  const cls = gd.bad ? 'gbad' : gd.flags ? 'gchk' : 'gok';
+  return `<td class="gdash ${cls}" title="${esc((gd.miss || []).join(' · ') || 'on target')}"><b>NOI ${p(gd.growth.noi)}</b><div class="muted" style="font-size:10.5px">inc ${p(gd.growth.income)} · exp ${p(gd.growth.expense)}${gd.bad || gd.flags ? ` · ${gd.bad + gd.flags} to look at` : ''}</div></td>`;
+}
 function renderDash(el) {
   const st = S.state;
   const props = new Map(st.properties.map((p) => [p.code, p]));
   const hasAcq = st.budgets.some((b) => b.budget_type !== 'annual');
+  const hasGuide = st.budgets.some((b) => b.dash && b.dash.guide);
   const pl = propertyListHtml(st);
   el.innerHTML = `
     ${pl.html}
@@ -334,7 +341,7 @@ function renderDash(el) {
           <button class="btn" id="newb">+ New budget</button>
         </div>
       </div>
-      ${st.budgets.length ? `<table class="list"><tr><th><input type="checkbox" id="sel-all" title="Select all budgets"></th><th>Property</th><th>Budget</th><th>Income</th><th>OpEx</th><th>NOI</th><th title="NOI vs the budget's reference (T12 actuals / CY budget for annual, UW for acquisitions)">Δ NOI</th><th title="EGI vs the reference">Δ EGI</th>${hasAcq ? '<th>CoC</th>' : ''}<th>Status</th><th>Updated</th><th></th></tr>
+      ${st.budgets.length ? `<table class="list"><tr><th><input type="checkbox" id="sel-all" title="Select all budgets"></th><th>Property</th><th>Budget</th><th>Income</th><th>OpEx</th><th>NOI</th><th title="NOI vs the budget's reference (T12 actuals / CY budget for annual, UW for acquisitions)">Δ NOI</th><th title="EGI vs the reference">Δ EGI</th>${hasGuide ? '<th title="2027 guidance: growth vs the October T12 — income / expenses / NOI. Red = off (NOI down, or below the current budget); amber = outside a range.">Guidance</th>' : ''}${hasAcq ? '<th>CoC</th>' : ''}<th>Status</th><th>Updated</th><th></th></tr>
         ${st.budgets.map((b) => {
           const d = b.dash || {};
           const varCell = (v) => (v == null ? '<td class="muted">—</td>' : `<td class="${Math.abs(v) < 1 ? '' : v > 0 ? '' : 'neg'}" style="${Math.abs(v) < 1 ? 'color:var(--good)' : ''}" title="vs ${esc(d.refLabel || 'UW')}">${Math.abs(v) < 1 ? 'tied' : money(v)}</td>`);
@@ -346,6 +353,7 @@ function renderDash(el) {
           <td>${b.budget_type === 'annual' ? `<b>${sm}</b> <span class="muted">annual</span>` : `<b>${sm}</b> <span class="muted">acquisition · UW Y1</span>`}<div class="muted" style="font-size:11px">${ov ? `${ov} override${ov === 1 ? '' : 's'}` : 'no overrides'}${d.ltlMode === 'leases' ? ' · per-lease LTL' : ''}${d.savePoints ? ` · ${d.savePoints} save pt${d.savePoints === 1 ? '' : 's'}` : ''}</div></td>
           <td>${money(d.income)}</td><td>${money(d.expense)}</td><td><b>${money(d.noi)}</b></td>
           ${varCell(d.noiVar)}${varCell(d.egiVar)}
+          ${hasGuide ? guideDashCell(d.guide) : ''}
           ${hasAcq ? `<td>${d.coc != null ? (d.coc * 100).toFixed(1) + '%' : '—'}${d.capital ? `<div class="muted" style="font-size:10.5px">on ${money(d.capital)}</div>` : ''}</td>` : ''}
           <td>${esc(b.status)}</td>
           <td class="muted">${new Date(b.updated_at).toLocaleDateString()}</td>
@@ -395,9 +403,10 @@ function renderDash(el) {
 
 /* ---- Properties list (Troy 2026-11-03): every property, the budget for the
    chosen year or "Not started", and — click in — which reports are on file and
-   which are missing. A budget needs the trailing-12 actual statement and the
-   CY budget statement (a Yardi template carries both); the template itself,
-   a rent roll and the payroll roster apply are recommended. ---- */
+   which are missing. With a current Yardi template on file that ONE file is the requirement (it
+   carries the trailing-12 and the CY budget — Troy 2026-11-11: "Why do I still need to upload the T12
+   statement and T12 Budget when the budget template has them?"); without one, the two statements
+   are required. A rent roll and the payroll roster are recommended. ---- */
 function propertyReports(st, code, budget, year) {
   // a report counts for `year` only when it is current: a trailing-12 that ends in the
   // year before the budget (or a template built for that budget year) — last year's
@@ -422,20 +431,31 @@ function propertyReports(st, code, budget, year) {
   const covHere = cov && cov.codes && cov.codes[code] ? cov.codes[code] : null;
   const followsTab = !!covHere && (!budget || budget.budget_type === 'annual') && inp.wageSource !== 'manual';
   const payOk = followsTab || (!!budget && (inp.wagesFromRoster === true || !!budget.payroll_model_id));
+  function payItem() {
+    return { key: 'payroll', label: 'Payroll wages', need: 'recommended', ok: payOk,
+      sub: followsTab ? `${budget ? 'follows' : 'will follow'} the Payroll tab · ${cov.label} · ${covHere.draft ? 'draft raises' : 'raises finalized'}`
+        : payOk ? (inp.wagesFromRoster ? 'Pay-rates roster applied' : 'payroll model linked')
+        : inp.wageSource === 'manual' ? 'set to its own history in Assumptions — trailing-12 wages × the raise %'
+        : `no raise cycle effective in ${(budget && budget.year) || year} books staff here — Payroll tab → start the cycle (until then: trailing-12 wages × the raise %)` };
+  }
+  // the template carries both statements: with a current template on file it is ONE item, not three
+  if (tplOk && tpl.actual_period) return [
+    { key: 'template', label: 'Yardi budget template', need: 'required', ok: true,
+      sub: `budget ${tpl.budget_year} · T12 ${tpl.actual_period}${tpl.budget_period ? ` · budget ${tpl.budget_period}` : ''} · ${fmtd(tpl.created_at)}` },
+    { key: 'rent', label: 'Rent roll', need: 'recommended', ok: !!rent,
+      sub: rent ? `${rent.as_of ? fmtd(rent.as_of) : ''} · ${rent.units || '?'} units` : 'unit-level — per-lease loss to lease and market rents' },
+    payItem(),
+  ];
   return [
     { key: 'actual', label: 'Trailing-12 actual statement', need: 'required', ok: actOk || (tplOk && !!tpl.actual_period),
       sub: actOk ? `${act.period || ''} · ${fmtd(act.created_at)}` : tplOk && tpl.actual_period ? `from the Yardi template · ${tpl.actual_period}` : act ? stale(act, '12 months') : 'Property Comparison (Cash), 12 months — or the Yardi template' },
     { key: 'budget', label: 'Current-year budget statement', need: 'required', ok: budOk || (tplOk && !!tpl.budget_period),
       sub: budOk ? `${bud.period || ''} · ${fmtd(bud.created_at)}` : tplOk && tpl.budget_period ? `from the Yardi template · ${tpl.budget_period}` : bud ? stale(bud, 'current-year budget') : 'the reference column every tie compares to' },
     { key: 'template', label: 'Yardi budget template', need: 'recommended', ok: tplOk,
-      sub: tplOk ? `budget ${tpl.budget_year} · ${fmtd(tpl.created_at)}` : tpl ? `have the ${tpl.budget_year} template — the ${year} one carries this year's expirations, debt and suggestions` : 'budgetYSR…xlsm — expirations, debt schedule, corporate suggestions' },
+      sub: tplOk ? `budget ${tpl.budget_year} · ${fmtd(tpl.created_at)}` : tpl ? `have the ${tpl.budget_year} template — the ${year} one carries this year's T12, budget, expirations, debt and suggestions` : 'budgetYSR…xlsm — carries the T12 and current-year budget (then neither statement is needed)' },
     { key: 'rent', label: 'Rent roll', need: 'recommended', ok: !!rent,
       sub: rent ? `${rent.as_of ? fmtd(rent.as_of) : ''} · ${rent.units || '?'} units` : 'unit-level — per-lease loss to lease and market rents' },
-    { key: 'payroll', label: 'Payroll wages', need: 'recommended', ok: payOk,
-      sub: followsTab ? `${budget ? 'follows' : 'will follow'} the Payroll tab · ${cov.label} · ${covHere.draft ? 'draft raises' : 'raises finalized'}`
-        : payOk ? (inp.wagesFromRoster ? 'Pay-rates roster applied' : 'payroll model linked')
-        : inp.wageSource === 'manual' ? 'set to its own history in Assumptions — trailing-12 wages × the raise %'
-        : `no raise cycle effective in ${(budget && budget.year) || year} books staff here — Payroll tab → start the cycle (until then: trailing-12 wages × the raise %)` },
+    payItem(),
   ];
 }
 function propertyListHtml(st) {
@@ -575,12 +595,15 @@ function newBudgetDialog() {
       <div class="fld" style="flex:1; min-width:260px"><label title="How each history-based line is built: its shape, increase factor and rounding, plus the formula settings. Saved from a finished budget with More → Save formulas as…. Nothing is assumed — pick one.">Formula set <span class="muted">— which saved formulas this budget starts on</span></label>
         <select id="nb-fset">${formulaSetOptions(nb.fset)}</select></div>
     </div>
-    <div class="row" style="margin-top:8px">
-      ${pick('nb-py', 'Trailing-12 actuals by GL', 'the PY base — Yardi 12 Month Statement export, Nov–Oct', 'statement')}
-      ${pick('nb-cyb', 'Current-year budget', 'optional comparison — 12 Month Budget export', 'statement')}
-    </div>
-    <div class="row" style="margin-top:8px">${pick('nb-tpl', 'Yardi budget template', 'optional — carries its own T12 + CY budget, debt schedule, Conservice forecasts; none pulls for 2027 yet', 'yardi_template')}</div>
+    <div class="row" style="margin-top:8px">${pick('nb-tpl', 'Yardi budget template', 'the one file you need — budgetYSR…xlsm carries the trailing-12 actuals AND the current-year budget, plus debt, expirations and corporate suggestions', 'yardi_template')}</div>
     <p class="muted" id="nb-tplnote" style="font-size:11.5px; margin:4px 0 8px"></p>
+    <details id="nb-stmts" ${nb.py || nb.cyb ? 'open' : ''} style="margin:0 0 8px"><summary class="muted" style="font-size:12px; cursor:pointer">No template? Use separate Yardi statements instead</summary>
+      <div class="row" style="margin-top:6px">
+        ${pick('nb-py', 'Trailing-12 actuals by GL', 'only without a template — Yardi 12 Month Statement export, Nov–Oct', 'statement')}
+        ${pick('nb-cyb', 'Current-year budget', 'only without a template — 12 Month Budget export', 'statement')}
+      </div>
+      <p class="muted" style="font-size:11px; margin:4px 0 0">A statement picked here replaces the template's own for that column. Leave both at — none — when the template is picked.</p>
+    </details>
     <div class="row">
       ${pick('nb-rent', 'Rent roll / UAD', 'GPR anchor, per-lease LTL, lease expirations (turn costs follow them +1 mo)', 'rent_roll')}
       ${pick('nb-pay', 'Payroll model', 'wages', 'payroll')}
@@ -620,7 +643,7 @@ function newBudgetDialog() {
     n.textContent = tpl
       ? `The template carries the trailing-12 actuals${tpl.actual_period ? ` (${tpl.actual_period})` : ''} and the ${tpl.budget_year - 1} budget${tpl.budget_period ? ` (${tpl.budget_period})` : ''}${py ? ' — the statement picked above is used instead where it is set.' : '.'}`
       : py ? `Building off the ${py.period || ''} statement alone — GPR off the rent roll (or the October actual), expirations off the rent roll leases, debt from Assumptions (loan × rate) or the last actual month flat.`
-      : 'Pick or upload the trailing-12 statement (⬆) — it is the PY base every line builds on.';
+      : 'Pick or upload the Yardi budget template (⬆) — it carries the trailing-12 and the current-year budget.';
   };
   // a Nov–Oct statement budgets the year after its last month
   const yearFromPeriod = (period) => { const m = String(period || '').match(/(\d{4})\s*$/); return m ? Number(m[1]) + 1 : null; };
@@ -637,8 +660,12 @@ function newBudgetDialog() {
       const tplStmts = new Set(tpls.flatMap((x) => [x.py_stmt_id, x.cy_budget_stmt_id]).filter(Boolean).map(Number));
       const own = (list) => list.filter((x) => !tplStmts.has(Number(x.id)));
       setSel('nb-tpl', tpls.map((x) => `<option value="${x.id}">${esc(x.label)} (${x.budget_year})</option>`).join(''), nb.tpl, tpls[0]?.id);
-      setSel('nb-py', own(pys).map((x) => `<option value="${x.id}">${esc(x.period || '')} · ${esc(x.label)}</option>`).join(''), nb.py, own(pys)[0]?.id);
-      setSel('nb-cyb', own(cybs).map((x) => `<option value="${x.id}">${esc(x.period || '')} · ${esc(x.label)}</option>`).join(''), nb.cyb, own(cybs)[0]?.id);
+      // separate statements are a fallback for a property with no template: never pre-picked when one
+      // exists (a picked statement replaces the template's own T12 / budget — Troy 2026-11-11)
+      const noTpl = !tpls.length;
+      setSel('nb-py', own(pys).map((x) => `<option value="${x.id}">${esc(x.period || '')} · ${esc(x.label)}</option>`).join(''), nb.py, noTpl ? own(pys)[0]?.id : null);
+      setSel('nb-cyb', own(cybs).map((x) => `<option value="${x.id}">${esc(x.period || '')} · ${esc(x.label)}</option>`).join(''), nb.cyb, noTpl ? own(cybs)[0]?.id : null);
+      if (noTpl && $('nb-stmts')) $('nb-stmts').open = true;
       const tpl = tpls.find((x) => String(x.id) === $('nb-tpl').value);
       const py = pys.find((x) => String(x.id) === $('nb-py').value);
       if (!nb.year) $('nb-year').value = (tpl && tpl.budget_year) || (py && yearFromPeriod(py.period)) || yearNow;
@@ -695,7 +722,7 @@ function newBudgetDialog() {
   $('nb-go').addEventListener('click', async () => {
     try {
       const v = (id) => { const e = $(id); return e ? (Number(e.value) || null) : null; };
-      if (annual && !v('nb-tpl') && !v('nb-py')) throw new Error('Pick or upload the Yardi budget template (or a trailing-12 statement) first — it is the PY base every line builds on.');
+      if (annual && !v('nb-tpl') && !v('nb-py')) throw new Error('Pick or upload the Yardi budget template first — it carries the trailing-12 and the current-year budget.');
       const fset = annual && $('nb-fset') ? $('nb-fset').value : null;
       if (annual && !fset) throw new Error('Pick a formula set — a saved one, or the template defaults. Nothing is assumed for you.');
       const bv = await POST('/budgets', {
@@ -1039,6 +1066,7 @@ function renderEditor(el) {
         <div class="gridwrap">${gridHtml(bv, totals)}</div>
       </div>
       <div class="side">
+        ${bv.guide ? guideCardHtml(bv) : ''}
         <div class="card">
           <h2>Monthly trend</h2>
           ${trendSvg(bv)}
@@ -1424,18 +1452,38 @@ function renderEditor(el) {
   }));
   el.querySelectorAll('.tie [data-tie]').forEach((btn) => btn.addEventListener('click', (e) => {
     e.stopPropagation();
-    const box = el.querySelector(`.tie [data-gt="${btn.dataset.tie}"]`);
+    const key = btn.dataset.tie;
+    const box = el.querySelector(`.tie [data-gt="${key}"]`);
     const v = box ? parseFloat(String(box.value).replace(/[%\s]/g, '')) : NaN;
-    tieGrowth(btn.dataset.tie, Number.isFinite(v) ? v / 100 : null).catch((err) => alert(err.message));
+    const pct = Number.isFinite(v) ? v / 100 : null;
+    if (key === 'rental' || key === 'income') {
+      // the income totals: Troy picks what moves (never chosen for him)
+      const last = ((S.bv.budget.inputs || {}).tieLevers || {})[key];
+      popMenu(btn, `<div class="rm-head">Move which lever?</div>
+        <button data-lv="vacancy" title="Scale the monthly vacancy % (shape kept); rental income moves almost dollar for dollar">Vacancy %${last === 'vacancy' ? ' (last used)' : ''}</button>
+        <button data-lv="gpr" title="Solve the market-rent steps. Loss to lease follows GPR, so most of a market-rent change lands there and the target may be out of reach">GPR (market rent)${last === 'gpr' ? ' (last used)' : ''}</button>`, (menu) => {
+        menu.querySelectorAll('[data-lv]').forEach((b2) => b2.addEventListener('click', async () => {
+          pushUndo();
+          try { S.bv = await POST(`/budgets/${b.id}/tie-growth`, { pcode: key, pct, lever: b2.dataset.lv }); render(); } catch (err) { S.undo.stack.pop(); alert(err.message); }
+        }));
+      });
+      return;
+    }
+    tieGrowth(key, pct).catch((err) => alert(err.message));
   }));
   const tieAll = el.querySelector('#tie-all');
   if (tieAll) tieAll.addEventListener('click', async (e) => {
     e.stopPropagation();
     const gtAll = (S.bv.budget.inputs || {}).growthTargets || {};
-    const order = [...Object.keys(gtAll).filter((k) => k !== 'opex' && k !== 'noi'), ...['opex', 'noi'].filter((k) => gtAll[k] != null)];
+    // categories, then the income totals (they move GPR), then OpEx, then NOI last
+    const late = ['rental', 'income', 'opex', 'noi'];
+    const order = [...Object.keys(gtAll).filter((k) => !late.includes(k)), ...late.filter((k) => gtAll[k] != null)];
     pushUndo();
-    try { for (const k of order) if (gtAll[k] != null) S.bv = await POST(`/budgets/${b.id}/tie-growth`, { pcode: k, pct: gtAll[k] }); }
+    const lv = (S.bv.budget.inputs || {}).tieLevers || {};
+    const skipped = order.filter((k) => (k === 'rental' || k === 'income') && !lv[k]);
+    try { for (const k of order) if (gtAll[k] != null && !skipped.includes(k)) S.bv = await POST(`/budgets/${b.id}/tie-growth`, { pcode: k, pct: gtAll[k], ...(lv[k] ? { lever: lv[k] } : {}) }); }
     catch (err) { alert(err.message); }
+    if (skipped.length) alert(`Skipped ${skipped.map((k) => (k === 'rental' ? 'Total Rental Income' : 'Total Income')).join(' and ')}: tie it on its own once to pick the lever (vacancy % or GPR).`);
     render();
   });
   el.querySelectorAll('.tie .rb:not(.basis)').forEach((btn) => btn.addEventListener('click', async (e) => {
@@ -2722,11 +2770,26 @@ function openAllocSplit(b) {
   dlg.showModal();
 }
 
+/* ---- 2027 exec-team guidance scorecard (server: guidanceCheck in shared/annual.ts) ---- */
+function guideCardHtml(bv) {
+  const g = bv.guide;
+  const icon = { ok: '<span class="gd ok">✓</span>', check: '<span class="gd check">!</span>', bad: '<span class="gd bad">✕</span>', info: '<span class="gd info">·</span>' };
+  const q = g.quarters || [];
+  const qTxt = q.length === 4 ? q.map((v, i) => `Q${i + 1} ${money(v)}`).join(' · ') : '';
+  return `<div class="card guide">
+    <h2>2027 guidance ${g.bad ? `<span class="pill miss">${g.bad} off</span>` : ''}${g.flags ? ` <span class="pill warnp">${g.flags} to check</span>` : ''}${!g.bad && !g.flags ? ' <span class="pill okp">on target</span>' : ''}</h2>
+    <p class="muted" style="margin:0 0 6px; font-size:11.5px">Exec team: rental income, total income, total expenses and the called-out lines must hold; <b>NOI matters most</b>. Against the October T12${(bv.refs || []).some((r) => r.key === 'budget') ? ' and the current budget' : ''}. Nothing here changes the budget.</p>
+    <table class="dfl gdt">${g.items.map((it) => `<tr class="${it.must ? 'must' : ''}"><td>${icon[it.status] || ''}</td><td class="k">${esc(it.label)}<div class="t muted">target ${esc(it.target)}</div></td><td class="v">${esc(it.value)}</td></tr>`).join('')}</table>
+    ${qTxt ? `<p class="muted" style="margin:6px 0 0; font-size:11px" title="Rental income by quarter: keep Q3/Q4 achievable (no hockey stick); Q1 should be aggressive">Rental income by quarter — ${qTxt}${g.q4VsQ1 != null ? ` · Q4 ${g.q4VsQ1 > 0 ? '+' : ''}${(g.q4VsQ1 * 100).toFixed(1)}% vs Q1` : ''}</p>` : ''}
+  </div>`;
+}
+
 /* ---- before a Yardi export: say what is unfinished ---- */
 function exportIssues(bv) {
   const issues = [];
   if (staleCalc(bv)) issues.push('It was calculated on older formulas (Recalc first).');
   if ((bv.lines || []).some((l) => l.driver && l.driver.draft)) issues.push('Wages use raise entries that are NOT finalized on the Payroll tab.');
+  if (bv.annual && bv.guide) for (const it of bv.guide.items) if (it.must && (it.status === 'bad' || it.status === 'check')) issues.push(`Guidance — ${it.label}: ${it.value} (target ${it.target}).`);
   if (bv.annual) {
     const items = defaultsInUse(bv);
     const ack = (bv.budget.inputs || {}).defaultsAck || null;
@@ -2795,19 +2858,19 @@ function tieGrowthHtml(bv) {
     ${cat('1')}${byP.loss ? row(byP.loss, null) : ''}
     ${row(agg(['1', 'loss'], 'Net Gross Potential Rent'), null, 'sub')}
     ${cat('2')}${cat('3')}
-    ${row(agg(['1', 'loss', '2', '3'], 'Total Rental Income'), null, 'sub')}
+    ${row(agg(['1', 'loss', '2', '3'], 'Total Rental Income'), 'rental', 'sub')}
     ${cat('4')}${cat('5')}
     ${row(agg(['4', '5'], 'Total Other + Utility Inc'), null, 'sub')}
-    ${row({ ...t.egi, label: 'Total Income (EGI)', t3: t3 ? t3.egi : null }, null, 'big')}
+    ${row({ ...t.egi, label: 'Total Income (EGI)', t3: t3 ? t3.egi : null }, 'income', 'big')}
     ${['6', '7', '8', '9', '10', '11', '12', '13', '14'].map((p) => (p === '7' ? (byP[p] ? row(byP[p], null) : '') : cat(p))).join('')}
     ${row({ ...t.toe, label: 'Total OpEx', t3: t3 ? t3.toe : null }, 'opex', 'big')}
     ${row({ ...t.noi, label: 'NOI', t3: t3 ? t3.noi : null }, 'noi', 'big')}
   </table>
   <div class="row" style="margin-top:6px; justify-content:space-between; align-items:center">
     <span class="muted" style="font-size:11px">Δ% = budget vs ${esc(refLabel)}. Type a target, then <b>tie</b>.</span>
-    ${nTargets ? `<button class="rb" id="tie-all" title="Apply every target that is set — categories first, then OpEx, then NOI">tie all (${nTargets})</button>` : ''}
+    ${nTargets ? `<button class="rb" id="tie-all" title="Apply every target that is set — categories first, then rental income / total income (they move GPR), then OpEx, then NOI">tie all (${nTargets})</button>` : ''}
   </div>
-  <p class="muted" style="font-size:11px"><b>Nothing derives from an underwriting.</b> “tie” shifts the trailing-12 × factor lines of that subtotal by one uniform number of points (MROUNDs kept), so the subtotal grows by the target; GPR solves its monthly %; concessions &amp; rental loss scale their % of GPR; loss to lease is set under Assumptions; mgmt fee follows income; a subtotal with no factor lines left (all overridden) rebalances proportionally. OpEx / NOI targets spread across every expense category but the fee.</p>`;
+  <p class="muted" style="font-size:11px"><b>Nothing derives from an underwriting.</b> “tie” shifts the trailing-12 × factor lines of that subtotal by one uniform number of points (MROUNDs kept), so the subtotal grows by the target; GPR solves its monthly %; concessions &amp; rental loss scale their % of GPR; loss to lease is set under Assumptions; mgmt fee follows income; <b>Total Rental Income / Total Income</b> move the lever you pick — vacancy % or GPR (other income is held; a target the lever cannot reach is refused, nothing changes); a subtotal with no factor lines left (all overridden) rebalances proportionally. OpEx / NOI targets spread across every expense category but the fee.</p>`;
 }
 
 function tieHtml(bv) {
@@ -4840,6 +4903,28 @@ function wirePayAdmin(el, st) {
   }));
 }
 
+/* the region's budget guidance ranges (exec team 2027 guidance by default) */
+const GUIDANCE_FIELDS = [
+  ['incomeMin', 'Total income growth, low', true], ['incomeMax', 'Total income growth, high', true],
+  ['expenseMin', 'Total expense growth, low', true], ['expenseMax', 'Total expense growth, high', true],
+  ['spreadMax', 'Expense growth over income growth, at most', true],
+  ['noiMin', 'NOI growth, at least', true],
+  ['marchVsLastMin', 'March rental income vs October, low', true], ['marchVsLastMax', 'March rental income vs October, high', true],
+  ['insurancePerUnit', 'Insurance $/unit/yr', false], ['reTaxPct', 'RE taxes over actuals', true],
+  ['payrollMin', 'Payroll growth, low', true], ['payrollMax', 'Payroll growth, high', true],
+  ['spPctCapital', 'SP as a share of capital', true],
+];
+function guidanceSettingsHtml(st) {
+  const g = st.guidance || {};
+  const box = ([k, label, pct]) => `<div class="fld"><label>${esc(label)}</label>${S.auth.isAdmin ? `<input data-gdk="${k}" ${pct ? 'data-pct="1"' : ''} value="${g[k] == null ? '' : pct ? +(g[k] * 100).toFixed(3) : g[k]}" style="width:70px; text-align:right">${pct ? ' %' : ''}` : `<b>${g[k] == null ? '—' : pct ? (g[k] * 100).toFixed(2) + '%' : g[k]}</b>`}</div>`;
+  return `<div class="card">
+    <h2>Budget guidance</h2>
+    <p class="muted" style="margin:0 0 6px">The exec team's targets every annual budget in this region is scored against (the 2027 guidance to start): growth vs the October T12. A scorecard only — nothing is changed by it. Misses on the must-hold lines show before a Yardi export.</p>
+    <div class="row" style="flex-wrap:wrap; gap:10px">${GUIDANCE_FIELDS.map(box).join('')}
+      <div class="fld"><label>NOI not below the current budget</label>${S.auth.isAdmin ? `<input type="checkbox" data-gdk="noiVsCyBudget" ${g.noiVsCyBudget !== false ? 'checked' : ''}>` : `<b>${g.noiVsCyBudget !== false ? 'yes' : 'no'}</b>`}</div></div>
+    ${S.auth.isAdmin ? '<div class="row" style="justify-content:flex-end; margin-top:6px"><button class="btn sm" id="gd-save">Save</button></div>' : ''}
+  </div>`;
+}
 function renderSettings(el) {
   const st = S.state;
   const pf = new Map(st.portfolios.map((p) => [p.id, p.name]));
@@ -4853,6 +4938,7 @@ function renderSettings(el) {
         <td>${S.auth.isAdmin ? `<select data-role="${p.code}" title="subject = budgeted here: listed on the dashboard and in the New budget dialog. comp = comparison data only."><option value="subject" ${p.role === 'subject' ? 'selected' : ''}>subject</option><option value="comp" ${p.role === 'comp' ? 'selected' : ''}>comp</option></select>` : esc(p.role)}</td></tr>`).join('')}</table>
       ${S.auth.isAdmin ? '<p class="muted">Edit a name or unit count and press Enter to save. Role saves when picked: a <b>subject</b> is budgeted here (dashboard list, New budget dialog); a <b>comp</b> is comparison data only. Changing it never touches comp sets or existing budgets.</p>' : ''}
     </div>
+    ${guidanceSettingsHtml(st)}
     <div class="card">
       <h2>Required budget lines <span class="badge">${(st.requiredLines || []).length}</span></h2>
       <p class="muted" style="margin:0 0 6px">GLs every annual budget in this region must carry. A budget with one at zero is flagged under <b>Defaults in use</b> and before a Yardi export. One per line: <code>GL — why</code>.</p>
@@ -4882,6 +4968,16 @@ function renderSettings(el) {
     await POST('/properties', { ...p, code: p.code, name: box.value.trim(), portfolioId: p.portfolio_id });
     await refreshState(); render();
   }));
+  { const gs = el.querySelector('#gd-save'); if (gs) gs.addEventListener('click', async () => {
+    const out = {};
+    el.querySelectorAll('[data-gdk]').forEach((box) => {
+      const k = box.dataset.gdk;
+      if (box.type === 'checkbox') out[k] = box.checked;
+      else if (box.value.trim() !== '') out[k] = box.dataset.pct ? Number(box.value) / 100 : Number(box.value);
+    });
+    await PUT('/guidance', { guidance: out });
+    await refreshState(); render();
+  }); }
   { const rs = el.querySelector('#req-save'); if (rs) rs.addEventListener('click', async () => {
     const lines = el.querySelector('#req-lines').value.split('\n').map((t) => t.trim()).filter(Boolean)
       .map((t) => { const m = t.match(/^(\d{4})\s*(?:[—–:-]\s*)?(.*)$/); return m ? { gl: m[1], why: m[2] } : null; }).filter(Boolean);
