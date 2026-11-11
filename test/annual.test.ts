@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, mgmtFeeRates, summaryColumn, sumSummaryCols, summaryLabels, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, contractMonths, flatFeeFromSchedule, guidanceCheck, type TemplateData, type AnnualSources,
+  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, contractMonths, flatFeeFromSchedule, guidanceCheck, fitToT12, type TemplateData, type AnnualSources,
 } from '../shared/annual.js';
 import { sum, zero12, rollup, CURVES, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
 import { parseYardiBudgetTemplate, parseRentRoll, parseMonarchStatement, detectUploadKind } from '../src/importers.js';
@@ -1499,5 +1499,44 @@ describe('guidanceCheck', () => {
     expect(r.items.find((i) => i.key === 'sp')!.status).toBe('check');  // nothing budgeted
     expect(r.quarters.length).toBe(4);
     expect(guidanceCheck({ lines, coaList, t12: null, lastMonth: 10, units: 10, capital: 0 })).toBeNull();
+  });
+});
+
+/* Fit to T12 on ANY line (Troy 2026-11-11: "It should be usable for any GL and any category") */
+describe('fit to T12 on any line', () => {
+  const actual = synthetic();
+  const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
+  const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
+  const withFit = (glFit: Record<string, number>, extra: any = {}) => generateAnnualLines(coaList, { ...inputs, ...extra, baseline: { ...inputs.baseline!, ...(extra.baseline || {}), glFit } }, src);
+  it('fitToT12 keeps the total and moves the months toward the history', () => {
+    const flat = Array(12).fill(100) as Months;
+    const hist = cal([300, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const half = fitToT12(flat, hist, 0.5)!;
+    expect(sum(half)).toBeCloseTo(1200, 2);
+    expect(half[0]).toBeCloseTo(650, 2);                        // 50 + 600
+    expect(half[1]).toBeCloseTo(50, 2);
+    expect(fitToT12(flat, hist, 1)![0]).toBeCloseTo(1200, 2);
+    expect(fitToT12(flat, zero12(), 0.5)).toBeNull();           // no history: nothing to fit
+  });
+  it('works on a flat (T12 ÷ 12) line, keeping its year total', () => {
+    const base = generateAnnualLines(coaList, { ...inputs, baseline: { ...inputs.baseline!, glShape: { '6604': 'flat' } } }, src);
+    const fit = withFit({ '6604': 1 }, { baseline: { glShape: { '6604': 'flat' } } });
+    const b = L(base, '6604'), f = L(fit, '6604');
+    expect(sum(f.months)).toBeCloseTo(sum(b.months), 2);
+    expect(f.months[0]).toBeGreaterThan(f.months[5]);           // January heavier than June, like its T12
+    expect((f.driver as any).fitT12).toBe(1);
+  });
+  it('works on engine lines (% of GPR, corporate rate) and on income', () => {
+    const base = generateAnnualLines(coaList, inputs, src);
+    const fit = withFit({ '5035': 0.5, '6108': 0.5 });
+    // 5035 delinquency is % of net rental income: total kept, months moved toward its T12 (flat here → unchanged shape)
+    expect(sum(L(fit, '5035').months)).toBeCloseTo(sum(L(base, '5035').months), 2);
+    // 6108 insurance has no T12 in the synthetic property: left alone
+    expect(L(fit, '6108').months).toEqual(L(base, '6108').months);
+    expect((L(fit, '6108').driver as any).fitT12).toBeUndefined();
+  });
+  it('a curve line keeps its own blend (no second fit), contracts are never fitted', () => {
+    const c = withFit({ '6620': 0.5 }, { contracts: [{ vendor: 'x', gl: '6620', kind: 'monthly', amount: 100 }] });
+    expect(L(c, '6620').months).toEqual(Array(12).fill(100));
   });
 });

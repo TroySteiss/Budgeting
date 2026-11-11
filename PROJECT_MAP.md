@@ -76,8 +76,13 @@ insurance $275/unit; RE taxes +3% unless documented; payroll 3–4%; SP ~2% of c
   before a journal split. Also rental income by calendar quarter + Q4 vs Q1 (hockey stick, shown only).
 - Ranges per region: `app_meta.guidance` (migration 017) over `DEFAULT_GUIDANCE`; `PUT /guidance`
   (admin); Settings → Budget guidance. `/state.guidance`; `lb.guidance`.
-- Editor: "2027 guidance" card at the top of the side panel (`guideCardHtml`); must-hold misses join the
-  pre-export check (`exportIssues`). Dashboard: Guidance column (NOI / income / expense growth, red =
+- Editor: guidance lives IN the tie card's Target column (Troy 2026-11-11: "there is literally a target
+  box, why would you create a whole new pane" — never a separate card). An empty target box shows the
+  guidance range as its placeholder (Total Income, Total OpEx, NOI, RE & PP taxes, Payroll) and Δ% is
+  green inside it / red outside until a target is typed; a typed target still wins and drives "tie".
+  Only while the card compares to the T12. The checks with no row of their own (NOI vs the 2026 budget,
+  expense spread, March vs October, insurance, SP, rental income by quarter) are one line each under
+  the table (`guideNotesHtml`). Must-hold misses join the pre-export check (`exportIssues`). Dashboard: Guidance column (NOI / income / expense growth, red =
   NOI down or below the current budget, amber = a range missed; `b.dash.guide` built in `/state`).
 - Ties: the tie card's Total Rental Income (`rental`) and Total Income (`income`) rows now take a target.
   `POST /budgets/:id/tie-growth {pcode, pct, lever}` — Troy picks the lever each time (popover):
@@ -1052,9 +1057,18 @@ templates". (Clicking into a saved set to edit its items directly is NOT built y
   historical expenses"): `baseline.glFit[gl]` (0..1; saved sets carry `rule.fit`) on shapes `turns`
   and `curve`. `annualBaseline` blends the curve's normalized weights with the GL's own T12 months
   (credit months = 0): 0 = pure curve, 1 = the T12 months; the year total is unchanged. Driver
-  `fit`, shown in the chip and the Excel note. UI: "fit to T12 %" box on the section header beside
-  the formula pick (`secFitHtml`, all curve lines of the section), a box in Formula for lines, and
-  a prompt in the row's shape menu. Not on the Default formulas screen yet.
+  `fit`, shown in the chip and the Excel note.
+  **Any GL, any category (Troy 2026-11-11: "Why is RR the only category that has a fit to T12
+  function??? It should be usable for any GL and any category")**: `fitToT12` (shared/annual.ts) is a
+  general step in `generateAnnualLines` after every formula (before the fee; 6112 after it): the
+  line's own months are blended with its rotated T12 months by `glFit[gl]` (else `rule.fit`), year
+  total kept penny-exact, MROUND re-applied. Curve / turnover baselines keep their in-shape blend (no
+  second fit). Skipped: contracts, debt / interest, zero / dropped / manual lines, and GLs with no T12.
+  Driver `fitT12` → second chip "FIT n%" and the Excel note. UI: the "fit to T12 %" box is on EVERY
+  section header that has a fittable line (`secFitLines`: any non-typed line with T12 history), the
+  row menu has "Fit to T12 %…" on any such line, and Formula for lines applies the % with any formula.
+  Saved formula sets carry it for history lines only (engine lines have no per-GL rule).
+  Not on the Default formulas screen yet.
 - **Recalculate many** (dashboard Export menu -> "Recalculate..."; `openRecalcMany`, `POST
   /budgets-recalc { ids, dryRun }`): preview of lines that move and NOI before / after per budget,
   then save with a save point "Before recalculating all". This is how a changed default reaches

@@ -39,7 +39,7 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-11a';
+export const ENGINE_VERSION = '2026-11-11b';
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -497,6 +497,27 @@ export const BASELINE_SKIP_SECTIONS = new Set(['special_projects', 'principal', 
 
 export const DEFAULT_BASELINE: NonNullable<BudgetInputs['baseline']> = { source: 'actual', growthPct: { ...TEMPLATE_CAT_PCT }, shape: 'actual', mround: 0 };
 
+/* ---------------- fit to T12 on ANY line (Troy 2026-11-11: "It should be usable for any GL and any
+   category") ---------------- */
+/** Blend a line's monthly spread with its own trailing-12 months: `f` (0..1) of the weight comes from
+    the T12 months, the rest from the line's own months. The YEAR TOTAL is kept (penny-exact); only where
+    it lands moves. Credit months in either series count as zero. MROUND (`mult`) is re-applied after.
+    `own` must be in the same (budget-month) order as `months`. Returns null when there is nothing to fit. */
+export function fitToT12(months: Months, own: Months, f: number, mult = 0): Months | null {
+  const k = Math.min(1, Math.max(0, f || 0));
+  const tot = r2(months.reduce((a, b) => a + b, 0));
+  if (!k || !tot) return null;
+  const sg = tot >= 0 ? 1 : -1;
+  const pos = (m: Months) => m.map((v) => (v * sg > 0 ? v * sg : 0));
+  const mine = pos(months), hist = pos(own);
+  const ms = mine.reduce((a, b) => a + b, 0), hs = hist.reduce((a, b) => a + b, 0);
+  if (!hs) return null;
+  const w = mine.map((v, i) => (ms ? ((1 - k) * v) / ms : (1 - k) / 12) + (k * hist[i]) / hs) as Months;
+  let out = spreadMonthly(tot, w);
+  if (mult > 0) out = out.map((v) => r2(Math.round(v / mult) * mult)) as Months;
+  return out;
+}
+
 /* ---------------- one baseline line ---------------- */
 
 /** A calendar series → the budget months on a shape, × (1+pct) (or a
@@ -663,6 +684,7 @@ export function formulaSetFromBudget(lines: BudgetLine[], inputs: BudgetInputs):
     if (Number.isFinite(d.pct)) r.factor = Math.round(d.pct * 1e6) / 1e6;
     if (d.mult) r.mround = d.mult;
     if (d.fit > 0) r.fit = d.fit;
+    else if (d.fitT12 > 0) r.fit = d.fitT12;
     // a flat line the user chose on the row is budgeted whatever its size; otherwise the
     // template's $1,000 rule still applies on the property the set is given to
     if (method === 'flatT12' && bl.glShape?.[l.gl_code]) r.noThreshold = true;
@@ -1563,6 +1585,24 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     mk(gl, months, { method: 'contract', mode: add ? 'add' : 'replace', items, ...(add && prev ? { base: prev.driver } : {}) } as any);
   }
 
+  /* ---- FIT TO T12 on any line (bl.glFit, else the formula set's rule.fit): the line keeps its year
+     total; its months lean toward its own trailing-12 months. Curve / turnover baselines already
+     blended inside annualBaseline. Not on contracts (known billing), debt, zero / dropped / empty
+     lines. Before the fee so a fitted income line is in the fee's basis; the fee itself after. ---- */
+  const FIT_SKIP = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest']);
+  const fitOf = (gl: string): number => Math.min(1, Math.max(0, Number(bl.glFit?.[gl] ?? (rules[gl] as any)?.fit ?? 0) || 0));
+  const fitLine = (gl: string): void => {
+    const ln = lines.get(gl); const d: any = ln?.driver || {};
+    const f = fitOf(gl);
+    if (!ln || !f || FIT_SKIP.has(d.method) || (d.method === 'baseline' && (d.shape === 'curve' || d.shape === 'turns'))) return;
+    const own = rotate12((src.actual || {})[gl] || zero12(), startMonth);
+    const out = fitToT12(ln.months, own, f, d.mult || 0);
+    if (!out) return;
+    ln.months = out;
+    ln.driver = { ...d, fitT12: Math.round(f * 1000) / 1000 } as any;
+  };
+  for (const gl of [...lines.keys()]) if (gl !== '6112') fitLine(gl);
+
   /* ---- management fee: % of the PRIOR month's total income, rounded to the dollar
      (2027 template: the fee bills a month in arrears, so January runs on December's
      budgeted income; without a current-year budget January runs on its own income) ---- */
@@ -1584,6 +1624,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     mk('6112', basis.map((v, i) => Math.round(v * fr.rates[i])) as Months, { method: 'mgmtPct', pct: feePct, priorMonth: true, ...(fr.firstMonths ? { firstYear: { pct: fy.pct, months: fr.firstMonths, through: fr.through } } : {}) } as any);
   }
   else if (coaByCode.has('6112')) baseline(coaByCode.get('6112')!);
+  fitLine('6112');
 
   /* ---- debt service: the Yardi amortization schedule; else loan × rate; else history ---- */
   if (isSet('7300')) {

@@ -38,6 +38,7 @@ function drvMeta(l) {
   if (l && l.driver && l.driver.smooth && l.driver.method !== 'smooth') {
     extra.push({ cls: 'drv-t12', tag: 'SMOOTH', label: `Missed-bill smoothing ×${l.driver.smooth.passes || 0} on top of this formula: spikes spread into the surrounding months, no negative months, every month rounded to $${l.driver.smooth.mult || 5}. The months are now fixed; 🔓 puts the line back on its formula.` });
   }
+  if (l && l.driver && l.driver.fitT12) extra.push({ cls: 'drv-t12', tag: `FIT ${Math.round(l.driver.fitT12 * 100)}%`, label: `Months lean ${Math.round(l.driver.fitT12 * 100)}% toward this GL's own trailing-12 months (year total unchanged) — row menu or section header "fit to T12"` });
   // one-time items taken out of this GL's trailing-12 before the formula read it (More → One-time items)
   if (l && l.driver && l.driver.oneTime) extra.push({ cls: 'drv-t12', tag: '−1X', label: `$${money(l.driver.oneTime)} of one-time items taken out of the trailing-12 before this formula read it (More → One-time items out of the T12…)` });
   // the recurring-journal split (TPND → TPNDC)
@@ -1066,7 +1067,6 @@ function renderEditor(el) {
         <div class="gridwrap">${gridHtml(bv, totals)}</div>
       </div>
       <div class="side">
-        ${bv.guide ? guideCardHtml(bv) : ''}
         <div class="card">
           <h2>Monthly trend</h2>
           ${trendSvg(bv)}
@@ -2119,7 +2119,7 @@ function secPctBoxHtml(bv, hdr, linesByGl) {
   }
   if (!follow && !keep) return '';
   const cur = (bl.secGrowth || {})[hdr.section];
-  return ` <span class="secpct" title="Increase % for every history-based line in ${esc(hdr.name)}: ${follow} line${follow === 1 ? '' : 's'} follow it${keep ? `; ${keep} keep their own (a % typed on the row, a hand-typed line, or a line with its own formula)` : ''}. Blank = each line's usual factor. Enter applies and recalculates.">increase <input class="secpct-in" data-secpct="${esc(hdr.section)}" value="${cur != null ? +(cur * 100).toFixed(2) : ''}" placeholder="—"> % <span class="muted">· ${follow} line${follow === 1 ? '' : 's'}${keep ? `, ${keep} keep their own` : ''}</span>${secShapeHtml(hdr, shapesNow)}</span>`;
+  return ` <span class="secpct" title="Increase % for every history-based line in ${esc(hdr.name)}: ${follow} line${follow === 1 ? '' : 's'} follow it${keep ? `; ${keep} keep their own (a % typed on the row, a hand-typed line, or a line with its own formula)` : ''}. Blank = each line's usual factor. Enter applies and recalculates.">increase <input class="secpct-in" data-secpct="${esc(hdr.section)}" value="${cur != null ? +(cur * 100).toFixed(2) : ''}" placeholder="—"> % <span class="muted">· ${follow} line${follow === 1 ? '' : 's'}${keep ? `, ${keep} keep their own` : ''}</span>${secShapeHtml(hdr, shapesNow)}${secFitHtml(hdr)}</span>`;
 }
 
 /* ---- section formula (Troy 2026-11-10): one pick on a section header sets how every history-based
@@ -2134,23 +2134,27 @@ function secShapeHtml(hdr, shapesNow) {
     <option value="" selected>${one ? 'formula: ' + esc((SEC_SHAPES.find((x) => x[0] === one) || [one, one])[1]) : 'formula: mixed'}</option>
     ${SEC_SHAPES.filter((x) => x[0] !== one).map(([k, t]) => `<option value="${k}">set all to: ${t}</option>`).join('')}
     <option value="__clear">clear row choices (back to the default)</option>
-    <option value="__defaults">change the DEFAULT for every budget…</option></select>${secFitHtml(hdr)}`;
+    <option value="__defaults">change the DEFAULT for every budget…</option></select>`;
 }
 /* FIT TO T12 (Troy 2026-11-11): lines on a curve (turnover / seasonal) can lean toward their own T12 months.
    One box on the section header sets it for every curve line under it; 0 / blank = the pure curve, 100 = the
    T12 months themselves. The year total does not change, only where it lands. */
 const FIT_SHAPES = new Set(['turns', 'curve']);
+/* fit works on ANY line with its own T12 (Troy 2026-11-11) — not contracts, debt, zero / dropped / typed lines */
+const FIT_SKIP = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest']);
+const hasT12 = (gl) => { const h = S.bv && S.bv.hist && S.bv.hist.t12; return !!(h && h.cal[gl] && h.cal[gl].some((v) => v)); };
+const fitOfLine = (l) => (l && l.driver ? (l.driver.fit || l.driver.fitT12 || 0) : 0);
 function secFitLines(section) {
   const lines = new Map((S.bv.lines || []).map((l) => [l.gl_code, l]));
   return S.state.coa.filter((a) => a.kind === 'detail' && a.section === section).map((a) => lines.get(a.code))
-    .filter((l) => l && !l.override && l.driver && l.driver.method === 'baseline' && FIT_SHAPES.has(l.driver.shape));
+    .filter((l) => l && !l.override && l.driver && !FIT_SKIP.has(l.driver.method) && hasT12(l.gl_code));
 }
 function secFitHtml(hdr) {
   const ls = secFitLines(hdr.section);
   if (!ls.length) return '';
-  const vals = new Set(ls.map((l) => Math.round((l.driver.fit || 0) * 100)));
+  const vals = new Set(ls.map((l) => Math.round(fitOfLine(l) * 100)));
   const cur = vals.size === 1 ? [...vals][0] : null;
-  return ` <span class="secfit" title="Fit to T12: how far the ${ls.length} curve line${ls.length === 1 ? '' : 's'} in ${esc(hdr.name)} lean toward their OWN trailing-12 months. 0 = the pure curve, 50 = half curve / half history, 100 = the T12 months themselves. Each line's year total stays the same; only the months move. Enter applies.">fit to T12 <input class="secfit-in" data-secfit="${esc(hdr.section)}" value="${cur == null ? '' : cur || ''}" placeholder="${cur == null ? 'mixed' : '0'}" style="width:42px; text-align:right; border:1px solid var(--line); border-radius:5px; padding:1px 4px; font-size:11.5px"> %</span>`;
+  return ` <span class="secfit" title="Fit to T12: how far the ${ls.length} line${ls.length === 1 ? '' : 's'} in ${esc(hdr.name)} lean toward their OWN trailing-12 months, whatever formula builds them. 0 = the formula's own months, 50 = half and half, 100 = the T12 months themselves. Each line's year total stays the same; only the months move. Enter applies.">fit to T12 <input class="secfit-in" data-secfit="${esc(hdr.section)}" value="${cur == null ? '' : cur || ''}" placeholder="${cur == null ? 'mixed' : '0'}" style="width:42px; text-align:right; border:1px solid var(--line); border-radius:5px; padding:1px 4px; font-size:11.5px"> %</span>`;
 }
 async function setFit(b, gls, pctVal) {
   const bl = (S.bv.budget.inputs || {}).baseline || {};
@@ -2301,7 +2305,7 @@ function openBulkFormula(b) {
     <p class="muted" style="margin:0 0 8px; font-size:12px">Sets how the ticked lines are built from their own history, then recalculates. Each line keeps its increase %. Hand-typed lines are not listed. One Undo reverses it.</p>
     <div class="row">
       <div class="fld"><label>Formula</label><select id="bs-shape">${SEC_SHAPES.map(([k, t]) => `<option value="${k}" ${k === 'turns' ? 'selected' : ''}>${t}</option>`).join('')}<option value="__clear">clear row choices (back to the formula set)</option></select></div>
-      <div class="fld"><label title="For the turnover curve and the seasonal curve: how far the ticked lines lean toward their own trailing-12 months. 0 = the pure curve, 100 = the T12 months. Year totals do not change.">Fit to T12 %</label><input id="bs-fit" value="" placeholder="0" style="width:70px"></div>
+      <div class="fld"><label title="How far the ticked lines lean toward their own trailing-12 months, with any formula. 0 = the formula's own months, 100 = the T12 months. Year totals do not change.">Fit to T12 %</label><input id="bs-fit" value="" placeholder="0" style="width:70px"></div>
       <span class="spacer" style="flex:1"></span>
       <button class="btn sub" id="bs-turn" title="The turn-cost lines: cleaning, painting, carpet, make-ready, appliance and flooring replacement">Turn lines</button>
       <button class="btn sub" id="bs-all">All</button>
@@ -2331,7 +2335,7 @@ function openBulkFormula(b) {
     const fitV = fitRaw === '' ? null : parseFloat(fitRaw.replace(/[%,]/g, ''));
     if (fitV != null && (!Number.isFinite(fitV) || fitV < 0 || fitV > 100)) { dlg.querySelector('#bs-err').textContent = 'Fit to T12 is a % from 0 to 100.'; return; }
     const glFit = { ...(cur.glFit || {}) };
-    for (const gl of gls) { if (shape === '__clear') { delete glShape[gl]; delete glFit[gl]; } else { glShape[gl] = shape; if (fitV != null && FIT_SHAPES.has(shape)) glFit[gl] = fitV / 100; } }
+    for (const gl of gls) { if (shape === '__clear') { delete glShape[gl]; delete glFit[gl]; } else { glShape[gl] = shape; if (fitV != null) glFit[gl] = fitV / 100; } }
     try { pushUndo(); S.bv = await PUT(`/budgets/${b.id}`, { inputs: { baseline: { ...cur, glShape, glFit } } }); dlg.close(); render(); }
     catch (e) { dlg.querySelector('#bs-err').textContent = e.message; }
   });
@@ -2770,20 +2774,6 @@ function openAllocSplit(b) {
   dlg.showModal();
 }
 
-/* ---- 2027 exec-team guidance scorecard (server: guidanceCheck in shared/annual.ts) ---- */
-function guideCardHtml(bv) {
-  const g = bv.guide;
-  const icon = { ok: '<span class="gd ok">✓</span>', check: '<span class="gd check">!</span>', bad: '<span class="gd bad">✕</span>', info: '<span class="gd info">·</span>' };
-  const q = g.quarters || [];
-  const qTxt = q.length === 4 ? q.map((v, i) => `Q${i + 1} ${money(v)}`).join(' · ') : '';
-  return `<div class="card guide">
-    <h2>2027 guidance ${g.bad ? `<span class="pill miss">${g.bad} off</span>` : ''}${g.flags ? ` <span class="pill warnp">${g.flags} to check</span>` : ''}${!g.bad && !g.flags ? ' <span class="pill okp">on target</span>' : ''}</h2>
-    <p class="muted" style="margin:0 0 6px; font-size:11.5px">Exec team: rental income, total income, total expenses and the called-out lines must hold; <b>NOI matters most</b>. Against the October T12${(bv.refs || []).some((r) => r.key === 'budget') ? ' and the current budget' : ''}. Nothing here changes the budget.</p>
-    <table class="dfl gdt">${g.items.map((it) => `<tr class="${it.must ? 'must' : ''}"><td>${icon[it.status] || ''}</td><td class="k">${esc(it.label)}<div class="t muted">target ${esc(it.target)}</div></td><td class="v">${esc(it.value)}</td></tr>`).join('')}</table>
-    ${qTxt ? `<p class="muted" style="margin:6px 0 0; font-size:11px" title="Rental income by quarter: keep Q3/Q4 achievable (no hockey stick); Q1 should be aggressive">Rental income by quarter — ${qTxt}${g.q4VsQ1 != null ? ` · Q4 ${g.q4VsQ1 > 0 ? '+' : ''}${(g.q4VsQ1 * 100).toFixed(1)}% vs Q1` : ''}</p>` : ''}
-  </div>`;
-}
-
 /* ---- before a Yardi export: say what is unfinished ---- */
 function exportIssues(bv) {
   const issues = [];
@@ -2807,6 +2797,18 @@ function okToExport(bv) {
 /* ANNUAL tie card: growth targets per subtotal vs the reference. Nothing
    derives from an underwriting — each row shows the implied growth, takes a
    target %, and "tie" shifts that subtotal's growth factors to land there. */
+/* the guidance checks that have no row in the tie card (Troy 2026-11-11: guidance goes WHERE THE
+   TARGETS ARE, not in a separate pane) — one line each, only the ones that are off or worth seeing */
+function guideNotesHtml(bv) {
+  const g = bv.guide; if (!g) return '';
+  const own = new Set(['noi', 'income', 'expense', 'rental', 'tax', 'payroll']);   // shown on their rows
+  const icon = { ok: '<span class="gd ok">✓</span>', check: '<span class="gd check">!</span>', bad: '<span class="gd bad">✕</span>', info: '<span class="gd info">·</span>' };
+  const items = g.items.filter((it) => !own.has(it.key));
+  const q = g.quarters || [];
+  return `<div class="gnotes">${items.map((it) => `<div class="gn ${it.status}" title="target ${esc(it.target)}">${icon[it.status] || ''} ${esc(it.label)}: <b>${esc(it.value)}</b> <span class="muted">(${esc(it.target)})</span></div>`).join('')}
+    ${q.length === 4 ? `<div class="gn info" title="Rental income by quarter: Q1 should be aggressive; keep Q3 / Q4 achievable (no hockey stick)">${icon.info} Rental income Q1–Q4: ${q.map((v) => money(v)).join(' · ')}${g.q4VsQ1 != null ? ` <span class="muted">(Q4 ${g.q4VsQ1 > 0 ? '+' : ''}${(g.q4VsQ1 * 100).toFixed(1)}% vs Q1)</span>` : ''}</div>` : ''}
+  </div>`;
+}
 function tieGrowthHtml(bv) {
   const inp = bv.budget.inputs || {};
   const refLabel = bv.refLabel || 'T12';
@@ -2838,16 +2840,32 @@ function tieGrowthHtml(bv) {
   // growth of the SIGNED reference: a contra line shrinking 10% reads −10%, like its target
   const pctOf = (r) => (r.uw ? (r.budget - r.uw) / r.uw : null);
   const fmtPct = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%`);
+  // the exec team's guidance (Settings → Budget guidance) lives in the target column: an empty box
+  // shows the guidance range, and Δ% is coloured against it until a target is typed. Guidance is
+  // growth over the October T12, so it only applies while the card compares to the T12.
+  const G = bv.guidance || null;
+  const useG = !!(G && bv.guide && inp.refSource !== 'budget');
+  const p1 = (v) => +(v * 100).toFixed(2);
+  const GR = useG ? {
+    income: [G.incomeMin, G.incomeMax], opex: [G.expenseMin, G.expenseMax], noi: [G.noiMin, null],
+    '8': [null, G.reTaxPct + 0.0025], '10': [null, G.payrollMax],
+  } : {};
+  const gText = (k) => { const r = GR[k]; if (!r) return ''; return r[0] != null && r[1] != null ? `${p1(r[0])}–${p1(r[1])}` : r[0] != null ? `≥${p1(r[0])}` : `≤${p1(r[1])}`; };
+  const gWhy = { income: 'total income', opex: 'total expenses', noi: 'NOI (most important)', '8': 'RE taxes: +3% unless documented', '10': 'payroll 3–4% on performing sites, lower where NOI growth is low' };
   // key: a pcode, 'opex' or 'noi' → takes a target; null → display only
   const row = (r, key, cls) => {
     const g = pctOf(r);
     const tgt = key != null && gt[key] != null ? gt[key] : null;
     const off = tgt != null && g != null ? Math.abs(g - tgt) : null;
-    const vcls = off == null ? '' : off < 0.0015 ? 'good' : off > 0.01 ? 'bad' : '';
+    const gr = key != null ? GR[key] : null;
+    const gIn = gr && g != null ? (gr[0] == null || g >= gr[0] - 1e-9) && (gr[1] == null || g <= gr[1] + 1e-9) : null;
+    const vcls = off != null ? (off < 0.0015 ? 'good' : off > 0.01 ? 'bad' : '') : gIn == null ? '' : gIn ? 'good' : 'bad';
+    const ph = gr ? gText(key) : '%';
+    const tip = `Growth target vs ${refLabel} (%)${gr ? ` — exec-team guidance ${gText(key)}% (${gWhy[key]}); type a target to tie to` : ''}`;
     return `<tr class="${cls || ''}"><td title="${esc(r.label)}">${esc(SHORT[r.pcode] || r.label)}</td>
       <td>${money(r.uw)}</td>${t3Cell(r)}<td>${money(r.budget)}</td>
       <td class="var ${vcls}" title="Δ ${money(r.budget - r.uw)} vs ${esc(refLabel)}">${fmtPct(g)}</td>
-      <td>${key != null ? `<input data-gt="${key}" value="${tgt != null ? (tgt * 100).toFixed(1) : ''}" placeholder="%" style="width:48px; font-size:11px; text-align:right" title="Growth target vs ${esc(refLabel)} (%)">` : ''}</td>
+      <td>${key != null ? `<input data-gt="${key}" value="${tgt != null ? (tgt * 100).toFixed(1) : ''}" placeholder="${esc(ph)}" class="${gr ? 'gph' : ''}" style="width:${gr ? 58 : 48}px; font-size:11px; text-align:right" title="${esc(tip)}">` : ''}</td>
       <td>${key != null && tgt != null && (off == null || off >= 0.0015) ? `<button class="rb" data-tie="${key}" title="Shift this subtotal's growth factors so it lands at ${esc(refLabel)} ${fmtPct(tgt)}">tie</button>` : ''}</td></tr>`;
   };
   const cat = (p) => (byP[p] ? row(byP[p], p) : '');
@@ -2866,8 +2884,9 @@ function tieGrowthHtml(bv) {
     ${row({ ...t.toe, label: 'Total OpEx', t3: t3 ? t3.toe : null }, 'opex', 'big')}
     ${row({ ...t.noi, label: 'NOI', t3: t3 ? t3.noi : null }, 'noi', 'big')}
   </table>
+  ${useG ? guideNotesHtml(bv) : ''}
   <div class="row" style="margin-top:6px; justify-content:space-between; align-items:center">
-    <span class="muted" style="font-size:11px">Δ% = budget vs ${esc(refLabel)}. Type a target, then <b>tie</b>.</span>
+    <span class="muted" style="font-size:11px">Δ% = budget vs ${esc(refLabel)}.${useG ? ' Grey numbers in an empty box are the exec-team guidance; Δ% is green inside it, red outside.' : ''} Type a target, then <b>tie</b>.</span>
     ${nTargets ? `<button class="rb" id="tie-all" title="Apply every target that is set — categories first, then rental income / total income (they move GPR), then OpEx, then NOI">tie all (${nTargets})</button>` : ''}
   </div>
   <p class="muted" style="font-size:11px"><b>Nothing derives from an underwriting.</b> “tie” shifts the trailing-12 × factor lines of that subtotal by one uniform number of points (MROUNDs kept), so the subtotal grows by the target; GPR solves its monthly %; concessions &amp; rental loss scale their % of GPR; loss to lease is set under Assumptions; mgmt fee follows income; <b>Total Rental Income / Total Income</b> move the lever you pick — vacancy % or GPR (other income is held; a target the lever cannot reach is refused, nothing changes); a subtotal with no factor lines left (all overridden) rebalances proportionally. OpEx / NOI targets spread across every expense category but the fee.</p>`;
@@ -5361,13 +5380,24 @@ function openShapeMenu(b, gl, acc, anchorBtn, inp) {
   menu.innerHTML = `
     <div class="rm-head">${gl} ${esc(acc.name || '')} — own history → budget</div>
     ${Object.entries(SHAPE_LABELS).map(([k, label]) => `<button data-sh="${k}">${curShape === k ? '✓ ' : ''}${label}</button>`).join('')}
-    <button data-sh="" style="color:var(--dim)">Template default for this GL</button>`;
+    <button data-sh="" style="color:var(--dim)">Template default for this GL</button>
+    ${hasT12(gl) && !(line && line.driver && FIT_SKIP.has(line.driver.method) && !line.override) ? `<div class="rm-head" style="margin-top:4px">Monthly spread</div><button data-fit="1" title="Lean this line's months toward its own trailing-12 months; the year total does not change">Fit to T12 %… <span class="muted">(now ${Math.round(((bl.glFit || {})[gl] ?? fitOfLine(line)) * 100)}%)</span></button>` : ''}`;
   const r = anchorBtn.getBoundingClientRect();
   menu.style.left = `${Math.max(8, r.left + window.scrollX - 40)}px`;
   menu.style.top = `${r.bottom + window.scrollY + 2}px`;
   document.body.appendChild(menu);
   menu.addEventListener('click', (e) => e.stopPropagation());
   setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+  { const fb = menu.querySelector('button[data-fit]'); if (fb) fb.addEventListener('click', async () => {
+    menu.remove();
+    const cur = Math.round(((bl.glFit || {})[gl] ?? fitOfLine(line)) * 100);
+    const f = parseFloat(String(prompt(`Fit to T12 % for ${gl} ${acc.name || ''}\n0 = the formula's own months, 50 = half and half, 100 = its trailing-12 months. The year total does not change.`, String(cur)) || '').replace(/[%,]/g, ''));
+    if (!(Number.isFinite(f) && f >= 0 && f <= 100)) return;
+    pushUndo();
+    if (line && line.override) S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { override: false });
+    S.bv = await PUT(`/budgets/${b.id}`, { inputs: { baseline: { ...bl, glFit: { ...(bl.glFit || {}), [gl]: f / 100 } } } });
+    render();
+  }); }
   menu.querySelectorAll('button[data-sh]').forEach((btn) => btn.addEventListener('click', async () => {
     const shape = btn.dataset.sh;
     menu.remove();

@@ -525,3 +525,9 @@ td.gdash.gok b { color: #1f6b3a; }
 [data-theme="dark"] td.gdash.gbad b { color: #f2a29c; }
 [data-theme="dark"] td.gdash.gchk b { color: #f0c674; }
 [data-theme="dark"] td.gdash.gok b { color: #9fd9b0; }
+
+/* guidance inside the tie card */
+.tie input.gph::placeholder { color: #9aa5a0; font-style: italic; }
+.tie .gnotes { margin-top: 6px; border-top: 1px solid var(--line, #e3e0d6); padding-top: 4px; }
+.tie .gn { font-size: 11.5px; line-height: 1.5; }
+.tie .gn .gd { width: 14px; height: 14px; line-height: 14px; font-size: 10px; }
