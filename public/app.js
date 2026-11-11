@@ -2839,8 +2839,8 @@ function openRowTools(b, gl, anchorBtn) {
     ${S.bv.annual ? `<button data-act="shape" title="Pick how this GL's own trailing-12 history becomes the budget: same month × factor (template), 1-2-1 weighted distribution, flat T12/12, last actual month flat, average of active months, or the T12 total on the GL's seasonal curve">${dot('drv-base')}Own T12 → shape × factor…</button>` : ''}
     ${S.bv.annual && acc.pcode && ['1', 'loss', '2', '3'].includes(acc.pcode) && gl !== '4994' ? `<button data-act="pctgpr" title="This line as a % of budget GPR">${dot('drv-base')}% of GPR…</button>` : ''}
     ${S.bv.annual && S.bv.template && S.bv.template.suggestions && S.bv.template.suggestions[gl] && S.bv.template.suggestions[gl].some((v) => v) ? `<button data-act="suggest" title="${esc((S.bv.template.suggestionNotes[gl] || []).join('; '))}">${dot('drv-corp')}Corporate suggestion (${money(S.bv.template.suggestions[gl].reduce((a, v) => a + v, 0))}/yr)…</button>` : ''}
-    ${(S.bv.sellerT12 || []).length ? `<button data-act="seller" title="${S.bv.annual ? 'Match this GL to any line of the property\'s own trailing-12 statement and take its monthly actuals × growth' : 'Match this GL to a seller T12 line and take its monthly actuals × growth'}">${dot('drv-t12')}${S.bv.annual ? 'Own T12 actuals — match any line…' : 'Seller actuals — match a seller line…'}</button>` : ''}
-    ${(S.bv.sellerT12 || []).length ? `<button data-act="t12curve" title="${S.bv.annual ? 'Take a statement line\'s T12 total × growth and spread it on a clean seasonal curve' : 'For non-accrual seller billing (credits/gaps/spikes): the ANNUAL total is still right even when the months are garbage. Takes the seller line\'s T12 total × growth and spreads it on a clean seasonal curve.'}">${dot('drv-t12')}${S.bv.annual ? 'T12 TOTAL → seasonal curve…' : 'Seller T12 TOTAL → seasonal curve… (bad bills)'}</button>` : ''}
+    ${(S.bv.sellerT12 || []).length ? `<button data-act="seller" title="${S.bv.annual ? 'This GL\'s own trailing-12 months × growth. No GL to pick: the row is the GL. Shift-click to take another statement line instead (also opens when this GL has no history).' : 'Match this GL to a seller T12 line and take its monthly actuals × growth'}">${dot('drv-t12')}${S.bv.annual ? 'Own T12 actuals × growth (this GL)' : 'Seller actuals — match a seller line…'}</button>` : ''}
+    ${(S.bv.sellerT12 || []).length ? `<button data-act="t12curve" title="${S.bv.annual ? 'Take a statement line\'s T12 total × growth and spread it on a clean seasonal curve' : 'For non-accrual seller billing (credits/gaps/spikes): the ANNUAL total is still right even when the months are garbage. Takes the seller line\'s T12 total × growth and spreads it on a clean seasonal curve.'}">${dot('drv-t12')}${S.bv.annual ? 'T12 TOTAL → seasonal curve… (this GL)' : 'Seller T12 TOTAL → seasonal curve… (bad bills)'}</button>` : ''}
     <button data-act="link" title="Set this GL equal to another budget line × a weight (e.g. sewer = water × 0.8). LIVE: re-follows the source on every regeneration.">${dot('drv-fee')}= another line × weight… (moves in conjunction)</button>
     ${line && line.months.some((v) => v) ? `<button data-act="smooth" title="One click for missed bills: pulls catch-up spikes into the surrounding low months and soaks up credit months, repeating until the series looks like real monthly billing. No negative months; every month rounded to $5, so the total can move by a few dollars. The line keeps its formula chip and gains a SMOOTH chip.">${dot('drv-t12')}Smooth missed bills — spikes into surrounding months</button>` : ''}
     ${line && (line.driver || {}).method === 'recovery' ? `<button data-act="recmap" title="Pick exactly which utility expense lines this reimbursement recovers (recovery % × their prior month). Claims are exclusive — a line you take here is released by whichever reim had it.">${dot('drv-t12')}Edit what this reim recovers…</button>` : ''}
@@ -2862,6 +2862,7 @@ function openRowTools(b, gl, anchorBtn) {
   menu.querySelectorAll('button[data-act]').forEach((mb) => mb.addEventListener('click', async (e) => {
     e.stopPropagation(); close();
     const act = mb.dataset.act;
+    S.pickOther = !!e.shiftKey;   // Shift-click a GL-based option = pick ANOTHER line instead of this row's own
     if (act === 'zero') return put(Array(12).fill(0), { method: 'zero' });
     if (act === 'shape') return openShapeMenu(b, gl, acc, anchorBtn, inp);
     if (act === 'pctgpr') {
@@ -2973,10 +2974,21 @@ function openSellerMatch(b, gl, acc, anchorBtn, put) {
   document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
   const start = (S.bv.budget.inputs || {}).startMonth || 1;
   const rows = (S.bv.sellerT12 || []).filter((r) => r.months && r.months.some((v) => v));
+  const isOwn = (r) => String(r.gl) === String(gl);
   rows.sort((a, z) => {
-    const am = a.pcode === acc.pcode ? 0 : 1, zm = z.pcode === acc.pcode ? 0 : 1;
+    const am = isOwn(a) ? -1 : a.pcode === acc.pcode ? 0 : 1, zm = isOwn(z) ? -1 : z.pcode === acc.pcode ? 0 : 1;
     return am - zm || Math.abs(z.total) - Math.abs(a.total);
   });
+  const applyRow = async (r) => {
+    const g = parseFloat(String(prompt(`Growth % on "${r.name}" (0 = actuals as-is):`, '3') || '').replace(/,/g, ''));
+    if (!Number.isFinite(g)) return;
+    const res = fcSellerLine(S.bv, S.bv.budget.inputs || {}, r, g);
+    await put(res.months, res.driver);
+  };
+  // Troy 2026-11-11: "I still am having to repick the GL when I pick an option that is GL based". The row
+  // already IS the GL: its own statement line is the source, no picker. Shift-click the option to pick another line.
+  const ownRow = S.bv.annual && !S.pickOther ? rows.find(isOwn) : null;
+  if (ownRow) { applyRow(ownRow); return; }
   const menu = document.createElement('div');
   menu.className = 'rowmenu';
   menu.style.maxHeight = '420px';
@@ -3002,12 +3014,8 @@ function openSellerMatch(b, gl, acc, anchorBtn, put) {
     });
   });
   menu.querySelectorAll('button[data-sm]').forEach((btn) => btn.addEventListener('click', async () => {
-    const r = rows[Number(btn.dataset.sm)];
     menu.remove();
-    const g = parseFloat(String(prompt(`Growth % on "${r.name}" (0 = seller actuals as-is):`, '3') || '').replace(/,/g, ''));
-    if (!Number.isFinite(g)) return;
-    const res = fcSellerLine(S.bv, S.bv.budget.inputs || {}, r, g);
-    await put(res.months, res.driver);
+    await applyRow(rows[Number(btn.dataset.sm)]);
   }));
 }
 
@@ -3015,8 +3023,9 @@ function openSellerMatch(b, gl, acc, anchorBtn, put) {
    even ⚠ non-accrual lines are fine here), then pick the seasonal shape. */
 function openT12CurveMatch(b, gl, acc, anchorBtn, put, inp) {
   document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
+  const isOwn = (r) => String(r.gl) === String(gl);
   const rows = fcSellerRows(S.bv).slice().sort((a, z) => {
-    const am = a.pcode === acc.pcode ? 0 : 1, zm = z.pcode === acc.pcode ? 0 : 1;
+    const am = isOwn(a) ? -1 : a.pcode === acc.pcode ? 0 : 1, zm = isOwn(z) ? -1 : z.pcode === acc.pcode ? 0 : 1;
     return am - zm || Math.abs(z.total) - Math.abs(a.total);
   });
   const menu = document.createElement('div');
@@ -3059,6 +3068,8 @@ function openT12CurveMatch(b, gl, acc, anchorBtn, put, inp) {
     }));
   };
 
+  // the row's own statement line is the source: straight to the curve choice (Shift-click the option to pick another line)
+  { const ownRow = S.bv.annual && !S.pickOther ? rows.find(isOwn) : null; if (ownRow) { pickShape(ownRow); return; } }
   menu.innerHTML = `
     <div class="rm-head">T12 total source for ${gl} ${esc(acc.name || '')} — the TOTAL is used, so ⚠ bad-bill lines are fine here</div>
     <div style="padding:4px 6px"><input id="tc-filter" placeholder="filter…" style="width:100%; border:1px solid var(--line); border-radius:6px; padding:4px 7px"></div>
@@ -3249,7 +3260,7 @@ function openWavgMatch(b, gl, acc, anchorBtn, put, inp) {
   // has the GL". When this GL has its own history that IS the source; the picker only opens
   // for a GL with no history of its own (it then has to borrow another line's shape).
   // (annual budgets only: the row's own statement line. An acquisition budget still picks between the seller's lines and the Minot comps.)
-  const ownRow = S.bv.annual ? rows.find((r) => r.own && r.srcType === 'seller') : null;
+  const ownRow = S.bv.annual && !S.pickOther ? rows.find((r) => r.own && r.srcType === 'seller') : null;
   if (ownRow) { applyWavg(ownRow); return; }
   const menu = document.createElement('div');
   menu.className = 'rowmenu';
