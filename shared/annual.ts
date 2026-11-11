@@ -31,7 +31,7 @@
    ========================================================================== */
 import {
   type CoaAccount, type BudgetLine, type BudgetInputs, type Months, type Driver, type UwSnapshotData,
-  type Lease, type CompWeights, type BaselineShape,
+  type Lease, type CompWeights, type BaselineShape, type T12Adjust, type Contract, type FeeSchedule,
   zero12, r2, sum, rollup, spreadMonthly, rotate12, CURVES, WAGE_GLS, ltlMonths, ltlModel, chargeGlMonthly,
   mergeFresh, overriddenWages, calMonthOf, calYearOf, daysInMonth, dateKey, leaseEndIndex, calendarSlice, foldCredits,
 } from './domain.js';
@@ -39,7 +39,7 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-10d';
+export const ENGINE_VERSION = '2026-11-11a';
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -357,6 +357,10 @@ export const CORP_RATES: Record<string, { perUnitYr?: number; flatMo?: number; l
     2026-11-09): 6451 is folded into 6310 "with the updated figures" — the paste-table row is
     units × (11.61 + 24.17 + 11.81 + 6.51 + 4.07) / 12 + 420 + 93. */
 export const CORP_RATES_2027: typeof CORP_RATES = {
+  // Blanket insurance for the 2026-27 policy year (Nov 2026 - Oct 2027) is $275/door, down from
+  // $285 (KB Sources/2027 Budget notes A1 Insurance, "[Stated - Insurance & Claims notes, as of
+  // 2026-11-06]"). The 11/1/2027 renewal is not priced yet, so Nov-Dec carry the same rate.
+  '6108': { perUnitYr: 275, label: 'Insurance — blanket $275/unit/yr (2026-27 policy year; Nov–Dec 2027 renewal not priced)' },
   '6310': { perUnitYr: r2(11.61 + 24.17 + 11.81 + 6.51 + 4.07), flatMo: 420 + 93, label: 'IT $420/mo + $93/mo + $58.17/unit/yr corporate allocations (2027 workbook rev2)' },
 };
 /** The corporate rates in force for a budget year: the 2026 constants, with the 2027
@@ -839,12 +843,105 @@ export function mgmtFeeRates(year: number, startMonth: number, regular: number, 
   return { rates, firstMonths: n, through: `${MON[lastFirst % 12]} ${Math.floor(lastFirst / 12)}` };
 }
 
+/* ============================================================================
+   2027 BUDGET NOTES PASS (Troy 2026-11-11, KB Sources/2027 Budget notes.md, agreed on all)
+   ========================================================================== */
+
+/** One-time items out of the trailing-12 (KB A4). Each entry takes `amount` OFF the posted figure
+    of calendar month `month` (1-12) of `gl`, before ANY formula reads the history: shapes, growth,
+    ratios to GPR / wages and the flat-fee base all see the normalized month. Returns the adjusted
+    calendar and the total removed per GL (for the chips). Never applied unless typed. */
+export function applyT12Adjust(actual: Record<string, Months> | null | undefined, adj: T12Adjust[] | null | undefined): { actual: Record<string, Months> | null; byGl: Record<string, number> } {
+  const byGl: Record<string, number> = {};
+  if (!actual || !adj || !adj.length) return { actual: actual || null, byGl };
+  const out: Record<string, Months> = { ...actual };
+  for (const a of adj) {
+    const m = Math.round(Number(a?.month));
+    const amt = Number(a?.amount);
+    if (!a?.gl || !(m >= 1 && m <= 12) || !Number.isFinite(amt) || !amt) continue;
+    const cur = (out[a.gl] || zero12()).slice() as Months;
+    cur[m - 1] = r2(cur[m - 1] - amt);
+    out[a.gl] = cur;
+    byGl[a.gl] = r2((byGl[a.gl] || 0) + amt);
+  }
+  return { actual: out, byGl };
+}
+
+/** A contract's amounts in BUDGET-month order (index 0 = the budget's start month). */
+export function contractMonths(c: Contract, units: number, startMonth = 1): Months {
+  const out = zero12();
+  const billed = (c.months && c.months.length ? c.months : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+    .map((m) => Math.round(Number(m))).filter((m) => m >= 1 && m <= 12);
+  const amt = Number(c.amount) || 0;
+  if (!amt || !billed.length) return out;
+  const step = (cal: number): number => (c.stepMonth && c.stepPct && cal >= Number(c.stepMonth) ? 1 + Number(c.stepPct) : 1);
+  for (let i = 0; i < 12; i++) {
+    const cal = calMonthOf(startMonth, i);                         // 1-12
+    let v = 0;
+    if (c.kind === 'annual') v = cal === Number(c.billMonth || 1) ? amt : 0;
+    else if (!billed.includes(cal)) v = 0;
+    else if (c.kind === 'perUnit') v = (amt * (units || 0)) / billed.length;
+    else v = c.per === 'total' ? amt / billed.length : amt;
+    out[i] = r2(v * step(cal));
+  }
+  return out;
+}
+
+/** Recurring journal splits by site (KB A1: "Every month, 41.11% of common electric, sewer, trash,
+    water, insurance, management fee and RE tax moves to TPNDC... Budget on the same basis"). */
+export const ALLOC_OUT_DEFAULTS: Record<string, { to: string; pct: number; gls: string[] }> = {
+  tpnd: { to: 'tpndc', pct: 0.4111, gls: ['6604', '6614', '6620', '6622', '6108', '6112', '6116'] },
+};
+export function allocOutFor(inputs: Pick<BudgetInputs, 'allocOut'> | null | undefined, propertyCode: string | null | undefined): { to: string; pct: number; gls: string[] } | null {
+  if (inputs && inputs.allocOut !== undefined) return inputs.allocOut && inputs.allocOut.pct > 0 ? inputs.allocOut : null;
+  return ALLOC_OUT_DEFAULTS[String(propertyCode || '').toLowerCase()] || null;
+}
+/** Methods that build a line from something OTHER than the property's own posted history: those
+    are the gross figures the allocation has to come off. */
+export const ALLOC_ENGINE_METHODS = new Set(['corpRate', 'mgmtPct', 'contract', 'suggested']);
+
+/** Flat-fee utility income from the package schedule (KB A5: FHND $85/$115/$145, PHND $73/$108/$133
+    by bedroom; renewals switch to the flat fee at lease expiration). Per occupied unit, month m:
+    share(m) x F + (1 - share(m)) x R, where F = the schedule's unit-weighted fee, R = what a unit
+    still on RUBS paid in the last actual month (backed out of that month's income and onFlatPct),
+    and share(m) = onFlatPct + (1 - onFlatPct) x (leases ending from `convertFrom` through m / leases).
+    Returns the monthly total (budget-month order), or null when the schedule is incomplete. */
+export function flatFeeFromSchedule(sch: FeeSchedule, opts: { lastIncome: number; occLast: number; units: number; vacPct: Months; leases?: Lease[] | null; year: number; startMonth?: number }): { months: Months; F: number; R: number; share: Months } | null {
+  const beds = Object.keys(sch.fees || {}).filter((b) => Number(sch.fees[b]) > 0 && Number(sch.units?.[b]) > 0);
+  const schedUnits = beds.reduce((a, b) => a + Number(sch.units[b]), 0);
+  if (!beds.length || !schedUnits) return null;
+  const F = beds.reduce((a, b) => a + Number(sch.fees[b]) * Number(sch.units[b]), 0) / schedUnits;
+  const units = opts.units || schedUnits;
+  const s0 = Math.min(1, Math.max(0, Number(sch.onFlatPct) || 0));
+  const occupiedLast = units * (opts.occLast || 1);
+  const L = occupiedLast > 0 ? opts.lastIncome / occupiedLast : 0;
+  const R = s0 < 1 ? Math.max(0, (L - s0 * F) / (1 - s0)) : F;
+  const startMonth = opts.startMonth || 1;
+  const startAbs = opts.year * 12 + (startMonth - 1);
+  const cf = /^(\d{4})-(\d{1,2})/.exec(String(sch.convertFrom || ''));
+  const fromIdx = cf ? Number(cf[1]) * 12 + Number(cf[2]) - 1 - startAbs : -1;   // relative to month 0
+  const leases = opts.leases || [];
+  const idx = leases.map((l) => leaseEndIndex(l.e, startAbs)).filter((v): v is number => v != null);
+  const share = zero12();
+  const months = zero12();
+  for (let i = 0; i < 12; i++) {
+    const turned = leases.length ? idx.filter((k) => k >= fromIdx && k <= i).length / leases.length : 0;
+    share[i] = Math.min(1, s0 + (1 - s0) * turned);
+    const perUnit = share[i] * F + (1 - share[i]) * R;
+    months[i] = r2(units * (1 - (opts.vacPct[i] || 0)) * perUnit);
+  }
+  return { months, F: r2(F), R: r2(R), share };
+}
+
 export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs, src: AnnualSources): BudgetLine[] {
   const lines = new Map<string, BudgetLine>();
   const mk = (gl: string, months: Months, driver: Driver, note = ''): void => {
     lines.set(gl, { gl_code: gl, months: months.map(r2), driver, override: false, note });
   };
   for (const a of coaList) if (a.kind === 'detail') mk(a.code, zero12(), { method: 'manual' });
+  // one-time items out of the history first: everything below reads the normalized trailing-12
+  const t12Adj = applyT12Adjust(src.actual, inputs.t12Adjust);
+  if (Object.keys(t12Adj.byGl).length) src = { ...src, actual: t12Adj.actual };
   const startMonth = inputs.startMonth || 1;
   const coaByCode = new Map(coaList.map((a) => [a.code, a]));
   const detail = coaList.filter((a) => a.kind === 'detail' && a.csv_order != null && a.active !== false);
@@ -1293,6 +1390,21 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const lastAct = (gl: string): number => (act[gl] || zero12())[lastMonth - 1] || 0;
     const lastGprA = lastAct('4994');
     const occLast = lastGprA > 0 ? Math.min(1, Math.max(0.5, 1 - Math.abs(lastAct('5031')) / lastGprA)) : 1;
+    // the package schedule, when entered: the total from fee x occupied units as leases switch over,
+    // split across the reimbursement GLs by the last actual month's mix (else the last-month rule below)
+    const sch = inputs.utilities?.feeSchedule;
+    const feeGls = detail.filter((a) => a.pcode === '4' && a.code !== '5122' && !isSet(a.code) && (act[a.code] || []).some((v) => v) && lastAct(a.code));
+    const lastTot = feeGls.reduce((x, a) => x + lastAct(a.code), 0);
+    const fs = sch && feeGls.length && lastTot > 0 ? flatFeeFromSchedule(sch, { lastIncome: lastTot, occLast, units, vacPct: vacPct as Months, leases: src.leases, year: inputs.year, startMonth }) : null;
+    if (fs) {
+      let left = fs.months.slice() as Months;
+      feeGls.forEach((a, k) => {
+        const w = lastAct(a.code) / lastTot;
+        const m = k === feeGls.length - 1 ? left : fs.months.map((v) => r2(v * w)) as Months;
+        if (k < feeGls.length - 1) left = left.map((v, i) => r2(v - m[i])) as Months;
+        mk(a.code, m, { method: 'flatFee', schedule: true, F: fs.F, R: fs.R, share: fs.share.map((v) => Math.round(v * 1000) / 1000), weight: Math.round(w * 10000) / 10000, onFlatPct: sch!.onFlatPct, lastMonth } as any);
+      });
+    }
     for (const a of detail) {
       if (a.pcode !== '4' || a.code === '5122' || isSet(a.code)) continue;
       if (!act[a.code] || !act[a.code].some((v) => v)) continue;
@@ -1312,6 +1424,27 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     // same-month history (a row's shape menu can still switch it back)
     if (a.pcode === '10') { baseline(a, 'flat', bl.glGrowth?.[a.code] ?? inputs.payrollRaisePct ?? 0.035); continue; }
     baseline(a);
+  }
+
+  /* ---- known contracts and recurring costs (inputs.contracts): set the line, or sit on top of its
+     formula. Before the fee, so a contracted income line (a commercial lease) is in its basis. ---- */
+  const byGlContracts = new Map<string, Contract[]>();
+  for (const c of inputs.contracts || []) {
+    if (!c || !c.gl || !coaByCode.has(c.gl) || !(Number(c.amount) > 0)) continue;
+    if (!byGlContracts.has(c.gl)) byGlContracts.set(c.gl, []);
+    byGlContracts.get(c.gl)!.push(c);
+  }
+  for (const [gl, cs] of byGlContracts) {
+    const add = cs.every((c) => c.mode === 'add');
+    const tot = zero12();
+    const items = cs.map((c) => {
+      const m = contractMonths(c, units, startMonth);
+      m.forEach((v, i) => { tot[i] = r2(tot[i] + v); });
+      return { vendor: c.vendor || '', annual: r2(sum(m)), kind: c.kind };
+    });
+    const prev = lines.get(gl);
+    const months = add && prev ? prev.months.map((v, i) => r2(v + tot[i])) as Months : tot;
+    mk(gl, months, { method: 'contract', mode: add ? 'add' : 'replace', items, ...(add && prev ? { base: prev.driver } : {}) } as any);
   }
 
   /* ---- management fee: % of the PRIOR month's total income, rounded to the dollar
@@ -1350,6 +1483,26 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     for (let i = 0; i < 12; i++) int[i] = r2((inputs.loan * inputs.rate / 360) * daysInMonth(calYearOf(inputs.year, startMonth, i), calMonthOf(startMonth, i)));
     mk('7300', int, { method: 'interest', loan: inputs.loan, rate: inputs.rate });
   } else if (coaByCode.has('7300')) baseline(coaByCode.get('7300')!, 'last', 0);
+
+  /* ---- recurring journal split (TPND -> TPNDC): the property keeps (1 - pct) of the engine-built
+     lines on the split GLs. Lines built from its own history already post net of the journal. ---- */
+  const alloc = allocOutFor(inputs, src.propertyCode);
+  if (alloc) {
+    for (const gl of alloc.gls) {
+      const ln = lines.get(gl);
+      const method = (ln?.driver as any)?.method;
+      if (!ln || !ALLOC_ENGINE_METHODS.has(method)) continue;
+      const gross = sum(ln.months);
+      ln.months = ln.months.map((v) => r2(v * (1 - alloc.pct))) as Months;
+      ln.driver = { ...(ln.driver as any), allocOut: { to: alloc.to, pct: alloc.pct, gross: r2(gross), out: r2(gross - sum(ln.months)) } } as any;
+    }
+  }
+
+  // every line whose history had one-time items taken out says how much
+  for (const [gl, amt] of Object.entries(t12Adj.byGl)) {
+    const ln = lines.get(gl);
+    if (ln) ln.driver = { ...(ln.driver as any), oneTime: amt } as any;
+  }
 
   return [...lines.values()];
 }

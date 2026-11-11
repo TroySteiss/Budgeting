@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
@@ -136,7 +136,25 @@ router.get('/state', h(async (_req, res) => {
     // saved formula sets (name + size only) — picked when a budget is started
     formulaSets: (await query(`select id, name, created_by, created_at, source, (select count(*)::int from jsonb_object_keys(coalesce(data->'rules','{}'::jsonb))) as rules from formula_sets order by created_at desc`)).rows,
     curves: CURVES,   // named seasonal shapes (Jan-Dec weights) for client-side spread tools
+    // lines every annual budget must carry (Troy 2026-11-11, KB 2027 notes: annual fire inspections...)
+    requiredLines: await loadRequiredLines(),
   });
+}));
+
+/* ---- required budget lines (per region): flagged in Defaults in use and before a Yardi export ---- */
+async function loadRequiredLines(): Promise<{ gl: string; why: string }[]> {
+  try {
+    const v = (await query('select required_lines from app_meta where id=1')).rows[0]?.required_lines;
+    return Array.isArray(v) ? v.filter((x: any) => x && x.gl).map((x: any) => ({ gl: String(x.gl), why: String(x.why || '') })) : [];
+  } catch { return []; }
+}
+router.put('/required-lines', requireAdmin, h(async (req, res) => {
+  const list = Array.isArray(req.body?.lines) ? req.body.lines : [];
+  const clean = list.filter((x: any) => x && /^\d{4}$/.test(String(x.gl || '').trim()))
+    .map((x: any) => ({ gl: String(x.gl).trim(), why: String(x.why || '').slice(0, 300) }));
+  await query('update app_meta set required_lines=$1 where id=1', [JSON.stringify(clean)]);
+  logChange(req.session.username || '', 'required lines', { n: clean.length });
+  res.json({ lines: clean });
 }));
 
 /* ---------------- uploads ---------------- */
@@ -757,6 +775,9 @@ function budgetView(lb: LoadedBudget) {
     } : null,
     lastMonth: lb.annual ? lb.lastMonth : null,
     flatFeeSite: lb.annual ? FLAT_FEE_PROPERTIES.has(String(lb.budget.property_code || '').toLowerCase()) : false,
+    // the recurring-journal split in force (site default TPND -> TPNDC, or the budget's own)
+    allocOut: lb.annual ? allocOutFor(lb.budget.inputs, lb.budget.property_code) : null,
+    allocOutSite: lb.annual ? ALLOC_OUT_DEFAULTS[String(lb.budget.property_code || '').toLowerCase()] || null : null,
     t12Missing: lb.annual ? lb.t12Missing : [],
     t12Dead: lb.annual ? lb.t12Dead : [],
     // new acquisition: start-up month(s) left out of the history, and months 2-3 of operations still in it

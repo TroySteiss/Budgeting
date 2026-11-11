@@ -24,7 +24,7 @@ const ND_PORTFOLIOS: SeedPortfolio[] = [
     ['mwnd', 'The Meadows', 84, 'Jamestown ND'],
   ] },
   { name: 'Minot', kind: 'comp', props: [
-    ['clnd', 'CLND', 341, 'Minot ND'],
+    ['clnd', 'CLND', 340, 'Minot ND'],
     ['spnd', 'SPND', 196, 'Minot ND'],
     ['tcnd', 'TCND', 104, 'Minot ND'],
     ['tpnd', 'TPND', 71, 'Minot ND'],

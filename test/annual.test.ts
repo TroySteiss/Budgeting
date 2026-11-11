@@ -3,9 +3,9 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, mgmtFeeRates, summaryColumn, sumSummaryCols, summaryLabels, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, type TemplateData, type AnnualSources,
+  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, contractMonths, flatFeeFromSchedule, type TemplateData, type AnnualSources,
 } from '../shared/annual.js';
-import { sum, zero12, rollup, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
+import { sum, zero12, rollup, CURVES, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
 import { parseYardiBudgetTemplate, parseRentRoll, parseMonarchStatement, detectUploadKind } from '../src/importers.js';
 import { loadAnnualRules } from '../src/annual-rules.js';
 
@@ -602,7 +602,11 @@ describe('CORP_RATES', () => {
     expect(corpRatesFor(2027)['6310']).toMatchObject({ perUnitYr: 58.17, flatMo: 513 });
     expect(corpRatesFor(2028)['6310'].perUnitYr).toBe(58.17);
     // the other corporate rates are untouched by the 2027 release
-    for (const gl of ['6108', '6320', '6560']) expect(corpRatesFor(2027)[gl]).toEqual(CORP_RATES[gl]);
+    for (const gl of ['6320', '6560']) expect(corpRatesFor(2027)[gl]).toEqual(CORP_RATES[gl]);
+  });
+  it('6108 insurance is the $275 blanket rate from 2027 on; 2026 keeps $285', () => {
+    expect(corpRatesFor(2026)['6108'].perUnitYr).toBe(285);
+    expect(corpRatesFor(2027)['6108'].perUnitYr).toBe(275);
   });
 });
 
@@ -1380,5 +1384,88 @@ describe('fit a curve to T12', () => {
   it('a credit month in the history counts as zero, never a negative budget month', () => {
     const m = abFit([500, -200, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500] as any, { shape: 'turns', turns, fit: 1 });
     expect(m[1]).toBe(0); expect(m.every((v) => v >= 0)).toBe(true); expect(tot(m)).toBe(5300);
+  });
+});
+
+/* 2027 Budget notes pass (Troy 2026-11-11): one-time T12 items, contracts, the flat-fee package
+   schedule and the TPND -> TPNDC journal split. Synthetic property only. */
+describe('2027 notes pass', () => {
+  const actual = synthetic();
+  const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
+  const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
+  const plain = generateAnnualLines(coaList, inputs, src);
+
+  it('applyT12Adjust takes a one-time amount off one posted month and reports it per GL', () => {
+    const r = applyT12Adjust(actual, [{ gl: '6302', month: 3, amount: 40, note: 'one-off' }, { gl: '6302', month: 4, amount: 10 }, { gl: '6302', month: 13, amount: 99 }]);
+    expect(r.actual!['6302'][2]).toBe(60);
+    expect(r.actual!['6302'][3]).toBe(90);
+    expect(r.byGl['6302']).toBe(50);
+    expect(actual['6302'][2]).toBe(100);                       // the source is not mutated
+  });
+  it('a one-time item moves only the month it sits in (same-month shape) and tags the chip', () => {
+    const adj = generateAnnualLines(coaList, { ...inputs, t12Adjust: [{ gl: '6302', month: 3, amount: 40 }] }, src);
+    const a = L(adj, '6302'), p = L(plain, '6302');
+    expect(a.months[2]).toBeCloseTo(p.months[2] * 0.6, 2);
+    expect(a.months[0]).toBe(p.months[0]);
+    expect((a.driver as any).oneTime).toBe(40);
+    expect((p.driver as any).oneTime).toBeUndefined();
+  });
+  it('contractMonths: monthly season, season total, annual invoice, per unit, escalator', () => {
+    const snow = contractMonths({ vendor: 'Brandoz', gl: '6934', kind: 'monthly', amount: 60000, per: 'total', months: [11, 12, 1, 2, 3, 4] }, 10);
+    expect(snow).toEqual([10000, 10000, 10000, 10000, 0, 0, 0, 0, 0, 0, 10000, 10000]);
+    const inv = contractMonths({ vendor: 'ButterflyMX', gl: '6331', kind: 'annual', amount: 8040, billMonth: 12 }, 10);
+    expect(sum(inv)).toBe(8040); expect(inv[11]).toBe(8040);
+    const pu = contractMonths({ vendor: 'SmartRent', gl: '6331', kind: 'perUnit', amount: 60 }, 10);
+    expect(pu[0]).toBe(50); expect(sum(pu)).toBe(600);
+    const step = contractMonths({ vendor: 'Chevron', gl: '5118', kind: 'monthly', amount: 1000, stepMonth: 8, stepPct: 0.03 }, 10);
+    expect(step[6]).toBe(1000); expect(step[7]).toBe(1030);
+    // ownership-year order: a budget starting in September puts September in month 0
+    expect(contractMonths({ vendor: 'x', gl: '6934', kind: 'annual', amount: 5, billMonth: 9 }, 0, 9)[0]).toBe(5);
+  });
+  it('contracts replace the line (default) or sit on top of its formula, and feed the fee basis', () => {
+    const rep = generateAnnualLines(coaList, { ...inputs, contracts: [{ vendor: 'A', gl: '6620', kind: 'monthly', amount: 100 }, { vendor: 'B', gl: '6620', kind: 'annual', amount: 1200, billMonth: 6 }] }, src);
+    const t = L(rep, '6620');
+    expect((t.driver as any).method).toBe('contract');
+    expect(sum(t.months)).toBe(2400);
+    expect(t.months[5]).toBe(1300);
+    const add = L(generateAnnualLines(coaList, { ...inputs, contracts: [{ vendor: 'A', gl: '6620', kind: 'monthly', amount: 100, mode: 'add' }] }, src), '6620');
+    expect(sum(add.months)).toBeCloseTo(sum(L(plain, '6620').months) + 1200, 2);
+    expect((add.driver as any).base.method).toBe('baseline');
+    // an income contract raises total income, so the fee follows
+    const inc = generateAnnualLines(coaList, { ...inputs, mgmtPct: 0.04, contracts: [{ vendor: 'Chevron', gl: '5118', kind: 'monthly', amount: 10000 }] }, src);
+    const base = generateAnnualLines(coaList, { ...inputs, mgmtPct: 0.04 }, src);
+    expect(L(inc, '6112').months[3] - L(base, '6112').months[3]).toBeCloseTo(400, 0);
+  });
+  it('TPND keeps 58.89% of engine-built split lines; history lines are already net', () => {
+    const t = generateAnnualLines(coaList, inputs, { ...src, propertyCode: 'tpnd' });
+    const c = generateAnnualLines(coaList, inputs, { ...src, propertyCode: 'clnd' });
+    expect(L(t, '6108').months[0]).toBeCloseTo(L(c, '6108').months[0] * (1 - 0.4111), 2);
+    expect((L(t, '6108').driver as any).allocOut.to).toBe('tpndc');
+    expect(L(t, '6620').months).toEqual(L(c, '6620').months);      // trash from its own (net) history
+    // turned off on the budget
+    expect(L(generateAnnualLines(coaList, { ...inputs, allocOut: null }, { ...src, propertyCode: 'tpnd' }), '6108').months[0]).toBe(L(c, '6108').months[0]);
+  });
+  it('flatFeeFromSchedule: all on the fee = fee x occupied units; a RUBS remainder converts as leases end', () => {
+    const vac = Array(12).fill(0.05) as Months;
+    const all = flatFeeFromSchedule({ fees: { '1': 100, '2': 150 }, units: { '1': 5, '2': 5 }, onFlatPct: 1 }, { lastIncome: 900, occLast: 0.9, units: 10, vacPct: vac, year: 2027 })!;
+    expect(all.F).toBe(125);
+    expect(all.months[0]).toBeCloseTo(10 * 0.95 * 125, 2);
+    // half on the fee at the last month: R backed out of 900 / 9 occupied = 100 per unit → R = 75
+    const leases = [{ m: 1, r: 1, e: '2027-03-31' }, { m: 1, r: 1, e: '2027-03-31' }, { m: 1, r: 1, e: '2027-09-30' }, { m: 1, r: 1, e: '2028-01-31' }];
+    const half = flatFeeFromSchedule({ fees: { '1': 100, '2': 150 }, units: { '1': 5, '2': 5 }, onFlatPct: 0.5, convertFrom: '2026-12' }, { lastIncome: 900, occLast: 0.9, units: 10, vacPct: vac, leases, year: 2027 })!;
+    expect(half.R).toBe(75);
+    expect(half.share[0]).toBe(0.5);
+    expect(half.share[2]).toBe(0.75);                           // 2 of 4 leases ended by March
+    expect(half.share[8]).toBe(0.875);
+    expect(half.months[0]).toBeCloseTo(10 * 0.95 * 100, 2);
+  });
+  it('the engine splits the schedule total across reimbursement GLs by last month mix', () => {
+    const fees = generateAnnualLines(coaList, { ...inputs, vacancyPct: Array(12).fill(0.05) as Months, utilities: { billing: 'flat', feeSchedule: { fees: { '1': 100 }, units: { '1': 10 }, onFlatPct: 1 } } }, src);
+    const u = L(fees, '5170');
+    expect((u.driver as any).schedule).toBe(true);
+    expect(u.months[0]).toBeCloseTo(10 * 0.95 * 100, 2);       // 5170 is the only reimbursement GL with history
+  });
+  it('snowContract curve is flat Nov-Apr', () => {
+    expect(CURVES.snowContract).toEqual([1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1]);
   });
 });

@@ -34,10 +34,15 @@ function applyTheme() {
 function drvMeta(l) {
   const m = drvMetaCore(l);
   // smoothing sits ON TOP of the line's formula: the formula keeps its chip, SMOOTH is a second one
+  const extra = [];
   if (l && l.driver && l.driver.smooth && l.driver.method !== 'smooth') {
-    return { ...m, extra: [{ cls: 'drv-t12', tag: 'SMOOTH', label: `Missed-bill smoothing ×${l.driver.smooth.passes || 0} on top of this formula: spikes spread into the surrounding months, no negative months, every month rounded to $${l.driver.smooth.mult || 5}. The months are now fixed; 🔓 puts the line back on its formula.` }] };
+    extra.push({ cls: 'drv-t12', tag: 'SMOOTH', label: `Missed-bill smoothing ×${l.driver.smooth.passes || 0} on top of this formula: spikes spread into the surrounding months, no negative months, every month rounded to $${l.driver.smooth.mult || 5}. The months are now fixed; 🔓 puts the line back on its formula.` });
   }
-  return m;
+  // one-time items taken out of this GL's trailing-12 before the formula read it (More → One-time items)
+  if (l && l.driver && l.driver.oneTime) extra.push({ cls: 'drv-t12', tag: '−1X', label: `$${money(l.driver.oneTime)} of one-time items taken out of the trailing-12 before this formula read it (More → One-time items out of the T12…)` });
+  // the recurring-journal split (TPND → TPNDC)
+  if (l && l.driver && l.driver.allocOut) { const a = l.driver.allocOut; extra.push({ cls: 'drv-corp', tag: `−${Math.round(a.pct * 10000) / 100}%`, label: `${Math.round(a.pct * 10000) / 100}% of this line moves to ${String(a.to).toUpperCase()} by recurring journal: $${money(a.gross)} gross, $${money(a.out)} to ${String(a.to).toUpperCase()} (Assumptions → journal split)` }); }
+  return extra.length ? { ...m, extra } : m;
 }
 const drvExtraHtml = (dm) => (dm.extra || []).map((x) => `<span class="drv ${x.cls}" style="margin-left:3px" title="${esc(x.label)}">${x.tag}</span>`).join('');
 function drvMetaCore(l) {
@@ -75,7 +80,12 @@ function drvMetaBase(l) {
       if (d.shaped === 'typed') return { cls: 'drv-rr', tag: '%GPR', label: `Vacancy % of GPR typed month by month (averages ${(d.avg * 100).toFixed(2)}%)` };
       return { cls: 'drv-rr', tag: '%GPR', label: d.avg != null ? `Vacancy ${(d.avg * 100).toFixed(2)}% of GPR every month (set flat, or the lease expirations on file cover fewer than nine months)` : '% of GPR' };
     }
-    case 'flatFee': return { cls: 'drv-rr', tag: 'FLAT FEE', label: `Flat utility fee per occupied unit — ${MONTHS[(l.driver.lastMonth || 1) - 1]} actual $${money(l.driver.base || 0)} × budgeted occupancy ÷ ${((l.driver.occLast || 1) * 100).toFixed(1)}% occupied that month (ties to the vacancy assumption)${l.driver.pct ? ` × ${(l.driver.pct * 100).toFixed(1)}% fee increase` : ''}` };
+    case 'contract': {
+      const d = l.driver, items = (d.items || []).map((x) => `${x.vendor || 'contract'} $${money(x.annual)}`).join(' + ');
+      return { cls: 'drv-corp', tag: d.mode === 'add' ? 'CONTRACT+' : 'CONTRACT', label: `${d.mode === 'add' ? 'Formula plus known contracts' : 'Known contracts'}: ${items} (More → Contracts & known costs…)` };
+    }
+    case 'flatFee': if (l.driver.schedule) return { cls: 'drv-rr', tag: 'FEE SCHED', label: `Flat-fee package schedule: $${money(l.driver.F, 2)} per occupied unit on the fee, $${money(l.driver.R, 2)} on RUBS until each lease switches at expiration (${Math.round((l.driver.share[0] || 0) * 100)}% on the fee in the first month, ${Math.round((l.driver.share[11] || 0) * 100)}% by the last) × budgeted occupancy; this GL takes ${Math.round((l.driver.weight || 0) * 1000) / 10}% of it (last actual month's mix)` };
+      return { cls: 'drv-rr', tag: 'FLAT FEE', label: `Flat utility fee per occupied unit — ${MONTHS[(l.driver.lastMonth || 1) - 1]} actual $${money(l.driver.base || 0)} × budgeted occupancy ÷ ${((l.driver.occLast || 1) * 100).toFixed(1)}% occupied that month (ties to the vacancy assumption)${l.driver.pct ? ` × ${(l.driver.pct * 100).toFixed(1)}% fee increase` : ''}` };
     case 'catShare': return { cls: 'drv-uw', tag: 'UW', label: `UW category ${l.driver.pcode} share` };
     case 'perUnitComp': return { cls: 'drv-comp', tag: 'MINOT', label: `Minot $${l.driver.perUnit}/unit × units` };
     case 'payrollModel': return { cls: 'drv-pay', tag: 'PAY', label: l.driver.live ? `Payroll tab wages — roster rates with each person's raise from "${l.driver.cycle || 'the raise cycle'}" — January at the current rate, half the increase in February, all of it from March${l.driver.draft ? ' · PRELIMINARY: raise entries are not finalized for every region feeding this property — Recalc picks up changes' : ' · finalized'}` : l.driver.roster ? 'Pay-rates roster wages (raises prorated — no March step)' : 'Payroll model wages', tag: l.driver.live && l.driver.draft ? 'PAY·prelim' : 'PAY' };
@@ -179,9 +189,10 @@ function liveT12Pct(gl, total) {
 }
 
 /* Corporate rate defaults by budget year — mirrors corpRatesFor() in shared/annual.ts, keep in step.
-   2027+: 6310 = $58.17/unit/yr + $513/mo (Payroll Budget Workbook 2027 rev2, 6451 folded in). */
+   2027+: 6310 = $58.17/unit/yr + $513/mo (Payroll Budget Workbook 2027 rev2, 6451 folded in);
+   6108 insurance = $275/unit/yr (2026-27 blanket policy year). */
 function corpDefaults(year) {
-  return { 6108: { perUnitYr: 285 }, 6310: Number(year) >= 2027 ? { perUnitYr: 58.17, flatMo: 513 } : { perUnitYr: 43.14, flatMo: 483 }, 6320: { perUnitYr: 7.86 }, 6560: { perUnitYr: 24.76 } };
+  return { 6108: { perUnitYr: Number(year) >= 2027 ? 275 : 285 }, 6310: Number(year) >= 2027 ? { perUnitYr: 58.17, flatMo: 513 } : { perUnitYr: 43.14, flatMo: 483 }, 6320: { perUnitYr: 7.86 }, 6560: { perUnitYr: 24.76 } };
 }
 
 /* parse "5" or "5,5,4.5,..." into 12 fractions (input given in %) */
@@ -1108,6 +1119,11 @@ function renderEditor(el) {
       ${bv.annual ? `<button data-x="bshape" title="Pick one formula (turn curve, 1-2-1 weighted, T12 ÷ 12…) and tick the lines it applies to, across any sections">∿ Formula for lines…</button>` : ''}
       ${bv.annual ? `<button data-x="fsave" title="Save every formula on this budget — each line's shape, increase factor and rounding, the zero-outs and the formula settings — under a name, to start other budgets from. Hand-typed cells and dollar amounts are NOT saved.">★ Save formulas as…</button>
       <button data-x="fapply" title="Give this budget a saved formula set. Its own per-line shape / factor choices are replaced by the set's; overrides, dollars, GPR and the vacancy average stay.">☆ Apply a saved formula set…</button>` : ''}
+      ${bv.annual ? `<div class="rm-head" style="margin-top:4px">Known costs</div>
+      <button data-x="contracts" title="Signed contracts and recurring costs (snow, elevators, SmartRent, annual invoices, a commercial lease…). A line with a contract on it takes the contract amounts instead of its history.">✎ Contracts & known costs…${((bv.budget.inputs || {}).contracts || []).length ? ` (${bv.budget.inputs.contracts.length})` : ''}</button>
+      <button data-x="onetime" title="Take one-time items (an unreversed accrual, a one-off repair, a catch-up bill) out of the trailing-12 before the formulas read it">✂ One-time items out of the T12…${((bv.budget.inputs || {}).t12Adjust || []).length ? ` (${bv.budget.inputs.t12Adjust.length})` : ''}</button>
+      <button data-x="feesched" title="Flat-fee utility package by bedroom count: reimbursement income from fee × occupied units, with RUBS leases switching at expiration">⌂ Flat-fee package schedule…</button>
+      <button data-x="split" title="Recurring journal split to a companion property (TPND → TPNDC 41.11%)">⇄ Journal split to another property…</button>` : ''}
       ${bv.annual ? `<button data-x="fpush" title="Give the way this budget builds whole sections (e.g. Contract Services) to the other budgets you pick. Only those sections change there; preview first.">⇉ Copy section formulas to other budgets…</button>` : ''}
       <button data-x="copy" title="Replay another budget's named formulas here, re-evaluated on this property's own data">⧉ Copy formulas from another budget…</button>
       ${ov.length ? `<button data-x="ovr" title="Audit this budget's overridden lines — release old MROUND-locks back to live formulas">🔓 Overrides: ${ov.length - fixed} formula · ${fixed} fixed</button>` : ''}
@@ -1125,6 +1141,10 @@ function renderEditor(el) {
       { const fs1 = menu.querySelector('[data-x="fsave"]'); if (fs1) fs1.addEventListener('click', () => saveFormulaSet(b)); }
       { const fs2 = menu.querySelector('[data-x="fapply"]'); if (fs2) fs2.addEventListener('click', () => openApplyFormulaSet(b)); }
       { const fs3 = menu.querySelector('[data-x="fpush"]'); if (fs3) fs3.addEventListener('click', () => openCopyFormulasOut(b)); }
+      { const c1 = menu.querySelector('[data-x="contracts"]'); if (c1) c1.addEventListener('click', () => openContracts(b)); }
+      { const c2 = menu.querySelector('[data-x="onetime"]'); if (c2) c2.addEventListener('click', () => openOneTime(b)); }
+      { const c3 = menu.querySelector('[data-x="feesched"]'); if (c3) c3.addEventListener('click', () => openFeeSchedule(b)); }
+      { const c4 = menu.querySelector('[data-x="split"]'); if (c4) c4.addEventListener('click', () => openAllocSplit(b)); }
       const o = menu.querySelector('[data-x="ovr"]'); if (o) o.addEventListener('click', () => openOverridesAudit(b));
       menu.querySelector('[data-x="cols"]').addEventListener('click', () => setTimeout(() => openColsMenu(anchor, labels), 0));
       menu.querySelector('[data-x="side"]').addEventListener('click', () => { localStorage.setItem('bt-side', sideOn ? '0' : '1'); render(); });
@@ -2451,6 +2471,12 @@ function defaultsInUse(bv) {
   // special projects
   const spT12 = Object.entries(t12).filter(([c]) => +c > 7315 && +c < 7500).reduce((a, [, v]) => a + v, 0);
   const sp = (bv.kpis || {}).sp || 0;
+  // required lines (Settings → Required budget lines): a zero one is flagged here and before export
+  for (const r of missingRequired(bv)) add('req' + r.gl, `Required: ${r.gl} ${r.name}`, 'nothing budgeted', false, r.why || 'required on every budget');
+  const ncon = (inp.contracts || []).length, nadj = (inp.t12Adjust || []).length;
+  if (ncon) add('contracts', 'Known contracts', `${ncon} on ${new Set(inp.contracts.map((c) => c.gl)).size} GLs, $${money(inp.contracts.reduce((a, c) => a + contractAnnual(c, bv), 0))} a year`, false);
+  if (nadj) add('onetime', 'One-time items out of the T12', `${nadj} items, $${money(inp.t12Adjust.reduce((a, x) => a + (Number(x.amount) || 0), 0))} removed`, false);
+  if (bv.allocOut) add('alloc', 'Journal split', `${Math.round(bv.allocOut.pct * 10000) / 100}% of ${bv.allocOut.gls.join(', ')} to ${String(bv.allocOut.to).toUpperCase()} (engine-built lines; history lines already post net)`, inp.allocOut === undefined);
   add('sp', 'Special projects', `${money(sp)} budgeted${spT12 ? ` (T12 posted ${money(spT12)})` : ''} — cash flow and cash-on-cash are before special projects${(bv.kpis || {}).principal ? '' : ' and principal'}`, !sp, !sp && Math.abs(spT12) > 1000 ? 'none entered' : '');
   return out;
 }
@@ -2492,6 +2518,210 @@ function defaultsCardHtml(bv) {
     </div></div>`;
 }
 
+/* ---- 2027 notes pass (Troy 2026-11-11): required lines, contracts, one-time items, fee schedule ---- */
+function missingRequired(bv) {
+  if (!bv || !bv.annual) return [];
+  const req = (S.state && S.state.requiredLines) || [];
+  const coa = new Map(((S.state && S.state.coa) || []).map((a) => [a.code, a]));
+  return req.filter((r) => { const l = (bv.lines || []).find((x) => x.gl_code === r.gl); return !l || !l.months.some((v) => Math.abs(v) >= 0.5); })
+    .map((r) => ({ ...r, name: (coa.get(r.gl) || {}).name || '' }));
+}
+/* mirrors contractMonths() in shared/annual.ts (calendar-year view), keep in step */
+function contractCal(c, units) {
+  const billed = (c.months && c.months.length ? c.months : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]).map(Number);
+  const amt = Number(c.amount) || 0;
+  return Array.from({ length: 12 }, (_, i) => {
+    const cal = i + 1;
+    let v = 0;
+    if (c.kind === 'annual') v = cal === Number(c.billMonth || 1) ? amt : 0;
+    else if (!billed.includes(cal)) v = 0;
+    else if (c.kind === 'perUnit') v = (amt * (units || 0)) / billed.length;
+    else v = c.per === 'total' ? amt / billed.length : amt;
+    return v * (c.stepMonth && c.stepPct && cal >= Number(c.stepMonth) ? 1 + Number(c.stepPct) : 1);
+  });
+}
+const contractAnnual = (c, bv) => sumM(contractCal(c, Number(((bv || S.bv).budget.inputs || {}).units) || 0));
+function glDatalist() {
+  return `<datalist id="gl-dl">${((S.state && S.state.coa) || []).filter((a) => a.kind === 'detail').map((a) => `<option value="${a.code}">${esc(a.name)}</option>`).join('')}</datalist>`;
+}
+const glName = (gl) => (((S.state && S.state.coa) || []).find((a) => a.code === gl) || {}).name || '';
+function ensureDlg(id) {
+  let dlg = document.getElementById(id);
+  if (!dlg) { dlg = document.createElement('dialog'); dlg.id = id; document.body.appendChild(dlg); }
+  return dlg;
+}
+async function saveInputs(b, patch) {
+  pushUndo();
+  S.bv = await PUT(`/budgets/${b.id}`, { inputs: patch });
+  render();
+}
+
+/* Contracts & known costs: each row sets (or adds to) one GL. */
+function openContracts(b) {
+  const dlg = ensureDlg('contracts-dlg');
+  const units = Number((S.bv.budget.inputs || {}).units) || 0;
+  let rows = JSON.parse(JSON.stringify((S.bv.budget.inputs || {}).contracts || []));
+  const blank = () => ({ id: String(Date.now()), vendor: '', gl: '', kind: 'monthly', amount: 0, per: 'month', months: [], billMonth: 12, stepMonth: null, stepPct: null, mode: 'replace', source: '' });
+  const monthsBox = (r, i) => `<span class="mbox">${MONTHS.map((m, k) => `<label title="${m}"><input type="checkbox" data-mo="${i}:${k + 1}" ${(r.months || []).includes(k + 1) ? 'checked' : ''}>${m[0]}</label>`).join('')}</span>`;
+  const draw = () => {
+    dlg.innerHTML = `<h2>Contracts & known costs</h2>
+      <p class="muted" style="font-size:12px; margin:0 0 8px">A GL with a contract takes the contract amounts instead of its history (<b>replace</b>), or the contract on top of its formula (<b>add</b>). Amounts are positive for income and expense. No months ticked = every month. Snow: <b>monthly</b>, <b>season total</b>, Nov–Apr ticked. Months still inside an acquisition's Year 1 keep the Year-1 plan.</p>
+      ${glDatalist()}
+      <div style="max-height:60vh; overflow:auto"><table class="list contracts">
+        <tr><th>Vendor</th><th>GL</th><th>How it bills</th><th>Amount</th><th>Months billed / invoice month</th><th>Step from · %</th><th>Line</th><th>Source</th><th>Year</th><th></th></tr>
+        ${rows.map((r, i) => `<tr>
+          <td><input data-f="vendor" data-i="${i}" value="${esc(r.vendor)}" style="width:110px"></td>
+          <td><input data-f="gl" data-i="${i}" value="${esc(r.gl)}" list="gl-dl" style="width:58px" title="${esc(glName(r.gl))}"><div class="muted" style="font-size:10.5px; max-width:110px">${esc(glName(r.gl))}</div></td>
+          <td><select data-f="kind" data-i="${i}"><option value="monthly" ${r.kind === 'monthly' ? 'selected' : ''}>monthly</option><option value="annual" ${r.kind === 'annual' ? 'selected' : ''}>annual invoice</option><option value="perUnit" ${r.kind === 'perUnit' ? 'selected' : ''}>$/unit/yr</option></select>
+            ${r.kind === 'monthly' ? `<select data-f="per" data-i="${i}"><option value="month" ${r.per !== 'total' ? 'selected' : ''}>per month</option><option value="total" ${r.per === 'total' ? 'selected' : ''}>season total</option></select>` : ''}</td>
+          <td><input data-f="amount" data-i="${i}" value="${r.amount || ''}" style="width:84px; text-align:right"></td>
+          <td>${r.kind === 'annual' ? `<select data-f="billMonth" data-i="${i}">${MONTHS.map((m, k) => `<option value="${k + 1}" ${Number(r.billMonth) === k + 1 ? 'selected' : ''}>${m}</option>`).join('')}</select>` : monthsBox(r, i)}</td>
+          <td><select data-f="stepMonth" data-i="${i}"><option value="">—</option>${MONTHS.map((m, k) => `<option value="${k + 1}" ${Number(r.stepMonth) === k + 1 ? 'selected' : ''}>${m}</option>`).join('')}</select>
+            <input data-f="stepPct" data-i="${i}" value="${r.stepPct != null && r.stepPct !== '' ? +(r.stepPct * 100).toFixed(3) : ''}" placeholder="%" style="width:40px"></td>
+          <td><select data-f="mode" data-i="${i}"><option value="replace" ${r.mode !== 'add' ? 'selected' : ''}>replace</option><option value="add" ${r.mode === 'add' ? 'selected' : ''}>add</option></select></td>
+          <td><input data-f="source" data-i="${i}" value="${esc(r.source || '')}" placeholder="file / note" style="width:130px"></td>
+          <td class="num">${money(sumM(contractCal(r, units)))}</td>
+          <td><button class="btn sub sm" data-del="${i}" title="Remove">✕</button></td></tr>`).join('')}
+      </table></div>
+      <div class="row" style="justify-content:space-between; margin-top:8px">
+        <button class="btn sub" id="ct-add">+ Contract</button>
+        <span><button class="btn sub" id="ct-x">Cancel</button> <button class="btn" id="ct-save">Save & recalculate</button></span>
+      </div>`;
+    dlg.querySelectorAll('[data-f]').forEach((el) => el.addEventListener('change', () => {
+      const r = rows[Number(el.dataset.i)], f = el.dataset.f;
+      if (f === 'amount') r.amount = Number(String(el.value).replace(/[$,]/g, '')) || 0;
+      else if (f === 'stepPct') r.stepPct = el.value === '' ? null : (Number(el.value) || 0) / 100;
+      else if (f === 'stepMonth' || f === 'billMonth') r[f] = el.value === '' ? null : Number(el.value);
+      else r[f] = el.value.trim();
+      draw();
+    }));
+    dlg.querySelectorAll('[data-mo]').forEach((el) => el.addEventListener('change', () => {
+      const [i, m] = el.dataset.mo.split(':').map(Number);
+      const set = new Set(rows[i].months || []);
+      if (el.checked) set.add(m); else set.delete(m);
+      rows[i].months = [...set].sort((a, c) => a - c);
+      draw();
+    }));
+    dlg.querySelectorAll('[data-del]').forEach((el) => el.addEventListener('click', () => { rows.splice(Number(el.dataset.del), 1); draw(); }));
+    dlg.querySelector('#ct-add').addEventListener('click', () => { rows.push(blank()); draw(); });
+    dlg.querySelector('#ct-x').addEventListener('click', () => dlg.close());
+    dlg.querySelector('#ct-save').addEventListener('click', async () => {
+      const bad = rows.filter((r) => !glName(r.gl) || !(Number(r.amount) > 0));
+      if (bad.length && !confirm(`${bad.length} row(s) have no valid GL or amount and will be ignored. Save anyway?`)) return;
+      dlg.close();
+      await saveInputs(b, { contracts: rows });
+    });
+  };
+  draw();
+  dlg.showModal();
+}
+
+/* One-time items out of the trailing-12: GL, calendar month, amount removed, note. */
+function openOneTime(b) {
+  const dlg = ensureDlg('onetime-dlg');
+  const start = Number((S.bv.budget.inputs || {}).startMonth) || 1;
+  const t12 = (S.bv.hist && S.bv.hist.t12 && S.bv.hist.t12.cal) || {};
+  const posted = (gl, cal) => { const m = t12[gl]; return m ? m[(cal - start + 12) % 12] : null; };   // hist is in budget-month order
+  let rows = JSON.parse(JSON.stringify((S.bv.budget.inputs || {}).t12Adjust || []));
+  const draw = () => {
+    dlg.innerHTML = `<h2>One-time items out of the T12</h2>
+      <p class="muted" style="font-size:12px; margin:0 0 8px">Each row takes the amount OFF that month's posted figure before any formula reads the history (shapes, growth, % of GPR / wages). The grid's T12 column still shows what posted; the line gets a −1X chip. Use the posted sign: an expense one-timer is positive.</p>
+      ${glDatalist()}
+      <table class="list">
+        <tr><th>GL</th><th>Month</th><th class="num">Posted</th><th class="num">Remove</th><th class="num">Left</th><th>Why</th><th></th></tr>
+        ${rows.map((r, i) => { const p = posted(r.gl, Number(r.month)); return `<tr>
+          <td><input data-f="gl" data-i="${i}" value="${esc(r.gl)}" list="gl-dl" style="width:58px"><div class="muted" style="font-size:10.5px">${esc(glName(r.gl))}</div></td>
+          <td><select data-f="month" data-i="${i}">${MONTHS.map((m, k) => `<option value="${k + 1}" ${Number(r.month) === k + 1 ? 'selected' : ''}>${m}</option>`).join('')}</select></td>
+          <td class="num">${p == null ? '—' : money(p)}</td>
+          <td><input data-f="amount" data-i="${i}" value="${r.amount || ''}" style="width:84px; text-align:right"></td>
+          <td class="num">${p == null ? '' : money(p - (Number(r.amount) || 0))}</td>
+          <td><input data-f="note" data-i="${i}" value="${esc(r.note || '')}" placeholder="e.g. CS utility finals" style="width:220px"></td>
+          <td><button class="btn sub sm" data-del="${i}">✕</button></td></tr>`; }).join('')}
+      </table>
+      <div class="row" style="justify-content:space-between; margin-top:8px">
+        <button class="btn sub" id="ot-add">+ Item</button>
+        <span><button class="btn sub" id="ot-x">Cancel</button> <button class="btn" id="ot-save">Save & recalculate</button></span>
+      </div>`;
+    dlg.querySelectorAll('[data-f]').forEach((el) => el.addEventListener('change', () => {
+      const r = rows[Number(el.dataset.i)], f = el.dataset.f;
+      r[f] = f === 'amount' ? Number(String(el.value).replace(/[$,]/g, '')) || 0 : f === 'month' ? Number(el.value) : el.value.trim();
+      draw();
+    }));
+    dlg.querySelectorAll('[data-del]').forEach((el) => el.addEventListener('click', () => { rows.splice(Number(el.dataset.del), 1); draw(); }));
+    dlg.querySelector('#ot-add').addEventListener('click', () => { rows.push({ gl: '', month: (Number(S.bv.lastMonth) || 10), amount: 0, note: '' }); draw(); });
+    dlg.querySelector('#ot-x').addEventListener('click', () => dlg.close());
+    dlg.querySelector('#ot-save').addEventListener('click', async () => {
+      dlg.close();
+      await saveInputs(b, { t12Adjust: rows.filter((r) => glName(r.gl) && Number(r.amount)) });
+    });
+  };
+  draw();
+  dlg.showModal();
+}
+
+/* Flat-fee package schedule (utilities.feeSchedule). */
+function openFeeSchedule(b) {
+  const dlg = ensureDlg('feesched-dlg');
+  const ut = (S.bv.budget.inputs || {}).utilities || {};
+  const sch = JSON.parse(JSON.stringify(ut.feeSchedule || { fees: {}, units: {}, onFlatPct: 0, convertFrom: `${Number(S.bv.budget.year) - 1}-12` }));
+  const flatOn = ut.billing ? ut.billing === 'flat' : !!S.bv.flatFeeSite;
+  const beds = ['0', '1', '2', '3', '4'];
+  dlg.innerHTML = `<h2>Flat-fee package schedule</h2>
+    <p class="muted" style="font-size:12px; margin:0 0 8px">Reimbursement income = package fee × occupied units. Units still on RUBS pay what they paid in the last actual month until their lease expires (from the switch month on), then move to the fee. Split across the reimbursement GLs by the last actual month's mix. ${flatOn ? '' : '<b>This budget is not on flat-fee billing</b> — saving turns it on.'}</p>
+    <table class="list"><tr><th>Bedrooms</th><th class="num">Package $/mo</th><th class="num">Units</th></tr>
+      ${beds.map((k) => `<tr><td>${k === '0' ? 'Studio' : k + ' BR'}</td><td><input data-fee="${k}" value="${sch.fees[k] || ''}" style="width:70px; text-align:right"></td><td><input data-units="${k}" value="${sch.units[k] || ''}" style="width:60px; text-align:right"></td></tr>`).join('')}
+    </table>
+    <div class="row" style="gap:14px; margin-top:8px">
+      <div class="fld"><label>Share of occupied units already on the fee (last actual month)</label><input id="fs-on" value="${+(Number(sch.onFlatPct || 0) * 100).toFixed(1)}" style="width:60px"> %</div>
+      <div class="fld"><label>Leases switch at expiration from</label><input id="fs-from" type="month" value="${esc(sch.convertFrom || '')}"></div>
+    </div>
+    <div class="row" style="justify-content:space-between; margin-top:10px">
+      <button class="btn sub" id="fs-clear" title="Back to the last-actual-month rule">Remove schedule</button>
+      <span><button class="btn sub" id="fs-x">Cancel</button> <button class="btn" id="fs-save">Save & recalculate</button></span>
+    </div>`;
+  dlg.querySelector('#fs-x').addEventListener('click', () => dlg.close());
+  dlg.querySelector('#fs-clear').addEventListener('click', async () => { dlg.close(); await saveInputs(b, { utilities: { ...ut, feeSchedule: null } }); });
+  dlg.querySelector('#fs-save').addEventListener('click', async () => {
+    const fees = {}, units = {};
+    dlg.querySelectorAll('[data-fee]').forEach((el) => { const v = Number(el.value) || 0; if (v) fees[el.dataset.fee] = v; });
+    dlg.querySelectorAll('[data-units]').forEach((el) => { const v = Number(el.value) || 0; if (v) units[el.dataset.units] = v; });
+    const next = { fees, units, onFlatPct: Math.min(1, Math.max(0, (Number(dlg.querySelector('#fs-on').value) || 0) / 100)), convertFrom: dlg.querySelector('#fs-from').value || null };
+    dlg.close();
+    await saveInputs(b, { utilities: { ...ut, billing: 'flat', feeSchedule: next } });
+  });
+  dlg.showModal();
+}
+
+/* Recurring journal split (TPND → TPNDC). Off / site default / custom. */
+function openAllocSplit(b) {
+  const dlg = ensureDlg('split-dlg');
+  const inp = S.bv.budget.inputs || {};
+  const cur = S.bv.allocOut || { to: '', pct: 0, gls: [] };
+  dlg.innerHTML = `<h2>Journal split to another property</h2>
+    <p class="muted" style="font-size:12px; margin:0 0 8px">A share of these GLs moves to a companion property by recurring journal every month (TPND → TPNDC 41.11%: common electric, sewer, trash, water, insurance, management fee, RE tax). The split comes off lines the engine builds from scratch (corporate rate, fee, contracts); lines built from this property's own history already post net of the journal. ${S.bv.allocOutSite ? `Site default: ${Math.round(S.bv.allocOutSite.pct * 10000) / 100}% to ${S.bv.allocOutSite.to.toUpperCase()}.` : ''}</p>
+    <div class="row" style="gap:12px">
+      <div class="fld"><label>To property</label><input id="sp-to" value="${esc(cur.to || '')}" style="width:80px"></div>
+      <div class="fld"><label>Share moved %</label><input id="sp-pct" value="${cur.pct ? +(cur.pct * 100).toFixed(4) : ''}" style="width:70px"></div>
+      <div class="fld"><label>GLs (comma separated)</label><input id="sp-gls" value="${esc((cur.gls || []).join(', '))}" style="width:260px"></div>
+    </div>
+    <div class="row" style="justify-content:space-between; margin-top:10px">
+      <span>${inp.allocOut !== undefined ? '<button class="btn sub" id="sp-def" title="Forget this budget\'s own setting">Use site default</button>' : ''} <button class="btn sub" id="sp-off">Turn off</button></span>
+      <span><button class="btn sub" id="sp-x">Cancel</button> <button class="btn" id="sp-save">Save & recalculate</button></span>
+    </div>`;
+  dlg.querySelector('#sp-x').addEventListener('click', () => dlg.close());
+  dlg.querySelector('#sp-off').addEventListener('click', async () => { dlg.close(); await saveInputs(b, { allocOut: null }); });
+  { const d = dlg.querySelector('#sp-def'); if (d) d.addEventListener('click', async () => { dlg.close(); const next = { ...(S.bv.budget.inputs || {}) }; delete next.allocOut; pushUndo(); S.bv = await POST(`/budgets/${b.id}/restore`, { lines: S.bv.planLines || S.bv.lines, inputs: next }); S.bv = await POST(`/budgets/${b.id}/recalc`); render(); }); }
+  dlg.querySelector('#sp-save').addEventListener('click', async () => {
+    const to = dlg.querySelector('#sp-to').value.trim().toLowerCase();
+    const pct = (Number(dlg.querySelector('#sp-pct').value) || 0) / 100;
+    const gls = dlg.querySelector('#sp-gls').value.split(/[\s,]+/).map((x) => x.trim()).filter((x) => /^\d{4}$/.test(x));
+    if (!to || !(pct > 0 && pct < 1) || !gls.length) { alert('Enter a property, a share between 0 and 100%, and at least one GL.'); return; }
+    dlg.close();
+    await saveInputs(b, { allocOut: { to, pct, gls } });
+  });
+  dlg.showModal();
+}
+
 /* ---- before a Yardi export: say what is unfinished ---- */
 function exportIssues(bv) {
   const issues = [];
@@ -2502,7 +2732,7 @@ function exportIssues(bv) {
     const ack = (bv.budget.inputs || {}).defaultsAck || null;
     if (!ack) issues.push('The defaults in use have not been reviewed.');
     else if (ack.hash !== defaultsHash(items)) issues.push('The defaults in use changed after they were reviewed.');
-    for (const x of items) if (x.warn && (x.key === 'fee' || x.key === 'sp' || x.key === 'startup')) issues.push(`${x.label}: ${x.warn}.`);
+    for (const x of items) if (x.warn && (x.key === 'fee' || x.key === 'sp' || x.key === 'startup' || x.key.startsWith('req'))) issues.push(`${x.label}: ${x.warn}.`);
   }
   return issues;
 }
@@ -4617,11 +4847,17 @@ function renderSettings(el) {
     <div class="card">
       <h2>Properties</h2>
       <table class="list"><tr><th>Code</th><th>Name</th><th>Units</th><th>Market</th><th>Portfolio</th><th>Role</th></tr>
-      ${st.properties.map((p) => `<tr><td><b>${p.code}</b></td><td>${esc(p.name)}</td>
+      ${st.properties.map((p) => `<tr><td><b>${p.code}</b></td><td>${S.auth.isAdmin ? `<input data-pname="${p.code}" value="${esc(p.name)}" style="width:190px">` : esc(p.name)}</td>
         <td>${S.auth.isAdmin ? `<input data-units="${p.code}" value="${p.units}" style="width:60px">` : p.units}</td>
         <td>${esc(p.market)}</td><td>${esc(pf.get(p.portfolio_id) || '')}</td>
         <td>${S.auth.isAdmin ? `<select data-role="${p.code}" title="subject = budgeted here: listed on the dashboard and in the New budget dialog. comp = comparison data only."><option value="subject" ${p.role === 'subject' ? 'selected' : ''}>subject</option><option value="comp" ${p.role === 'comp' ? 'selected' : ''}>comp</option></select>` : esc(p.role)}</td></tr>`).join('')}</table>
-      ${S.auth.isAdmin ? '<p class="muted">Edit a unit count and press Enter to save. Role saves when picked: a <b>subject</b> is budgeted here (dashboard list, New budget dialog); a <b>comp</b> is comparison data only. Changing it never touches comp sets or existing budgets.</p>' : ''}
+      ${S.auth.isAdmin ? '<p class="muted">Edit a name or unit count and press Enter to save. Role saves when picked: a <b>subject</b> is budgeted here (dashboard list, New budget dialog); a <b>comp</b> is comparison data only. Changing it never touches comp sets or existing budgets.</p>' : ''}
+    </div>
+    <div class="card">
+      <h2>Required budget lines <span class="badge">${(st.requiredLines || []).length}</span></h2>
+      <p class="muted" style="margin:0 0 6px">GLs every annual budget in this region must carry. A budget with one at zero is flagged under <b>Defaults in use</b> and before a Yardi export. One per line: <code>GL — why</code>.</p>
+      ${S.auth.isAdmin ? `<textarea id="req-lines" rows="4" style="width:100%; font-family:inherit">${esc((st.requiredLines || []).map((r) => `${r.gl} — ${r.why}`).join('\n'))}</textarea>
+      <div class="row" style="justify-content:flex-end; margin-top:6px"><button class="btn sm" id="req-save">Save</button></div>` : `<ul>${(st.requiredLines || []).map((r) => `<li>${esc(r.gl)} — ${esc(r.why)}</li>`).join('') || '<li class="muted">none</li>'}</ul>`}
     </div>
     <div class="card">
       <h2>Chart of accounts <span class="badge">${st.coa.length} accounts</span></h2>
@@ -4634,12 +4870,24 @@ function renderSettings(el) {
           <td class="muted">${a.csv_order ?? ''}</td>
           <td>${S.auth.isAdmin && a.kind === 'detail' ? `<input type="checkbox" data-ac="${a.code}" ${a.active !== false ? 'checked' : ''} title="Inactive GLs are hidden from the grid AND excluded from comp-weight category spreads (their share re-spreads over the active GLs; the category still ties). CSV exports still include them as zero rows.">` : (a.active !== false ? '✓' : '')}</td></tr>`).join('')}</table>
       </div>
-      <p class="muted">Curves: flat, snow, winter, heat, electric, summer, turnover. P-codes: 1, loss, 2–14 (blank = below the line). Unchecking Active removes a GL from category spreads on the next recalc — use it for comp-set GLs the subjects can't earn (e.g. 5118 COMMERCIAL RENT).</p>
+      <p class="muted">Curves: flat, snow, snowContract (Nov–Apr flat), winter, heat, electric, summer, turnover. P-codes: 1, loss, 2–14 (blank = below the line). Unchecking Active removes a GL from category spreads on the next recalc — use it for comp-set GLs the subjects can't earn (e.g. 5118 COMMERCIAL RENT).</p>
     </div>`;
   el.querySelector('#coa-f').addEventListener('input', (e) => {
     const q = e.target.value.toLowerCase();
     el.querySelectorAll('#coa-t tr[data-row]').forEach((tr) => { tr.style.display = tr.dataset.row.includes(q) ? '' : 'none'; });
   });
+  el.querySelectorAll('[data-pname]').forEach((box) => box.addEventListener('keydown', async (e) => {
+    if (e.key !== 'Enter') return;
+    const p = st.properties.find((x) => x.code === box.dataset.pname);
+    await POST('/properties', { ...p, code: p.code, name: box.value.trim(), portfolioId: p.portfolio_id });
+    await refreshState(); render();
+  }));
+  { const rs = el.querySelector('#req-save'); if (rs) rs.addEventListener('click', async () => {
+    const lines = el.querySelector('#req-lines').value.split('\n').map((t) => t.trim()).filter(Boolean)
+      .map((t) => { const m = t.match(/^(\d{4})\s*(?:[—–:-]\s*)?(.*)$/); return m ? { gl: m[1], why: m[2] } : null; }).filter(Boolean);
+    await PUT('/required-lines', { lines });
+    await refreshState(); render();
+  }); }
   el.querySelectorAll('[data-units]').forEach((box) => box.addEventListener('keydown', async (e) => {
     if (e.key !== 'Enter') return;
     const p = st.properties.find((x) => x.code === box.dataset.units);

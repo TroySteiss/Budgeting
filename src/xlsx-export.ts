@@ -57,7 +57,7 @@ function driverKind(l: BudgetLine | undefined): string {
     case 'sellerUtil': case 'recovery': case 'sellerLine': case 't12curve': case 'smooth': return 't12';
     case 'linkLine': return 'fee';
     case 'baseline': case 'pctGpr': case 'recapture': case 'perTurn': return 'base';
-    case 'suggested': case 'corpRate': return 'corp';
+    case 'suggested': case 'corpRate': case 'contract': return 'corp';
     case 'debtService': return 'int';
     default: return 'man';
   }
@@ -89,7 +89,10 @@ const isHardCell = (ln: BudgetLine | undefined, i: number): boolean => { if (!ln
 const MON3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 /** A line whose Year-1 months come from the property's Y1 budget says so ahead of its formula. */
 function driverLabel(d: any): string {
-  const base = driverLabelBase(d);
+  let base = driverLabelBase(d);
+  // 2027 notes pass: one-time items out of the T12, and the recurring-journal split
+  if (d?.oneTime) base += `; $${Math.round(d.oneTime).toLocaleString('en-US')} of one-time items taken out of the T12 first`;
+  if (d?.allocOut) base += `; ${Math.round(d.allocOut.pct * 10000) / 100}% to ${String(d.allocOut.to).toUpperCase()} by recurring journal ($${Math.round(d.allocOut.out).toLocaleString('en-US')} of $${Math.round(d.allocOut.gross).toLocaleString('en-US')})`;
   if (d?.smooth && d.method !== 'smooth') return `${base}; missed-bill smoothed x${d.smooth.passes || 0}, rounded to $${d.smooth.mult || 5}`;
   if (!Array.isArray(d?.y1) || !d.y1.length) return base;
   const span = `${MON3[d.y1[0]]}-${MON3[d.y1[d.y1.length - 1]]} from the Year-1 budget`;
@@ -193,6 +196,7 @@ function annualDriverLabel(d: any): string {
     }
     case 'pctGpr': return `${((d.pct || 0) * 100).toFixed(2)}% of ${d.of === 'net' ? 'net rental income' : d.of === 'netgpr' ? 'net GPR' : 'GPR'} (${d.basis === 'last' ? 'last-month' : 'T12'} ratio)`;
     case 'suggested': return `corporate suggestion${d.note ? `: ${d.note}` : ''}`;
+    case 'contract': return `${d.mode === 'add' ? 'formula + ' : ''}contracts: ${(d.items || []).map((x: any) => `${x.vendor || 'contract'} $${Math.round(x.annual).toLocaleString('en-US')}`).join(' + ')}`;
     case 'corpRate': return `corporate rate${d.perUnitYr ? ` $${d.perUnitYr}/unit/yr` : ''}${d.flatMo ? ` + $${d.flatMo}/mo` : ''}`;
     case 'debtService': return `Yardi amortization schedule — ${d.kind}${d.loan ? ` (${d.loan})` : ''}`;
     case 'perTurn': return `$${d.amount}/move-in × ${d.turns} projected move-ins`;

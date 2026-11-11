@@ -72,7 +72,30 @@ export type Driver = { revised?: boolean; /** month indexes (0-11) typed by hand
   | { method: 'recapture'; pct: number }                          // concession recapture % of the other concessions
   | { method: 'zero' }
   | { method: 'collections'; pct: number; startDq: number }   // prior-period collections = rate x the previous month's delinquency
-  | { method: 'dropped'; t12: number; limit: number });   // annual: T12 at or under the template's $1,000 cut-off — budgeted at zero, shown as dropped
+  | { method: 'dropped'; t12: number; limit: number }   // annual: T12 at or under the template's $1,000 cut-off — budgeted at zero, shown as dropped
+  /** annual: known contract / recurring cost amounts (inputs.contracts) set the line ('replace') or sit on top of its formula ('add') */
+  | { method: 'contract'; mode: 'replace' | 'add'; items: { vendor: string; annual: number; kind: string }[]; base?: any });   // annual: T12 at or under the template's $1,000 cut-off — budgeted at zero, shown as dropped
+
+/** One-time amount removed from a trailing-12 month before the formulas read it. */
+export interface T12Adjust { gl: string; month: number; amount: number; note?: string }
+/** A known contract or recurring cost (annual budgets). Amounts are positive for expense AND
+    income lines. `kind`: 'monthly' = `amount` each billed month (or, with per 'total', the total
+    spread evenly over the billed months); 'annual' = one invoice of `amount` in `billMonth`;
+    'perUnit' = `amount` $/unit/yr accrued evenly over the billed months. `months` = calendar months
+    billed (1-12, default all). `stepMonth`/`stepPct` = an escalator from that calendar month of the
+    budget year on. `mode` 'replace' (default) = the contracts ARE the line; 'add' = on top of its formula. */
+export interface Contract {
+  id?: string; vendor: string; gl: string;
+  kind: 'monthly' | 'annual' | 'perUnit';
+  amount: number; per?: 'month' | 'total';
+  months?: number[] | null; billMonth?: number | null;
+  stepMonth?: number | null; stepPct?: number | null;
+  mode?: 'replace' | 'add'; source?: string;
+}
+/** Flat-fee utility package schedule: $/month per occupied unit by bedroom count, the unit count by
+    bedroom count, the share of occupied units already on the flat fee at the last actual month,
+    and the first month leases switch at expiration ('YYYY-MM'). */
+export interface FeeSchedule { fees: Record<string, number>; units: Record<string, number>; onFlatPct: number; convertFrom?: string | null }
 
 /** 'actual' = same calendar month of the statement; 'wavg' = Troy's cyclic
     1-2-1 weighted distribution; 'flat' = annual total / 12; 'curve' = total on
@@ -180,7 +203,18 @@ export interface BudgetInputs {
       allocation like other categories. */
   /** billing (annual): 'flat' = residents pay an in-house flat utility fee per occupied unit (BCND; PHND/FHND from
       fall 2026), so reimbursement income = last actual month scaled to budgeted occupancy; default = RUBS/history */
-  utilities?: { source?: 'seller' | 'uw' | 'baseline' | 'recovery'; growthPct?: number; recoveryPct?: number | null; billing?: 'flat' | 'rubs' };
+  utilities?: { source?: 'seller' | 'uw' | 'baseline' | 'recovery'; growthPct?: number; recoveryPct?: number | null; billing?: 'flat' | 'rubs'; feeSchedule?: FeeSchedule | null };
+  /** annual: one-time amounts taken OUT of the trailing-12 before any formula reads it (Troy 2026-11-11;
+      KB 2027 Budget notes A4 — e.g. MWND October one-timers, ECND unreversed accruals). Each removes
+      `amount` from the posted figure of calendar month `month` (1-12) of `gl`. Picked by hand only. */
+  t12Adjust?: T12Adjust[] | null;
+  /** annual: known contracts and recurring costs (snow, elevators, SmartRent, annual invoices, a
+      commercial lease…) — see contractMonths in shared/annual.ts */
+  contracts?: Contract[] | null;
+  /** annual: share of chosen GLs allocated out to a companion property by recurring journal
+      (TPND → TPNDC 41.11%). Applies to engine-built lines only (corporate rate, fee, contracts):
+      history-based lines already post net of the journal. Unset = the site default (ALLOC_OUT_DEFAULTS). */
+  allocOut?: { to: string; pct: number; gls: string[] } | null;
   /** legacy field from the (removed) stub-proration design — ignored. */
   uwProration?: Record<string, number>;
 
@@ -715,6 +749,10 @@ export const WAGE_GLS = ['6402', '6404', '6405', '6407'];
 export const CURVES: Record<string, Months> = {
   flat:     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
   snow:     [2, 2, 1.5, 0.5, 0, 0, 0, 0, 0, 0.5, 1.5, 2],
+  // flat-rate snow CONTRACT: equal monthly billing Nov 1 - Apr 30 (Riley Combs 2026-11-02: set
+  // the 2027 curve to Nov-Apr; the Scherbenske bid bills six equal instalments). The weather-shaped
+  // `snow` curve stays for supplies / ice melt (6818).
+  snowContract: [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1],
   winter:   [2, 1.8, 1.3, 0.7, 0.4, 0.25, 0.2, 0.2, 0.35, 0.8, 1.5, 1.9], // winter-heavy with a year-round base (softer than snow, broader than heat)
   heat:     [1.8, 1.7, 1.4, 1, 0.6, 0.4, 0.3, 0.3, 0.5, 0.9, 1.4, 1.7],
   electric: [1.2, 1.1, 1, 0.9, 0.9, 1.1, 1.2, 1.2, 1, 0.9, 1, 1.1],
