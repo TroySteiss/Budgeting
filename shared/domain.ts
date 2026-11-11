@@ -403,8 +403,42 @@ export function chargeGlMonthly(charges: Record<string, number>): Record<string,
 
 /* ---------------- lease-level loss-to-lease burnoff ---------------- */
 
-/** One lease off the unit-level rent roll: market rent, actual rent, lease end. */
-export interface Lease { m: number; r: number; e?: string | null }
+/** One lease off the unit-level rent roll: market rent, actual rent (the resident's 'rent' charge),
+    lease end, and `s` = the unit's HAP / subsidy charge (the housing authority's share of the rent,
+    budgeted on 4996). `s` is absent on rolls stored before 2026-11-11 (see withHap). */
+export interface Lease { m: number; r: number; e?: string | null; s?: number }
+
+/* HAP (Troy 2026-11-11, "a very critical issue with the way this is dealing with HAP rent"). On a
+   HAP unit the roll's 'rent' charge is only the RESIDENT's share; the housing authority's share is a
+   separate 'subsidy' charge that budgets on 4996 HAP VOUCHER RENT. So the unit's market − rent gap is
+   mostly subsidy, not loss to lease. The per-lease model used to treat that whole gap as burnable:
+   HAP units had the largest gaps, so they renewed FIRST and 75-100% of the subsidy "burned off" into
+   rent — while 4996 still budgeted the same subsidy. Income was counted twice. Now the subsidy part
+   of a lease's gap is held (it never burns and is not re-priced); only market − rent − subsidy burns. */
+export const HAP_CHARGE = /^(subsidy|hap|hud|voucher)/i;
+/** The property's monthly HAP / subsidy charge total off the roll's charges. */
+export function subsidyTotal(charges: Record<string, number> | null | undefined): number {
+  return r2(Object.entries(charges || {}).reduce((a, [k, v]) => (HAP_CHARGE.test(k) ? a + (Number(v) || 0) : a), 0));
+}
+/** Leases with their HAP share. A roll stored with per-lease `s` is used as is. An older roll has only
+    the property's subsidy total: it is laid on the leases whose rent is furthest below market (the HAP
+    units), each up to its own gap. Returns what could not be placed (a fully-subsidized $0-rent unit was
+    left off older rolls). */
+export function withHap(leases: Lease[] | null | undefined, charges?: Record<string, number> | null): { leases: Lease[]; hap: number; estimated: boolean; unplaced: number } {
+  const ls = (leases || []).map((l) => ({ ...l }));
+  if (ls.some((l) => l.s != null)) return { leases: ls, hap: r2(ls.reduce((a, l) => a + (l.s || 0), 0)), estimated: false, unplaced: 0 };
+  let left = subsidyTotal(charges);
+  const total = left;
+  if (!left) return { leases: ls, hap: 0, estimated: false, unplaced: 0 };
+  const order = ls.map((l, i) => ({ i, ratio: l.m > 0 ? l.r / l.m : 1 })).filter((x) => x.ratio < 0.9).sort((a, b) => a.ratio - b.ratio);
+  for (const { i } of order) {
+    if (left <= 0) break;
+    const gap = Math.max(0, ls[i].m - ls[i].r);
+    const take = r2(Math.min(gap, left));
+    if (take > 0) { ls[i].s = take; left = r2(left - take); }
+  }
+  return { leases: ls, hap: r2(total - left), estimated: true, unplaced: r2(left) };
+}
 
 /** A date string ('YYYY-MM-DD', 'M/D/YYYY', or anything Date parses) → a sortable
     y*10000+m*100+d key, null when unreadable. Year-month parsed directly: Date('YYYY-MM-DD')
@@ -474,7 +508,8 @@ export function ltlModel(
       else if (idx >= 0) expM = idx;
       else if (asOfKey != null && (dateKey(l.e) ?? -1) >= asOfKey) expM = 0;   // turned between the roll and the start
     }
-    return { m: l.m || 0, r: l.r || 0, ltl: r2((l.m || 0) - (l.r || 0)), expM };  // ltl positive = loss to lease
+    // ltl = the BURNABLE gap (positive = loss to lease); the HAP share `s` is held outside it
+    return { m: l.m || 0, r: l.r || 0, s: Math.max(0, l.s || 0), ltl: r2((l.m || 0) - (l.r || 0) - Math.max(0, l.s || 0)), expM };
   });
   const g = (m: number): number => { const v = Number(opts.growth?.[m]); return Number.isFinite(v) && v > 0 ? v : 1; };
   // month-to-month / already-expired: one twelfth of them resets each month
@@ -486,7 +521,7 @@ export function ltlModel(
   for (let m = 0; m < 12; m++) {
     // every lease's gap this month, against the market as it stands NOW: rent is fixed
     // between resets, so market growth deepens the gap on every lease — reset or not
-    for (const it of items) it.ltl = r2(it.m * g(m) - it.r);
+    for (const it of items) it.ltl = r2(it.m * g(m) - it.r - it.s);
     const expiring = items.filter((it) => it.expM === m);
     if (expiring.length) {
       // largest LTL renews first
@@ -494,9 +529,10 @@ export function ltlModel(
       const nRenew = Math.round(renewalPct * expiring.length);
       // a reset burns its share of the WHOLE current gap (growth included) by re-pricing the
       // rent: 0% burnoff leaves the rent — and so the gap — exactly where it was
-      expiring.forEach((it, i) => { it.ltl = r2(it.ltl * (i < nRenew ? keepRenew : keepNew)); it.r = it.m * g(m) - it.ltl; });
+      expiring.forEach((it, i) => { it.ltl = r2(it.ltl * (i < nRenew ? keepRenew : keepNew)); it.r = it.m * g(m) - it.s - it.ltl; });
     }
-    out[m] = r2(-items.reduce((a, it) => a + it.ltl, 0)) || 0;   // normalize -0
+    // the posted loss to lease = the burnable gap + the HAP share (4996 carries the HAP income)
+    out[m] = r2(-items.reduce((a, it) => a + it.ltl + it.s, 0)) || 0;   // normalize -0
     open[m] = r2(items.reduce((a, it) => a + (it.expM > m ? it.m : 0), 0));
   }
   return { months: out, openMarket: open, occupiedMarket };
@@ -1017,7 +1053,7 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
   // burn burnoffRenew, move-ins burn burnoffNew). 'ramp' keeps the legacy
   // linear ramp to a % of GPR.
   if (inputs.ltl.mode !== 'ramp' && leases && leases.length) {
-    mk('5003', ltlMonths(leases, inputs.year, startMonth, { ...inputs.ltl, asOf: rollAsOf }), { method: 'ltl' });
+    mk('5003', ltlMonths(withHap(leases, charges).leases, inputs.year, startMonth, { ...inputs.ltl, asOf: rollAsOf }), { method: 'ltl' });
   } else if (inputs.ltl.mode !== 'ramp') {
     const rp = inputs.ltl.renewalPct ?? 0.7;
     const blend = rp * (inputs.ltl.burnoffRenew ?? 0.5) + (1 - rp) * (inputs.ltl.burnoffNew ?? 1);

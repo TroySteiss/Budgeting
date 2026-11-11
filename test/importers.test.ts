@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import * as XLSX from 'xlsx';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parseReviewDraft, parseComparisonActuals, detectUploadKind, parseYardiBudgetTemplate, parsePayrollTemplate } from '../src/importers.js';
@@ -429,5 +429,21 @@ describe('Payroll Budget Workbook — a property payroll sheet as the tie-out re
     const wb2 = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb2, XLSX.utils.aoa_to_sheet([['PrismID', 'EmployeeName', 'PayRate', 'PropertyCode']]), 'Dictionary of Employees');
     expect(() => parsePayrollTemplate(XLSX.write(wb2, { type: 'buffer', bookType: 'xlsx' }) as Buffer)).toThrow(/Create a Payroll Budget/);
+  });
+});
+
+/* HAP (Troy 2026-11-11): the lease-charges roll carries each unit's subsidy charge on its lease, and a
+   fully-subsidized unit is kept as a lease. Real file; skipped when the fixture is not on disk. */
+describe('Rent Roll with Lease Charges — HAP share per lease', () => {
+  const f = join(process.cwd(), 'test', 'fixtures', 'rentroll-lease-charges.xlsx');
+  it.skipIf(!existsSync(f))('each lease carries s, and per property they add up to its subsidy charge total', () => {
+    const props = parseRentRoll(readFileSync(f));
+    const withSub = props.filter((p: any) => (p.charges || {}).subsidy);
+    expect(withSub.length).toBeGreaterThan(0);
+    for (const p of withSub as any[]) {
+      const s = p.leases.reduce((a: number, l: any) => a + (l.s || 0), 0);
+      expect(Math.round(s * 100) / 100).toBeCloseTo(p.charges.subsidy, 2);
+      expect(p.leases.every((l: any) => l.s != null)).toBe(true);
+    }
   });
 });

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import {
   spreadMonthly, allocateWeighted, rollup, generateLines, rebalanceCategory,
   categoryTotals, computeTieout, defaultInputs, tieNoiToUw, tieIncomeToUw,
-  calendarSlice, monthLabels, rotate12, ltlMonths, buildUtilityModel, chargeGlMonthly,
+  calendarSlice, monthLabels, rotate12, ltlMonths, ltlModel, withHap, subsidyTotal, buildUtilityModel, chargeGlMonthly,
   applyRounding, regenerate, sum, zero12, CoaAccount, UwSnapshotData, Months, Lease, SellerUtilRow,
   actualizeFromComparison, applyActuals, injectPreStartActuals, ownershipIndexOf, actualKey, parseActualKey, BudgetLine,
 } from '../shared/domain.js';
@@ -641,5 +641,30 @@ describe('foldCredits: no month against the line\'s sign', () => {
     expect(r.months[2]).toBe(0);
     expect(r.months.every((v: number) => v <= 0)).toBe(true);
     expect(tot(r.months)).toBe(tot(m));
+  });
+});
+
+/* HAP (Troy 2026-11-11): the subsidy share of a HAP lease's gap is NOT loss to lease. It never burns at
+   renewal or turnover — 4996 already budgets it — and it no longer makes HAP units renew first. */
+describe('HAP share held out of the loss-to-lease burnoff', () => {
+  const opts = { renewalPct: 1, burnoffRenew: 1, burnoffNew: 1 };
+  it('a HAP lease keeps its subsidy gap through a full-burn renewal; a market lease burns', () => {
+    const hap = [{ m: 1000, r: 200, e: '2027-03-31', s: 750 }];      // resident 200 + HAP 750; true gap 50
+    const plain = [{ m: 1000, r: 200, e: '2027-03-31' }];
+    const a = ltlModel(hap, 2027, 1, opts).months, b = ltlModel(plain, 2027, 1, opts).months;
+    expect(a[0]).toBe(-800); expect(b[0]).toBe(-800);                 // month 0: the same posted loss to lease
+    expect(a[2]).toBe(-750);                                          // after renewal only the 50 burned
+    expect(Math.abs(b[2])).toBe(0);                                   // the old way burned the subsidy too
+  });
+  it('withHap: per-lease s is used as is; an older roll places the subsidy total on the lowest-rent leases', () => {
+    expect(withHap([{ m: 1000, r: 900, s: 0 }, { m: 1000, r: 100, s: 800 }]).hap).toBe(800);
+    const est = withHap([{ m: 1000, r: 950 }, { m: 1000, r: 300 }, { m: 1000, r: 100 }], { subsidy: 1200, petrent: 50 });
+    expect(est.estimated).toBe(true);
+    expect(est.leases[2].s).toBe(900);                                // lowest rent first, up to its gap
+    expect(est.leases[1].s).toBe(300);
+    expect(est.leases[0].s).toBeUndefined();
+    expect(est.unplaced).toBe(0);
+    expect(subsidyTotal({ SUBSIDY: 10, hapvouch: 5, rent: 99 })).toBe(15);
+    expect(withHap([{ m: 1000, r: 990 }], { subsidy: 500 }).unplaced).toBe(500);   // nowhere to put it
   });
 });

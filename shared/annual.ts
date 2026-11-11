@@ -33,13 +33,13 @@ import {
   type CoaAccount, type BudgetLine, type BudgetInputs, type Months, type Driver, type UwSnapshotData,
   type Lease, type CompWeights, type BaselineShape, type T12Adjust, type Contract, type FeeSchedule,
   zero12, r2, sum, rollup, spreadMonthly, rotate12, CURVES, WAGE_GLS, ltlMonths, ltlModel, chargeGlMonthly,
-  mergeFresh, overriddenWages, calMonthOf, calYearOf, daysInMonth, dateKey, leaseEndIndex, calendarSlice, foldCredits,
+  mergeFresh, overriddenWages, withHap, calMonthOf, calYearOf, daysInMonth, dateKey, leaseEndIndex, calendarSlice, foldCredits,
 } from './domain.js';
 
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-11b';
+export const ENGINE_VERSION = '2026-11-11c';
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -1219,17 +1219,20 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   /* ---- loss to lease ---- */
   const ltl = inputs.ltl || ({} as BudgetInputs['ltl']);
   const followGpr = ltl.followGpr !== false;
+  // the HAP / subsidy share of each lease is held out of the burnable loss to lease (withHap, domain.ts)
+  const hapL = src.leases && src.leases.length ? withHap(src.leases, src.charges) : null;
+  const hapInfo = hapL && hapL.hap ? { hap: hapL.hap, ...(hapL.estimated ? { hapEst: true } : {}), ...(hapL.unplaced ? { hapUnplaced: hapL.unplaced } : {}) } : {};
   if (isSet('5003')) {
     // a shape chosen on the row: already built above
   } else if (ltl.mode === 'flat') {
     // Troy: hold the loss to lease — no burnoff. Start = typed $/mo, else the
     // rent roll's current gap, else the last actual month; market growth
     // still deepens it when "follows GPR" is on
-    const model = src.leases && src.leases.length ? ltlModel(src.leases, inputs.year, startMonth, { ...ltl, renewalPct: 1, burnoffRenew: 0, burnoffNew: 0, asOf: src.rollAsOf }) : null;
+    const model = hapL ? ltlModel(hapL.leases, inputs.year, startMonth, { ...ltl, renewalPct: 1, burnoffRenew: 0, burnoffNew: 0, asOf: src.rollAsOf }) : null;
     const L0 = ltl.startMonthly ? -Math.abs(ltl.startMonthly) : (model && model.months[0]) || lastOf('5003');
     // market growth deepens the gap on the occupied units' market (all units when the roll is summary-only)
     const deepen = (i: number) => (!followGpr || !gpr[0] ? 0 : model ? (gpr[i] / gpr[0] - 1) * model.occupiedMarket : gpr[i] - gpr[0]);
-    mk('5003', gpr.map((v, i) => r2(Math.min(0, L0 - deepen(i)))) as Months, { method: 'ltl' });
+    mk('5003', gpr.map((v, i) => r2(Math.min(0, L0 - deepen(i)))) as Months, { method: 'ltl', ...hapInfo } as any);
   } else if (ltl.mode === 'ramp') {
     const out = zero12();
     for (let i = 0; i < 12; i++) {
@@ -1242,8 +1245,8 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     // rent is fixed until it resets); a reset burns only the burnoff share of that gap. Before
     // 2026-11-09 a reset wiped the growth part entirely whatever the burnoff % — so at 100%
     // renewal / 0% burnoff the February step still "burned off" through the year.
-    const model = ltlModel(src.leases, inputs.year, startMonth, { ...ltl, asOf: src.rollAsOf, growth: followGpr && gpr[0] ? gpr.map((v) => v / gpr[0]) : null });
-    mk('5003', model.months.map((v) => r2(Math.min(0, v))) as Months, { method: 'ltl' });
+    const model = ltlModel(hapL!.leases, inputs.year, startMonth, { ...ltl, asOf: src.rollAsOf, growth: followGpr && gpr[0] ? gpr.map((v) => v / gpr[0]) : null });
+    mk('5003', model.months.map((v) => r2(Math.min(0, v))) as Months, { method: 'ltl', ...hapInfo } as any);
   } else if (lastGpr || ltl.startMonthly) {
     // template: last actual month's LTL, deepened by the market-rent change,
     // burned off by that month's expirations × renewal % × burnoff shares

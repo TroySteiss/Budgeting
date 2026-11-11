@@ -73,7 +73,9 @@ function drvMetaBase(l) {
     case 'ltl': {
       const lt = (S.bv && S.bv.budget && S.bv.budget.inputs && S.bv.budget.inputs.ltl) || {};
       const how = lt.mode === 'flat' ? 'held flat (no burnoff)' : lt.mode === 'ramp' ? 'ramp to a % of GPR' : (S.bv && S.bv.leaseCount) ? 'per-lease burnoff at each turnover' : 'burnoff on lease expirations';
-      return { cls: 'drv-rr', tag: 'LTL', label: `Loss to lease — ${how}${lt.followGpr !== false && lt.mode !== 'ramp' ? ', deepens with GPR growth' : ''} · renewal %, burnoff on renewal / move-in are the boxes to the right (method + "follows GPR" under Assumptions)` };
+      const d = l.driver || {};
+      const hapTxt = d.hap ? ` · HAP $${money(d.hap)}/mo held: the housing authority's share of HAP units' rent is not loss to lease and never burns (4996 budgets it)${d.hapEst ? " — placed from the roll's subsidy total on the lowest-rent leases; re-upload the rent roll for each unit's own HAP" : ''}${d.hapUnplaced ? `; $${money(d.hapUnplaced)}/mo could not be matched to a lease` : ''}` : '';
+      return { cls: 'drv-rr', tag: d.hap ? 'LTL·HAP' : 'LTL', label: `Loss to lease — ${how}${lt.followGpr !== false && lt.mode !== 'ramp' ? ', deepens with GPR growth' : ''} · renewal %, burnoff on renewal / move-in are the boxes to the right (method + "follows GPR" under Assumptions)${hapTxt}` };
     }
     case 'vacancy': {
       const d = l.driver;

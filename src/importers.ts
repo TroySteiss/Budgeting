@@ -1,7 +1,7 @@
 /* Parsers for the four upload formats. All label-driven (never fixed row
    numbers — the Cottonwood UW sheet is offset +20 rows vs its siblings). */
 import * as XLSX from 'xlsx';
-import type { UwSnapshotData, Months } from '../shared/domain.js';
+import { HAP_CHARGE, type UwSnapshotData, type Months } from '../shared/domain.js';
 import type { TemplateData } from '../shared/annual.js';
 import { POSITION_GL, isRmPosition, isSalariedPosition, type StaffingPerson, type DetailPerson } from '../shared/payroll.js';
 
@@ -572,7 +572,7 @@ function parseYardiLeaseCharges(g: Grid, h: number, asOf: string | null): RentPa
   const out: RentParsedProperty[] = [];
   let section: 'cur' | 'fut' | null = null;
   let units = 0, market = 0, inPlace = 0, occ = 0;
-  let leases: { m: number; r: number; e: string | null }[] = [];
+  let leases: { m: number; r: number; e: string | null; s?: number }[] = [];
   let charges: Record<string, number> = {};
   // the unit block being read: its market, occupancy, lease end and charges so far
   let cur: { mkt: number; occupied: boolean; end: string | null; rent: number; other: Record<string, number> } | null = null;
@@ -581,7 +581,10 @@ function parseYardiLeaseCharges(g: Grid, h: number, asOf: string | null): RentPa
     if (cur.occupied) {
       inPlace += cur.rent;
       occ++;
-      if (cur.rent > 0) leases.push({ m: Math.round(cur.mkt * 100) / 100, r: Math.round(cur.rent * 100) / 100, e: cur.end });
+      // the unit's HAP / subsidy charge rides on the lease (held out of the burnable loss to lease), and a
+      // fully-subsidized unit ($0 resident rent) is a real lease, not an in-flight move-in
+      const sub = Math.round(Object.entries(cur.other).reduce((a, [k, v]) => (HAP_CHARGE.test(k) ? a + v : a), 0) * 100) / 100;
+      if (cur.rent > 0 || sub > 0) leases.push({ m: Math.round(cur.mkt * 100) / 100, r: Math.round(cur.rent * 100) / 100, e: cur.end, s: sub });
       for (const [code, v] of Object.entries(cur.other)) charges[code] = Math.round(((charges[code] || 0) + v) * 100) / 100;
     }
     cur = null;
