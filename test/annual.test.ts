@@ -1256,3 +1256,53 @@ describe('Year-1 plan in the annual budget', () => {
     expect(applyY1Plan(on, coa, plan, 2027)).toEqual(on);
   });
 });
+
+/* Section formulas copied to another budget. */
+import { copyFormulas, sectionFormulaSource } from '../shared/annual.js';
+describe('copying section formulas to another budget', () => {
+  const acct = (code: string, section: string, kind = 'detail') => ({ code, name: code, kind, section, pcode: '13', curve: 'flat', active: true }) as unknown as CoaAccount;
+  const coa = [acct('6900', 'contract_services', 'header'), acct('6908', 'contract_services'), acct('6910', 'contract_services'), acct('6912', 'contract_services'), acct('6914', 'contract_services'), acct('6702', 'in_house_maint'), acct('6704', 'in_house_maint')];
+  const srcRules = { '6908': { method: 'wavg', factor: 0.05, mround: 25 }, '6910': { method: 'wavg', factor: 0.02 }, '6702': { method: 'same' }, '6704': { method: 'flatT12' } } as any;
+
+  it('a section built one way hands that formula to its other GLs; a mixed section hands over only its own', () => {
+    const one = sectionFormulaSource(srcRules, coa, ['contract_services']);
+    expect(one.gls.sort()).toEqual(['6908', '6910', '6912', '6914']);
+    expect(one.fill.sort()).toEqual(['6912', '6914']);
+    expect(one.rules['6912']).toEqual({ method: 'wavg' });
+    const mixed = sectionFormulaSource(srcRules, coa, ['in_house_maint']);
+    expect(mixed.gls.sort()).toEqual(['6702', '6704']);
+    expect(mixed.fill).toEqual([]);
+  });
+  it('changes only the chosen GLs, keeps each line\'s own % unless asked, and drops the row choices it replaces', () => {
+    const target = {
+      rules: { '6908': { method: 'flatT12', factor: 0.03 }, '6912': { method: 'corpRate' }, '6702': { method: 'flatT12' }, '6305': { method: 'last' } },
+      baseline: { glShape: { '6910': 'flat', '6702': 'flat' }, glGrowth: { '6908': 0.1 }, glMround: { '6910': 50 }, secGrowth: { contract_services: 0.04, admin: 0.02 } },
+    } as any;
+    const src = sectionFormulaSource(srcRules, coa, ['contract_services']);
+    const { inputs, changed } = copyFormulas(target, { rules: src.rules, secGrowth: { contract_services: 0.07 } }, src.gls, ['contract_services'], { fill: src.fill });
+    const r = inputs.rules as any, bl = inputs.baseline as any;
+    expect(r['6908']).toEqual({ method: 'wavg', mround: 25, factor: 0.03 });   // shape + rounding copied, the target's own factor kept
+    expect(r['6910']).toEqual({ method: 'wavg' });                            // no factor on the target before: none now
+    expect(r['6912']).toEqual({ method: 'corpRate' });                        // the engine builds this one: a fill never takes it
+    expect(r['6914']).toEqual({ method: 'wavg' });                            // filled
+    expect(r['6702']).toEqual({ method: 'flatT12' });                         // another section: untouched
+    expect(r['6305']).toEqual({ method: 'last' });
+    expect(bl.glShape).toEqual({ '6702': 'flat' });
+    expect(bl.glMround).toEqual({});
+    expect(bl.glGrowth).toEqual({ '6908': 0.1 });                             // % not asked for: the row's own % stays
+    expect(bl.secGrowth).toEqual({ contract_services: 0.04, admin: 0.02 });
+    expect(changed.sort()).toEqual(['6908', '6910', '6914']);
+    expect(target.baseline.glShape['6910']).toBe('flat');                     // the input object is not mutated
+
+    const withPct = copyFormulas(target, { rules: src.rules, secGrowth: { contract_services: 0.07 } }, src.gls, ['contract_services'], { fill: src.fill, pct: true }).inputs as any;
+    expect(withPct.rules['6908']).toEqual({ method: 'wavg', factor: 0.05, mround: 25 });
+    expect(withPct.baseline.glGrowth).toEqual({});
+    expect(withPct.baseline.secGrowth).toEqual({ contract_services: 0.07, admin: 0.02 });
+  });
+  it('a budget from before formula sets keeps the fallback table for every other GL', () => {
+    const src = sectionFormulaSource(srcRules, coa, ['contract_services']);
+    const out = copyFormulas({ baseline: {} } as any, { rules: src.rules }, src.gls, ['contract_services'], { fill: src.fill, fallbackRules: { '6305': { method: 'last' }, '6908': { method: 'flatT12' } } as any }).inputs.rules as any;
+    expect(out['6305']).toEqual({ method: 'last' });
+    expect(out['6908'].method).toBe('wavg');
+  });
+});

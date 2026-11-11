@@ -1063,6 +1063,7 @@ function renderEditor(el) {
       <button data-x="round" title="Round selected lines' months to a multiple">⌁ MROUND lines…</button>
       ${bv.annual ? `<button data-x="fsave" title="Save every formula on this budget — each line's shape, increase factor and rounding, the zero-outs and the formula settings — under a name, to start other budgets from. Hand-typed cells and dollar amounts are NOT saved.">★ Save formulas as…</button>
       <button data-x="fapply" title="Give this budget a saved formula set. Its own per-line shape / factor choices are replaced by the set's; overrides, dollars, GPR and the vacancy average stay.">☆ Apply a saved formula set…</button>` : ''}
+      ${bv.annual ? `<button data-x="fpush" title="Give the way this budget builds whole sections (e.g. Contract Services) to the other budgets you pick. Only those sections change there; preview first.">⇉ Copy section formulas to other budgets…</button>` : ''}
       <button data-x="copy" title="Replay another budget's named formulas here, re-evaluated on this property's own data">⧉ Copy formulas from another budget…</button>
       ${ov.length ? `<button data-x="ovr" title="Audit this budget's overridden lines — release old MROUND-locks back to live formulas">🔓 Overrides: ${ov.length - fixed} formula · ${fixed} fixed</button>` : ''}
       <div class="rm-head" style="margin-top:4px">View</div>
@@ -1076,6 +1077,7 @@ function renderEditor(el) {
       menu.querySelector('[data-x="copy"]').addEventListener('click', () => openCopyFormulas(b));
       { const fs1 = menu.querySelector('[data-x="fsave"]'); if (fs1) fs1.addEventListener('click', () => saveFormulaSet(b)); }
       { const fs2 = menu.querySelector('[data-x="fapply"]'); if (fs2) fs2.addEventListener('click', () => openApplyFormulaSet(b)); }
+      { const fs3 = menu.querySelector('[data-x="fpush"]'); if (fs3) fs3.addEventListener('click', () => openCopyFormulasOut(b)); }
       const o = menu.querySelector('[data-x="ovr"]'); if (o) o.addEventListener('click', () => openOverridesAudit(b));
       menu.querySelector('[data-x="cols"]').addEventListener('click', () => setTimeout(() => openColsMenu(anchor, labels), 0));
       menu.querySelector('[data-x="side"]').addEventListener('click', () => { localStorage.setItem('bt-side', sideOn ? '0' : '1'); render(); });
@@ -1118,6 +1120,10 @@ function renderEditor(el) {
       S.bv = await PUT(`/budgets/${b.id}`, { inputs: { baseline: { ...bl, secGrowth } } });
       render();
     });
+  });
+  el.querySelectorAll('select.secshape-in').forEach((sel) => {
+    sel.addEventListener('click', (e) => e.stopPropagation());
+    sel.addEventListener('change', () => { const v = sel.value; if (v) setSectionShape(b, sel.dataset.secshape, v); });
   });
   { const dop = document.getElementById('dropped-open'); if (dop) dop.addEventListener('click', () => openDroppedDialog(b)); }
   { const dfo = document.getElementById('defaults-open'); if (dfo) dfo.addEventListener('click', () => openDefaultsDialog(b)); }
@@ -1963,7 +1969,7 @@ function secPctBoxHtml(bv, hdr, linesByGl) {
   if (!bv.annual || !SEC_PCT_SECTIONS.has(hdr.section)) return '';
   const bl = (bv.budget.inputs || {}).baseline || {};
   const own = bl.glGrowth || {}, shaped = bl.glShape || {};
-  let follow = 0, keep = 0;
+  let follow = 0, keep = 0; const shapesNow = new Set();
   for (const a of S.state.coa) {
     if (a.kind !== 'detail' || a.section !== hdr.section) continue;
     const l = linesByGl.get(a.code);
@@ -1971,10 +1977,95 @@ function secPctBoxHtml(bv, hdr, linesByGl) {
     if (l.override) { if (l.months.some((v) => v)) keep++; continue; }
     if (l.driver.method !== 'baseline') { if (l.months.some((v) => v)) keep++; continue; }   // corporate rate, fee, suggestion… their own formula
     if (own[a.code] != null) keep++; else follow++;
+    shapesNow.add(l.driver.shape || '');
   }
   if (!follow && !keep) return '';
   const cur = (bl.secGrowth || {})[hdr.section];
-  return ` <span class="secpct" title="Increase % for every history-based line in ${esc(hdr.name)}: ${follow} line${follow === 1 ? '' : 's'} follow it${keep ? `; ${keep} keep their own (a % typed on the row, a hand-typed line, or a line with its own formula)` : ''}. Blank = each line's usual factor. Enter applies and recalculates.">increase <input class="secpct-in" data-secpct="${esc(hdr.section)}" value="${cur != null ? +(cur * 100).toFixed(2) : ''}" placeholder="—"> % <span class="muted">· ${follow} line${follow === 1 ? '' : 's'}${keep ? `, ${keep} keep their own` : ''}</span></span>`;
+  return ` <span class="secpct" title="Increase % for every history-based line in ${esc(hdr.name)}: ${follow} line${follow === 1 ? '' : 's'} follow it${keep ? `; ${keep} keep their own (a % typed on the row, a hand-typed line, or a line with its own formula)` : ''}. Blank = each line's usual factor. Enter applies and recalculates.">increase <input class="secpct-in" data-secpct="${esc(hdr.section)}" value="${cur != null ? +(cur * 100).toFixed(2) : ''}" placeholder="—"> % <span class="muted">· ${follow} line${follow === 1 ? '' : 's'}${keep ? `, ${keep} keep their own` : ''}</span>${secShapeHtml(hdr, shapesNow)}</span>`;
+}
+
+/* ---- section formula (Troy 2026-11-10): one pick on a section header sets how every history-based
+   line under it is built (e.g. Contractor off "T12 / 12"). Hand-typed lines and lines with their own
+   formula (corporate rate, fee, suggestion) are not touched. ---- */
+const SEC_SHAPES = [['actual', 'Same month last year'], ['wavg', '1-2-1 weighted months'], ['flat', 'T12 ÷ 12, flat'], ['curve', 'T12 on the seasonal curve'], ['avgnz', 'Average of active months'], ['last', 'Last actual month, flat'], ['turns', 'T12 on lease expirations']];
+function secShapeHtml(hdr, shapesNow) {
+  const now = [...shapesNow].filter(Boolean);
+  if (!now.length) return '';
+  const one = now.length === 1 ? now[0] : null;
+  return `<select class="secshape-in" data-secshape="${esc(hdr.section)}" title="How every history-based line in ${esc(hdr.name)} is built. Picking one sets it on all of them and recalculates; hand-typed lines and lines with their own formula keep theirs. Then More → Copy section formulas to other budgets… to give the same change to other properties.">
+    <option value="" selected>${one ? 'formula: ' + esc((SEC_SHAPES.find((x) => x[0] === one) || [one, one])[1]) : 'formula: mixed'}</option>
+    ${SEC_SHAPES.filter((x) => x[0] !== one).map(([k, t]) => `<option value="${k}">set all to: ${t}</option>`).join('')}
+    <option value="__clear">clear row choices (back to the formula set)</option></select>`;
+}
+async function setSectionShape(b, section, shape) {
+  const inp = S.bv.budget.inputs || {}, bl = inp.baseline || {};
+  const lines = new Map((S.bv.lines || []).map((l) => [l.gl_code, l]));
+  const glShape = { ...(bl.glShape || {}) }; let n = 0;
+  for (const a of S.state.coa) {
+    if (a.kind !== 'detail' || a.section !== section) continue;
+    const l = lines.get(a.code);
+    if (!l || l.override || !l.driver || l.driver.method !== 'baseline') continue;
+    if (shape === '__clear') { if (glShape[a.code] != null) { delete glShape[a.code]; n++; } } else { glShape[a.code] = shape; n++; }
+  }
+  if (!n) return;
+  pushUndo();
+  S.bv = await PUT(`/budgets/${b.id}`, { inputs: { baseline: { ...bl, glShape } } });
+  render();
+}
+
+/* ---- copy the formulas of whole sections to other budgets / saved formula sets ---- */
+function openCopyFormulasOut(b) {
+  let dlg = document.getElementById('fpush-dlg');
+  if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'fpush-dlg'; document.body.appendChild(dlg); }
+  const bv = S.bv, coa = S.state.coa, lines = new Map((bv.lines || []).map((l) => [l.gl_code, l]));
+  const secs = [];
+  for (const a of coa) {
+    if (a.kind !== 'detail') continue;
+    const l = lines.get(a.code);
+    if (!l || l.override || !l.driver || !['baseline', 'zero'].includes(l.driver.method)) continue;
+    let s = secs.find((x) => x.key === a.section);
+    if (!s) { const h = coa.find((x) => x.kind === 'header' && x.section === a.section); s = { key: a.section, name: h ? h.name : String(a.section).replace(/_/g, ' '), n: 0, shapes: new Set() }; secs.push(s); }
+    s.n++; if (l.driver.shape) s.shapes.add(l.driver.shape);
+  }
+  const shapeTxt = (s) => [...s.shapes].map((k) => (SEC_SHAPES.find((x) => x[0] === k) || [k, k])[1]).join(', ');
+  const others = ((S.state && S.state.budgets) || []).filter((x) => x.budget_type === 'annual' && x.id !== b.id).sort((x, y) => (y.year - x.year) || String(x.property_code).localeCompare(String(y.property_code)));
+  const sets = (S.state && S.state.formulaSets) || [];
+  dlg.innerHTML = `<h2>Copy section formulas to other budgets</h2>
+    <p class="muted" style="font-size:12px; margin:0 0 10px">Gives the way <b>${esc(String(b.property_code).toUpperCase())} ${b.year}</b> builds the lines in the sections you tick to the budgets you tick, then recalculates each one on its own history. <b>Only those sections move.</b> Hand-typed lines, dollars and everything else on the other budgets stay. Each budget gets a save point first.</p>
+    <div class="cols">
+      <div><h4>Sections from this budget</h4><div class="pick" id="fp-secs">${secs.map((s) => `<label title="${esc(shapeTxt(s))}"><input type="checkbox" value="${esc(s.key)}"> ${esc(s.name)} <span class="muted">· ${s.n} line${s.n === 1 ? '' : 's'}${s.shapes.size === 1 ? ' · ' + esc(shapeTxt(s)) : s.shapes.size > 1 ? ' · mixed' : ''}</span></label>`).join('') || '<span class="muted">No formula-driven lines.</span>'}</div>
+        <label style="display:block; margin-top:8px; font-size:12.5px" title="Off: each line keeps the increase % it already has on the other budget. On: the % from this budget comes along, including a % typed on these section headers."><input type="checkbox" id="fp-pct"> Also copy the increase %</label></div>
+      <div><h4>To these budgets <span class="muted" style="font-weight:400">— <a href="#" id="fp-all">all ${b.year}</a> · <a href="#" id="fp-none">none</a></span></h4><div class="pick" id="fp-buds">${others.map((x) => `<label><input type="checkbox" value="${x.id}" data-year="${x.year}"> ${esc(String(x.property_code).toUpperCase())} ${x.year}${x.label ? ' <span class="muted">· ' + esc(x.label) + '</span>' : ''}</label>`).join('') || '<span class="muted">No other annual budgets.</span>'}</div>
+        ${sets.length ? `<h4 style="margin-top:8px">And these saved formula sets <span class="muted" style="font-weight:400">— for budgets started later</span></h4><div class="pick" id="fp-sets" style="max-height:90px">${sets.map((x) => `<label><input type="checkbox" value="${x.id}"> ${esc(x.name)}</label>`).join('')}</div>` : ''}</div>
+    </div>
+    <div id="fp-out" style="margin-top:10px; font-size:12.5px"></div>
+    <div class="err" id="fp-err"></div>
+    <div class="row" style="justify-content:flex-end; margin-top:10px"><button class="btn sub" id="fp-x">Close</button> <button class="btn sub" id="fp-prev">Preview</button> <button class="btn" id="fp-go">Apply &amp; recalculate</button></div>`;
+  const q = (s) => dlg.querySelector(s), vals = (s) => [...dlg.querySelectorAll(s + ' input:checked')].map((i) => i.value);
+  const setAll = (on, year) => dlg.querySelectorAll('#fp-buds input').forEach((i) => { i.checked = on && (!year || Number(i.dataset.year) === Number(year)); });
+  q('#fp-all').addEventListener('click', (e) => { e.preventDefault(); setAll(true, b.year); });
+  q('#fp-none').addEventListener('click', (e) => { e.preventDefault(); setAll(false); });
+  q('#fp-x').addEventListener('click', () => dlg.close());
+  const run = async (dryRun) => {
+    q('#fp-err').textContent = '';
+    const body = { sections: vals('#fp-secs'), budgetIds: vals('#fp-buds').map(Number), setIds: sets.length ? vals('#fp-sets').map(Number) : [], pct: q('#fp-pct').checked, dryRun };
+    if (!body.sections.length) { q('#fp-err').textContent = 'Tick at least one section.'; return; }
+    if (!body.budgetIds.length && !body.setIds.length) { q('#fp-err').textContent = 'Tick at least one budget or saved formula set.'; return; }
+    if (!dryRun && !confirm(`Change ${body.budgetIds.length} budget${body.budgetIds.length === 1 ? '' : 's'}${body.setIds.length ? ` and ${body.setIds.length} saved set${body.setIds.length === 1 ? '' : 's'}` : ''}? Each budget gets a save point first.`)) return;
+    q('#fp-out').innerHTML = '<span class="muted">Working…</span>';
+    try {
+      const r = await POST(`/budgets/${b.id}/copy-formulas`, body);
+      const d = (v) => (Math.abs(v) < 0.5 ? '—' : (v > 0 ? '+' : '−') + money(Math.abs(v)));
+      q('#fp-out').innerHTML = `<b>${dryRun ? 'Preview — nothing saved yet' : 'Done'}</b> · ${r.gls} line formulas from ${esc(r.from)}
+        ${r.budgets.length ? `<table class="list" style="margin-top:6px"><tr><th>Budget</th><th>Formulas changed</th><th>Lines that move</th><th>NOI before</th><th>NOI after</th><th>Change</th><th></th></tr>
+          ${r.budgets.map((x) => x.skipped ? `<tr><td>${esc(x.code)} ${x.year}</td><td colspan="6" class="muted">skipped — ${esc(x.skipped)}</td></tr>` : `<tr><td>${esc(x.code)} ${x.year}</td><td>${x.formulas}</td><td>${x.lines}</td><td>${money(x.noiBefore)}</td><td>${money(x.noiAfter)}</td><td>${d(x.noiAfter - x.noiBefore)}</td><td class="muted">${[x.locked ? `${x.locked} hand-typed line${x.locked === 1 ? '' : 's'} left alone` : '', x.stale ? 'was due a recalculation, so the change includes that' : ''].filter(Boolean).join('; ')}</td></tr>`).join('')}</table>` : ''}
+        ${r.sets.length ? `<div style="margin-top:6px">Saved sets: ${r.sets.map((x) => `${esc(x.name)} (${x.formulas} formula${x.formulas === 1 ? '' : 's'})`).join(' · ')}</div>` : ''}`;
+      if (!dryRun) await refreshState();
+    } catch (e) { q('#fp-out').innerHTML = ''; q('#fp-err').textContent = e.message; }
+  };
+  q('#fp-prev').addEventListener('click', () => run(true));
+  q('#fp-go').addEventListener('click', () => run(false));
+  dlg.showModal();
 }
 
 /* the trailing-12 total on file for a GL (annual budgets) */

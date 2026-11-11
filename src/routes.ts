@@ -5,7 +5,7 @@ import { query, tx } from './db.js';
 import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
-  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
+  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
   refFromCalendar, refColumn, ENGINE_VERSION, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
@@ -1325,6 +1325,60 @@ router.post('/budgets/:id/formula-set', h(async (req, res) => {
   await saveLines(id, built.lines, true);
   logChange(req.session.username || '', 'apply formula set', { id, set: inputs.rulesFrom });
   res.json(budgetView((await loadBudget(id))!));
+}));
+
+/* Give the formulas of whole sections of THIS budget to other budgets and saved formula sets.
+   { sections, budgetIds, setIds, pct, dryRun } - dryRun returns what would change without saving.
+   Each budget gets a save point first; hand-typed lines on the target are never touched. */
+router.post('/budgets/:id/copy-formulas', h(async (req, res) => {
+  const id = Number(req.params.id);
+  const lb = await loadBudget(id);
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  if (!lb.annual) return res.status(400).json({ error: 'Formulas are copied from an annual budget' });
+  const sections: string[] = (Array.isArray(req.body?.sections) ? req.body.sections : []).map(String);
+  const budgetIds: number[] = [...new Set<number>((Array.isArray(req.body?.budgetIds) ? req.body.budgetIds : []).map(Number).filter((n: number) => Number.isFinite(n) && n !== id))];
+  const setIds: number[] = [...new Set<number>((Array.isArray(req.body?.setIds) ? req.body.setIds : []).map(Number).filter((n: number) => Number.isFinite(n)))];
+  const pct = req.body?.pct === true, dryRun = req.body?.dryRun === true;
+  if (!sections.length) return res.status(400).json({ error: 'Pick at least one section' });
+  if (!budgetIds.length && !setIds.length) return res.status(400).json({ error: 'Pick at least one budget or saved formula set' });
+  const set = formulaSetFromBudget(lb.lines, lb.budget.inputs || {});
+  const srcF = sectionFormulaSource(set.rules, lb.coa, sections);
+  const gls = srcF.gls;
+  if (!gls.length) return res.status(400).json({ error: 'No formula-driven lines in those sections on this budget' });
+  const srcSec = (lb.budget.inputs?.baseline as any)?.secGrowth || null;
+  const from = `${String(lb.budget.property_code).toUpperCase()} ${lb.budget.year}`;
+  const noiOf = (lines: BudgetLine[]) => r2(sum(rollup(new Map(lines.map((l) => [l.gl_code, l.months]))).get('7280') || zero12()));
+  const user = req.session.username || '';
+  const budgets: any[] = [];
+  for (const bid of budgetIds) {
+    const t = await loadBudget(bid);
+    if (!t) continue;
+    const row: any = { id: bid, code: String(t.budget.property_code).toUpperCase(), year: Number(t.budget.year), label: t.budget.label || '' };
+    if (!t.annual) { budgets.push({ ...row, skipped: 'not an annual budget' }); continue; }
+    const { inputs, changed } = copyFormulas(t.budget.inputs || {}, { rules: srcF.rules, secGrowth: srcSec }, gls, sections, { pct, fallbackRules: loadAnnualRules() as any, fill: srcF.fill });
+    const built = buildLines({ ...t, budget: { ...t.budget, inputs } }, inputs, t.lines);
+    const before = new Map(t.lines.map((l) => [l.gl_code, l]));
+    const moved = built.lines.filter((l) => { const o = before.get(l.gl_code); return !o ? l.months.some((v) => v) : o.months.some((v, i) => Math.abs(v - l.months[i]) >= 0.005); }).length;
+    const locked = gls.filter((gl) => before.get(gl)?.override).length;
+    Object.assign(row, { formulas: changed.length, lines: moved, locked, noiBefore: noiOf(t.lines), noiAfter: noiOf(built.lines), stale: t.budget.calc_version !== ENGINE_VERSION });
+    if (!dryRun && (changed.length || moved)) {
+      await captureSnapshot(t, `Before formulas copied from ${from}`, user);
+      await query('update budgets set inputs=$2, updated_at=now() where id=$1', [bid, JSON.stringify(inputs)]);
+      await saveLines(bid, built.lines, true);
+    }
+    budgets.push(row);
+  }
+  const sets: any[] = [];
+  for (const sid of setIds) {
+    const s = (await query('select id, name, data from formula_sets where id=$1', [sid])).rows[0];
+    if (!s) continue;
+    const data = (s.data || { rules: {}, settings: {} }) as FormulaSet;
+    const out = copyFormulas({ rules: data.rules || {} } as BudgetInputs, { rules: srcF.rules, secGrowth: null }, gls, [], { pct, fill: srcF.fill });
+    if (!dryRun && out.changed.length) await query('update formula_sets set data=$2 where id=$1', [sid, JSON.stringify({ ...data, rules: out.inputs.rules })]);
+    sets.push({ id: sid, name: s.name, formulas: out.changed.length });
+  }
+  if (!dryRun) logChange(user, 'copy formulas', { from: id, sections, pct, budgets: budgets.filter((b) => !b.skipped).map((b) => b.id), sets: sets.map((x) => x.id), gls: gls.length });
+  res.json({ ok: true, dryRun, from, gls: gls.length, budgets, sets });
 }));
 
 /* ---------------- Summary tab + panel headers ----------------

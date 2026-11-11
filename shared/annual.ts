@@ -678,6 +678,60 @@ export function applyFormulaSet(inputs: BudgetInputs, set: FormulaSet, from: { i
   } as BudgetInputs;
 }
 
+/* ---------------- one set of formula changes, given to other budgets (Troy 2026-11-10) ----------------
+   "I need to be able to change entire sections of formulas for all templates at once w ease. For
+   example, Contractor uses T12/12 ... which is how all of my budgets are set up." / "being able to
+   selectively apply one set of changes to other templates".
+   The formulas of the chosen GLs (whole sections of the source budget) are written into the
+   target's rules; the target's own per-row shape / rounding choices on those GLs are dropped so
+   the copied formula governs. Everything outside those GLs is untouched, and so is every dollar,
+   every hand-typed line and every data input. The increase % travels only when asked: otherwise
+   each line keeps the factor it already had on the target. Pure - the caller regenerates. */
+/** What a budget hands over for whole sections: its own rule for every formula-driven GL there,
+    plus - when every such line in a section is built the SAME way - that one formula for the
+    section's other GLs (lines the source has no history on), so "the whole section" means the
+    whole section on the receiving budget too. A section with mixed formulas hands over only its
+    own lines. `fill` lists the GLs covered that second way. */
+export function sectionFormulaSource(rules: Record<string, AnnualRule>, coaList: CoaAccount[], sections: string[]): { rules: Record<string, AnnualRule>; gls: string[]; fill: string[] } {
+  const out: Record<string, AnnualRule> = {}; const gls: string[] = []; const fill: string[] = [];
+  for (const sec of sections) {
+    const detail = coaList.filter((a) => a.kind === 'detail' && a.section === sec);
+    const own = detail.filter((a) => rules[a.code]);
+    for (const a of own) { out[a.code] = rules[a.code]; gls.push(a.code); }
+    const shaped = own.map((a) => rules[a.code]).filter((r) => r.method !== 'zero');
+    const kinds = new Set(shaped.map((r) => `${r.method}|${r.shape || ''}`));
+    if (kinds.size !== 1) continue;
+    const one: AnnualRule = { method: shaped[0].method, ...(shaped[0].shape ? { shape: shaped[0].shape } : {}) };
+    for (const a of detail) if (!rules[a.code]) { out[a.code] = one; gls.push(a.code); fill.push(a.code); }
+  }
+  return { rules: out, gls, fill };
+}
+/** Rule methods that leave the engine's own logic in charge of a GL (never replaced by a section fill). */
+const ENGINE_RULE = new Set<AnnualRule['method']>(['engine', 'corpRate', 'suggested', 'debt', 'payroll', 'fixedAnnual', 'zero']);
+export function copyFormulas(
+  target: BudgetInputs, src: { rules: Record<string, AnnualRule>; secGrowth?: Record<string, number> | null },
+  gls: string[], sections: string[], opts: { pct?: boolean; fallbackRules?: Record<string, AnnualRule> | null; fill?: string[] } = {},
+): { inputs: BudgetInputs; changed: string[] } {
+  // a budget from before formula sets runs on the fallback table: keep it for every other GL
+  const rules: Record<string, AnnualRule> = { ...((target.rules as Record<string, AnnualRule> | undefined) ?? opts.fallbackRules ?? {}) };
+  const bl = { ...DEFAULT_BASELINE, ...(target.baseline || {}) } as any;
+  const glShape = { ...(bl.glShape || {}) }, glMround = { ...(bl.glMround || {}) }, glGrowth = { ...(bl.glGrowth || {}) }, secGrowth = { ...(bl.secGrowth || {}) };
+  const changed: string[] = []; const fillSet = new Set(opts.fill || []);
+  for (const gl of gls) {
+    const from = src.rules[gl]; if (!from) continue;
+    const prev = rules[gl];
+    // a section fill never takes over a GL the engine builds itself (corporate rate, fee, payroll...)
+    if (fillSet.has(gl) && prev && ENGINE_RULE.has(prev.method)) continue;
+    const next: AnnualRule = { ...from };
+    if (!opts.pct) { delete next.factor; if (prev && Number.isFinite(prev.factor)) next.factor = prev.factor; }
+    const had = glShape[gl] != null || glMround[gl] != null || (opts.pct && glGrowth[gl] != null);
+    if (had || JSON.stringify(prev || null) !== JSON.stringify(next)) changed.push(gl);
+    rules[gl] = next; delete glShape[gl]; delete glMround[gl]; if (opts.pct) delete glGrowth[gl];
+  }
+  if (opts.pct) for (const s of sections) { const v = src.secGrowth?.[s]; if (v != null) secGrowth[s] = v; else delete secGrowth[s]; }
+  return { inputs: { ...target, rules, baseline: { ...bl, glShape, glMround, glGrowth, secGrowth } } as BudgetInputs, changed };
+}
+
 export interface AnnualSources {
   actual: Record<string, Months> | null;    // trailing-12 posted actuals, calendar series by GL
   budget: Record<string, Months> | null;    // current-year budget as it sits in Yardi
