@@ -44,7 +44,7 @@ export function applyRounding(lines: BudgetLine[]): BudgetLine[] {
 
 /* `revised` marks a formula line whose cells were hand-edited afterwards —
    the formula identity is kept (chip shows a *), never demoted to manual. */
-export type Driver = { revised?: boolean } & (
+export type Driver = { revised?: boolean; /** calendar-month indexes (0-11) taken from the property's Year-1 plan (annual budgets, shared/annual.ts applyY1Plan) */ y1?: number[] } & (
   | { method: 'manual' }
   | { method: 'gpr' }
   | { method: 'ltl' }
@@ -113,6 +113,8 @@ export interface BudgetInputs {
       `start` ('YYYY-MM'). Unset = the property's acquisition budget / the template's acquisition
       date; pct null or 0 = no first-year rate. */
   mgmtFirstYear?: { pct?: number | null; start?: string | null };
+  /** annual: false = do NOT take the months still inside ownership Year 1 from the property's Y1 budget (default: take them) */
+  y1Plan?: boolean;
   /** annual: share of the previous month's delinquency (5035) collected as prior-period collections (5036); unset = the trailing-12 rate, capped at 100% */
   collectPct?: number;
   /** annual budgets: the per-GL formula rules this budget runs on — a COPY of the saved formula

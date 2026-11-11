@@ -81,7 +81,15 @@ const S_FOOT = 42;
 const CURC = '"$"#,##0.00_);[Red]("$"#,##0.00)';
 const RED = 'FFFF0000';
 
+const MON3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** A line whose Year-1 months come from the property's Y1 budget says so ahead of its formula. */
 function driverLabel(d: any): string {
+  const base = driverLabelBase(d);
+  if (!Array.isArray(d?.y1) || !d.y1.length) return base;
+  const span = `${MON3[d.y1[0]]}-${MON3[d.y1[d.y1.length - 1]]} from the Year-1 budget`;
+  return d.method === 'manual' ? span : `${span}; then ${base}`;
+}
+function driverLabelBase(d: any): string {
   switch (d?.method) {
     case 'gpr': return 'rent roll GPR';
     case 'ltl': return 'LTL burnoff';

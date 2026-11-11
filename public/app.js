@@ -34,6 +34,11 @@ function drvMeta(l) {
   if (l && l.driver && l.driver.revised && m.tag !== 'MAN' && m.tag !== '—') {
     return { ...m, tag: m.tag + '*', label: m.label + ' — cells hand-revised' };
   }
+  // months still inside ownership Year 1 come from the property's Y1 budget, the rest from the formula
+  if (l && l.driver && Array.isArray(l.driver.y1) && l.driver.y1.length && !l.override) {
+    const y = l.driver.y1, span = `${MONTHS[y[0]]}–${MONTHS[y[y.length - 1]]}`;
+    return m.tag === 'MAN' || m.tag === '—' ? { ...m, cls: 'drv-fee', tag: 'Y1', label: `${span} from the Year-1 budget; nothing budgeted after` } : { ...m, tag: 'Y1+' + m.tag, label: `${span} from the Year-1 budget; then ${m.label}` };
+  }
   return m;
 }
 function drvMetaBase(l) {
@@ -2044,6 +2049,13 @@ function defaultsInUse(bv) {
   add('fset', 'Formula set', rf ? `${rf.name}${rf.at ? ` · given ${new Date(rf.at).toLocaleDateString()}` : ''}` : 'none picked — running on the 2026 GRKS draft rules, the old silent default (More → Apply a saved formula set…)', !rf || rf.id === 'grks', !rf ? 'no formula set was chosen for this property' : '');
   add('growth', 'Increase factors', typed.length ? `typed: ${typed.map(([k, v]) => `cat ${k} ${pc(v, 1)}`).join(', ')}; the rest per GL from the formula set` : rf && rf.id !== 'grks' ? `per GL, from "${rf.name}"` : rf && rf.id == null ? 'template defaults: admin +5%, R&M +5%, rehab +5%, trash +7%, the rest 0%' : 'per GL, from the 2026 GRKS draft: admin +5%, supplies & contractors +10%, rehab +15%, utilities +5%, trash +7%, other income 0%', !typed.length && (!rf || rf.id === 'grks' || rf.id == null));
   if ((bv.t12Dead || []).length || (bv.t12Startup || []).length) add('startup', 'New-acquisition history', `${bv.t12Live} month${bv.t12Live === 1 ? '' : 's'} of operations annualized${(bv.t12Startup || []).length ? `; ${bv.t12Startup.join(', ')} left out as start-up` : '; no start-up month left out'}`, inp.startupExclude == null, (bv.t12Early || []).length ? `${bv.t12Early.join(' and ')} (month 2-3 of operations) are in the history — review` : '');
+  if (bv.y1Plan) {
+    const y = bv.y1Plan, span = y.months.length ? `${MONTHS[y.months[0]]}–${MONTHS[y.months[y.months.length - 1]]}` : '';
+    add('y1plan', 'Year-1 months', y.on
+      ? `${span} taken from the Year-1 budget on every line through NOI. Year 1 NOI ${money(y.y1Noi)} vs ${y.uwNoi != null ? 'UW ' + money(y.uwNoi) : 'plan ' + money(y.planNoi)} (${Math.abs(y.variance) < 1 ? 'ties' : (y.variance > 0 ? '+' : '−') + money(Math.abs(y.variance))})${y.locked.length ? `; ${y.locked.length} locked line${y.locked.length === 1 ? '' : 's'} differ from the plan` : ''}`
+      : `off — ${span} run on this budget's own formulas. Year 1 NOI would be ${money(y.y1Noi)} vs ${y.uwNoi != null ? 'UW ' + money(y.uwNoi) : 'plan ' + money(y.planNoi)} (${(y.variance > 0 ? '+' : '−') + money(Math.abs(y.variance))})`,
+      inp.y1Plan == null, !y.on || Math.abs(y.variance) >= 1 ? 'Year 1 does not land on the underwriting NOI' : '');
+  }
   const drift = (inp.baseline || {}).costDrift;
   add('drift', 'Cost drift in the year', (drift ?? 0.03) ? `${pc(drift ?? 0.03, 1)} January to December on history-based expense lines; year totals unchanged` : 'off', drift == null);
   // LTL
@@ -4396,6 +4408,7 @@ function annualInputsHtml(inp) {
       <div class="fld"><label>Shape</label><select id="in-blshape">${['actual', 'wavg', 'flat', 'curve'].map((k) => `<option value="${k}" ${(bl.shape || 'actual') === k ? 'selected' : ''}>${SHAPE_LABELS[k]}</option>`).join('')}</select></div>
       <div class="fld"><label>MROUND $ (0 = each GL's foundation multiple)</label><input id="in-blmround" value="${bl.mround || 0}" style="width:80px"></div>
       ${(S.bv.t12Dead || []).length || (S.bv.t12Startup || []).length ? `<div class="fld"><label title="A new acquisition's first months are not a clean picture: a partial month of rent, closing entries, catch-up bills. The months left out are filled with each line's average over the months that remain. Default: the first month. At least two months are always kept.">Start-up months left out of the history${(S.bv.t12Startup || []).length ? ` <span class="muted">— now: ${esc(S.bv.t12Startup.join(', '))}</span>` : ''}</label><select id="in-startup">${[0, 1, 2, 3].map((n) => `<option value="${n}" ${(inp.startupExclude ?? 1) === n ? 'selected' : ''}>${n === 0 ? 'none' : n === 1 ? 'the first month (default)' : `the first ${n} months`}</option>`).join('')}</select></div>` : ''}
+      ${S.bv.y1Plan ? (() => { const y = S.bv.y1Plan, span = y.months.length ? `${MONTHS[y.months[0]]}–${MONTHS[y.months[y.months.length - 1]]}` : ''; return `<div class="fld"><label title="This property's Year-1 (acquisition) budget ties to the underwriting NOI and its 12 ownership months run into this year. With this on, ${span} on every line through NOI are that budget's amounts, so Year 1 as a whole lands on the underwriting. The months after run on this budget's formulas. Interest, principal and SP are not touched; locked lines are not moved.">Year-1 months (${span}) <span class="muted">— Year 1 NOI ${money(y.y1Noi)} vs ${y.uwNoi != null ? 'UW ' + money(y.uwNoi) : 'plan ' + money(y.planNoi)}</span></label><select id="in-y1plan"><option value="1" ${inp.y1Plan !== false ? 'selected' : ''}>from the Year-1 budget</option><option value="0" ${inp.y1Plan === false ? 'selected' : ''}>this budget's own formulas</option></select></div>`; })() : ''}
       <div class="fld"><label title="History-based expense lines (admin, marketing, utilities, R&M, rehab) are tilted so December runs this much above January, in a straight line. The YEAR TOTAL does not change — only when the dollars land. 0 = off. Not applied to payroll, taxes, insurance, the fee or contract-flat lines.">Cost drift within the year % (Jan → Dec)</label><input id="in-drift" value="${+(((bl.costDrift ?? 0.03)) * 100).toFixed(2)}" style="width:70px"></div>
       <label style="align-self:center" title="The Yardi template carries Conservice's per-GL per-month utility % forecasts. The GRKS foundation used a flat 5% instead; tick to apply the forecast where one exists."><input type="checkbox" id="in-blutil" ${bl.useUtilForecast ? 'checked' : ''}> Use Conservice utility forecasts</label>
     </div>
@@ -4512,6 +4525,7 @@ async function applyAnnualInputs(b, el) {
     ...(q('#in-startup') ? { startupExclude: Number(q('#in-startup').value) } : {}),
     burdenBasis: q('#in-burden') ? q('#in-burden').value : (cur.burdenBasis || 't12'),
     ...(q('#in-burdenfrom') ? { burdenFrom: q('#in-burdenfrom').value || null } : {}),
+    ...(q('#in-y1plan') ? { y1Plan: q('#in-y1plan').value === '0' ? false : (cur.y1Plan === false ? true : cur.y1Plan) } : {}),
     utilities: { ...(cur.utilities || {}), billing: q('#in-utilbill') ? q('#in-utilbill').value : ((cur.utilities || {}).billing || 'rubs') },
     baseline: { ...(cur.baseline || {}), source: q('#in-blsrc').value, shape: q('#in-blshape').value, mround: num('#in-blmround'), costDrift: q('#in-drift') ? Math.max(0, num('#in-drift', 3)) / 100 : (cur.baseline || {}).costDrift, growthPct, useUtilForecast: q('#in-blutil').checked },
     turnFees, corpRates,

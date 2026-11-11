@@ -5,7 +5,7 @@ import { query, tx } from './db.js';
 import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
-  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, stmtCalendar, trailing12, annualizedFromCal,
+  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
   refFromCalendar, refColumn, ENGINE_VERSION, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
@@ -431,6 +431,8 @@ interface LoadedBudget {
   burdenSrc: { code: string; actual: Record<string, Months> | null; budget: Record<string, Months> | null; period: string; found: boolean } | null;
   /** annual: when ownership began + the acquisition budget's first-year management fee % */
   acquisition: { start: string | null; firstYearPct: number | null } | null;
+  /** annual: the property's acquisition (UW Year-1) budget, when its 12 ownership months reach into this budget's year */
+  y1Plan: (Y1Plan & { budgetId: number; uwNoi: number | null }) | null;
   /** the latest Payroll Budget Workbook sheet for this property + year (stmt kind 'payroll_template') — a reference, never an input */
   payrollTpl: { id: number; label: string; period: string; total: number; cal: Record<string, Months> } | null;
 }
@@ -549,15 +551,25 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   // when ownership began and the first-year management fee: the Yardi template's acquisition
   // date wins for the date; the rate comes from the property's own acquisition budget (UW Y1)
   let acquisition: { start: string | null; firstYearPct: number | null } | null = null;
+  let y1Plan: LoadedBudget['y1Plan'] = null;
   if (annual) {
     const acqB = (await query(
-      `select year, inputs->>'startMonth' as sm, inputs->>'mgmtPct' as pct from budgets
+      `select id, uw_snapshot_id, year, inputs->>'startMonth' as sm, inputs->>'mgmtPct' as pct from budgets
         where property_code=$1 and budget_type <> 'annual' and coalesce(inputs->>'mode','') <> 'annual' order by year desc, updated_at desc limit 1`, [budget.property_code]
     )).rows[0];
     const tplAcq = budget.template_id ? (await query(`select data->>'acquisitionDate' as d from template_snapshots where id=$1`, [budget.template_id])).rows[0]?.d : null;
     const start = tplAcq || (acqB ? `${acqB.year}-${String(Number(acqB.sm) || 1).padStart(2, '0')}` : null);
     const pct = acqB && Number(acqB.pct) > 0 ? Number(acqB.pct) : null;
     if (start || pct != null) acquisition = { start, firstYearPct: pct };
+    // the Y1 plan itself: the months of this budget's year that are still ownership Year 1 take its amounts
+    if (acqB) {
+      const plan = { year: Number(acqB.year), startMonth: Number(acqB.sm) || 1 };
+      if (plan.startMonth > 1 && plan.year + 1 === Number(budget.year)) {
+        const pl = (await query('select gl_code, months from budget_lines where budget_id=$1', [acqB.id])).rows;
+        const u = acqB.uw_snapshot_id ? (await query(`select data->>'noi' as noi from uw_snapshots where id=$1`, [acqB.uw_snapshot_id])).rows[0] : null;
+        if (pl.length) y1Plan = { ...plan, budgetId: Number(acqB.id), uwNoi: u && u.noi != null && Number.isFinite(Number(u.noi)) ? Number(u.noi) : null, lines: pl.map((r: any) => ({ gl_code: r.gl_code, months: (r.months as any[]).map(Number) as Months })) };
+      }
+    }
   }
   const refs: RefCol[] = [];
   if (annual) {
@@ -638,7 +650,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
       }));
     }
   }
-  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, savePoints, payrollTpl, rosterLink, acquisition, burdenSrc,
+  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, burdenSrc,
            annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs };
 }
 
@@ -756,6 +768,9 @@ function budgetView(lb: LoadedBudget) {
     burdenSrc: lb.burdenSrc ? { code: lb.burdenSrc.code, period: lb.burdenSrc.period, found: lb.burdenSrc.found } : null,
     // ownership start + first-year management fee % on file (annual) — the Assumptions defaults
     acquisition: lb.acquisition,
+    // Year-1 plan in this budget: which months it supplies and how Year 1 stands against the UW NOI
+    y1Plan: lb.annual && lb.y1Plan ? { budgetId: lb.y1Plan.budgetId, year: lb.y1Plan.year, startMonth: lb.y1Plan.startMonth, on: lb.budget.inputs?.y1Plan !== false && (Number(lb.budget.inputs?.startMonth) || 1) === 1,
+      ...y1Check(lb.lines, lb.y1Plan, Number(lb.budget.year), lb.y1Plan.uwNoi) } : null,
     // where the wages come from: the Pay-rates link (cycle, draft / finalized by region) or null
     rosterLink: lb.rosterLink ? { label: lb.rosterLink.label, effective: lb.rosterLink.effective, draft: lb.rosterLink.draft, regions: lb.rosterLink.regions, wages: lb.rosterLink.wages } : null,
     leaseCount: lb.leases?.length || 0,
@@ -934,6 +949,12 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
       ? regenerate(existing, lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges, lb.rollAsOf)
       : generateLines(lb.coa, inputs, lb.uw, lb.comps, lb.catShapes, wages, lb.leases, lb.sellerUtil, lb.charges, lb.rollAsOf);
   }
+  // YEAR-1 PLAN: the months still inside ownership Year 1 take the acquisition budget's amounts on every
+  // line that feeds NOI. Once before the dependent passes (so fees / recoveries in the months after read
+  // the right bases) and once after everything else (so those months end exactly on the plan).
+  const y1 = lb.annual && lb.y1Plan && inputs.y1Plan !== false && (Number(inputs.startMonth) || 1) === 1 ? lb.y1Plan : null;
+  if (lb.annual) lines = clearY1Plan(lines);
+  if (y1) lines = applyY1Plan(lines, lb.coa, y1, Number(inputs.year));
   lines = applyDependentPasses(lb, lines, inputs);
   const ref = refOf(lb);
   if (ref) {
@@ -943,6 +964,7 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   }
   // standing per-line MROUND re-applies as the final step (not a lock)
   lines = applyRounding(lines);
+  if (y1) lines = applyY1Plan(lines, lb.coa, y1, Number(inputs.year));
   return { lines };
 }
 

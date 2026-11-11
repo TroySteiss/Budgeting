@@ -33,13 +33,13 @@ import {
   type CoaAccount, type BudgetLine, type BudgetInputs, type Months, type Driver, type UwSnapshotData,
   type Lease, type CompWeights, type BaselineShape,
   zero12, r2, sum, rollup, spreadMonthly, rotate12, CURVES, WAGE_GLS, ltlMonths, ltlModel, chargeGlMonthly,
-  mergeFresh, overriddenWages, calMonthOf, calYearOf, daysInMonth, dateKey, leaseEndIndex,
+  mergeFresh, overriddenWages, calMonthOf, calYearOf, daysInMonth, dateKey, leaseEndIndex, calendarSlice,
 } from './domain.js';
 
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-10b';
+export const ENGINE_VERSION = '2026-11-10c';
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -1238,6 +1238,81 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   } else if (coaByCode.has('7300')) baseline(coaByCode.get('7300')!, 'last', 0);
 
   return [...lines.values()];
+}
+
+/* ============================================================================
+   YEAR-1 PLAN INSIDE THE ANNUAL BUDGET (Troy 2026-11-10: "We made Y1 Budgets for Bismarck and
+   Jamestown. We need to incorporate those NOI's so that we have made promised returns by Y1.")
+   A new acquisition's Y1 budget is 12 ownership months tied 100% to the UW Year-1 NOI
+   (Aug-26..Jul-27 for an August close). Its calendar-year annual budget covers the tail of that
+   window (Jan..Jul 2027). For those months every line that feeds NOI takes the Y1 plan's amount,
+   so the two budgets never disagree and Year 1 as a whole still lands on the UW NOI. Months after
+   Year 1 stay on the annual formulas. Lines below NOI (interest, principal, SP) are untouched.
+   A locked (overridden) line is never moved: its difference shows in y1Check as variance.
+   ========================================================================== */
+export interface Y1Plan { year: number; startMonth: number; lines: { gl_code: string; months: Months }[] }
+/** A detail GL that feeds NOI: income 4994-5189, operating expense 6101-7069 (the rollup's ranges). */
+export const feedsNoi = (code: string): boolean => { const n = parseInt(code, 10); return Number.isFinite(n) && ((n >= 4994 && n <= 5189) || (n >= 6101 && n <= 7069)); };
+const noiSign = (code: string): number => (parseInt(code, 10) < 6000 ? 1 : -1);
+/** Calendar-month indexes (0 = Jan) of `calYear` that fall inside the plan's 12 ownership months. */
+export function y1MonthsIn(plan: Pick<Y1Plan, 'year' | 'startMonth'>, calYear: number): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < 12; i++) if (calYearOf(plan.year, plan.startMonth, i) === calYear) out.push(calMonthOf(plan.startMonth, i) - 1);
+  return out.sort((a, b) => a - b);
+}
+/** Undo a previous overlay on lines the engine did not rebuild (a GL only the Y1 plan carried): zero
+    the plan months and drop the marker. Rebuilt lines never carry the marker; locked lines are left. */
+export function clearY1Plan(lines: BudgetLine[]): BudgetLine[] {
+  return lines.map((l) => {
+    const y1 = (l.driver as Driver).y1; if (!y1 || l.override) return l;
+    const m = [...l.months] as Months; for (const i of y1) m[i] = 0;
+    const { y1: _drop, ...driver } = l.driver as any;
+    return { ...l, months: m, driver };
+  });
+}
+/** Put the Y1 plan's amounts into the months of `calYear` that are still ownership Year 1. */
+export function applyY1Plan(lines: BudgetLine[], coaList: CoaAccount[], plan: Y1Plan, calYear: number): BudgetLine[] {
+  const idx = y1MonthsIn(plan, calYear); if (!idx.length) return lines;
+  const slice = new Map<string, Months>();
+  for (const l of plan.lines) if (feedsNoi(l.gl_code)) slice.set(l.gl_code, calendarSlice(l.months, plan.year, plan.startMonth, calYear));
+  const coa = new Set(coaList.map((a) => a.code)); const seen = new Set<string>();
+  const out = lines.map((l) => {
+    seen.add(l.gl_code);
+    if (!feedsNoi(l.gl_code) || l.override) return l;
+    const s = slice.get(l.gl_code); const m = [...l.months] as Months; let touched = false;
+    for (const i of idx) { const v = s ? s[i] : 0; if (v || m[i]) touched = true; m[i] = v; }
+    return touched ? { ...l, months: m, driver: { ...(l.driver as any), y1: idx } as Driver } : l;
+  });
+  for (const [gl, s] of slice) {
+    if (seen.has(gl) || !coa.has(gl) || !idx.some((i) => s[i])) continue;
+    const m = zero12(); for (const i of idx) m[i] = s[i];
+    out.push({ gl_code: gl, months: m, driver: { method: 'manual', y1: idx } as Driver, override: false, note: '' });
+  }
+  return out;
+}
+export interface Y1Check {
+  /** calendar-month indexes of this budget's year inside ownership Year 1 */
+  months: number[];
+  /** the Y1 plan's NOI: all 12 ownership months, the part before this calendar year, the part inside it */
+  planNoi: number; planBefore: number; planIn: number;
+  /** this budget's NOI over the same months, and Year 1 as it now stands (planBefore + budgetIn) */
+  budgetIn: number; y1Noi: number;
+  uwNoi: number | null;
+  /** y1Noi minus the UW Year-1 NOI (minus the plan's NOI when no UW is on file) */
+  variance: number;
+  /** locked lines that differ from the plan in those months */
+  locked: { gl: string; diff: number }[];
+}
+export function y1Check(lines: BudgetLine[], plan: Y1Plan, calYear: number, uwNoi: number | null): Y1Check {
+  const idx = y1MonthsIn(plan, calYear);
+  const over = (ls: { gl_code: string; months: Months }[], pick: (m: Months, gl: string) => number) => r2(ls.reduce((a, l) => (feedsNoi(l.gl_code) ? a + noiSign(l.gl_code) * pick(l.months, l.gl_code) : a), 0));
+  const planNoi = over(plan.lines, (m) => sum(m));
+  const planIn = over(plan.lines, (m) => sum(calendarSlice(m, plan.year, plan.startMonth, calYear)));
+  const budgetIn = over(lines, (m) => idx.reduce((a, i) => a + m[i], 0));
+  const planBefore = r2(planNoi - planIn); const y1Noi = r2(planBefore + budgetIn);
+  const byGl = new Map(plan.lines.map((l) => [l.gl_code, calendarSlice(l.months, plan.year, plan.startMonth, calYear)]));
+  const locked = lines.filter((l) => l.override && feedsNoi(l.gl_code)).map((l) => { const s = byGl.get(l.gl_code); return { gl: l.gl_code, diff: r2(idx.reduce((a, i) => a + l.months[i] - (s ? s[i] : 0), 0)) }; }).filter((x) => x.diff);
+  return { months: idx, planNoi, planBefore, planIn, budgetIn, y1Noi, uwNoi, variance: r2(y1Noi - (uwNoi ?? planNoi)), locked };
 }
 
 export function regenerateAnnual(existing: BudgetLine[], coaList: CoaAccount[], inputs: BudgetInputs, src: AnnualSources): BudgetLine[] {

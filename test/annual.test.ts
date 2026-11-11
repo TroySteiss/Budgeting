@@ -1199,3 +1199,60 @@ describe('Summary panel (Troy 2026-11-10): the budget-comps rows, labels and T12
     expect(trailing12([stmt], { back: 3 })).toBeNull();                // Aug 2025 is not on file
   });
 });
+
+/* Year-1 plan inside the annual budget — made-up figures. */
+import { applyY1Plan, clearY1Plan, y1Check, y1MonthsIn, feedsNoi } from '../shared/annual.js';
+describe('Year-1 plan in the annual budget', () => {
+  const flat = (v: number) => Array(12).fill(v) as Months;
+  const coa = ['4994', '5031', '5140', '6305', '6410', '7300'].map((code) => ({ code, name: code, pcode: '1', curve: 'flat', active: true })) as unknown as CoaAccount[];
+  // ownership year Aug-26..Jul-27: index 0 = Aug-26, index 5 = Jan-27, index 11 = Jul-27
+  const plan = { year: 2026, startMonth: 8, lines: [
+    { gl_code: '4994', months: [100, 100, 100, 100, 100, 110, 110, 110, 110, 110, 110, 120] as Months },
+    { gl_code: '5031', months: flat(-5) },
+    { gl_code: '5140', months: flat(2) },      // income line the annual budget does not carry
+    { gl_code: '6305', months: flat(30) },
+    { gl_code: '7300', months: flat(40) },     // interest: below NOI, never taken
+  ] };
+  const line = (gl: string, m: Months, extra: Partial<BudgetLine> = {}): BudgetLine => ({ gl_code: gl, months: m, driver: { method: 'manual' }, override: false, note: '', ...extra });
+  const annual = () => [line('4994', flat(125)), line('5031', flat(-6)), line('6305', flat(33)), line('6410', flat(4)), line('7300', flat(41))];
+
+  it('knows which calendar months are still Year 1 and which GLs feed NOI', () => {
+    expect(y1MonthsIn(plan, 2027)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(y1MonthsIn(plan, 2026)).toEqual([7, 8, 9, 10, 11]);
+    expect(y1MonthsIn({ year: 2026, startMonth: 9 }, 2027)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(y1MonthsIn(plan, 2028)).toEqual([]);
+    expect([feedsNoi('4994'), feedsNoi('5189'), feedsNoi('6101'), feedsNoi('7069'), feedsNoi('7300'), feedsNoi('3080'), feedsNoi('8500')]).toEqual([true, true, true, true, false, false, false]);
+  });
+  it('takes Jan-Jul from the plan on every line through NOI and leaves Aug-Dec and below-NOI lines alone', () => {
+    const out = new Map(applyY1Plan(annual(), coa, plan, 2027).map((l) => [l.gl_code, l]));
+    expect(out.get('4994')!.months).toEqual([110, 110, 110, 110, 110, 110, 120, 125, 125, 125, 125, 125]);
+    expect(out.get('6305')!.months).toEqual([30, 30, 30, 30, 30, 30, 30, 33, 33, 33, 33, 33]);
+    expect(out.get('6410')!.months).toEqual([0, 0, 0, 0, 0, 0, 0, 4, 4, 4, 4, 4]);       // not in the plan: nothing in Year 1
+    expect(out.get('5140')!.months).toEqual([2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0]);       // only in the plan: added
+    expect(out.get('7300')!.months).toEqual(flat(41));
+    expect((out.get('4994')!.driver as any).y1).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect((out.get('7300')!.driver as any).y1).toBeUndefined();
+  });
+  it('Year 1 lands on the plan NOI, and a locked line shows as variance instead of moving', () => {
+    const planNoi = (100 * 5 + 110 * 6 + 120) + 12 * (-5 + 2 - 30);
+    const tied = y1Check(applyY1Plan(annual(), coa, plan, 2027), plan, 2027, planNoi);
+    expect(tied.planNoi).toBe(planNoi);
+    expect(tied.y1Noi).toBe(planNoi);
+    expect(tied.variance).toBe(0);
+    expect(tied.planBefore + tied.planIn).toBe(planNoi);
+    const locked = annual(); locked[2] = line('6305', flat(33), { override: true });
+    const chk = y1Check(applyY1Plan(locked, coa, plan, 2027), plan, 2027, planNoi);
+    expect(chk.locked).toEqual([{ gl: '6305', diff: 21 }]);
+    expect(chk.variance).toBe(-21);
+    // not applied at all: the gap is the whole difference between the two budgets over Jan-Jul
+    expect(y1Check(annual(), plan, 2027, planNoi).variance).toBe(7 * (125 - 6 - 33 - 4) - (110 * 6 + 120 + 7 * (-5 + 2 - 30)));
+  });
+  it('turning it off removes what only the plan had put there', () => {
+    const on = applyY1Plan(annual(), coa, plan, 2027);
+    const off = new Map(clearY1Plan(on).map((l) => [l.gl_code, l]));
+    expect(off.get('5140')!.months).toEqual(zero12());
+    expect((off.get('5140')!.driver as any).y1).toBeUndefined();
+    // applying twice is the same as once
+    expect(applyY1Plan(on, coa, plan, 2027)).toEqual(on);
+  });
+});
