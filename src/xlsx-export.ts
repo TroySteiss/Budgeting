@@ -81,6 +81,11 @@ const S_FOOT = 42;
 const CURC = '"$"#,##0.00_);[Red]("$"#,##0.00)';
 const RED = 'FFFF0000';
 
+/** Hard-coded numbers: bold, in a colour no fill or other font uses (matches the app). */
+const HARD_FONT = { size: 8, bold: true, color: { argb: 'FFC2185B' } };
+/** Is month i of this line hard-coded? Typed cells when the line recorded them, else every non-zero month of a hand-fixed line.
+    A smoothed line is not hard-coded: a formula still drives it. */
+const isHardCell = (ln: BudgetLine | undefined, i: number): boolean => { if (!ln?.override) return false; const d = (ln.driver as any) || {}; const h = d.hard; return Array.isArray(h) ? h.includes(i) : d.smooth || d.method === 'smooth' ? false : !!ln.months[i]; };
 const MON3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 /** A line whose Year-1 months come from the property's Y1 budget says so ahead of its formula. */
 function driverLabel(d: any): string {
@@ -475,6 +480,7 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: d.fill } };
     cell.alignment = { horizontal: 'center' };
   });
+  { const hk = ws.getCell(5, C.m1 + Object.keys(DRIVER_FILLS).length); hk.value = '1,234 = hard-coded'; hk.font = { ...HARD_FONT, size: 7 }; hk.alignment = { horizontal: 'center' }; }
 
   // r6 column headers
   const heads: [number, string][] = [
@@ -534,7 +540,8 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
         if (payRow) cell.value = { formula: `${PQ}${payColL(i)}${payRow}`, result: v || 0 } as any;
         else if (v) cell.value = v;
         cell.numFmt = CUR;
-        cell.font = f8;
+        // hard-coded (typed / fixed by hand): bold in the one colour nothing else uses
+        cell.font = !payRow && isHardCell(ln, i) ? HARD_FONT : f8;
         if (payRow) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DRIVER_FILLS.pay.fill } };
         else if (hasVals) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: dFill } };
       });
@@ -991,7 +998,7 @@ function fillPayrollSheet(
   ws.getCell(1, 2).font = { size: 12, bold: true };
   ws.getCell(2, 2).value = `Wage rows = the payroll model's monthly wages (type over them to change). Every other row = Ratio used (col ${L(PC.used)}) × that month's TOTAL WAGES; the ratio defaults to the ${basisLabel} shown beside it — type a % or any formula. The Budget sheet's payroll rows read from this sheet.`;
   ws.getCell(2, 2).font = { size: 8, italic: true, color: { argb: 'FF505050' } };
-  ws.getCell(3, 2).value = 'Fill: lilac = payroll model / formula · yellow = ratio input · pink = manual override';
+  ws.getCell(3, 2).value = 'Fill: lilac = payroll model / formula · yellow = ratio input · pink = manual override · bold magenta number = hard-coded (typed by hand)';
   ws.getCell(3, 2).font = { size: 7.5, italic: true, color: { argb: 'FF808080' } };
 
   const heads: [number, string][] = [
@@ -1030,6 +1037,7 @@ function fillPayrollSheet(
       if (asFormula) cell.value = { formula: `$${L(PC.used)}${r}*${L(PC.m1 + i)}${wagesRow}`, result: v || 0 } as any;
       else if (v) cell.value = v;
       money(cell);
+      if (!asFormula && isHardCell(ln, i)) cell.font = HARD_FONT;
       if (fill) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
     });
     const tot = r2(sum(months)), t12 = t12Of(a.code), bud = budOf(a.code);

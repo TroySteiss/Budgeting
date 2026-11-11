@@ -1555,6 +1555,12 @@ function gridHtml(bv, totals) {
     if (isZero && !S.showZero && !sp) continue;
     const isDropped = !!(l && l.driver && l.driver.method === 'dropped');
     const dm = drvMeta(l && (ann || l.override || isDropped) ? l : null);
+    // hard-coded CELLS: the months typed by hand when the line recorded them; every non-zero month when a tool
+    // rewrote the whole line (typed total, Smooth, import) or the line was fixed before cells were recorded
+    // (a smoothed line is NOT hard-coded: its formula still drives it, only typed cells on it are marked)
+    const hardSet = l && l.override ? (Array.isArray((l.driver || {}).hard) ? new Set(l.driver.hard) : (l.driver || {}).smooth || (l.driver || {}).method === 'smooth' ? new Set() : 'all') : null;
+    const isHard = (i) => !!hardSet && (hardSet === 'all' ? !!m[i] : hardSet.has(i));
+    const hard = hardSet === 'all';
     const prm = cols.fx && l && !l.override ? paramFor(a.code, l, bv.budget.inputs || {}) : null;
     // seller-derived lines get a non-accrual flag when the billing looks bad
     const smell = sellerDerived(l) ? billingSmell(m) : null;
@@ -1563,8 +1569,8 @@ function gridHtml(bv, totals) {
       <td class="code">${a.code}</td>
       <td class="name${histFor(a.code).length ? ' hashist' : ''}" ${histFor(a.code).length ? `data-hist="${a.code}"` : ''} title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}${histFor(a.code).length ? ' — click for the prior T12 / CY budget by month' : ''}">${histFor(a.code).length ? `<span class="hx">${histOpen(a.code) ? '▾' : '▸'}</span>` : ''}${esc(a.name)}${smell ? ` <span class="warnflag" title="Seller billing looks NON-ACCRUAL: ${esc(smell.join('; '))}. Likely bad bills — review, or smooth via WAVG / flat / Minot seasonal.">⚠</span>` : ''}${a.active === false ? ' <span class="badge" title="Deactivated GL still carrying dollars — Recalc zeroes it">inactive — recalc to zero</span>' : ''}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
       ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${drvExtraHtml(dm)}${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? (prm.steps ? `<button class="fxp fxp-steps" data-steps="${a.code}" title="${esc(prm.label)} — click to place increases in specific months">${esc(prm.value)}</button>` : prm.multi ? `<button class="fxp fxp-steps" data-multi="${a.code}" title="${esc(prm.title || '')} — click to edit every input">${esc(prm.summary)}</button>` : `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">${/%/.test(prm.label) ? '<span class="fxu" title="percent">%</span>' : ''}`) : ''}</td>` : ''}
-      ${monthIdx.map((i) => `<td class="m ${actIdx.has(i) ? 'drv-act' : sp ? '' : dm.cls}"><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money(Math.round(m[i]) || 0) : ''}"></td>`).join('')}
-      ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}"><input data-ann="${a.code}" value="${ann ? money(Math.round(ann) || 0) : ''}" title="${bv.annual ? bv.budget.year : 'Year 1'} total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
+      ${monthIdx.map((i) => `<td class="m ${actIdx.has(i) ? 'drv-act' : sp ? '' : dm.cls}${isHard(i) && !actIdx.has(i) ? ' hard' : ''}"${isHard(i) && !actIdx.has(i) ? ' title="Hard-coded: this cell was typed or fixed by hand. 🔓 in the row tools puts the line back on its formula."' : ''}><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money(Math.round(m[i]) || 0) : ''}"></td>`).join('')}
+      ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}${hard && ann ? ' hard' : ''}"><input data-ann="${a.code}" value="${ann ? money(Math.round(ann) || 0) : ''}" title="${bv.annual ? bv.budget.year : 'Year 1'} total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
       ${refCells(a.code, 'detail', ann, !!(l && l.override))}
       ${cols.punit ? `<td>${ann ? money(ann / units) : ''}</td>` : ''}
       ${cols.note ? `<td class="note"><input data-gl="${a.code}" value="${esc(l ? l.note : '')}" placeholder="note"></td>` : ''}
@@ -1908,6 +1914,7 @@ const TAG_KEY = [
   ['%WAGES', "A payroll line as a % of that month's budgeted wages (same-month historical ratio)."],
   ['DEBT', 'Interest / principal from the Yardi amortization schedule.'],
   ['ZERO', 'Zeroed on purpose.'],
+
   ['+ SMOOTH', 'A second chip: missed-bill smoothing applied on top of the line formula (months fixed, rounded to $5).'],
   ['MAN', 'Typed by hand; formulas do not touch it until it is unlocked.'],
   ['TOTAL', 'A year total typed by hand, spread on the previous shape.'],
@@ -1919,6 +1926,7 @@ function openTagKey() {
   if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'tagkey-dlg'; document.body.appendChild(dlg); }
   dlg.innerHTML = `<h2>Chip key</h2>
     <table class="list" style="font-size:12.5px">${TAG_KEY.map(([t, d]) => `<tr><td style="white-space:nowrap"><span class="drv" style="background:var(--soft)">${esc(t)}</span></td><td>${esc(d)}</td></tr>`).join('')}</table>
+    <p style="font-size:12.5px; margin:10px 0 0"><span class="hardkey">1,234</span> — a cell in bold in this colour is <b>hard-coded</b>: typed by hand. When a whole line was fixed at once (a typed total, an import) every month of it is marked. A smoothed line is not marked: its formula still drives it.</p>
     <div class="row" style="justify-content:flex-end; margin-top:10px"><button class="btn" id="tagkey-x">Close</button></div>`;
   dlg.querySelector('#tagkey-x').addEventListener('click', () => dlg.close());
   dlg.showModal();
@@ -2923,7 +2931,7 @@ function openRowTools(b, gl, anchorBtn) {
       const res = smoothMonths(cur, { gl, round: 5 });
       const prev = line && line.driver && line.driver.method && line.driver.method !== 'manual' ? line.driver : null;
       // the formula keeps its chip; smoothing rides along as a second one
-      if (prev && prev.method !== 'smooth') return put(res.months, { ...prev, smooth: { passes: ((prev.smooth || {}).passes || 0) + res.passes, mult: 5 } });
+      if (prev && prev.method !== 'smooth') { const { hard: _typed, ...p2 } = prev; return put(res.months, { ...p2, smooth: { passes: ((prev.smooth || {}).passes || 0) + res.passes, mult: 5 } }); }
       return put(res.months, { method: 'smooth', passes: ((prev || {}).passes || 0) + res.passes, mult: 5, of: prev ? prev.of : undefined, srcName: prev ? prev.srcName : undefined });
     }
     if (act === 'undrop') { await budgetDroppedLines(b, [gl]); return; }

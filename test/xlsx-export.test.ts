@@ -206,3 +206,32 @@ describe('stored formula values (nothing blank before "Enable Editing")', () => 
     }
   });
 });
+
+describe('hard-coded numbers stand out in the workbook', () => {
+  it('a typed cell is bold in the hard-code colour; the other cells of that line and formula lines are not', async () => {
+    const a = args('tst');
+    const hand = a.lines.find((l) => !['6402', '6404', '6405', '6407'].includes(l.gl_code) && Number(l.gl_code) > 6500 && Number(l.gl_code) < 6700 && l.months.some((v) => v))!;
+    const live = a.lines.find((l) => l !== hand && Number(l.gl_code) > 6500 && Number(l.gl_code) < 6700 && l.months.every((v) => v))!;
+    hand.override = true;
+    const typed = hand.months.findIndex((v) => v), other = hand.months.findIndex((v, i) => v && i !== typed);
+    hand.driver = { ...(hand.driver as any), hard: [typed] };
+    const wb = await load(await buildReviewWorkbook(a));
+    const bud = wb.getWorksheet('Budget')!;
+    const firstMonth = (gl: string, months: number[]) => bud.getCell(rowOfCode(bud, gl), 5 + months.findIndex((v) => v));
+    const fh = firstMonth(hand.gl_code, hand.months).font!, fl = firstMonth(live.gl_code, live.months).font!;
+    expect(fh.bold).toBe(true);
+    expect(fh.color?.argb).toBe('FFC2185B');
+    expect(!!fl.bold).toBe(false);
+    // per CELL: another month of the same line is not marked
+    if (other >= 0) expect(!!bud.getCell(rowOfCode(bud, hand.gl_code), 5 + other).font?.bold).toBe(false);
+    // a hand-fixed line with no record of cells (a typed total, Smooth, an import): every month is marked
+    delete (hand.driver as any).hard;
+    const wb2 = await load(await buildReviewWorkbook(a)); const bud2 = wb2.getWorksheet('Budget')!;
+    if (other >= 0) expect(bud2.getCell(rowOfCode(bud2, hand.gl_code), 5 + other).font?.bold).toBe(true);
+    // a smoothed line is formula-driven, not hard-coded: nothing marked
+    hand.driver = { ...(hand.driver as any), smooth: { passes: 2, mult: 5 } };
+    const wb3 = await load(await buildReviewWorkbook(a)); const bud3 = wb3.getWorksheet('Budget')!;
+    expect(!!bud3.getCell(rowOfCode(bud3, hand.gl_code), 5 + typed).font?.bold).toBe(false);
+    expect(fl.color?.argb).not.toBe('FFC2185B');
+  });
+});

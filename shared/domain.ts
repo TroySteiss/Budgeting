@@ -44,7 +44,7 @@ export function applyRounding(lines: BudgetLine[]): BudgetLine[] {
 
 /* `revised` marks a formula line whose cells were hand-edited afterwards —
    the formula identity is kept (chip shows a *), never demoted to manual. */
-export type Driver = { revised?: boolean; /** calendar-month indexes (0-11) taken from the property's Year-1 plan (annual budgets, shared/annual.ts applyY1Plan) */ y1?: number[] } & (
+export type Driver = { revised?: boolean; /** month indexes (0-11) typed by hand on this line; absent on a hand-fixed line = every month (a tool rewrote the line, or it predates the record) */ hard?: number[]; /** calendar-month indexes (0-11) taken from the property's Year-1 plan (annual budgets, shared/annual.ts applyY1Plan) */ y1?: number[] } & (
   | { method: 'manual' }
   | { method: 'gpr' }
   | { method: 'ltl' }

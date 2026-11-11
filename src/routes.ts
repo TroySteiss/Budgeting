@@ -1152,12 +1152,18 @@ router.put('/budgets/:id/lines/:gl', h(async (req, res) => {
     if (existing.round && existing.round > 0) {
       existing.months = existing.months.map((v) => r2(Math.round(v / existing.round!) * existing.round!));
     }
+    const wasOverride = existing.override;
     existing.override = true;
     // hand-editing cells on a formula line REVISES the formula, it doesn't
     // erase it — keep the driver identity and flag the revision. Only lines
     // with no formula history become plain manual.
     const prev = existing.driver || ({} as any);
     existing.driver = prev.method && prev.method !== 'manual' ? { ...prev, revised: true } : { method: 'manual' };
+    // WHICH cells were typed (the grid and the workbook highlight exactly these). A line that was already
+    // fixed by hand with no record stays "unknown" (= every month) rather than pretending only this cell was.
+    // A smoothed line is still formula-driven (the formula's months, smoothed): none of its cells are typed until one is.
+    const smoothed = !!(prev as any).smooth || (prev as any).method === 'smooth';
+    if (!wasOverride || Array.isArray(prev.hard) || smoothed) (existing.driver as any).hard = [...new Set<number>([...(wasOverride && Array.isArray(prev.hard) ? prev.hard : []), ...changed])].sort((a, b) => a - b);
   }
   if (typeof override === 'boolean') existing.override = override;
   if (typeof note === 'string') existing.note = note;
