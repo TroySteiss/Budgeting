@@ -488,3 +488,11 @@ td.m.drv-drop input { color: var(--dim); }
 .edseg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-right: 6px; }
 .edseg button { border: 0; background: var(--btn-sub-bg); color: var(--ink); padding: 6px 12px; font-size: 12.5px; cursor: pointer; }
 .edseg button.on { background: var(--accent); color: #fff; font-weight: 600; }
+
+/* Region toggle (Troy 2026-11-11): ND / KC East, each region's data kept separate */
+.topbar .region-toggle { display: inline-flex; border: 1px solid #50645e; border-radius: 999px; overflow: hidden; flex-shrink: 0; }
+.topbar .region-toggle button { background: none; border: none; color: var(--head-dim); padding: 4px 12px; font-size: 12.5px; cursor: pointer; }
+.topbar .region-toggle button + button { border-left: 1px solid #50645e; }
+.topbar .region-toggle button.on { background: #f3ead8; color: #1d2421; font-weight: 700; }
+/* KC East gets a blue rule under the banner so the region in use is never in doubt */
+body.monarch[data-region="kc"] .topbar { border-bottom-color: #4a90c2; }

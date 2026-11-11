@@ -1,7 +1,7 @@
 import { rosterWagesFor, rosterCoverage, type RosterLink } from './payroll-data.js';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import multer from 'multer';
-import { query, tx } from './db.js';
+import { query, tx, inRegion, regionOfRequest } from './db.js';
 import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
@@ -23,8 +23,10 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 export const router = Router();
 
 /* async error wrapper → JSON 500 */
+/* every handler runs inside its request's region (db.ts): queries hit only that region's schema.
+   Re-entered here, not just in a middleware, because multer's stream callbacks drop the async context. */
 const h = (fn: (req: Request, res: Response) => Promise<any>) =>
-  (req: Request, res: Response, next: NextFunction) => fn(req, res).catch(next);
+  (req: Request, res: Response, next: NextFunction) => inRegion(regionOfRequest(req), () => fn(req, res)).catch(next);
 
 const logChange = (username: string, action: string, detail: any): void => {
   query('insert into change_log(username, action, detail) values($1,$2,$3)', [username, action, JSON.stringify(detail)]).catch(() => {});

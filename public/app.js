@@ -2,6 +2,7 @@
    State flows: /api/state (lists) + /api/budgets/:id (editor payload). */
 'use strict';
 
+const REGIONS_UI = { nd: 'North Dakota', kc: 'KC East' };   // keys mirror REGIONS in src/db.ts
 const S = {
   auth: null,          // {authed, username, isAdmin, appTitle}
   state: null,         // {coa, portfolios, properties, budgets, uwSnapshots, compSets, rentSnapshots}
@@ -11,6 +12,9 @@ const S = {
   upload: { kind: 'yardi_template', files: [], parsed: null, busy: false, msg: '', err: '' },
   err: '',
   theme: localStorage.getItem('bt-theme') || 'light',
+  // region (Troy 2026-11-11): North Dakota or KC East — fully separate data (its own DB schema).
+  // Held per TAB and sent on every request, so two tabs on different regions never cross-write.
+  region: REGIONS_UI[localStorage.getItem('bt-region')] ? localStorage.getItem('bt-region') : 'nd',
   hiddenCols: new Set(JSON.parse(localStorage.getItem('bt-hidecols') || '[]')),
   undo: { budgetId: null, stack: [] },   // snapshots of {lines, inputs} before each change
   showDist: localStorage.getItem('bt-dist') === '1',
@@ -134,9 +138,11 @@ async function doUndo(budgetId) {
 }
 
 /* ---------------- api ---------------- */
+/* the tab's region rides on every call (X-Region) and on every download link (?region=) */
+const rUrl = (u) => u + (u.includes('?') ? '&' : '?') + 'region=' + S.region;
 async function api(path, opts = {}) {
   const r = await fetch('/api' + path, {
-    headers: opts.body instanceof FormData ? {} : { 'Content-Type': 'application/json' },
+    headers: { 'X-Region': S.region, ...(opts.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }) },
     ...opts,
     body: opts.body instanceof FormData ? opts.body : opts.body ? JSON.stringify(opts.body) : undefined,
   });
@@ -194,11 +200,28 @@ const show12 = (arr) => {
 /* ---------------- boot ---------------- */
 async function boot() {
   applyTheme();
+  document.body.dataset.region = S.region;
   S.auth = await GET('/auth/status').catch(() => ({ authed: false }));
   if (S.auth.authed) S.state = await GET('/state');
   render();
 }
 async function refreshState() { S.state = await GET('/state'); }
+
+/* Switch the tab to another region: drop everything loaded from the old one (open budget,
+   undo stack, payroll working set, summary, upload preview) and reload its lists. */
+async function switchRegion(r) {
+  if (!REGIONS_UI[r] || r === S.region) return;
+  if (S.pendingRow && S.pendingRow.dirty && !confirm('You have an unsaved row edit. Switch region and discard it?')) return;
+  S.region = r;
+  try { localStorage.setItem('bt-region', r); } catch {}
+  document.body.dataset.region = r;
+  S.view = 'dash'; S.bv = null; S.pendingRow = null; S.sum = null; S.err = '';
+  S.undo = { budgetId: null, stack: [] };
+  S.upload = { kind: 'yardi_template', files: [], parsed: null, busy: false, msg: '', err: '' };
+  S.pay = { st: null, cycle: null, cycleId: null, region: '*', iterId: null, compare: true, loading: false, err: '', msg: '', newCycle: false };
+  S.state = await GET('/state');
+  render();
+}
 
 /* ---------------- render root ---------------- */
 function render() {
@@ -211,6 +234,9 @@ function render() {
   app.innerHTML = `
     <div class="topbar">
       <span class="brand">${esc(S.auth.appTitle || 'Budget Tool')}</span>
+      <span class="region-toggle" role="group" aria-label="Region" title="Each region's budgets, data, payroll and settings are kept fully separate">
+        ${Object.entries(REGIONS_UI).map(([k, label]) => `<button data-region="${k}" class="${S.region === k ? 'on' : ''}" aria-pressed="${S.region === k}">${esc(label)}</button>`).join('')}
+      </span>
       <nav>
         <button data-v="dash" class="${S.view === 'dash' ? 'on' : ''}">Budgets</button>
         ${S.view === 'editor' && S.bv ? `<span class="crumb">›</span><button data-v="editor" class="on">${esc(S.bv.budget.property_code)} ${S.bv.budget.year}</button>` : ''}
@@ -227,6 +253,7 @@ function render() {
   document.querySelectorAll('.topbar nav button').forEach((b) =>
     b.addEventListener('click', () => { S.view = b.dataset.v; if (S.view === 'summary') S.sum = null;   /* always reload: budgets may have changed */ render(); }));
   document.getElementById('logout').addEventListener('click', async () => { await POST('/logout'); location.reload(); });
+  document.querySelectorAll('.region-toggle button').forEach((b) => b.addEventListener('click', () => switchRegion(b.dataset.region)));
   document.getElementById('theme-toggle').addEventListener('click', () => { S.theme = S.theme === 'dark' ? 'light' : 'dark'; applyTheme(); render(); });
   const main = document.getElementById('main');
   if (S.view === 'dash') renderDash(main);
@@ -348,8 +375,8 @@ function renderDash(el) {
       <button data-x="recalc" title="Re-run every formula on the ticked budgets (all of them when none is ticked), so a changed default or formula reaches each one. Shows NOI before and after per budget first; hand-typed lines stay; each budget gets a save point.">↻ Recalculate…</button>
       <button data-x="act" title="Partial-month rule off the budget as it sits in Yardi: upload the month-end Property Comparison (Cash) + each property's budget CSV — every CSV comes back with the closed month set 1:1 to what posted">✓ Actualize from Yardi CSVs…</button>`, (menu) => {
       menu.querySelector('[data-x="recalc"]').addEventListener('click', () => { const ids = selectedIds(); openRecalcMany(ids.length ? ids.map(Number) : st.budgets.map((x) => x.id)); });
-      menu.querySelector('[data-x="pf"]').addEventListener('click', () => { const ids = selectedIds(); window.open(`/api/export/portfolio.xlsx${ids.length ? `?ids=${ids.join(',')}` : ''}`, '_blank'); });
-      menu.querySelector('[data-x="zip"]').addEventListener('click', () => { const ids = selectedIds(); const all = ids.length ? ids : st.budgets.map((b) => b.id); if (all.length) window.open(`/api/export/bundle.zip?ids=${all.join(',')}`, '_blank'); });
+      menu.querySelector('[data-x="pf"]').addEventListener('click', () => { const ids = selectedIds(); window.open(rUrl(`/api/export/portfolio.xlsx${ids.length ? `?ids=${ids.join(',')}` : ''}`), '_blank'); });
+      menu.querySelector('[data-x="zip"]').addEventListener('click', () => { const ids = selectedIds(); const all = ids.length ? ids : st.budgets.map((b) => b.id); if (all.length) window.open(rUrl(`/api/export/bundle.zip?ids=${all.join(',')}`), '_blank'); });
       menu.querySelector('[data-x="act"]').addEventListener('click', () => openActualizeCsv());
     });
   });
@@ -1030,7 +1057,7 @@ function renderEditor(el) {
 
   // exports: cutoff (zero calendar months through) lives in the menu, remembered per session
   S.exCutoff = S.exCutoff || 0;
-  const exportCsv = (yr) => { if (okToExport(S.bv)) window.open(`/api/budgets/${b.id}/export.csv?calYear=${yr}&cutoff=${S.exCutoff}`, '_blank'); };
+  const exportCsv = (yr) => { if (okToExport(S.bv)) window.open(rUrl(`/api/budgets/${b.id}/export.csv?calYear=${yr}&cutoff=${S.exCutoff}`), '_blank'); };
   const exportAll = async () => {
     if (!okToExport(S.bv)) return;
     const urls = [
@@ -1040,7 +1067,7 @@ function renderEditor(el) {
     ];
     for (const u2 of urls) {
       const a = document.createElement('a');
-      a.href = u2; a.download = '';
+      a.href = rUrl(u2); a.download = '';
       document.body.appendChild(a); a.click(); a.remove();
       await new Promise((r) => setTimeout(r, 800));
     }
@@ -1063,7 +1090,7 @@ function renderEditor(el) {
       menu.querySelector('[data-x="all"]').addEventListener('click', exportAll);
       menu.querySelector('[data-x="csv1"]').addEventListener('click', () => exportCsv(b.year));
       const c2 = menu.querySelector('[data-x="csv2"]'); if (c2) c2.addEventListener('click', () => exportCsv(b.year + 1));
-      menu.querySelector('[data-x="xlsx"]').addEventListener('click', () => window.open(`/api/budgets/${b.id}/export.xlsx`, '_blank'));
+      menu.querySelector('[data-x="xlsx"]').addEventListener('click', () => window.open(rUrl(`/api/budgets/${b.id}/export.xlsx`), '_blank'));
       menu.querySelector('[data-x="imp"]').addEventListener('click', () => document.getElementById('imp-file').click());
       menu.querySelector('[data-x="act"]').addEventListener('click', () => openActualize(b));
     });
@@ -4389,7 +4416,7 @@ function payRegionTableHtml(c, props, iter, prior, locked, tot, merged) {
     }
     body.push(payRowHtml(r));
   }
-  const xUrl = all ? `/api/payroll/cycles/${c.cycle.id}/export.xlsx` : (iter ? `/api/payroll/iterations/${iter.id}/export.xlsx` : '');
+  const xUrl = all ? rUrl(`/api/payroll/cycles/${c.cycle.id}/export.xlsx`) : (iter ? rUrl(`/api/payroll/iterations/${iter.id}/export.xlsx`) : '');
   return `<div class="card paysec">
     <div class="payhead">
       <b>${all ? 'All regions' : esc(P.region)}</b><span class="muted">${rows.length} people · each listed once, in their home region · sections match the payroll workbook · ⇄ marks a split (hover for the full allocation)</span>

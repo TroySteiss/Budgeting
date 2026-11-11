@@ -1,16 +1,18 @@
 /* First-boot seed: the Monarch chart of accounts (from seed/coa.json, generated
    off the real Yardi upload CSV + FHND budget workbook) and the known ND
-   portfolios/properties. Idempotent — inserts only what is missing. */
+   portfolios/properties, per region (each region is its own schema, see db.ts).
+   Idempotent — inserts only what is missing. */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { query } from './db.js';
+import { query, inRegion, REGION_KEYS, type Region } from './db.js';
 
 interface SeedAcct {
   code: string; name: string; kind: string; section: string; pcode: string | null;
   csv_order: number | null; display_order: number; curve: string | null;
 }
 
-const PORTFOLIOS: { name: string; kind: string; props: [string, string, number, string][] }[] = [
+type SeedPortfolio = { name: string; kind: string; props: [string, string, number, string][] };
+const ND_PORTFOLIOS: SeedPortfolio[] = [
   { name: 'Bismarck 4', kind: 'subject', props: [
     ['cwnd', 'Cottonwood Apartments', 268, 'Bismarck ND'],
     ['lhnd', 'Legacy Heights', 119, 'Bismarck ND'],
@@ -37,7 +39,24 @@ const PORTFOLIOS: { name: string; kind: string; props: [string, string, number, 
   ] },
 ];
 
+/* KC East (Troy 2026-11-11). Names and unit counts are placeholders until the
+   first rent roll / template drop or an admin edit under Settings > Properties. */
+const KC_PORTFOLIOS: SeedPortfolio[] = [
+  { name: 'KC East', kind: 'subject', props: [
+    ['agmo', 'AGMO', 0, 'KC East'],
+    ['fpmo', 'FPMO', 0, 'KC East'],
+    ['pwmo', 'PWMO', 0, 'KC East'],
+    ['trmo', 'TRMO', 0, 'KC East'],
+    ['wlmo', 'WLMO', 0, 'KC East'],
+  ] },
+];
+const PORTFOLIOS_BY_REGION: Record<Region, SeedPortfolio[]> = { nd: ND_PORTFOLIOS, kc: KC_PORTFOLIOS };
+
 export async function seedIfEmpty(): Promise<void> {
+  for (const r of REGION_KEYS) await inRegion(r, () => seedRegion(PORTFOLIOS_BY_REGION[r]));
+}
+
+async function seedRegion(PORTFOLIOS: SeedPortfolio[]): Promise<void> {
   const coaCount = (await query('select count(*)::int as n from gl_accounts')).rows[0].n;
   if (coaCount === 0) {
     const accts: SeedAcct[] = JSON.parse(readFileSync(join(process.cwd(), 'seed', 'coa.json'), 'utf8'));

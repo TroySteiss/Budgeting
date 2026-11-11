@@ -3,6 +3,9 @@
 Budgeting web app. Replaces the FHND/PHND Excel budget workbooks for new acquisitions
 (Bismarck 4: CWND LHND NRND RRND; Jamestown 2: DRND MWND); annual-budget mode is planned.
 Node + TypeScript + Express + Postgres, vanilla-JS SPA.
+Two regions (banner toggle): North Dakota (`public` schema) and KC East (AGMO PWMO WLMO TRMO FPMO,
+`kc` schema). Data is fully separate per region. Every handler must run through `h()` so it picks
+up the request's region (PROJECT_MAP.md → Regions).
 
 - Read PROJECT_MAP.md first and keep it current (KB page: `Claude KB\Tools\nd-budget-tool.md`).
   Also see HANDOFF.md and DEVILS_ADVOCATE_2026-11-05.md.

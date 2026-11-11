@@ -9,7 +9,7 @@
    iteration independently. */
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import multer from 'multer';
-import { query } from './db.js';
+import { query, inRegion, regionOfRequest } from './db.js';
 import { requireAuth, requireAdmin, isAdminUser, canSeeRmPay, normUser } from './auth.js';
 import { parseStaffingReport, parsePayrollModel, parsePayrollDetail } from './importers.js';
 import { loadBudget, buildLines, saveLines } from './routes.js';
@@ -20,8 +20,10 @@ import { buildRaiseWorkbook, parseRaiseImportDetailed, type RaiseExportRow, type
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 export const payrollRouter = Router();
 
+/* every handler runs inside its request's region (db.ts): queries hit only that region's schema.
+   Re-entered here, not just in a middleware, because multer's stream callbacks drop the async context. */
 const h = (fn: (req: Request, res: Response) => Promise<any>) =>
-  (req: Request, res: Response, next: NextFunction) => fn(req, res).catch(next);
+  (req: Request, res: Response, next: NextFunction) => inRegion(regionOfRequest(req), () => fn(req, res)).catch(next);
 
 const logChange = (username: string, action: string, detail: any): void => {
   query('insert into change_log(username, action, detail) values($1,$2,$3)', [username, action, JSON.stringify(detail)]).catch(() => {});
