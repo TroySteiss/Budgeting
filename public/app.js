@@ -58,7 +58,7 @@ function drvMetaBase(l) {
   if (l.override && (!method || method === 'manual')) return { cls: 'drv-man', tag: 'MAN', label: 'Manual override' };
   switch (method) {
     case 't3avg': return { cls: 'drv-comp', tag: 'T3', label: `T3 avg of ${l.driver.srcName || 'this GL'} × ${(((l.driver || {}).pct || 0)).toFixed(1)}% → MROUND $250` };
-    case 'wavg': return { cls: l.driver.srcType === 'seller' ? 'drv-t12' : 'drv-comp', tag: 'WAVG', label: `1-2-1 weighted distribution of ${l.driver.srcName || ''} × ${((l.driver.pct || 0)).toFixed(1)}%${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
+    case 'wavg': return { cls: l.driver.srcType === 'seller' ? 'drv-t12' : 'drv-comp', tag: 'WAVG', label: `1-2-1 weighted distribution of ${l.driver.basis === 'budget' ? 'the current-year budget for ' : ''}${l.driver.srcName || ''} × ${((l.driver.pct || 0)).toFixed(1)}%${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
     case 'gpr': return { cls: 'drv-rr', tag: 'ROLL', label: `GPR — steps: ${gprStepsSummary(((S.bv && S.bv.budget && S.bv.budget.inputs) || {}).gpr ? S.bv.budget.inputs.gpr.growthPct : null)}` };
     case 'ltl': {
       const lt = (S.bv && S.bv.budget && S.bv.budget.inputs && S.bv.budget.inputs.ltl) || {};
@@ -81,12 +81,14 @@ function drvMetaBase(l) {
       return { cls: 'drv-fee', tag: fy ? '%INC·Y1' : '%INC', label: fy ? `Management fee: ${((fy.pct || 0) * 100).toFixed(2)}% for the first 12 months of ownership (income through ${fy.through}; ${fy.months} fee month${fy.months === 1 ? '' : 's'} of this budget), then ${((l.driver.pct || 0) * 100).toFixed(2)}% — on the prior month's income` : `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.priorMonth ? 'prior-month ' : ''}income` }; }
     case 'interest': return { cls: 'drv-int', tag: 'INT', label: 'Interest (loan × rate × days)' };
     case 'sellerUtil': return { cls: 'drv-t12', tag: 'SLR', label: 'Seller statement level (× growth)' };
-    case 'sellerLine': return { cls: 'drv-t12', tag: 'SLR', label: `Seller: ${l.driver.name || ''} × ${(l.driver.pct || 0).toFixed(1)}%` };
+    case 'sellerLine': return l.driver.basis === 'budget'
+      ? { cls: 'drv-t12', tag: 'CY BUD', label: `Current-year budget by month: ${l.driver.name || ''} × ${(l.driver.pct || 0).toFixed(1)}%` }
+      : { cls: 'drv-t12', tag: 'SLR', label: `${S.bv && S.bv.annual ? 'T12 actuals' : 'Seller'}: ${l.driver.name || ''} × ${(l.driver.pct || 0).toFixed(1)}%` };
     case 'recovery': return { cls: 'drv-t12', tag: 'REC', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% of prior-month ${l.driver.src ? `← ${l.driver.src}` : 'billing'}` };
     case 'charges': return { cls: 'drv-rr', tag: 'CHG', label: 'Rent-roll charges × 12' };
     case 'zero': return { cls: 'drv-int', tag: 'ZERO', label: 'Zeroed out — this GL carries nothing' };
     case 'dropped': return { cls: 'drv-drop', tag: '<$1K', label: `NOT budgeted: the trailing-12 was $${money(l.driver.t12 || 0)}, and the template drops lines at or under $${money(l.driver.limit || 1000)}. Click to budget it at T12 ÷ 12` };
-    case 't12curve': return { cls: 'drv-t12', tag: 'T12C', label: `Seller ${l.driver.name || ''} T12 TOTAL × ${(l.driver.pct || 0).toFixed(1)}% on ${l.driver.shape === 'minot' ? 'the Minot' : l.driver.shape || 'flat'} curve${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
+    case 't12curve': return { cls: 'drv-t12', tag: 'T12C', label: `${l.driver.basis === 'budget' ? 'Current-year budget' : S.bv && S.bv.annual ? 'Own' : 'Seller'} ${l.driver.name || ''} ${l.driver.basis === 'budget' ? '' : 'T12 '}TOTAL × ${(l.driver.pct || 0).toFixed(1)}% on ${l.driver.shape === 'minot' ? 'the Minot' : l.driver.shape || 'flat'} curve${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
     case 'linkLine': return { cls: 'drv-fee', tag: 'LINK', label: `= ${l.driver.src || ''} ${l.driver.srcName || ''} × ${l.driver.weight ?? 1} — follows it live on every regeneration` };
     case 'yardiCsv': return { cls: 'drv-man', tag: 'YARDI', label: `Adopted from the Yardi budget CSV${l.driver.file ? ` (${l.driver.file})` : ''} — the month as it sits in Yardi` };
     case 'imported': return { cls: 'drv-man', tag: 'IMP', label: `Imported from draft workbook${l.driver.file ? ` (${l.driver.file})` : ''}` };
@@ -2718,6 +2720,26 @@ function fcFindSeller(bv, name) {
       || rows.find((r) => r.name.trim().toLowerCase().startsWith(want))   // stored names are truncated
       || null;
 }
+/* The GL's own CURRENT-YEAR BUDGET by month as a source row (Troy 2026-11-11: "The budget template has T12
+   data in it... Same with budget numbers"). It comes off the Yardi template with the T12; nothing to pick. */
+function fcBudgetRow(bv, gl) {
+  const m = bv.hist && bv.hist.budget && bv.hist.budget.cal && bv.hist.budget.cal[gl];
+  if (!m || !m.some((v) => v)) return null;
+  const start = ((bv.budget || {}).inputs || {}).startMonth || 1;
+  const a = S.state.coa.find((x) => x.code === gl) || {};
+  return { gl, basis: 'budget', name: `${gl} ${a.name || ''}`.trim(), months: m.slice(), monthCal: m.map((_, i) => ((start - 1 + i) % 12) + 1), pcode: a.pcode || null, total: m.reduce((x, y) => x + (y || 0), 0) };
+}
+/* Annual budgets: a GL-based option reads the row's OWN GL. Its trailing-12 first; a GL with no T12 offers its
+   own current-year budget (one yes/no, never a list). Returns the row, false = declined (do nothing), or null =
+   nothing of its own on the template / Shift-click / acquisition budget -> the caller opens the picker. */
+function fcOwnSource(bv, gl, rows) {
+  if (!bv.annual || S.pickOther) return null;
+  const own = rows.find((r) => String(r.gl) === String(gl));
+  if (own) return own;
+  const bud = fcBudgetRow(bv, gl);
+  if (!bud) return null;
+  return confirm(`${gl} has no trailing-12 actuals on the template.\n\nUse its current-year budget (${money(bud.total)}) as the source instead?`) ? bud : false;
+}
 function fcSellerCal(r) {
   const cal = Array(12).fill(0);
   r.months.forEach((v, i) => { cal[((r.monthCal && r.monthCal[i]) || i + 1) - 1] += v || 0; });
@@ -2728,7 +2750,7 @@ function fcSellerLine(bv, inp, row, pct) {
   const cal = fcSellerCal(row);
   return {
     months: Array.from({ length: 12 }, (_, i) => Math.round(cal[(start - 1 + i) % 12] * (1 + pct / 100) * 100) / 100),
-    driver: { method: 'sellerLine', name: row.name.slice(0, 40), pct },
+    driver: { method: 'sellerLine', name: row.name.slice(0, 40), pct, ...(row.basis ? { basis: row.basis } : {}) },
   };
 }
 function fcMinot(bv, inp, gl, pcode) {
@@ -2797,7 +2819,7 @@ function fcT12Curve(bv, inp, row, pct, shapeKey, gl, mult, customWeights) {
       months[bi] = Math.round((months[bi] + drift) * 100) / 100;
     }
   }
-  return { months, driver: { method: 't12curve', name: row.name.slice(0, 40), pct, shape: shapeKey, mult: mult || 0, weights: shapeKey === 'custom' ? customWeights : undefined } };
+  return { months, driver: { method: 't12curve', name: row.name.slice(0, 40), pct, shape: shapeKey, mult: mult || 0, weights: shapeKey === 'custom' ? customWeights : undefined, ...(row.basis ? { basis: row.basis } : {}) } };
 }
 
 function fcWavg(bv, inp, row, pct, mult) {
@@ -2808,7 +2830,7 @@ function fcWavg(bv, inp, row, pct, mult) {
     const v = sm[(start - 1 + i) % 12] * row.scale * (1 + pct / 100);
     return mult ? Math.round(v / mult) * mult : Math.round(v * 100) / 100;
   });
-  return { months, driver: { method: 'wavg', pct, mult: mult || 0, srcType: row.srcType, srcName: row.name.slice(0, 30) } };
+  return { months, driver: { method: 'wavg', pct, mult: mult || 0, srcType: row.srcType, srcName: row.name.slice(0, 30), ...(row.basis ? { basis: row.basis } : {}) } };
 }
 
 /* ---------------- row quick tools ---------------- */
@@ -2839,7 +2861,8 @@ function openRowTools(b, gl, anchorBtn) {
     ${S.bv.annual ? `<button data-act="shape" title="Pick how this GL's own trailing-12 history becomes the budget: same month × factor (template), 1-2-1 weighted distribution, flat T12/12, last actual month flat, average of active months, or the T12 total on the GL's seasonal curve">${dot('drv-base')}Own T12 → shape × factor…</button>` : ''}
     ${S.bv.annual && acc.pcode && ['1', 'loss', '2', '3'].includes(acc.pcode) && gl !== '4994' ? `<button data-act="pctgpr" title="This line as a % of budget GPR">${dot('drv-base')}% of GPR…</button>` : ''}
     ${S.bv.annual && S.bv.template && S.bv.template.suggestions && S.bv.template.suggestions[gl] && S.bv.template.suggestions[gl].some((v) => v) ? `<button data-act="suggest" title="${esc((S.bv.template.suggestionNotes[gl] || []).join('; '))}">${dot('drv-corp')}Corporate suggestion (${money(S.bv.template.suggestions[gl].reduce((a, v) => a + v, 0))}/yr)…</button>` : ''}
-    ${(S.bv.sellerT12 || []).length ? `<button data-act="seller" title="${S.bv.annual ? 'This GL\'s own trailing-12 months × growth. No GL to pick: the row is the GL. Shift-click to take another statement line instead (also opens when this GL has no history).' : 'Match this GL to a seller T12 line and take its monthly actuals × growth'}">${dot('drv-t12')}${S.bv.annual ? 'Own T12 actuals × growth (this GL)' : 'Seller actuals — match a seller line…'}</button>` : ''}
+    ${(S.bv.sellerT12 || []).length ? `<button data-act="seller" title="${S.bv.annual ? 'This GL\'s own trailing-12 months × growth. No GL to pick: the row is the GL. Shift-click to take another statement line instead. A GL with no T12 offers its own current-year budget.' : 'Match this GL to a seller T12 line and take its monthly actuals × growth'}">${dot('drv-t12')}${S.bv.annual ? 'Own T12 actuals × growth (this GL)' : 'Seller actuals — match a seller line…'}</button>` : ''}
+    ${S.bv.annual && fcBudgetRow(S.bv, gl) ? `<button data-act="ownBudget" title="This GL's own current-year budget, month by month, × growth. It is read from the Yardi template along with the T12: no GL to pick.">${dot('drv-t12')}CY budget × growth (this GL · ${money(fcBudgetRow(S.bv, gl).total)})</button>` : ''}
     ${(S.bv.sellerT12 || []).length ? `<button data-act="t12curve" title="${S.bv.annual ? 'Take a statement line\'s T12 total × growth and spread it on a clean seasonal curve' : 'For non-accrual seller billing (credits/gaps/spikes): the ANNUAL total is still right even when the months are garbage. Takes the seller line\'s T12 total × growth and spreads it on a clean seasonal curve.'}">${dot('drv-t12')}${S.bv.annual ? 'T12 TOTAL → seasonal curve… (this GL)' : 'Seller T12 TOTAL → seasonal curve… (bad bills)'}</button>` : ''}
     <button data-act="link" title="Set this GL equal to another budget line × a weight (e.g. sewer = water × 0.8). LIVE: re-follows the source on every regeneration.">${dot('drv-fee')}= another line × weight… (moves in conjunction)</button>
     ${line && line.months.some((v) => v) ? `<button data-act="smooth" title="One click for missed bills: pulls catch-up spikes into the surrounding low months and soaks up credit months, repeating until the series looks like real monthly billing. No negative months; every month rounded to $5, so the total can move by a few dollars. The line keeps its formula chip and gains a SMOOTH chip.">${dot('drv-t12')}Smooth missed bills — spikes into surrounding months</button>` : ''}
@@ -2911,6 +2934,14 @@ function openRowTools(b, gl, anchorBtn) {
       openCompT3Match(b, gl, acc, anchorBtn, put, inp);
       return;
     }
+    if (act === 'ownBudget') {
+      const r = fcBudgetRow(S.bv, gl);
+      if (!r) return;
+      const g = parseFloat(String(prompt(`Growth % on the ${money(r.total)} current-year budget for ${gl} ${acc.name || ''} (0 = the budget as-is):`, '3') || '').replace(/,/g, ''));
+      if (!Number.isFinite(g)) return;
+      const res = fcSellerLine(S.bv, inp, r, g);
+      return put(res.months, res.driver);
+    }
     if (act === 'seller') {
       openSellerMatch(b, gl, acc, anchorBtn, put);
       return;
@@ -2980,14 +3011,15 @@ function openSellerMatch(b, gl, acc, anchorBtn, put) {
     return am - zm || Math.abs(z.total) - Math.abs(a.total);
   });
   const applyRow = async (r) => {
-    const g = parseFloat(String(prompt(`Growth % on "${r.name}" (0 = actuals as-is):`, '3') || '').replace(/,/g, ''));
+    const g = parseFloat(String(prompt(`Growth % on "${r.name}"${r.basis === 'budget' ? ' current-year budget' : ''} (0 = ${r.basis === 'budget' ? 'the budget' : 'actuals'} as-is):`, '3') || '').replace(/,/g, ''));
     if (!Number.isFinite(g)) return;
     const res = fcSellerLine(S.bv, S.bv.budget.inputs || {}, r, g);
     await put(res.months, res.driver);
   };
   // Troy 2026-11-11: "I still am having to repick the GL when I pick an option that is GL based". The row
   // already IS the GL: its own statement line is the source, no picker. Shift-click the option to pick another line.
-  const ownRow = S.bv.annual && !S.pickOther ? rows.find(isOwn) : null;
+  const ownRow = fcOwnSource(S.bv, gl, rows);
+  if (ownRow === false) return;
   if (ownRow) { applyRow(ownRow); return; }
   const menu = document.createElement('div');
   menu.className = 'rowmenu';
@@ -3048,7 +3080,7 @@ function openT12CurveMatch(b, gl, acc, anchorBtn, put, inp) {
       shapes.push([k, `${k} curve${k === own ? ' — this GL’s default' : ''}`]);
     }
     menu.innerHTML = `
-      <div class="rm-head">Spread ${esc(row.name.slice(0, 30))} T12 total (${money(total)}) on:</div>
+      <div class="rm-head">Spread ${esc(row.name.slice(0, 30))} ${row.basis === 'budget' ? 'current-year budget' : 'T12'} total (${money(total)}) on:</div>
       ${shapes.map(([k, lbl]) => `<button data-sh="${k}">${lbl}</button>`).join('')}
       <button data-sh="smoothed" title="No shape to pick: the seller's own months, missed-bill smoothed (spikes into surrounding months), scaled to total × growth">smoothed seller months — spikes spread out, total kept</button>`;
     menu.querySelectorAll('button[data-sh]').forEach((btn) => btn.addEventListener('click', async () => {
@@ -3069,7 +3101,7 @@ function openT12CurveMatch(b, gl, acc, anchorBtn, put, inp) {
   };
 
   // the row's own statement line is the source: straight to the curve choice (Shift-click the option to pick another line)
-  { const ownRow = S.bv.annual && !S.pickOther ? rows.find(isOwn) : null; if (ownRow) { pickShape(ownRow); return; } }
+  { const ownRow = fcOwnSource(S.bv, gl, rows); if (ownRow === false) { menu.remove(); return; } if (ownRow) { pickShape(ownRow); return; } }
   menu.innerHTML = `
     <div class="rm-head">T12 total source for ${gl} ${esc(acc.name || '')} — the TOTAL is used, so ⚠ bad-bill lines are fine here</div>
     <div style="padding:4px 6px"><input id="tc-filter" placeholder="filter…" style="width:100%; border:1px solid var(--line); border-radius:6px; padding:4px 7px"></div>
@@ -3260,7 +3292,13 @@ function openWavgMatch(b, gl, acc, anchorBtn, put, inp) {
   // has the GL". When this GL has its own history that IS the source; the picker only opens
   // for a GL with no history of its own (it then has to borrow another line's shape).
   // (annual budgets only: the row's own statement line. An acquisition budget still picks between the seller's lines and the Minot comps.)
-  const ownRow = S.bv.annual && !S.pickOther ? rows.find((r) => r.own && r.srcType === 'seller') : null;
+  let ownRow = S.bv.annual && !S.pickOther ? rows.find((r) => r.own && r.srcType === 'seller') : null;
+  if (!ownRow && S.bv.annual && !S.pickOther) {
+    // no T12 for this GL: its own current-year budget (also on the template), after a yes
+    const bud = fcOwnSource(S.bv, gl, []);
+    if (bud === false) return;
+    if (bud) ownRow = { srcType: 'seller', basis: 'budget', name: bud.name, pcode: bud.pcode, cal: fcSellerCal(bud), scale: 1, total: bud.total, own: true };
+  }
   if (ownRow) { applyWavg(ownRow); return; }
   const menu = document.createElement('div');
   menu.className = 'rowmenu';
@@ -3637,11 +3675,11 @@ function openCopyFormulas(b) {
         res = fcT3avg(S.bv, tinp, d.src || l.gl_code, d.pct || 0);
         if (!res) why = 'no Minot comp shape for the source GL on this budget';
       } else if (d.method === 'sellerLine') {
-        const row = fcFindSeller(S.bv, d.name);
+        const row = d.basis === 'budget' ? fcBudgetRow(S.bv, l.gl_code) : fcFindSeller(S.bv, d.name);
         if (row) res = fcSellerLine(S.bv, tinp, row, d.pct || 0);
-        else why = `no seller line named "${d.name || '?'}" on this budget's T12`;
+        else why = d.basis === 'budget' ? 'no current-year budget for this GL on this budget' : `no seller line named "${d.name || '?'}" on this budget's T12`;
       } else if (d.method === 't12curve') {
-        const row = fcFindSeller(S.bv, d.name);
+        const row = d.basis === 'budget' ? fcBudgetRow(S.bv, l.gl_code) : fcFindSeller(S.bv, d.name);
         if (row) res = fcT12Curve(S.bv, tinp, row, d.pct || 0, d.shape, l.gl_code, d.mult || 0, d.weights || null);
         else why = `no seller line named "${d.name || '?'}" on this budget's T12`;
       } else if (d.method === 'linkLine') {
@@ -3652,7 +3690,11 @@ function openCopyFormulas(b) {
       } else if (d.method === 'wavg') {
         const rows = fcWavgRows(S.bv, tinp, l.gl_code);
         let row = null;
-        if (d.srcType === 'seller') {
+        if (d.basis === 'budget') {
+          const bud = fcBudgetRow(S.bv, l.gl_code);
+          if (bud) row = { srcType: 'seller', basis: 'budget', name: bud.name, pcode: bud.pcode, cal: fcSellerCal(bud), scale: 1, total: bud.total, own: true };
+          else why = 'no current-year budget for this GL on this budget';
+        } else if (d.srcType === 'seller') {
           const want = String(d.srcName || '').trim().toLowerCase();
           row = rows.find((r) => r.srcType === 'seller' && r.name.trim().toLowerCase() === want)
              || rows.find((r) => r.srcType === 'seller' && r.name.trim().toLowerCase().startsWith(want));

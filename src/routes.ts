@@ -643,12 +643,10 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
       }
     }
     // the row tools (match a line, WAVG, T12-on-curve) take the property's OWN actuals as the source
-    if (stmtActual?.rows?.length) {
-      sellerRows = stmtActual.rows.map((r) => ({
-        gl: r.gl, name: `${r.gl} ${(r.name || coaMap.get(r.gl)?.name || '').trim()}`, months: r.months,
-        monthCal: stmtActual!.monthCal || [], pcode: coaMap.get(r.gl)?.pcode || null, total: r.total || 0,
-      }));
-    }
+    // Troy 2026-11-11: "The budget template has T12 data in it". The source is the SAME trailing-12 the grid's
+    // T12 column shows (composed across the statements on file), by GL - not only the linked statement's rows,
+    // so every GL with T12 on the template is its own source and nothing has to be picked.
+    if (stmtActual?.rows?.length || actualCal) sellerRows = ownT12Rows(stmtActual, actualCal, (gl) => coaMap.get(gl) || null);
   }
   return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, burdenSrc,
            annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs };
@@ -969,6 +967,20 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
 }
 
 /** The property's trailing-12 window across all of its actual statements, the linked one first. */
+/** Annual row-tool sources: one row per GL of the property's own trailing-12. Months are the composed T12
+    (calendar Jan-Dec) where it has the GL, else the linked statement's own row. */
+export function ownT12Rows(stmt: StmtData | null, cal: Record<string, Months> | null, acct: (gl: string) => { name?: string; pcode?: string | null } | null) {
+  const out: any[] = [], seen = new Set<string>();
+  const mk = (gl: string, nm: string, months: number[], monthCal: number[], total: number) => ({ gl, name: `${gl} ${(nm || acct(gl)?.name || '').trim()}`, months, monthCal, pcode: acct(gl)?.pcode || null, total });
+  const calRow = (gl: string, nm: string) => mk(gl, nm, cal![gl].map((v) => v || 0), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], Math.round(cal![gl].reduce((a, v) => a + (v || 0), 0) * 100) / 100);
+  for (const r of (stmt?.rows || []) as any[]) {
+    const gl = String(r.gl); if (seen.has(gl)) continue; seen.add(gl);
+    out.push(cal && cal[gl] ? calRow(gl, r.name || '') : mk(gl, r.name || '', r.months, stmt!.monthCal || [], r.total || 0));
+  }
+  for (const gl of Object.keys(cal || {})) if (!seen.has(gl)) { seen.add(gl); out.push(calRow(gl, '')); }
+  return out;
+}
+
 async function composeT12(propertyCode: string, preferredId: number | null, preferred: StmtData, excludeStartup?: number, back = 0) {
   const others = (await query(`select id, data from stmt_snapshots where property_code=$1 and kind='actual' and id <> coalesce($2, -1) order by created_at desc`, [propertyCode, preferredId])).rows;
   return trailing12([preferred, ...others.map((r: any) => r.data as StmtData)], { ...(excludeStartup != null ? { excludeStartup: Number(excludeStartup) } : {}), back });

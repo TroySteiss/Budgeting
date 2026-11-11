@@ -108,11 +108,11 @@ function driverLabelBase(d: any): string {
     case 'interest': return 'loan interest';
     case 'sellerUtil': return 'seller statement level';
     case 'recovery': return `${(d.pct * 100).toFixed(1)}% recovery of prior-month billing`;
-    case 'sellerLine': return `seller: ${d.name || ''} × ${(d.pct || 0).toFixed(1)}%`;
+    case 'sellerLine': return `${d.basis === 'budget' ? 'CY budget' : 'seller'}: ${d.name || ''} × ${(d.pct || 0).toFixed(1)}%`;
     case 'charges': return 'rent-roll charges × 12';
     case 't3avg': return `T3 avg of ${d.srcName || 'comp'} × ${(d.pct || 0).toFixed(1)}% (MROUND 250)`;
-    case 'wavg': return `1-2-1 wtd avg of ${d.srcName || 'source'} × ${(d.pct || 0).toFixed(1)}%`;
-    case 't12curve': return `seller ${d.name || ''} T12 total × ${(d.pct || 0).toFixed(1)}% on ${d.shape || 'flat'} curve`;
+    case 'wavg': return `1-2-1 wtd avg of ${d.basis === 'budget' ? 'CY budget ' : ''}${d.srcName || 'source'} × ${(d.pct || 0).toFixed(1)}%`;
+    case 't12curve': return `${d.basis === 'budget' ? 'CY budget' : 'seller'} ${d.name || ''} ${d.basis === 'budget' ? '' : 'T12 '}total × ${(d.pct || 0).toFixed(1)}% on ${d.shape || 'flat'} curve`;
     case 'smooth': return `missed-bill smoothing ×${d.passes || 0}`;
     case 'linkLine': return `= ${d.src || ''} × ${d.weight ?? 1}`;
     case 'setTotal': return `total set to ${Math.round(d.total || 0).toLocaleString()}`;

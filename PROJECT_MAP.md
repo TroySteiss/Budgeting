@@ -917,6 +917,14 @@ templates". (Clicking into a saved set to edit its items directly is NOT built y
   of its own, or on Shift-click (`S.pickOther`, set by the row-tool dispatcher) to borrow another
   line. Acquisition budgets still pick: their source rows are the SELLER's chart, where the same
   code is not reliably the same account; a same-code row is listed first.
+- **The template is the source** (Troy 2026-11-11: "The budget template has T12 data in it... Same
+  with budget numbers"): annual `sellerRows` = `ownT12Rows(stmtActual, actualCal)` - one row per GL
+  of the COMPOSED trailing-12 (the grid's T12 column), not only the linked statement's rows, so
+  every GL with T12 is its own source. A GL with no T12 offers its own current-year budget with one
+  yes/no (`fcOwnSource` -> `fcBudgetRow`, from `hist.budget.cal`); the picker is left for a GL with
+  neither, and Shift-click. Row menu: **"CY budget × growth (this GL)"** (`ownBudget`). Budget-based
+  drivers carry `basis: 'budget'` (`sellerLine` chip CY BUD, `t12curve`, `wavg`); the formula
+  copier replays them on the TARGET line's own current-year budget.
 - **Recalculate many** (dashboard Export menu -> "Recalculate..."; `openRecalcMany`, `POST
   /budgets-recalc { ids, dryRun }`): preview of lines that move and NOI before / after per budget,
   then save with a save point "Before recalculating all". This is how a changed default reaches
