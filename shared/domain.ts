@@ -199,6 +199,9 @@ export interface BudgetInputs {
     glShape?: Record<string, BaselineShape>;
     /** per-GL MROUND override */
     glMround?: Record<string, number>;
+    /** per-GL "fit to T12" (0..1) for a line on a curve (turnover curve / seasonal curve): the share of the
+        monthly shape taken from the GL's OWN trailing-12 months instead of the curve. Total unchanged. */
+    glFit?: Record<string, number>;
     /** increase % typed on a SECTION header (chart `section`: admin, utilities, in_house_maint…) — every
         history-based line of the subsection takes it unless the row has its own % or is hand-typed */
     secGrowth?: Record<string, number>;

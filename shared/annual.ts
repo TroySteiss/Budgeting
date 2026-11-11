@@ -497,8 +497,19 @@ export const DEFAULT_BASELINE: NonNullable<BudgetInputs['baseline']> = { source:
 
 /** A calendar series → the budget months on a shape, × (1+pct) (or a
     per-month pct array), rotated into budget order, MROUNDed when asked. */
-export function annualBaseline(cal: Months, opts: { pct?: number; pcts?: Months | null; shape: BaselineShape; startMonth?: number; lastMonth?: number; curve?: Months | null; mult?: number; turns?: Months | null }): Months {
+export function annualBaseline(cal: Months, opts: { pct?: number; pcts?: Months | null; shape: BaselineShape; startMonth?: number; lastMonth?: number; curve?: Months | null; mult?: number; turns?: Months | null; fit?: number }): Months {
   const g = (i: number) => 1 + (opts.pcts ? (opts.pcts[i] || 0) : (opts.pct || 0));
+  // FIT TO T12 (Troy 2026-11-11: "apply a turnover curve, and then fit it closer to T12 historical expenses"):
+  // the curve's weights are blended with the GL's own trailing-12 months, `fit` (0..1) being the share taken
+  // from history. 0 = the pure curve, 1 = the T12 months themselves. Credit months count as zero. Total unchanged.
+  const fitted = (w: number[]): Months => {
+    const f = Math.min(1, Math.max(0, opts.fit || 0));
+    const sg = cal.reduce((a, b) => a + b, 0) >= 0 ? 1 : -1;
+    const own = cal.map((v) => (v * sg > 0 ? v * sg : 0));
+    const os = own.reduce((a, b) => a + b, 0), ws = w.reduce((a, b) => a + b, 0);
+    if (!f || !os || !ws) return w as Months;
+    return w.map((v, i) => ((1 - f) * v) / ws + (f * own[i]) / os) as Months;
+  };
   const start = opts.startMonth || 1;
   const last = (opts.lastMonth || 10) - 1;
   let m: Months;
@@ -507,14 +518,14 @@ export function annualBaseline(cal: Months, opts: { pct?: number; pcts?: Months 
     case 'flat': { const tot = cal.reduce((a, b) => a + b, 0); m = cal.map((_, c) => (tot / 12) * g(c)) as Months; break; }
     case 'curve': {
       const tot = r2(cal.reduce((a, b) => a + b, 0) * (1 + (opts.pct || 0)));
-      m = spreadMonthly(tot, opts.curve && opts.curve.some((v) => v > 0) ? opts.curve : CURVES.flat);
+      m = spreadMonthly(tot, fitted(opts.curve && opts.curve.some((v) => v > 0) ? opts.curve : CURVES.flat));
       break;
     }
     case 'turns': {
       // T12 total × factor, spread by lease expirations lagged one month (calendar order);
       // with no expirations on file the line falls back to flat
       const tot = r2(cal.reduce((a, b) => a + b, 0) * (1 + (opts.pct || 0)));
-      const w = opts.turns && opts.turns.some((v) => v > 0) ? opts.turns : CURVES.flat;
+      const w = fitted(opts.turns && opts.turns.some((v) => v > 0) ? opts.turns : CURVES.flat);
       const ws = w.reduce((a, b) => a + b, 0);
       m = w.map((v) => (ws ? (tot * v) / ws : tot / 12)) as Months;
       break;
@@ -601,6 +612,8 @@ export interface AnnualRule {
   /** 'custom' carries its shape in `shape` (turns, avgnz, curve — saved formula sets); 'zero' = this GL is zeroed on purpose */
   method: 'same' | 'wavg' | 'flatT12' | 'last' | 'engine' | 'corpRate' | 'suggested' | 'debt' | 'payroll' | 'fixedAnnual' | 'custom' | 'zero';
   shape?: BaselineShape; mround?: number; factor?: number; noThreshold?: boolean; name?: string;
+  /** fit to T12 (0..1) for a curve shape: share of the monthly shape taken from the GL's own trailing-12 months */
+  fit?: number;
 }
 const RULE_SHAPE: Partial<Record<AnnualRule['method'], BaselineShape>> = { same: 'actual', wavg: 'wavg', flatT12: 'flat', last: 'last', fixedAnnual: 'flat' };
 export const ruleShapeOf = (r: AnnualRule | null | undefined): BaselineShape | undefined => (r ? (r.shape ?? RULE_SHAPE[r.method]) : undefined);
@@ -645,6 +658,7 @@ export function formulaSetFromBudget(lines: BudgetLine[], inputs: BudgetInputs):
     const r: AnnualRule = method ? { method } : { method: 'custom', shape: sh };
     if (Number.isFinite(d.pct)) r.factor = Math.round(d.pct * 1e6) / 1e6;
     if (d.mult) r.mround = d.mult;
+    if (d.fit > 0) r.fit = d.fit;
     // a flat line the user chose on the row is budgeted whatever its size; otherwise the
     // template's $1,000 rule still applies on the property the set is given to
     if (method === 'flatT12' && bl.glShape?.[l.gl_code]) r.noThreshold = true;
@@ -672,7 +686,7 @@ export function applyFormulaSet(inputs: BudgetInputs, set: FormulaSet, from: { i
     ...inputs,
     rules: { ...(set.rules || {}) },
     rulesFrom: { id: from.id, name: from.name, at: new Date().toISOString() },
-    baseline: { ...DEFAULT_BASELINE, ...(inputs.baseline || {}), ...clean(st.baseline), glShape: {}, glGrowth: {}, glMround: {}, secGrowth: {} } as any,
+    baseline: { ...DEFAULT_BASELINE, ...(inputs.baseline || {}), ...clean(st.baseline), glShape: {}, glGrowth: {}, glMround: {}, glFit: {}, secGrowth: {} } as any,
     ltl: { ...(inputs.ltl || ({} as any)), ...clean(st.ltl) },
     ...(st.vacancyExpWeight != null ? { vacancyExpWeight: st.vacancyExpWeight } : {}),
     ...(st.burdenBasis ? { burdenBasis: st.burdenBasis } : {}),
@@ -739,7 +753,7 @@ export function effectiveRules(inputs: BudgetInputs, fallback: Record<string, An
   for (const [gl, r] of Object.entries(defaults)) {
     const prev = base[gl];
     if (own.has(gl) || !ruleShapeOf(r) || isEngineRule(prev)) continue;
-    out[gl] = { method: r.method, ...(r.shape ? { shape: r.shape } : {}), ...(prev && Number.isFinite(prev.factor) ? { factor: prev.factor } : {}), ...(prev?.mround ? { mround: prev.mround } : {}) };
+    out[gl] = { method: r.method, ...(r.shape ? { shape: r.shape } : {}), ...(prev && Number.isFinite(prev.factor) ? { factor: prev.factor } : {}), ...(prev?.mround ? { mround: prev.mround } : {}), ...(r.fit ? { fit: r.fit } : {}) };
   }
   return out;
 }
@@ -751,7 +765,7 @@ export function copyFormulas(
   // a budget from before formula sets runs on the fallback table: keep it for every other GL
   const rules: Record<string, AnnualRule> = { ...((target.rules as Record<string, AnnualRule> | undefined) ?? opts.fallbackRules ?? {}) };
   const bl = { ...DEFAULT_BASELINE, ...(target.baseline || {}) } as any;
-  const glShape = { ...(bl.glShape || {}) }, glMround = { ...(bl.glMround || {}) }, glGrowth = { ...(bl.glGrowth || {}) }, secGrowth = { ...(bl.secGrowth || {}) };
+  const glShape = { ...(bl.glShape || {}) }, glMround = { ...(bl.glMround || {}) }, glGrowth = { ...(bl.glGrowth || {}) }, secGrowth = { ...(bl.secGrowth || {}) }, glFit = { ...(bl.glFit || {}) };
   const changed: string[] = []; const fillSet = new Set(opts.fill || []);
   for (const gl of gls) {
     const from = src.rules[gl]; if (!from) continue;
@@ -760,14 +774,14 @@ export function copyFormulas(
     if (fillSet.has(gl) && prev && ENGINE_RULE.has(prev.method)) continue;
     const next: AnnualRule = { ...from };
     if (!opts.pct) { delete next.factor; if (prev && Number.isFinite(prev.factor)) next.factor = prev.factor; }
-    const had = glShape[gl] != null || glMround[gl] != null || (opts.pct && glGrowth[gl] != null);
+    const had = glShape[gl] != null || glMround[gl] != null || glFit[gl] != null || (opts.pct && glGrowth[gl] != null);
     if (had || JSON.stringify(prev || null) !== JSON.stringify(next)) changed.push(gl);
-    rules[gl] = next; delete glShape[gl]; delete glMround[gl]; if (opts.pct) delete glGrowth[gl];
+    rules[gl] = next; delete glShape[gl]; delete glMround[gl]; delete glFit[gl]; if (opts.pct) delete glGrowth[gl];
   }
   if (opts.pct) for (const s of sections) { const v = src.secGrowth?.[s]; if (v != null) secGrowth[s] = v; else delete secGrowth[s]; }
   // these GLs now carry a formula given to this budget on purpose: the shared defaults stay off them
   const rulesOwn = [...new Set([...(target.rulesOwn || []), ...gls.filter((gl) => src.rules[gl] && rules[gl] && JSON.stringify(rules[gl]).length && !(fillSet.has(gl) && isEngineRule(rules[gl])))])].sort();
-  return { inputs: { ...target, rules, rulesOwn, baseline: { ...bl, glShape, glMround, glGrowth, secGrowth } } as BudgetInputs, changed };
+  return { inputs: { ...target, rules, rulesOwn, baseline: { ...bl, glShape, glMround, glGrowth, glFit, secGrowth } } as BudgetInputs, changed };
 }
 
 export interface AnnualSources {
@@ -899,7 +913,8 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       return false;
     }
     const mult = bl.glMround?.[a.code] ?? (bl.mround || rule?.mround || 0);
-    let months = annualBaseline(cal, { pct, pcts, shape: sh, startMonth, lastMonth, curve: CURVES[a.curve || 'flat'], mult, turns: turnCurve });
+    const fit = sh === 'turns' || sh === 'curve' ? Math.min(1, Math.max(0, bl.glFit?.[a.code] ?? rule?.fit ?? 0)) : 0;
+    let months = annualBaseline(cal, { pct, pcts, shape: sh, startMonth, lastMonth, curve: CURVES[a.curve || 'flat'], mult, turns: turnCurve, fit });
     if (rule?.method === 'wavg' && sh === 'wavg' && !bl.glShape?.[a.code] && startMonth === 1) {
       // RMC's Excel weighted average can't wrap the year: January and December
       // fall back to the plain same-month × factor, MROUND $10 (the GRKS cells)
@@ -924,7 +939,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       const lastV = cal[lastMonth - 1] || 0;
       if (avg && Math.abs(lastV - avg) > LAST_DEV_WARN * Math.abs(avg)) lastDev = Math.round((lastV / avg - 1) * 1000) / 1000;
     }
-    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(lastDev != null ? { lastDev } : {}), ...(drift ? { drift } : {}), ...(noNeg.folded ? { folded: noNeg.folded } : {}) } as any);
+    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(fit ? { fit } : {}), ...(lastDev != null ? { lastDev } : {}), ...(drift ? { drift } : {}), ...(noNeg.folded ? { folded: noNeg.folded } : {}) } as any);
     return true;
   };
 

@@ -1361,3 +1361,24 @@ describe('default formulas (shared table)', () => {
     expect(builtinShape('6905')).toBe('turns');
   });
 });
+
+import { annualBaseline as abFit } from '../shared/annual.js';
+describe('fit a curve to T12', () => {
+  const cal = [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 1300] as any;   // T12 = 2,400, December heavy
+  const turns = [0, 0, 0, 0, 0, 12, 12, 0, 0, 0, 0, 0] as any;                          // all turns in Jun / Jul
+  const tot = (m: number[]) => Math.round(m.reduce((a, v) => a + v, 0));
+  it('0 = the pure curve, 100 = the T12 months, 50 = half way; the total never moves', () => {
+    const f0 = abFit(cal, { shape: 'turns', turns, fit: 0 });
+    const f50 = abFit(cal, { shape: 'turns', turns, fit: 0.5 });
+    const f100 = abFit(cal, { shape: 'turns', turns, fit: 1 });
+    expect(f0).toEqual(abFit(cal, { shape: 'turns', turns }));
+    expect(f0[5]).toBe(1200); expect(f0[11]).toBe(0);
+    expect(f100).toEqual(cal);
+    expect(f50[5]).toBe(650); expect(f50[11]).toBe(650); expect(f50[0]).toBe(50);
+    for (const m of [f0, f50, f100]) expect(tot(m)).toBe(2400);
+  });
+  it('a credit month in the history counts as zero, never a negative budget month', () => {
+    const m = abFit([500, -200, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500] as any, { shape: 'turns', turns, fit: 1 });
+    expect(m[1]).toBe(0); expect(m.every((v) => v >= 0)).toBe(true); expect(tot(m)).toBe(5300);
+  });
+});

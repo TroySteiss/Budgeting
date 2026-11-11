@@ -185,7 +185,7 @@ const INPUT = 'FFFFF2CC';   // typed-input cell (the ratio used)
 function annualDriverLabel(d: any): string {
   switch (d?.method) {
     case 'baseline': {
-      const shape = d.shape === 'last' ? '(last month, flat)' : d.shape === 'wavg' ? '(1-2-1 wtd)' : d.shape === 'flat' ? '(T12/12 flat)' : d.shape === 'avgnz' ? '(avg of active months)' : d.shape === 'curve' ? '(T12 on curve)' : d.shape === 'turns' ? '(T12 on lease expirations, +1 mo lag)' : '(same month)';
+      const shape = d.shape === 'last' ? '(last month, flat)' : d.shape === 'wavg' ? '(1-2-1 wtd)' : d.shape === 'flat' ? '(T12/12 flat)' : d.shape === 'avgnz' ? '(avg of active months)' : d.shape === 'curve' ? `(T12 on curve${d.fit ? `, fit ${Math.round(d.fit * 100)}% to T12 months` : ''})` : d.shape === 'turns' ? `(turnover curve: T12 on lease expirations, +1 mo lag${d.fit ? `, fit ${Math.round(d.fit * 100)}% to T12 months` : ''})` : '(same month)';
       const factor = d.pcts
         ? `Conservice forecast ${(Math.min(...d.pcts) * 100).toFixed(0)}–${(Math.max(...d.pcts) * 100).toFixed(0)}% by month`
         : `${(((d.pct || 0)) * 100).toFixed(1)}%`;

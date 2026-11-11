@@ -942,6 +942,13 @@ templates". (Clicking into a saved set to edit its items directly is NOT built y
   only credit months and local spikes (> 1.5x the typical month AND both neighbours), excess into low
   months within 3, filled to the typical month. Nothing wrong = asks before one half-strength pass.
   The old multi-pass `smoothMonths` remains for the "smoothed seller months" curve shape only.
+- **Fit a curve to T12** (Troy 2026-11-11: "apply a turnover curve, and then fit it closer to T12
+  historical expenses"): `baseline.glFit[gl]` (0..1; saved sets carry `rule.fit`) on shapes `turns`
+  and `curve`. `annualBaseline` blends the curve's normalized weights with the GL's own T12 months
+  (credit months = 0): 0 = pure curve, 1 = the T12 months; the year total is unchanged. Driver
+  `fit`, shown in the chip and the Excel note. UI: "fit to T12 %" box on the section header beside
+  the formula pick (`secFitHtml`, all curve lines of the section), a box in Formula for lines, and
+  a prompt in the row's shape menu. Not on the Default formulas screen yet.
 - **Recalculate many** (dashboard Export menu -> "Recalculate..."; `openRecalcMany`, `POST
   /budgets-recalc { ids, dryRun }`): preview of lines that move and NOI before / after per budget,
   then save with a save point "Before recalculating all". This is how a changed default reaches

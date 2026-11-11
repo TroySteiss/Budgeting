@@ -97,7 +97,7 @@ function drvMetaBase(l) {
     /* ---- annual (template) rules ---- */
     case 'baseline': {
       const d = l.driver;
-      const shape = { actual: 'same calendar month', wavg: '1-2-1 weighted distribution', flat: 'T12 ÷ 12 flat', curve: 'T12 total on the GL curve', last: 'last actual month, flat', avgnz: 'average of active months, flat', turns: `T12 total on lease expirations + 1 mo lag${d.turns ? ` (${Math.round(d.turns)} expirations)` : ''}` }[d.shape] || d.shape;
+      const shape = { actual: 'same calendar month', wavg: '1-2-1 weighted distribution', flat: 'T12 ÷ 12 flat', curve: `T12 total on the GL curve${d.fit ? `, fit ${Math.round(d.fit * 100)}% to its own T12 months` : ''}`, last: 'last actual month, flat', avgnz: 'average of active months, flat', turns: `turnover curve: T12 total on lease expirations + 1 mo lag${d.turns ? ` (${Math.round(d.turns)} expirations)` : ''}${d.fit ? `, fit ${Math.round(d.fit * 100)}% to its own T12 months` : ''}` }[d.shape] || d.shape;
       const factor = d.pcts ? `+ Conservice forecast ${(Math.min(...d.pcts) * 100).toFixed(0)}–${(Math.max(...d.pcts) * 100).toFixed(0)}% by month` : `× ${(1 + (d.pct || 0)).toFixed(3)}`;
       const tag = d.src === 'budget' ? 'CYB' : d.shape === 'turns' ? 'TURNS' : d.shape === 'last' ? 'LAST' : d.pcts ? 'UTIL' : d.shape === 'wavg' ? 'WAVG' : d.shape === 'flat' ? 'T12/12' : 'SAME MO';
       const foldTxt = d.folded ? ` · ${d.folded} credit month${d.folded === 1 ? '' : 's'} in the history folded into the other months (no negative budget months; total kept)` : '';
@@ -1141,6 +1141,20 @@ function renderEditor(el) {
       render();
     });
   });
+  el.querySelectorAll('input.secfit-in').forEach((box) => {
+    box.parentElement.addEventListener('click', (e) => e.stopPropagation());
+    box.addEventListener('focus', () => box.select());
+    box.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); box.blur(); } });
+    box.addEventListener('change', async () => {
+      const raw = String(box.value || '').trim();
+      const v = raw === '' ? 0 : parseFloat(raw.replace(/[%,]/g, ''));
+      if (!Number.isFinite(v) || v < 0 || v > 100) { alert('Fit to T12 is a % from 0 (the pure curve) to 100 (the T12 months themselves).'); render(); return; }
+      const gls = secFitLines(box.dataset.secfit).map((l) => l.gl_code);
+      if (!gls.length) return;
+      await setFit(b, gls, v);
+      toastMsg(`${gls.length} curve line${gls.length === 1 ? '' : 's'} fit ${v}% to T12`);
+    });
+  });
   el.querySelectorAll('select.secshape-in').forEach((sel) => {
     sel.addEventListener('click', (e) => e.stopPropagation());
     sel.addEventListener('change', () => { const v = sel.value; if (v) setSectionShape(b, sel.dataset.secshape, v); });
@@ -2025,7 +2039,31 @@ function secShapeHtml(hdr, shapesNow) {
     <option value="" selected>${one ? 'formula: ' + esc((SEC_SHAPES.find((x) => x[0] === one) || [one, one])[1]) : 'formula: mixed'}</option>
     ${SEC_SHAPES.filter((x) => x[0] !== one).map(([k, t]) => `<option value="${k}">set all to: ${t}</option>`).join('')}
     <option value="__clear">clear row choices (back to the default)</option>
-    <option value="__defaults">change the DEFAULT for every budget…</option></select>`;
+    <option value="__defaults">change the DEFAULT for every budget…</option></select>${secFitHtml(hdr)}`;
+}
+/* FIT TO T12 (Troy 2026-11-11): lines on a curve (turnover / seasonal) can lean toward their own T12 months.
+   One box on the section header sets it for every curve line under it; 0 / blank = the pure curve, 100 = the
+   T12 months themselves. The year total does not change, only where it lands. */
+const FIT_SHAPES = new Set(['turns', 'curve']);
+function secFitLines(section) {
+  const lines = new Map((S.bv.lines || []).map((l) => [l.gl_code, l]));
+  return S.state.coa.filter((a) => a.kind === 'detail' && a.section === section).map((a) => lines.get(a.code))
+    .filter((l) => l && !l.override && l.driver && l.driver.method === 'baseline' && FIT_SHAPES.has(l.driver.shape));
+}
+function secFitHtml(hdr) {
+  const ls = secFitLines(hdr.section);
+  if (!ls.length) return '';
+  const vals = new Set(ls.map((l) => Math.round((l.driver.fit || 0) * 100)));
+  const cur = vals.size === 1 ? [...vals][0] : null;
+  return ` <span class="secfit" title="Fit to T12: how far the ${ls.length} curve line${ls.length === 1 ? '' : 's'} in ${esc(hdr.name)} lean toward their OWN trailing-12 months. 0 = the pure curve, 50 = half curve / half history, 100 = the T12 months themselves. Each line's year total stays the same; only the months move. Enter applies.">fit to T12 <input class="secfit-in" data-secfit="${esc(hdr.section)}" value="${cur == null ? '' : cur || ''}" placeholder="${cur == null ? 'mixed' : '0'}" style="width:42px; text-align:right; border:1px solid var(--line); border-radius:5px; padding:1px 4px; font-size:11.5px"> %</span>`;
+}
+async function setFit(b, gls, pctVal) {
+  const bl = (S.bv.budget.inputs || {}).baseline || {};
+  const glFit = { ...(bl.glFit || {}) };
+  for (const gl of gls) { if (pctVal > 0) glFit[gl] = Math.min(1, pctVal / 100); else glFit[gl] = 0; }
+  pushUndo();
+  S.bv = await PUT(`/budgets/${b.id}`, { inputs: { baseline: { ...bl, glFit } } });
+  render();
 }
 async function setSectionShape(b, section, shape) {
   if (shape === '__defaults') { render(); return openDefaultFormulas(section); }
@@ -2168,6 +2206,7 @@ function openBulkFormula(b) {
     <p class="muted" style="margin:0 0 8px; font-size:12px">Sets how the ticked lines are built from their own history, then recalculates. Each line keeps its increase %. Hand-typed lines are not listed. One Undo reverses it.</p>
     <div class="row">
       <div class="fld"><label>Formula</label><select id="bs-shape">${SEC_SHAPES.map(([k, t]) => `<option value="${k}" ${k === 'turns' ? 'selected' : ''}>${t}</option>`).join('')}<option value="__clear">clear row choices (back to the formula set)</option></select></div>
+      <div class="fld"><label title="For the turnover curve and the seasonal curve: how far the ticked lines lean toward their own trailing-12 months. 0 = the pure curve, 100 = the T12 months. Year totals do not change.">Fit to T12 %</label><input id="bs-fit" value="" placeholder="0" style="width:70px"></div>
       <span class="spacer" style="flex:1"></span>
       <button class="btn sub" id="bs-turn" title="The turn-cost lines: cleaning, painting, carpet, make-ready, appliance and flooring replacement">Turn lines</button>
       <button class="btn sub" id="bs-all">All</button>
@@ -2193,8 +2232,12 @@ function openBulkFormula(b) {
     if (!gls.length) { dlg.querySelector('#bs-err').textContent = 'Tick at least one line.'; return; }
     const cur = (S.bv.budget.inputs || {}).baseline || {};
     const glShape = { ...(cur.glShape || {}) };
-    for (const gl of gls) { if (shape === '__clear') delete glShape[gl]; else glShape[gl] = shape; }
-    try { pushUndo(); S.bv = await PUT(`/budgets/${b.id}`, { inputs: { baseline: { ...cur, glShape } } }); dlg.close(); render(); }
+    const fitRaw = String(dlg.querySelector('#bs-fit').value || '').trim();
+    const fitV = fitRaw === '' ? null : parseFloat(fitRaw.replace(/[%,]/g, ''));
+    if (fitV != null && (!Number.isFinite(fitV) || fitV < 0 || fitV > 100)) { dlg.querySelector('#bs-err').textContent = 'Fit to T12 is a % from 0 to 100.'; return; }
+    const glFit = { ...(cur.glFit || {}) };
+    for (const gl of gls) { if (shape === '__clear') { delete glShape[gl]; delete glFit[gl]; } else { glShape[gl] = shape; if (fitV != null && FIT_SHAPES.has(shape)) glFit[gl] = fitV / 100; } }
+    try { pushUndo(); S.bv = await PUT(`/budgets/${b.id}`, { inputs: { baseline: { ...cur, glShape, glFit } } }); dlg.close(); render(); }
     catch (e) { dlg.querySelector('#bs-err').textContent = e.message; }
   });
   dlg.showModal();
@@ -4962,9 +5005,15 @@ function openShapeMenu(b, gl, acc, anchorBtn, inp) {
     if (shape) glShape[gl] = shape; else delete glShape[gl];
     const glGrowth = { ...(bl.glGrowth || {}) };
     if (Number.isFinite(g)) glGrowth[gl] = g / 100;
+    const glFit = { ...(bl.glFit || {}) };
+    if (FIT_SHAPES.has(shape)) {
+      const curFit = Math.round(((bl.glFit || {})[gl] ?? ((line && line.driver && line.driver.fit) || 0)) * 100);
+      const f = parseFloat(String(prompt(`Fit to T12 % for ${gl} ${acc.name || ''}\n0 = the pure curve, 50 = half curve / half its own T12 months, 100 = the T12 months themselves. The year total does not change.`, String(curFit)) || '').replace(/[%,]/g, ''));
+      if (Number.isFinite(f) && f >= 0 && f <= 100) glFit[gl] = f / 100;
+    }
     pushUndo();
     if (line && line.override) S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { override: false });
-    S.bv = await PUT(`/budgets/${b.id}`, { inputs: { baseline: { ...bl, glShape, glGrowth } } });
+    S.bv = await PUT(`/budgets/${b.id}`, { inputs: { baseline: { ...bl, glShape, glGrowth, glFit } } });
     render();
   }));
 }
