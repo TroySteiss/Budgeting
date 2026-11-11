@@ -92,13 +92,13 @@ describe('generateAnnualLines — template rules on own history', () => {
     expect(L(lines, '5165').months[2]).toBe(110);          // other income 0%
   });
   it('real estate taxes = trailing-12 total ÷ 12 flat (never October × 12), no $1,000 threshold', () => {
-    expect(L(lines, '6116').months).toEqual(Array(12).fill(925));          // (9 × 900 + 3 × 1,000) ÷ 12
+    expect(L(lines, '6116').months).toEqual(Array(12).fill(952.75));       // (9 × 900 + 3 × 1,000) ÷ 12, × 1.03 (RE taxes grow 3% by default)
     expect((L(lines, '6116').driver as any).shape).toBe('flat');
     const small = { ...actual, '6116': cal(Array(12).fill(50)) };          // T12 600 ≤ 1,000 still budgets
-    expect(L(generateAnnualLines(coaList, inputs, { ...src, actual: small }), '6116').months[0]).toBe(50);
+    expect(L(generateAnnualLines(coaList, inputs, { ...src, actual: small }), '6116').months[0]).toBe(51.5);
     // the GRKS rule for 6116 is `fixedAnnual` (RMC typed an annual) — same flat default, rule carried
     const withRule = L(generateAnnualLines(coaList, inputs, { ...src, rules: { '6116': { method: 'fixedAnnual' } } }), '6116');
-    expect(withRule.months).toEqual(Array(12).fill(925));
+    expect(withRule.months).toEqual(Array(12).fill(952.75));
     expect((withRule.driver as any).rule).toBe('fixedAnnual');
   });
   it('"October actual" lines are flat at the last actual month, and flag a last month far off the T12 average', () => {
@@ -496,7 +496,7 @@ describe('parseYardiBudgetTemplate — GRKS RMC draft ties to its Summary', () =
     const inputs = baseInputs(2026, t.units, actual, null, coaList, t, 10);
     const lines = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10, template: t });
     expect(sum(L(lines, '4994').months)).toBeCloseTo(1493914.18, 1);
-    expect(sum(L(lines, '6116').months)).toBeCloseTo(101838.76, 1);   // RE tax: T12 flat, not RMC's typed 103,355 (October × 12)
+    expect(sum(L(lines, '6116').months)).toBeCloseTo(101838.76 * 1.03, 0);   // RE tax: T12 flat × 1.03 (the 3% default), not RMC's typed 103,355 (October × 12)
     expect(sum(L(lines, '6108').months)).toBe(28500);
     expect(sum(L(lines, '7300').months)).toBeCloseTo(234066.04, 1);
     expect(sum(L(lines, '3080').months)).toBeCloseTo(-100862.94, 1);
@@ -539,7 +539,7 @@ describe('foundation rules (seed/annual-rules.json, extracted from the GRKS draf
       expect(L(lines, '5165').months[0]).toBe(1050);                 // PY Jan 1,030.65 → MROUND 50 (RMC: 1,050)
       // RE tax: trailing-12 total flat (101,839), NOT October × 12 (103,355 — RMC's typed annual
       // was a property decision; on clnd the same rule put 2026 taxes 110k under what was loaded)
-      expect(sum(L(lines, '6116').months)).toBeCloseTo(101838.76, 1);
+      expect(sum(L(lines, '6116').months)).toBeCloseTo(101838.76 * 1.03, 0);   // × 1.03: the RE tax default
       expect((L(lines, '6116').driver as any).rule).toBe('fixedAnnual');
     });
     it('a typed category % outranks the per-GL foundation factors (the Assumptions boxes used to be inert)', () => {
@@ -1304,5 +1304,38 @@ describe('copying section formulas to another budget', () => {
     const out = copyFormulas({ baseline: {} } as any, { rules: src.rules }, src.gls, ['contract_services'], { fill: src.fill, fallbackRules: { '6305': { method: 'last' }, '6908': { method: 'flatT12' } } as any }).inputs.rules as any;
     expect(out['6305']).toEqual({ method: 'last' });
     expect(out['6908'].method).toBe('wavg');
+  });
+});
+
+describe('history-based lines never budget a negative month', () => {
+  const coa = coaList;
+  const bi = baseInputs(2027, 100, null, null, coa); const inputs = { ...bi, rules: {}, baseline: { ...bi.baseline, glShape: { '6630': 'actual', '5024': 'actual' }, glGrowth: { '6630': 0, '5024': 0 } } } as any;
+  it('an expense with a credit month in its history: that month is zero, the total is kept; a contra line stays negative', () => {
+    const actual = { '6630': [900, 900, -400, 900, 900, 900, 900, 900, 900, 900, 900, 900] as Months, '5024': [-300, -300, -300, 200, -300, -300, -300, -300, -300, -300, -300, -300] as Months };
+    const lines = new Map(generateAnnualLines(coa, inputs, { actual, budget: null, lastMonth: 10, rules: {} }).map((l) => [l.gl_code, l]));
+    const exp = lines.get('6630')!;
+    expect(exp.months.every((v) => v >= 0)).toBe(true);
+    expect(exp.months[2]).toBe(0);
+    expect((exp.driver as any).folded).toBe(1);
+    const plain = sum(generateAnnualLines(coa, inputs, { actual: { '6630': actual['6630'].map((v) => Math.abs(v) === 400 ? 0 : v) as Months }, budget: null, lastMonth: 10, rules: {} }).find((l) => l.gl_code === '6630')!.months);
+    expect(sum(exp.months)).toBeLessThan(plain);                       // the credit still lowers the year
+    const con = lines.get('5024')!;
+    expect(con.months.every((v) => v <= 0)).toBe(true);
+    expect(sum(con.months)).toBeLessThan(0);
+  });
+});
+
+describe('real estate taxes grow 3% by default', () => {
+  const actual = { '6116': Array(12).fill(10000) as Months };
+  const inputs = { ...baseInputs(2027, 100, null, null, coaList), rules: {} } as any;
+  const tax = (inp: any, rules: any = {}) => sum(generateAnnualLines(coaList, { ...inp, rules }, { actual, budget: null, lastMonth: 10, rules }).find((l) => l.gl_code === '6116')!.months);
+  it('T12 x 1.03 with nothing typed, also when a saved set carries the old 0%', () => {
+    expect(tax(inputs)).toBeCloseTo(123600, 0);
+    expect(tax(inputs, { '6116': { method: 'fixedAnnual', factor: 0 } })).toBeCloseTo(123600, 0);
+  });
+  it('a % typed on the row wins, including 0', () => {
+    expect(tax({ ...inputs, baseline: { ...inputs.baseline, glGrowth: { '6116': 0 } } })).toBeCloseTo(120000, 0);
+    expect(tax({ ...inputs, baseline: { ...inputs.baseline, glGrowth: { '6116': 0.05 } } })).toBeCloseTo(126000, 0);
+    expect(tax(inputs, { '6116': { method: 'fixedAnnual', factor: 0.04 } })).toBeCloseTo(124800, 0);
   });
 });

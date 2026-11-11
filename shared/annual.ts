@@ -33,13 +33,13 @@ import {
   type CoaAccount, type BudgetLine, type BudgetInputs, type Months, type Driver, type UwSnapshotData,
   type Lease, type CompWeights, type BaselineShape,
   zero12, r2, sum, rollup, spreadMonthly, rotate12, CURVES, WAGE_GLS, ltlMonths, ltlModel, chargeGlMonthly,
-  mergeFresh, overriddenWages, calMonthOf, calYearOf, daysInMonth, dateKey, leaseEndIndex, calendarSlice,
+  mergeFresh, overriddenWages, calMonthOf, calYearOf, daysInMonth, dateKey, leaseEndIndex, calendarSlice, foldCredits,
 } from './domain.js';
 
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-10c';
+export const ENGINE_VERSION = '2026-11-10d';
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -387,10 +387,14 @@ export function flatFeeBilling(inputs: { utilities?: { billing?: string } } | nu
 /** A `last`-shape line whose last actual month is this far off its trailing-12 average
     gets `driver.lastDev` so the chip can warn (one odd month is setting the year). */
 export const LAST_DEV_WARN = 0.25;
+/** Real estate taxes grow 3% a year unless a % is typed on the row, the section or the category. */
+export const RE_TAX_DEFAULT_PCT = 0.03;
 /** Per-GL increase factors the template hard-codes. */
 export const TEMPLATE_GL_PCT: Record<string, number> = {
   '5158': 0.05, '5167': 0.05, '5169': 0.05, '5170': 0.05, '5171': 0.05, '5172': 0.05, '5174': 0.05,
   '6550': 0.05, '6555': 0.05, '6620': 0.07, '6621': 0.07, '6665': 0, '5178': 0, '5180': 0,
+  // REAL ESTATE TAXES (Troy 2026-11-10: "3% growth by default on RE taxes. It should not be $0")
+  '6116': RE_TAX_DEFAULT_PCT,
 };
 /** Per-category increase factors (template defaults; '*' for the rest). */
 export const TEMPLATE_CAT_PCT: Record<string, number> = { '1': 0, loss: 0, '2': 0, '3': 0, '4': 0, '5': 0, '6': 0, '7': 0, '8': 0, '9': 0.05, '10': 0, '11': 0, '12': 0, '13': 0.05, '14': 0.05, '*': 0 };
@@ -823,8 +827,11 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   // subsection (admin, utilities, in-house maintenance, exterior / CAM, contract services…). It
   // sits UNDER a % typed on the row itself and never touches a hand-typed line; it outranks the
   // category % and the formula set's own factor.
+  // RE taxes: a saved formula set recorded 0% only because 0% was the old default, nobody chose it.
+  // That 0 does not hold the new 3% default back; a 0 typed on the row / section / category still does.
+  const ruleFactor = (gl: string): number | undefined => { const f = ruleOf(gl)?.factor; return gl === '6116' && f === 0 ? undefined : f; };
   const pctFor = (a: CoaAccount): number =>
-    bl.glGrowth?.[a.code] ?? bl.secGrowth?.[a.section || ''] ?? userPct[a.pcode || ''] ?? ruleOf(a.code)?.factor ?? TEMPLATE_GL_PCT[a.code] ?? userPct['*'] ?? TEMPLATE_CAT_PCT[a.pcode || ''] ?? TEMPLATE_CAT_PCT['*'] ?? 0;
+    bl.glGrowth?.[a.code] ?? bl.secGrowth?.[a.section || ''] ?? userPct[a.pcode || ''] ?? ruleFactor(a.code) ?? TEMPLATE_GL_PCT[a.code] ?? userPct['*'] ?? TEMPLATE_CAT_PCT[a.pcode || ''] ?? TEMPLATE_CAT_PCT['*'] ?? 0;
   const isSet = (gl: string): boolean => (lines.get(gl)?.driver as any)?.method !== 'manual';
   /** statement line × factor on a shape; false when the property has no history on the GL.
       Precedence: the budget's own per-GL overrides → the GL's foundation rule
@@ -871,6 +878,10 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const drift = COST_DRIFT_PCODES.has(a.pcode || '') && sh !== 'last' && !bl.glShape?.[a.code] && !FIXED_ANNUAL_GLS.has(a.code) && rule?.method !== 'fixedAnnual'
       ? (bl.costDrift ?? COST_DRIFT_DEFAULT) : 0;
     if (drift) months = tiltMonths(months, drift, mult);
+    // no negative budget months: an expense line is never negative; an income line keeps the side its
+    // own total is on (contra lines - concessions, vacancy, write-offs - are negative by nature)
+    const noNeg = foldCredits(months, parseInt(a.code, 10) >= 6000 || sum(months) >= 0 ? 1 : -1, mult);
+    months = noNeg.months;
     // a "last actual month" line whose last month is far off its own average: one odd
     // month (a tax true-up, a zero) is setting the whole year — flag it for the chip
     let lastDev: number | undefined;
@@ -879,7 +890,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       const lastV = cal[lastMonth - 1] || 0;
       if (avg && Math.abs(lastV - avg) > LAST_DEV_WARN * Math.abs(avg)) lastDev = Math.round((lastV / avg - 1) * 1000) / 1000;
     }
-    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(lastDev != null ? { lastDev } : {}), ...(drift ? { drift } : {}) } as any);
+    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(lastDev != null ? { lastDev } : {}), ...(drift ? { drift } : {}), ...(noNeg.folded ? { folded: noNeg.folded } : {}) } as any);
     return true;
   };
 

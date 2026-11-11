@@ -1270,6 +1270,32 @@ router.post('/budgets/:id/restore', h(async (req, res) => {
   res.json(budgetView((await loadBudget(id))!));
 }));
 
+/* Recalculate many budgets at once (dashboard): how a changed default or formula reaches every
+   budget. { ids, dryRun } - each budget gets a save point first; hand-typed lines stay. Returns
+   NOI before / after and the lines that moved, per budget. */
+router.post('/budgets-recalc', h(async (req, res) => {
+  const ids: number[] = [...new Set<number>((Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number).filter((n: number) => Number.isFinite(n)))];
+  const dryRun = req.body?.dryRun === true;
+  if (!ids.length) return res.status(400).json({ error: 'Pick at least one budget' });
+  const noiOf = (lines: BudgetLine[]) => r2(sum(rollup(new Map(lines.map((l) => [l.gl_code, l.months]))).get('7280') || zero12()));
+  const out: any[] = [];
+  for (const id of ids) {
+    const lb = await loadBudget(id);
+    if (!lb) continue;
+    const built = buildLines(lb, lb.budget.inputs, lb.lines);
+    const before = new Map(lb.lines.map((l) => [l.gl_code, l]));
+    const moved = built.lines.filter((l) => { const o = before.get(l.gl_code); return !o ? l.months.some((v) => v) : o.months.some((v, i) => Math.abs(v - l.months[i]) >= 0.005); });
+    const top = moved.map((l) => ({ gl: l.gl_code, d: r2(sum(l.months) - sum(before.get(l.gl_code)?.months || zero12())) })).sort((a, b) => Math.abs(b.d) - Math.abs(a.d)).slice(0, 3);
+    out.push({ id, code: String(lb.budget.property_code).toUpperCase(), year: Number(lb.budget.year), type: lb.annual ? 'annual' : 'acquisition', lines: moved.length, noiBefore: noiOf(lb.lines), noiAfter: noiOf(built.lines), top });
+    if (!dryRun && moved.length) {
+      await captureSnapshot(lb, 'Before recalculating all', req.session.username || '');
+      await saveLines(id, built.lines, true);
+    } else if (!dryRun) await saveLines(id, built.lines, true);   // nothing moved: still stamp the formula version
+  }
+  if (!dryRun) logChange(req.session.username || '', 'recalculate many', { ids });
+  res.json({ ok: true, dryRun, budgets: out });
+}));
+
 router.post('/budgets/:id/recalc', h(async (req, res) => {
   const id = Number(req.params.id);
   const lb = await loadBudget(id);

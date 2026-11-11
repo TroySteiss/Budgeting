@@ -608,3 +608,38 @@ describe('actualized months — the partial-month rule (rrnd, Aug-26 Cash)', () 
     expect(parseActualKey('2026-08')).toEqual({ calYear: 2026, calMonth: 8 });
   });
 });
+
+/* No negative budget months - made-up figures. */
+import { foldCredits } from '../shared/domain.js';
+describe('foldCredits: no month against the line\'s sign', () => {
+  const tot = (m: number[]) => Math.round(m.reduce((a, b) => a + b, 0) * 100) / 100;
+  it('leaves a clean line alone', () => {
+    const m = [100, 100, 0, 100, 100, 100, 100, 100, 100, 100, 100, 100] as any;
+    expect(foldCredits(m, 1)).toEqual({ months: m, folded: 0 });
+  });
+  it('zeroes a credit month and keeps the year total by scaling the rest', () => {
+    const m = [500, 500, -300, 500, 500, 500, 500, 500, 500, 500, 500, 500] as any;
+    const r = foldCredits(m, 1);
+    expect(r.folded).toBe(1);
+    expect(r.months[2]).toBe(0);
+    expect(r.months.every((v: number) => v >= 0)).toBe(true);
+    expect(tot(r.months)).toBe(tot(m));
+  });
+  it('keeps the MROUND multiple when the line has one', () => {
+    const r = foldCredits([500, 500, -300, 500, 500, 500, 500, 500, 500, 500, 500, 500] as any, 1, 25);
+    expect(r.months.every((v: number) => v >= 0 && v % 25 === 0)).toBe(true);
+    expect(Math.abs(tot(r.months) - 5200)).toBeLessThanOrEqual(25 * 6);
+  });
+  it('does not budget an expense whose whole year nets to a credit', () => {
+    const r = foldCredits([100, -900, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0] as any, 1);
+    expect(r.months).toEqual(Array(12).fill(0));
+    expect(r.folded).toBe(1);
+  });
+  it('a contra line stays negative and loses its stray positive month', () => {
+    const m = [-200, -200, 150, -200, -200, -200, -200, -200, -200, -200, -200, -200] as any;
+    const r = foldCredits(m, -1);
+    expect(r.months[2]).toBe(0);
+    expect(r.months.every((v: number) => v <= 0)).toBe(true);
+    expect(tot(r.months)).toBe(tot(m));
+  });
+});

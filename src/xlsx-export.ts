@@ -85,6 +85,7 @@ const MON3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oc
 /** A line whose Year-1 months come from the property's Y1 budget says so ahead of its formula. */
 function driverLabel(d: any): string {
   const base = driverLabelBase(d);
+  if (d?.smooth && d.method !== 'smooth') return `${base}; missed-bill smoothed x${d.smooth.passes || 0}, rounded to $${d.smooth.mult || 5}`;
   if (!Array.isArray(d?.y1) || !d.y1.length) return base;
   const span = `${MON3[d.y1[0]]}-${MON3[d.y1[d.y1.length - 1]]} from the Year-1 budget`;
   return d.method === 'manual' ? span : `${span}; then ${base}`;

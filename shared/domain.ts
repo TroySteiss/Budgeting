@@ -647,6 +647,26 @@ export function shapeSmells(w: number[]): boolean {
   return false;
 }
 
+/** NO MONTH AGAINST THE LINE'S SIGN (Troy 2026-11-10: "We can not be budgeting negative numbers").
+    History carries credit months (a refund, a reversed accrual, a reclass); copied forward they
+    budget a negative expense. Months on the wrong side of `sign` are set to zero and the other
+    months are scaled so the line's total is unchanged; a line whose whole total is on the wrong
+    side is not budgeted at all. `mult` keeps a line's MROUND. Returns how many months were folded. */
+export function foldCredits(months: Months, sign: 1 | -1, mult = 0): { months: Months; folded: number } {
+  const bad = months.filter((v) => v * sign < 0).length;
+  if (!bad) return { months, folded: 0 };
+  const tot = sum(months);
+  if (tot * sign <= 0) return { months: zero12(), folded: bad };
+  const keep = months.map((v) => (v * sign > 0 ? v : 0));
+  const k = tot / sum(keep as Months);
+  const out = keep.map((v) => (mult ? r2(Math.round((v * k) / mult) * mult) : r2(v * k))) as Months;
+  if (!mult) {
+    const d = r2(tot - sum(out));
+    if (d) { let bi = 0; out.forEach((v, i) => { if (Math.abs(v) > Math.abs(out[bi])) bi = i; }); out[bi] = r2(out[bi] + d); }
+  }
+  return { months: out, folded: bad };
+}
+
 /** Cyclical total-preserving 1-2-1 smoothing — melts a catch-up spike back
     into the low months around it. Repeats until the cycle stops smelling
     like missed bills (cap 8 passes); clean seasonal shapes pass through. */
