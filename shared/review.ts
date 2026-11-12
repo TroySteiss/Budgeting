@@ -21,6 +21,10 @@ export type ReviewKind =
   | 'monthlyAmount'  // `amount` every month
   | 'perUnitMonth'   // `amount` x units in `month` (Healthy Homes $20/unit in December)
   | 'pctOverT12'     // the year's total `pct` over the trailing-12 (RE taxes +3% over the bill)
+  | 'notPositive'    // no month above zero (a contra-income line: concessions, vacancy)
+  | 'nearT12'        // the year's total within `pct` of the trailing-12 either way (bad-debt recovery: no growth)
+  | 'maxOverT12'     // the year's total at most `pct` over the trailing-12 (fixed-dollar fees: not grown at the rent rate)
+  | 'monthlyAtLeast' // at least `amount` every month (the $275/mo software template line)
   | 'note';          // a reminder only, checked by eye
 
 export interface ReviewRule {
@@ -48,6 +52,10 @@ export const REVIEW_KINDS: { kind: ReviewKind; label: string; month?: boolean; a
   { kind: 'monthlyAmount', label: '$ every month', amount: true },
   { kind: 'perUnitMonth', label: '$ per unit in a month', month: true, amount: true },
   { kind: 'pctOverT12', label: '% over the T12', pct: true },
+  { kind: 'notPositive', label: 'Never positive' },
+  { kind: 'nearT12', label: 'About the T12 (± %)', pct: true },
+  { kind: 'maxOverT12', label: 'At most % over the T12', pct: true },
+  { kind: 'monthlyAtLeast', label: 'At least $ every month', amount: true },
   { kind: 'note', label: 'Reminder (check by eye)' },
 ];
 
@@ -67,10 +75,29 @@ const COMMON: ReviewRule[] = [
 ];
 /** Built-in rules per region. ND leaves out the KC-only items (Healthy Homes, the rover change, Zillow, the KC
     sites' monthly sewer / water); its cable revenue share is monthly (Minot), KC's quarterly. */
+const ND_REVIEW: ReviewRule[] = [
+  { id: 'conc-neg', gl: '5024', label: 'Concessions: entered by hand, never positive', kind: 'notPositive' },
+  { id: 'vac-neg', gl: '5031', label: 'Vacancy: never positive', kind: 'notPositive' },
+  { id: 'bdr-t12', gl: '5110', label: 'Bad debt recovery: about the T12 (no growth off an average)', kind: 'nearT12', pct: 0.05 },
+  { id: 'fee-conv', gl: '5117', label: 'Convenience fee: fixed dollars, not grown at the rent rate', kind: 'maxOverT12', pct: 0.03 },
+  { id: 'fee-ins', gl: '5126', label: 'Insurance non-compliance fee: fixed dollars, not grown at the rent rate', kind: 'maxOverT12', pct: 0.03 },
+  { id: 'fee-nsf', gl: '5155', label: 'NSF fee: fixed dollars, not grown at the rent rate', kind: 'maxOverT12', pct: 0.03 },
+  { id: 'fee-xfer', gl: '5168', label: 'Transfer fee: fixed dollars, not grown at the rent rate', kind: 'maxOverT12', pct: 0.03 },
+  { id: 'fee-lt', gl: '5140', label: 'Lease termination fee: fixed dollars, not grown at the rent rate', kind: 'maxOverT12', pct: 0.03 },
+  { id: 'pest-own', gl: '5158', label: 'Pest fee: its own line, $5 x occupied units (ND West)', kind: 'present', props: ['bcnd', 'ecnd', 'fhnd', 'phnd'] },
+  { id: 'sw-275', gl: '6331', label: 'Computer software: at least the $275/mo template, plus site SaaS contracts', kind: 'monthlyAtLeast', amount: 275 },
+  { id: 'sewer-every', gl: '6614', label: 'Sewer: hits every month', kind: 'every' },
+  { id: 'water-every', gl: '6622', label: 'Water: hits every month', kind: 'every' },
+  { id: 'fire-insp', gl: '6917', label: 'Fire inspection: the annual inspection is budgeted', kind: 'present' },
+  { id: 'one-time', gl: '6365', label: 'One-time items backed out of the T12 and listed in the budget notes', kind: 'note' },
+  { id: 'tax-bill', gl: '6116', label: 'RE taxes: the real bill from the property accountant, discounted one-time payment, no penalties', kind: 'note' },
+  { id: 'lender', gl: '7325', label: 'Lender corrective items with 2027 deadlines budgeted', kind: 'note' },
+];
 export const DEFAULT_REVIEW_RULES: Record<'nd' | 'kc', ReviewRule[]> = {
   nd: [
-    { id: 'cable', gl: '5115', label: 'Cable income: monthly revenue share (Minot)', kind: 'every' },
-    ...COMMON,
+    { id: 'cable', gl: '5115', label: 'Cable income: monthly revenue share (Minot; Midco 4% at BCND / ECND)', kind: 'every' },
+    ...COMMON.filter((r) => r.id !== 'consult-425'),   // ND consulting is the corporate rate (the ND review sheet)
+    ...ND_REVIEW,
   ],
   kc: [
     { id: 'cable', gl: '5115', label: 'Cable income: quarterly revenue share (KC)', kind: 'quarterly' },
@@ -147,6 +174,24 @@ export function reviewCell(rule: ReviewRule, p: { code: string; months: number[]
       const got = m[i];
       if (!want) return { status: 'info', text: 'no unit count' };
       return Math.abs(got - want) <= Math.max(1, want * 0.02) ? { status: 'y', text: '' } : { status: 'n', text: `${usd(got)} in ${MON[i]} vs ${usd(want)}` };
+    }
+    case 'notPositive': {
+      const pos = m.map((v, i) => (v > 0.5 ? MON[i] : '')).filter(Boolean);
+      return pos.length ? { status: 'n', text: `positive in ${pos.join(', ')}` } : { status: 'y', text: '' };
+    }
+    case 'nearT12':
+    case 'maxOverT12': {
+      const last = p.t12 ? tot(p.t12) : 0;
+      if (!last) return Math.abs(total) < 1 ? { status: 'y', text: none('') } : { status: 'info', text: 'no T12 to compare' };
+      const g = total / last - 1, lim = Number(rule.pct) || 0;
+      const txt = `${g >= 0 ? '+' : ''}${(g * 100).toFixed(1)}% vs T12`;
+      const ok = rule.kind === 'nearT12' ? Math.abs(g) <= lim + 0.0005 : g <= lim + 0.0005;
+      return { status: ok ? 'y' : 'n', text: txt };
+    }
+    case 'monthlyAtLeast': {
+      const want = Number(rule.amount) || 0;
+      const under = m.map((v, i) => (v < want - 0.5 ? i : -1)).filter((i) => i >= 0);
+      return under.length ? { status: 'n', text: `under ${usd(want)} in ${under.length} month${under.length === 1 ? '' : 's'} (${usd(Math.min(...under.map((i) => m[i])))} low)` } : { status: 'y', text: '' };
     }
     case 'pctOverT12': {
       const last = p.t12 ? tot(p.t12) : 0;
