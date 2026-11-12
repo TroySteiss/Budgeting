@@ -879,7 +879,15 @@ ratio to net GPR (`pctGpr`). Growth ties no longer scale 5036 directly; it follo
 The "ND 2027 Budget Review" workbook (built off the KB, contracts and Troy's 11/12 corrections) has an **Apply** tab —
 one row per site + GL + item, 2027 months, an action, push Y/N, firmness, basis, source, contracts row, history note,
 target GL — "for Claude Code to push into the budgets", with an **Apply Rules** tab. Troy picked "upload + preview +
-apply". Dashboard → Export ▾ → **Apply ND review workbook…** (`openReviewApply`).
+apply", then (same day): "I need to be able to drop it into data once, not redrop the same sheet into a property
+level hidden menu". So it is a **Data page** upload: `detectUploadKind` → `review_apply` (an "Apply" tab headed
+row_id / site / gl / action / push); `/uploads/parse?kind=review_apply` reads it; "Save to Data" stores the rows as
+the upload's payload (`uploads.kind = 'review_apply'`). The Data page's **ND budget review workbook** card
+(`reviewStoredHtml`, `GET /review-apply/stored`) names the newest saved copy, its sites (✓ applied / ○ not yet, with
+when, who and which GLs from `payload.applied`), and **Preview & apply…** (`openReviewApply`) plans the SAVED copy
+(`POST /review-apply/preview` with no file; `/apply` with `uploadId`, rows read server-side). Drop a newer copy to
+replace it. Row text is cut to WIN1252 at read time (arrows → "->", "≈" → "~"): the local database is WIN1252 and
+the rows are stored in the upload and on line drivers. The dashboard Export entry is gone.
 
 - `parseReviewApply` (importers.ts): reads the Apply tab by header name. `planApply` (shared/reviewApply.ts, pure,
   test/reviewApply.test.ts) plans ONE budget: reclass → set → at_least (floor per `compare_pool`, shortfall added in
