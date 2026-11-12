@@ -395,41 +395,72 @@ function guideDashCell(gd) {
   const cls = gd.bad ? 'gbad' : gd.flags ? 'gchk' : 'gok';
   return `<td class="gdash ${cls}" title="${esc((gd.miss || []).join(' · ') || 'on target')}"><b>NOI ${p(gd.growth.noi)}</b><div class="muted" style="font-size:10.5px">inc ${p(gd.growth.income)} · exp ${p(gd.growth.expense)}${gd.bad || gd.flags ? ` · ${gd.bad + gd.flags} to look at` : ''}</div></td>`;
 }
+/* ONE table (Troy 2026-11-12: "why is this two different tables?"): every property for the budget year picked, its
+   budget's figures on the same row (Income, OpEx, NOI, Δ NOI / Δ EGI, Guidance, CoC, status), the reports on file
+   (click the pill for the list), and Open / + Start. A property not started for the year shows its reports and
+   + Start with the figures blank. Export / Recalculate with nothing ticked act on the budgets of the year shown. */
 function renderDash(el) {
   const st = S.state;
-  const props = new Map(st.properties.map((p) => [p.code, p]));
-  const hasAcq = st.budgets.some((b) => b.budget_type !== 'annual');
-  const hasGuide = st.budgets.some((b) => b.dash && b.dash.guide);
   const pl = propertyListHtml(st);
+  const year = pl.year || S.dashYear || new Date().getFullYear() + 1;
+  const yearBudgets = st.budgets.filter((b) => b.year === year);
+  const hasAcq = yearBudgets.some((b) => b.budget_type !== 'annual') || yearBudgets.some((b) => (b.dash || {}).capital);
+  const hasGuide = yearBudgets.some((b) => b.dash && b.dash.guide);
+  const years = [...new Set([year, ...st.budgets.map((b) => b.year), new Date().getFullYear() + 1])].sort((a, b) => b - a);
+  const notStarted = (pl.rows || []).filter((r) => !r.b).length;
+  const repsPill = (r) => (r.missingReq.length ? `<span class="pill miss">${r.missingReq.length} required missing</span>` : r.missingRec.length ? `<span class="pill rec">${r.missingRec.length} recommended missing</span>` : '<span class="pill ok">all on file</span>');
+  const budgetCells = (b) => {
+    const d = b.dash || {};
+    const varCell = (v) => (v == null ? '<td class="muted">—</td>' : `<td class="${Math.abs(v) < 1 ? '' : v > 0 ? '' : 'neg'}" style="${Math.abs(v) < 1 ? 'color:var(--good)' : ''}" title="vs ${esc(d.refLabel || 'UW')}">${Math.abs(v) < 1 ? 'tied' : money(v)}</td>`);
+    const sm = d.startMonth > 1 ? `${MONTHS[d.startMonth - 1]}-${String(b.year).slice(2)} – ${MONTHS[(d.startMonth + 10) % 12]}-${String(b.year + 1).slice(2)}` : String(b.year);
+    const ov = (d.overridesFormula || 0) + (d.overridesFixed || 0);
+    return {
+      budget: `<b>${sm}</b> <span class="muted">${b.budget_type === 'annual' ? 'annual' : 'acquisition · UW Y1'}</span><div class="muted" style="font-size:11px">${ov ? `${ov} override${ov === 1 ? '' : 's'}` : 'no overrides'}${d.ltlMode === 'leases' ? ' · per-lease LTL' : ''}${d.savePoints ? ` · ${d.savePoints} save pt${d.savePoints === 1 ? '' : 's'}` : ''}</div>`,
+      figs: `<td>${money(d.income)}</td><td>${money(d.expense)}</td><td><b>${money(d.noi)}</b></td>${varCell(d.noiVar)}${varCell(d.egiVar)}
+        ${hasGuide ? guideDashCell(d.guide) : ''}
+        ${hasAcq ? `<td>${d.coc != null ? (d.coc * 100).toFixed(1) + '%' : '—'}${d.capital ? `<div class="muted" style="font-size:10.5px">on ${money(d.capital)}</div>` : ''}</td>` : ''}`,
+    };
+  };
+  const nFig = 5 + (hasGuide ? 1 : 0) + (hasAcq ? 1 : 0);
+  const cols = 8 + nFig;
+  const body = (pl.rows || []).map((r) => {
+    const { p } = r;
+    const propCell = `<td class="pname" data-p="${esc(p.code)}" title="click for the reports on file"><b>${esc(p.code)}</b> · ${esc(p.name)}<div class="muted" style="font-size:10.5px">${p.units ? `${p.units} units` : ''}${p.market ? ` · ${esc(p.market)}` : ''}</div></td>`;
+    const detail = `<tr class="pdetail" data-pd="${esc(p.code)}" hidden><td colspan="${cols}"></td></tr>`;
+    if (!r.b) {
+      return `<tr class="nostart"><td></td>${propCell}
+        <td><span class="pill none">Not started</span>${r.others.length ? ` <span class="muted" style="font-size:11px">has ${r.others.join(', ')}</span>` : ''}</td>
+        <td class="st pclick" data-p="${esc(p.code)}">${repsPill(r)}</td>
+        <td colspan="${nFig}" class="muted" style="font-size:11.5px">${r.missingReq.length ? `needs ${r.missingReq.map((x) => x.label.toLowerCase()).join(' and ')} first` : ''}</td>
+        <td></td><td></td>
+        <td class="go"><button class="btn sub sm" data-rowstart="${esc(p.code)}" title="Start the ${year} budget for ${esc(p.code)}">+ Start</button></td></tr>${detail}`;
+    }
+    return r.bs.map((b, k) => {
+      const c = budgetCells(b);
+      return `<tr class="click" data-id="${b.id}">
+        <td><input type="checkbox" data-sel="${b.id}"></td>
+        ${k === 0 ? propCell : '<td></td>'}
+        <td>${c.budget}</td>
+        <td class="st pclick" data-p="${esc(p.code)}">${k === 0 ? repsPill(r) : ''}</td>
+        ${c.figs}
+        <td>${esc(b.status || 'draft')}</td>
+        <td class="muted">${new Date(b.updated_at).toLocaleDateString()}</td>
+        <td class="go" style="white-space:nowrap"><button class="btn sm" data-rowopen="${b.id}" title="Open this budget">Open</button>${S.auth.isAdmin ? ` <button class="rb" data-del="${b.id}" title="Delete this budget">🗑</button>` : ''}</td></tr>`;
+    }).join('') + detail;
+  }).join('');
   el.innerHTML = `
-    ${pl.html}
     <div class="card">
-      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:10px">
-        <h2 style="margin:0">Budgets</h2>
-        <div class="row">
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:10px; gap:8px; flex-wrap:wrap">
+        <h2 style="margin:0">Budgets <span class="badge">${(pl.rows || []).length} properties</span>${notStarted ? ` <span class="pill none" style="margin-left:6px">${notStarted} not started for ${year}</span>` : ''}</h2>
+        <div class="row" style="align-items:center; gap:8px; flex-wrap:wrap">
+          <label class="muted" style="font-size:12px">Budget year</label><select id="dash-year">${years.map((y) => `<option value="${y}" ${y === year ? 'selected' : ''}>${y}</option>`).join('')}</select>
           <button class="btn sub" id="dash-dform" title="The formula and seasonal curve every line uses by default, for all budgets on the defaults. One pick sets a whole section.">ƒ Default formulas</button>
-          <button class="btn sub" id="dash-export" title="Exports for the ticked budgets (all if none ticked)">⬇ Export ▾</button>
+          <button class="btn sub" id="dash-export" title="Exports for the ticked budgets (all of ${year}'s if none ticked)">⬇ Export ▾</button>
           <button class="btn" id="newb">+ New budget</button>
         </div>
       </div>
-      ${st.budgets.length ? `<table class="list"><tr><th><input type="checkbox" id="sel-all" title="Select all budgets"></th><th>Property</th><th>Budget</th><th>Income</th><th>OpEx</th><th>NOI</th><th title="NOI vs the budget's reference (T12 actuals / CY budget for annual, UW for acquisitions)">Δ NOI</th><th title="EGI vs the reference">Δ EGI</th>${hasGuide ? '<th title="2027 guidance: growth vs the October T12 — income / expenses / NOI. Red = off (NOI down, or below the current budget); amber = outside a range.">Guidance</th>' : ''}${hasAcq ? '<th>CoC</th>' : ''}<th>Status</th><th>Updated</th><th></th></tr>
-        ${st.budgets.map((b) => {
-          const d = b.dash || {};
-          const varCell = (v) => (v == null ? '<td class="muted">—</td>' : `<td class="${Math.abs(v) < 1 ? '' : v > 0 ? '' : 'neg'}" style="${Math.abs(v) < 1 ? 'color:var(--good)' : ''}" title="vs ${esc(d.refLabel || 'UW')}">${Math.abs(v) < 1 ? 'tied' : money(v)}</td>`);
-          const sm = d.startMonth > 1 ? `${MONTHS[d.startMonth - 1]}-${String(b.year).slice(2)} – ${MONTHS[(d.startMonth + 10) % 12]}-${String(b.year + 1).slice(2)}` : String(b.year);
-          const ov = (d.overridesFormula || 0) + (d.overridesFixed || 0);
-          return `<tr class="click" data-id="${b.id}">
-          <td><input type="checkbox" data-sel="${b.id}"></td>
-          <td><b>${esc(b.property_code)}</b> · ${esc(b.property_name)}</td>
-          <td>${b.budget_type === 'annual' ? `<b>${sm}</b> <span class="muted">annual</span>` : `<b>${sm}</b> <span class="muted">acquisition · UW Y1</span>`}<div class="muted" style="font-size:11px">${ov ? `${ov} override${ov === 1 ? '' : 's'}` : 'no overrides'}${d.ltlMode === 'leases' ? ' · per-lease LTL' : ''}${d.savePoints ? ` · ${d.savePoints} save pt${d.savePoints === 1 ? '' : 's'}` : ''}</div></td>
-          <td>${money(d.income)}</td><td>${money(d.expense)}</td><td><b>${money(d.noi)}</b></td>
-          ${varCell(d.noiVar)}${varCell(d.egiVar)}
-          ${hasGuide ? guideDashCell(d.guide) : ''}
-          ${hasAcq ? `<td>${d.coc != null ? (d.coc * 100).toFixed(1) + '%' : '—'}${d.capital ? `<div class="muted" style="font-size:10.5px">on ${money(d.capital)}</div>` : ''}</td>` : ''}
-          <td>${esc(b.status)}</td>
-          <td class="muted">${new Date(b.updated_at).toLocaleDateString()}</td>
-          <td>${S.auth.isAdmin ? `<button class="rb" data-del="${b.id}" title="Delete this budget">🗑</button>` : ''}</td>
-        </tr>`; }).join('')}</table>` : `<p class="muted">No budgets yet. Click <b>+ New budget</b> — for an annual budget you only need the property's Yardi budget template (budgetYSR…xlsm); it carries the trailing-12 actuals and the current-year budget. Add the rent roll for the GPR anchor and per-lease burnoff.</p>`}
+      ${(pl.rows || []).length ? `<table class="list plist"><tr><th><input type="checkbox" id="sel-all" title="Select all of ${year}'s budgets"></th><th>Property</th><th>${year} budget</th><th>Reports</th><th>Income</th><th>OpEx</th><th>NOI</th><th title="NOI vs the budget's reference (T12 actuals / CY budget / UW for the year)">Δ NOI</th><th title="EGI vs the reference">Δ EGI</th>${hasGuide ? '<th title="2027 guidance: growth vs the October T12 — income / expenses / NOI. Red = off (NOI down, or below the current budget); amber = outside a range.">Guidance</th>' : ''}${hasAcq ? '<th>CoC</th>' : ''}<th>Status</th><th>Updated</th><th></th></tr>
+        ${body}</table>` : `<p class="muted">No properties yet. Click <b>+ New budget</b> — for an annual budget you only need the property's Yardi budget template (budgetYSR…xlsm); it carries the trailing-12 actuals and the current-year budget. Add the rent roll for the GPR anchor and per-lease burnoff.</p>`}
     </div>
     <dialog id="newdlg"></dialog>
     <dialog class="assump" id="pm-dlg"></dialog>
@@ -437,7 +468,7 @@ function renderDash(el) {
 
   wirePropertyList(el, pl);
   el.querySelectorAll('tr.click').forEach((tr) => tr.addEventListener('click', async (e) => {
-    if (e.target.dataset.del) return;
+    if (e.target.dataset.del || e.target.closest('.pclick') || e.target.closest('.pname')) return;
     await openBudget(Number(tr.dataset.id));
   }));
   el.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', async (e) => {
@@ -455,18 +486,19 @@ function renderDash(el) {
     el.querySelectorAll('[data-sel]').forEach((c) => { c.checked = selAll.checked; });
   });
   document.getElementById('dash-dform').addEventListener('click', () => openDefaultFormulas());
+  const shownIds = () => yearBudgets.map((x) => x.id);
   document.getElementById('dash-export').addEventListener('click', (e) => {
     e.stopPropagation();
     const n = selectedIds().length;
     popMenu(e.currentTarget, `
-      <div class="rm-head">${n ? `${n} ticked budget${n === 1 ? '' : 's'}` : 'All budgets'}</div>
+      <div class="rm-head">${n ? `${n} ticked budget${n === 1 ? '' : 's'}` : `All ${yearBudgets.length} of ${year}'s budgets`}</div>
       <button data-x="pf" title="One workbook: each site's Budget / Summary / Raw Data tabs plus a live Portfolio rollup tab — tick the 4 Bismarck sites for a Bismarck WB, the 2 Jamestown for a JT WB">⬇ Portfolio workbook</button>
       <button data-x="zip" title="ZIP of every export, sorted by report type: Yardi Uploads per year + Budget Drafts — each budget saved as an iteration">⬇ All exports (zip)</button>
-      <button data-x="recalc" title="Re-run every formula on the ticked budgets (all of them when none is ticked), so a changed default or formula reaches each one. Shows NOI before and after per budget first; hand-typed lines stay; each budget gets a save point.">↻ Recalculate…</button>
+      <button data-x="recalc" title="Re-run every formula on the ticked budgets (all of the year's when none is ticked), so a changed default or formula reaches each one. Shows NOI before and after per budget first; hand-typed lines stay; each budget gets a save point.">↻ Recalculate…</button>
       <button data-x="act" title="Partial-month rule off the budget as it sits in Yardi: upload the month-end Property Comparison (Cash) + each property's budget CSV — every CSV comes back with the closed month set 1:1 to what posted">✓ Actualize from Yardi CSVs…</button>`, (menu) => {
-      menu.querySelector('[data-x="recalc"]').addEventListener('click', () => { const ids = selectedIds(); openRecalcMany(ids.length ? ids.map(Number) : st.budgets.map((x) => x.id)); });
-      menu.querySelector('[data-x="pf"]').addEventListener('click', () => { const ids = selectedIds(); window.open(rUrl(`/api/export/portfolio.xlsx${ids.length ? `?ids=${ids.join(',')}` : ''}`), '_blank'); });
-      menu.querySelector('[data-x="zip"]').addEventListener('click', () => { const ids = selectedIds(); const all = ids.length ? ids : st.budgets.map((b) => b.id); if (all.length) window.open(rUrl(`/api/export/bundle.zip?ids=${all.join(',')}`), '_blank'); });
+      menu.querySelector('[data-x="recalc"]').addEventListener('click', () => { const ids = selectedIds(); openRecalcMany(ids.length ? ids.map(Number) : shownIds()); });
+      menu.querySelector('[data-x="pf"]').addEventListener('click', () => { const ids = selectedIds().length ? selectedIds() : shownIds(); window.open(rUrl(`/api/export/portfolio.xlsx${ids.length ? `?ids=${ids.join(',')}` : ''}`), '_blank'); });
+      menu.querySelector('[data-x="zip"]').addEventListener('click', () => { const ids = selectedIds(); const all = ids.length ? ids : shownIds(); if (all.length) window.open(rUrl(`/api/export/bundle.zip?ids=${all.join(',')}`), '_blank'); });
       menu.querySelector('[data-x="act"]').addEventListener('click', () => openActualizeCsv());
     });
   });
@@ -542,12 +574,13 @@ function propertyListHtml(st) {
   S.dashYear = year;
   const rows = subjects.map((p) => {
     const mine = st.budgets.filter((b) => b.property_code === p.code);
-    const b = mine.filter((x) => x.year === year).sort((x, y) => new Date(y.updated_at) - new Date(x.updated_at))[0] || null;
+    const bs = mine.filter((x) => x.year === year).sort((x, y) => new Date(y.updated_at) - new Date(x.updated_at));
+    const b = bs[0] || null;
     const others = [...new Set(mine.filter((x) => x.year !== year).map((x) => x.year))].sort((a, c) => c - a);
     const reports = propertyReports(st, p.code, b, year);
     const missingReq = reports.filter((r) => r.need === 'required' && !r.ok);
     const missingRec = reports.filter((r) => r.need === 'recommended' && !r.ok);
-    return { p, b, others, reports, missingReq, missingRec };
+    return { p, b, bs, others, reports, missingReq, missingRec };
   });
   const notStarted = rows.filter((r) => !r.b).length;
   const html = `
@@ -577,7 +610,8 @@ function wirePropertyList(el, pl) {
   // straight into the budget from the row (Troy 2026-11-09) — no need to unfold the property first
   el.querySelectorAll('[data-rowopen]').forEach((b) => b.addEventListener('click', async (e) => { e.stopPropagation(); await openBudget(Number(b.dataset.rowopen)); }));
   el.querySelectorAll('[data-rowstart]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); S.nb = { prop: b.dataset.rowstart, year: pl.year }; S.newType = 'annual'; newBudgetDialog(); }));
-  el.querySelectorAll('tr.pclick').forEach((tr) => tr.addEventListener('click', () => {
+  el.querySelectorAll('.pclick, .pname').forEach((tr) => tr.addEventListener('click', (e) => {
+    e.stopPropagation();
     const code = tr.dataset.p;
     const det = el.querySelector(`tr.pdetail[data-pd="${code}"]`);
     const open = !det.hidden;

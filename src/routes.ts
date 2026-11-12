@@ -7,7 +7,7 @@ import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayro
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
   acqCalendarPlan, applyPlanSlice, postedSinceClosing, y1MonthsIn, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
-  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
 import { planApply, type ApplyRow, type ApplyPlan } from '../shared/reviewApply.js';
@@ -123,7 +123,7 @@ router.get('/state', h(async (_req, res) => {
         .sort((x, y) => (y.year - x.year) || (new Date(y.updated_at).getTime() - new Date(x.updated_at).getTime()))[0];
       const ud0 = acqAny ? uwData.get(acqAny.uw_snapshot_id) : null;
       const insB = ud0?.basis?.['6']?.y1;
-      const insRate = insB && insB.kind === 'perUnit' ? Number(insB.value) : ud0 && Number(ud0.units) && ud0.y1?.['6'] ? Math.abs(Number(ud0.y1['6'])) / Number(ud0.units) : null;
+      const insRate = elevatedInsuranceRate(insB && insB.kind === 'perUnit' ? Number(insB.value) : ud0 && Number(ud0.units) && ud0.y1?.['6'] ? Math.abs(Number(ud0.y1['6'])) / Number(ud0.units) : null, stateGuidance);
       const gr = t12g ? guidanceCheck({ lines: ls as any, coaList: coa, t12: t12g.cal, cyBudget: cyd ? stmtCalendar(cyd) : null, lastMonth: t12g.lastMonth || 10,
         startMonth: Number(b.inputs?.startMonth) || 1, units: Number(b.inputs?.units) || Number(b.units) || 0, capital: Number(b.inputs?.capital) || 0, guidance: stateGuidance, insurancePerUnit: insRate }) : null;
       if (gr) guide = { growth: gr.growth, flags: gr.flags, bad: gr.bad, miss: gr.items.filter((i) => i.status === 'check' || i.status === 'bad').map((i) => i.label) };
@@ -1019,7 +1019,9 @@ function effectiveLines(lb: LoadedBudget): BudgetLine[] {
 
 /** The site's own insurance $/unit in its UW model (acquisition budgets, and a new acquisition's annual budget through
     its Year-1 plan): the basis when on file, else the UW insurance category over the UW units. Null = no UW. Troy
-    2026-11-12: "CWND and RRND have elevated insurance rates in the model, so don't suggest changing things like that". */
+    2026-11-12: "CWND and RRND have elevated insurance rates in the model, so don't suggest changing things like that",
+    then: "For new sites at $285, they go to $275, as they are 'normal' properties. ie they are not in a flood zone" —
+    so only an ELEVATED rate counts (`elevatedInsuranceRate`: more than 10% over the guidance rate); else null. */
 function uwInsuranceRate(lb: LoadedBudget): number | null {
   const pick = (u: any): number | null => {
     if (!u) return null;
@@ -1028,10 +1030,9 @@ function uwInsuranceRate(lb: LoadedBudget): number | null {
     const n = Number(u.units) || Number(lb.budget.inputs?.units) || 0;
     return n && u.y1?.['6'] ? Math.abs(Number(u.y1['6'])) / n : null;
   };
-  const own = lb.annual ? pick(lb.y1Plan?.uw) : pick(lb.uw);
-  if (own) return Math.round(own * 100) / 100;
-  const lb6 = (lb.uwBasisLatest?.basis as any)?.['6']?.y1;
-  return lb.y1Plan && lb6 && lb6.kind === 'perUnit' ? Number(lb6.value) : null;
+  let own = lb.annual ? pick(lb.y1Plan?.uw) : pick(lb.uw);
+  if (!own) { const lb6 = (lb.uwBasisLatest?.basis as any)?.['6']?.y1; own = lb.y1Plan && lb6 && lb6.kind === 'perUnit' ? Number(lb6.value) : null; }
+  return elevatedInsuranceRate(own, lb.guidance);
 }
 
 /** UW basis vs actuals (Troy 2026-11-12, the 06.30.2026 UW books: "You should be able to fully tell how these were

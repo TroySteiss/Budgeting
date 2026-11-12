@@ -1028,6 +1028,15 @@ export const DEFAULT_GUIDANCE: BudgetGuidance = {
   incomePct: 0.03, expensePct: 0.03, spreadMax: 0.005, noiPct: 0.025, noiVsCyBudget: true, marchVsLastPct: 0.015,
   insurancePerUnit: 275, reTaxPct: 0.03, payrollPct: 0.035, expenseMax: 0.035, payrollMax: 0.04, spPctCapital: 0.02, tolerance: 0.0025,
 };
+/** A site's own UW insurance $/unit counts only when it is ELEVATED (a flood zone, a lender-required policy): more than
+    `ELEVATED_INSURANCE_FACTOR` over the guidance rate. Troy 2026-11-12: CWND / RRND ($360) keep theirs; "For new sites
+    at $285, they go to $275, as they are 'normal' properties. ie they are not in a flood zone". Else null. */
+export const ELEVATED_INSURANCE_FACTOR = 1.1;
+export function elevatedInsuranceRate(rate: number | null | undefined, guidance?: Partial<BudgetGuidance> | null): number | null {
+  const g = Number(guidance?.insurancePerUnit) || DEFAULT_GUIDANCE.insurancePerUnit;
+  const r = Number(rate) || 0;
+  return r > g * ELEVATED_INSURANCE_FACTOR ? Math.round(r * 100) / 100 : null;
+}
 /** The ceilings in force: never under the target number itself. */
 export const expenseCeil = (G: BudgetGuidance): number => Math.max(G.expensePct, G.expenseMax ?? G.expensePct);
 export const payrollCeil = (G: BudgetGuidance): number => Math.max(G.payrollPct, G.payrollMax ?? G.payrollPct);

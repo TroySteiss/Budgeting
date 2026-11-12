@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, mgmtFeeRates, summaryColumn, sumSummaryCols, summaryLabels, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, contractMonths, flatFeeFromSchedule, guidanceCheck, fitToT12, noiQuarters, qShiftTargets, normalizeGuidance, type TemplateData, type AnnualSources,
+  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, contractMonths, flatFeeFromSchedule, guidanceCheck, elevatedInsuranceRate, fitToT12, noiQuarters, qShiftTargets, normalizeGuidance, type TemplateData, type AnnualSources,
   refollowMgmtFee,
 } from '../shared/annual.js';
 import { sum, zero12, rollup, CURVES, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
@@ -1634,6 +1634,11 @@ describe('guidanceCheck', () => {
     const own = guidanceCheck({ lines: at360, coaList, t12: actual, lastMonth: 10, units: 10, capital: 100000, insurancePerUnit: 360 })!.items.find((i) => i.key === 'ins')!;
     expect(own.status).toBe('ok');
     expect(own.target).toBe("$360 or less (this site's UW rate)");
+    // only an ELEVATED UW rate counts (flood zone / lender policy): $360 is kept, $285 sites go to the $275 guidance
+    expect(elevatedInsuranceRate(360, { insurancePerUnit: 275 })).toBe(360);
+    expect(elevatedInsuranceRate(285, { insurancePerUnit: 275 })).toBeNull();
+    expect(elevatedInsuranceRate(302.5, null)).toBeNull();               // 10% over is still normal
+    expect(elevatedInsuranceRate(null, null)).toBeNull();
     expect(r.items.find((i) => i.key === 'sp')!.status).toBe('check');  // nothing budgeted
     expect(r.quarters.length).toBe(4);
     expect(guidanceCheck({ lines, coaList, t12: null, lastMonth: 10, units: 10, capital: 0 })).toBeNull();
