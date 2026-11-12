@@ -1572,6 +1572,21 @@ describe('quarter shift', () => {
     expect((L(sh, '6402').driver as any).qShift).toBeUndefined();   // not picked: untouched
     expect(L(sh, '6402').months).toEqual(L(base, '6402').months);
   });
+  it('fixed-schedule lines never carry the shift, even when picked: RE taxes, insurance, payroll (Troy 2026-11-11)', () => {
+    const q1 = N0[0] / yearNoi - 0.01, q4 = N0[3] / yearNoi + 0.01;
+    const fixed = coaList.filter((a) => a.kind === 'detail' && ['6', '8', '10'].includes(String(a.pcode))).map((a) => a.code);
+    const sh = generateAnnualLines(coaList, { ...inputs, mgmtPct: 0.04, qShift: { targets: [q1, null, null, q4], gls: ['6302', '6604', '6620', '6702', ...fixed] } }, src);
+    let seen = 0;
+    for (const gl of fixed) {
+      const was = base.find((l) => l.gl_code === gl); const now = sh.find((l) => l.gl_code === gl);
+      if (!was || !now || !sum(was.months)) continue;
+      seen++;
+      expect((now.driver as any).qShift).toBeUndefined();
+      expect(now.months).toEqual(was.months);
+    }
+    expect(seen).toBeGreaterThan(0);
+    expect((L(sh, '6604').driver as any).qShift).toBeTruthy();   // the shiftable lines still carry it
+  });
   it('vacancy timing moves income; the fee follows; year NOI kept', () => {
     const q1 = N0[0] / yearNoi - 0.005;
     const sh = generateAnnualLines(coaList, { ...inputs, mgmtPct: 0.04, qShift: { targets: [q1, null, null, null], vacancy: true } }, src);

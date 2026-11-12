@@ -2866,9 +2866,12 @@ function openQShift(b, targets) {
   const cur = inp.qShift || null;
   const coa = new Map(((S.state && S.state.coa) || []).map((a) => [a.code, a]));
   const lineBy = new Map((S.bv.lines || []).map((l) => [l.gl_code, l]));
-  const SKIP = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest', 'mgmtPct']);
-  // the lines that can carry it: operating expense GLs with dollars, not typed / contract / fee / debt
-  const cands = (S.bv.lines || []).filter((l) => { const n = Number(l.gl_code); return n >= 6101 && n <= 7069 && l.gl_code !== '6112' && !l.override && l.driver && !SKIP.has(l.driver.method) && sumM(l.months) > 0 && l.months.every((v) => v >= 0); })
+  // never levers (mirrors qShiftLeverOk, shared/annual.ts): insurance, the fee, RE & PP taxes and payroll follow
+  // a schedule; corporate rates / suggestions are corporate's; contracts, debt and typed lines were already out
+  const SKIP = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest', 'mgmtPct', 'corpRate', 'suggested']);
+  const FIXED_P = new Set(['6', '7', '8', '10']);
+  // the lines that can carry it: operating expense GLs with dollars whose timing is a choice
+  const cands = (S.bv.lines || []).filter((l) => { const n = Number(l.gl_code); return n >= 6101 && n <= 7069 && l.gl_code !== '6112' && !FIXED_P.has(String((coa.get(l.gl_code) || {}).pcode)) && !l.override && l.driver && !SKIP.has(l.driver.method) && sumM(l.months) > 0 && l.months.every((v) => v >= 0); })
     .map((l) => ({ gl: l.gl_code, name: (coa.get(l.gl_code) || {}).name || '', section: (coa.get(l.gl_code) || {}).section || '', annual: sumM(l.months) }))
     .sort((x, y) => Number(x.gl) - Number(y.gl));
   const bySec = {};

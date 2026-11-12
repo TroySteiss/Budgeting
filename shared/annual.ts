@@ -1106,6 +1106,16 @@ export function qShiftTargets(targets: (number | null)[], now: number[]): number
   const tot = now.reduce((a, b) => a + b, 0) || 1;
   return t.map((v, q) => (v != null ? v : freeNow ? rest * (now[q] / tot) / (freeNow / tot) : rest / free.length));
 }
+/** Lines that can NEVER carry a quarter shift (Troy 2026-11-11: "We cant quarter shift things like RE taxes").
+    Their months follow a schedule, not a choice: insurance (6) and RE & PP taxes (8) are billed / accrued on
+    a fixed schedule, the management fee (7) follows income, payroll (10) follows pay periods and the roster,
+    and corporate rates / suggestions are set by corporate. Contracts, debt and typed lines were already out. */
+export const QSHIFT_FIXED_PCODES = new Set(['6', '7', '8', '10']);
+export const QSHIFT_SKIP_METHODS = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest', 'mgmtPct', 'corpRate', 'suggested']);
+export function qShiftLeverOk(gl: string, acc: CoaAccount | undefined, method: string | undefined): boolean {
+  const n = parseInt(gl, 10);
+  return !!acc && acc.kind === 'detail' && n >= 6101 && n <= 7069 && gl !== '6112' && !QSHIFT_FIXED_PCODES.has(String(acc.pcode)) && !QSHIFT_SKIP_METHODS.has(String(method));
+}
 /** Solve the shift on the built lines in place. Returns the lever GLs moved and λ (1 = all the way). */
 export function quarterShiftSolve(lines: Map<string, BudgetLine>, coaByCode: Map<string, CoaAccount>, qs: QShift, afterMove?: () => void, ownT12?: (gl: string) => Months | null): { moved: string[]; lam: number; targets: number[] } | null {
   const N0 = qSums(noiOf(lines));
@@ -1115,14 +1125,13 @@ export function quarterShiftSolve(lines: Map<string, BudgetLine>, coaByCode: Map
   if (!shares) return null;
   const D = shares.map((v) => v * N);
   const floor = Math.min(0.95, Math.max(0, qs.floor ?? 0.5));
-  const LEVER_SKIP = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest', 'mgmtPct']);
   // the levers, as positive quarter amounts: expense lines as posted, vacancy as its magnitude
   // `fixed` = the part of the line that does not move (the T12 under an increase lever); `fl` = its own floor
   type Lever = { gl: string; sign: 1 | -1; base: Months; Q: number[]; A: number; fixed?: Months; fl?: number };
   const levers: Lever[] = [];
   for (const gl of qs.gls || []) {
-    const ln = lines.get(gl); const acc = coaByCode.get(gl); const n = parseInt(gl, 10);
-    if (!ln || !acc || acc.kind !== 'detail' || !(n >= 6101 && n <= 7069) || gl === '6112' || LEVER_SKIP.has((ln.driver as any)?.method)) continue;
+    const ln = lines.get(gl); const acc = coaByCode.get(gl);
+    if (!ln || !qShiftLeverOk(gl, acc, (ln.driver as any)?.method)) continue;
     const Q = qSums(ln.months); const A = Q.reduce((a, b) => a + b, 0);
     if (A > 0 && Q.every((v) => v >= 0)) levers.push({ gl, sign: 1, base: ln.months.slice() as Months, Q, A });
   }
