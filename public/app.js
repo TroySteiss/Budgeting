@@ -52,6 +52,8 @@ function drvMeta(l) {
 const SHAPE_CHIP = { actual: ['drv-base', 'SAME MO'], wavg: ['drv-base', 'WAVG'], flat: ['drv-base', 'T12/12'], curve: ['drv-base', 'CURVE'], avgnz: ['drv-base', 'AVG≠0'], last: ['drv-base', 'LAST'], turns: ['drv-base', 'TURNS'] };
 const chipHtml = (cls, tag) => `<span class="drv ${cls} optchip">${esc(tag)}</span>`;
 const shapeChip = (k) => (SHAPE_CHIP[k] ? chipHtml(SHAPE_CHIP[k][0], SHAPE_CHIP[k][1]) : '');
+/** does this GL have a real seasonal curve (electric, heat, snow …)? With none, "seasonal curve" is just T12 ÷ 12 */
+const glHasCurve = (gl) => { const a = ((S.state && S.state.coa) || []).find((x) => x.code === gl); return !!(a && a.curve && a.curve !== 'flat'); };
 /* <select> options cannot hold a chip: they carry the tag and the chip's colours instead */
 const _chipStyleCache = {};
 function chipStyle(cls) {
@@ -133,9 +135,12 @@ function drvMetaBase(l) {
     /* ---- annual (template) rules ---- */
     case 'baseline': {
       const d = l.driver;
-      const shape = { actual: 'same calendar month', wavg: '1-2-1 weighted distribution', flat: 'T12 ÷ 12 flat', curve: `T12 total on the GL curve${d.fit ? `, fit ${Math.round(d.fit * 100)}% to its own T12 months` : ''}`, last: 'last actual month, flat', avgnz: 'average of active months, flat', turns: `turnover curve: T12 total on lease expirations + 1 mo lag${d.turns ? ` (${Math.round(d.turns)} expirations)` : ''}${d.fit ? `, fit ${Math.round(d.fit * 100)}% to its own T12 months` : ''}` }[d.shape] || d.shape;
+      let shape = { actual: 'same calendar month', wavg: '1-2-1 weighted distribution', flat: 'T12 ÷ 12 flat', curve: `T12 total on the GL curve${d.fit ? `, fit ${Math.round(d.fit * 100)}% to its own T12 months` : ''}`, last: 'last actual month, flat', avgnz: 'average of active months, flat', turns: `turnover curve: T12 total on lease expirations + 1 mo lag${d.turns ? ` (${Math.round(d.turns)} expirations)` : ''}${d.fit ? `, fit ${Math.round(d.fit * 100)}% to its own T12 months` : ''}` }[d.shape] || d.shape;
       const factor = d.pcts ? `+ Conservice forecast ${(Math.min(...d.pcts) * 100).toFixed(0)}–${(Math.max(...d.pcts) * 100).toFixed(0)}% by month` : `× ${(1 + (d.pct || 0)).toFixed(3)}`;
-      const tag = d.src === 'budget' ? 'CYB' : d.pcts ? 'UTIL' : (SHAPE_CHIP[d.shape] || SHAPE_CHIP.actual)[1];
+      // a GL with no seasonal curve on "curve" is exactly T12 ÷ 12 — show it as that, not CURVE (Troy 2026-11-11)
+      const flatCurve = d.shape === 'curve' && !glHasCurve(l.gl_code);
+      if (flatCurve) shape = `T12 ÷ 12 flat (this GL has no seasonal curve)${d.fit ? `, fit ${Math.round(d.fit * 100)}% to its own T12 months` : ''}`;
+      const tag = d.src === 'budget' ? 'CYB' : d.pcts ? 'UTIL' : flatCurve ? SHAPE_CHIP.flat[1] : (SHAPE_CHIP[d.shape] || SHAPE_CHIP.actual)[1];
       const foldTxt = d.folded ? ` · ${d.folded} credit month${d.folded === 1 ? '' : 's'} in the history folded into the other months (no negative budget months; total kept)` : '';
       const lastWarn = d.lastDev != null ? ` · ⚠ last actual month is ${d.lastDev > 0 ? '+' : ''}${Math.round(d.lastDev * 100)}% vs the T12 average — one month is setting the year (shape menu: T12 ÷ 12 flat)` : '';
       return { cls: 'drv-base', tag: d.lastDev != null ? '⚠LAST' : tag, label: `${d.src === 'budget' ? 'CY budget' : 'Own trailing-12 actual'} — ${shape} ${factor}${d.mult ? ` → MROUND $${d.mult}` : ''} · T12 ${Math.round(d.base || 0).toLocaleString()}${foldTxt}${d.drift ? ` · tilted ${(d.drift * 100).toFixed(1)}% January to December (costs drift up through the year; year total unchanged)` : ''}${d.rule ? ' · default shape and factor from the 2026 GRKS draft (not set for this property)' : ''}${lastWarn}` };
@@ -2188,13 +2193,18 @@ function secPctBoxHtml(bv, hdr, linesByGl) {
 /* ---- section formula (Troy 2026-11-10): one pick on a section header sets how every history-based
    line under it is built (e.g. Contractor off "T12 / 12"). Hand-typed lines and lines with their own
    formula (corporate rate, fee, suggestion) are not touched. ---- */
-const SEC_SHAPES = [['actual', 'Same month last year'], ['wavg', '1-2-1 weighted months'], ['flat', 'T12 ÷ 12, flat'], ['curve', 'T12 on the seasonal curve'], ['avgnz', 'Average of active months'], ['last', 'Last actual month, flat'], ['turns', 'Turnover curve (lease expirations + 1 month)']];
+/* ONE flat option (Troy 2026-11-11: "way too many options for flatlining, please cut all but main one"):
+   "Average of active months" and "Last actual month, flat" are no longer offered anywhere. Lines already on
+   them keep working and are labelled "(retired)" so nothing moves unasked. */
+const SEC_SHAPES = [['actual', 'Same month last year'], ['wavg', '1-2-1 weighted months'], ['flat', 'T12 ÷ 12, flat'], ['curve', 'T12 on the seasonal curve'], ['turns', 'Turnover curve (lease expirations + 1 month)']];
+const RETIRED_SHAPES = [['avgnz', 'Average of active months (retired)'], ['last', 'Last actual month, flat (retired)']];
+const shapeLabel = (k) => ([...SEC_SHAPES, ...RETIRED_SHAPES].find((x) => x[0] === k) || [k, k])[1];
 function secShapeHtml(hdr, shapesNow) {
   const now = [...shapesNow].filter(Boolean);
   if (!now.length) return '';
   const one = now.length === 1 ? now[0] : null;
   return `<select class="secshape-in" data-secshape="${esc(hdr.section)}" title="How every history-based line in ${esc(hdr.name)} is built. Picking one sets it on all of them and recalculates; hand-typed lines and lines with their own formula keep theirs. Then More → Copy section formulas to other budgets… to give the same change to other properties.">
-    <option value="" selected>${one ? `formula: ${SHAPE_CHIP[one] ? SHAPE_CHIP[one][1] + ' · ' : ''}` + esc((SEC_SHAPES.find((x) => x[0] === one) || [one, one])[1]) : 'formula: mixed'}</option>
+    <option value="" selected>${one ? `formula: ${SHAPE_CHIP[one] ? SHAPE_CHIP[one][1] + ' · ' : ''}` + esc(shapeLabel(one)) : 'formula: mixed'}</option>
     ${SEC_SHAPES.filter((x) => x[0] !== one).map(([k, t]) => shapeOpt(k, `set all to: ${t}`)).join('')}
     <option value="__clear">clear row choices (back to the default)</option>
     <option value="__defaults">change the DEFAULT for every budget…</option></select>`;
@@ -2310,7 +2320,7 @@ async function openDefaultFormulas(focusSection) {
   let d;
   try { d = await GET('/default-formulas'); } catch (e) { dlg.innerHTML = `<h2>Default formulas</h2><div class="err">${esc(e.message)}</div><div class="foot"><button class="btn sub" id="df-x">Close</button></div>`; dlg.querySelector('#df-x').addEventListener('click', () => dlg.close()); return; }
   const admin = !!(S.auth && S.auth.isAdmin);
-  const label = (k) => (SEC_SHAPES.find((x) => x[0] === k) || [k, k])[1];
+  const label = shapeLabel;
   const secs = [];
   for (const r of d.rows) { let s = secs.find((x) => x.key === r.section); if (!s) { s = { key: r.section, name: r.sectionName, rows: [] }; secs.push(s); } s.rows.push(r); }
   const dis = admin ? '' : 'disabled';
@@ -2324,7 +2334,7 @@ async function openDefaultFormulas(focusSection) {
         <div style="display:flex; align-items:center; gap:8px; margin:10px 0 4px; position:sticky; top:0; background:var(--card, #fff); padding:3px 0"><b style="text-transform:uppercase; font-size:12px; color:var(--dim)">${esc(s.name)}</b> <span class="muted" style="font-size:11.5px">${s.rows.length} lines</span>
           <select data-secset="${esc(s.key)}" ${dis} style="margin-left:auto"><option value="">set the whole section to…</option>${SEC_SHAPES.map(([k, t]) => shapeOpt(k, t)).join('')}<option value="__none">not set (built-in)</option></select></div>
         <table class="list" style="margin:0">${s.rows.map((r) => `<tr data-row="${r.gl}" data-find="${esc((r.gl + ' ' + r.name + ' ' + s.name).toLowerCase())}"><td style="width:46%">${r.gl} ${esc(r.name)}</td>
-          <td><select data-df="${r.gl}" data-was="${r.shape || ''}" ${dis}><option value="" ${r.shape ? '' : 'selected'}>not set — built-in: ${label(r.builtin)}${r.grks && r.grks !== r.builtin ? ` (old GRKS budgets: ${label(r.grks)})` : ''}</option>${SEC_SHAPES.map(([k, t]) => shapeOpt(k, t, r.shape === k ? 'selected' : '')).join('')}</select></td>
+          <td><select data-df="${r.gl}" data-was="${r.shape || ''}" ${dis}><option value="" ${r.shape ? '' : 'selected'}>not set — built-in: ${label(r.builtin)}${r.grks && r.grks !== r.builtin ? ` (old GRKS budgets: ${label(r.grks)})` : ''}</option>${[...SEC_SHAPES, ...RETIRED_SHAPES.filter((x) => x[0] === r.shape)].map(([k, t]) => shapeOpt(k, t, r.shape === k ? 'selected' : '')).join('')}</select></td>
           <td style="width:130px"><select data-cv="${r.gl}" data-was="${esc(r.curve)}" ${dis} title="The seasonal curve of this GL">${d.curves.map((c) => `<option value="${c}" ${r.curve === c ? 'selected' : ''}>${c} curve</option>`).join('')}</select></td></tr>`).join('')}</table></div>`).join('')}
     </div>
     <div class="err" id="df-err"></div>
@@ -2461,7 +2471,7 @@ function openCopyFormulasOut(b) {
     if (!s) { const h = coa.find((x) => x.kind === 'header' && x.section === a.section); s = { key: a.section, name: h ? h.name : String(a.section).replace(/_/g, ' '), n: 0, shapes: new Set() }; secs.push(s); }
     s.n++; if (l.driver.shape) s.shapes.add(l.driver.shape);
   }
-  const shapeTxt = (s) => [...s.shapes].map((k) => (SEC_SHAPES.find((x) => x[0] === k) || [k, k])[1]).join(', ');
+  const shapeTxt = (s) => [...s.shapes].map(shapeLabel).join(', ');
   const others = ((S.state && S.state.budgets) || []).filter((x) => x.budget_type === 'annual' && x.id !== b.id).sort((x, y) => (y.year - x.year) || String(x.property_code).localeCompare(String(y.property_code)));
   const sets = (S.state && S.state.formulaSets) || [];
   dlg.innerHTML = `<h2>Copy section formulas to other budgets</h2>
@@ -3628,17 +3638,17 @@ function openRowTools(b, gl, anchorBtn) {
     ${S.bv.annual && rowT12(gl) ? `<button data-act="flatGrow" title="This line = its trailing-12 total ÷ 12, the same every month, × (1 + the growth % you type). Works on ANY line with history — rent, loss to lease, vacancy, payroll, the fee, corporate lines included. It replaces the line's own formula until you put it back."><b>${dot('drv-base', 'flatGrow')}Flat + growth over T12… (T12 ${money(rowT12(gl))})</b></button>` : ''}
     ${S.bv.annual && ((inp.baseline || {}).glShape || {})[gl] ? `<button data-act="ownFormula" title="Drop the shape chosen on this row; the line goes back to its usual formula">${dot('drv-uw', 'ownFormula')}Back to this line's own formula</button>` : ''}
     <button data-act="zero">${dot('drv-int', 'zero')}Zero out row</button>
-    <button data-act="flatAnnual">${dot('drv-man', 'flatAnnual')}Flat — annual $ over the year…</button>
+    ${S.bv.annual ? '' : `<button data-act="flatAnnual">${dot('drv-man', 'flatAnnual')}Flat — annual $ over the year…</button>
     <button data-act="flatMonthly">${dot('drv-man', 'flatMonthly')}Flat — $ per month…</button>
-    <button data-act="grow">${dot('drv-man', 'grow')}Start $ /mo + growth %/mo…</button>
+    <button data-act="grow">${dot('drv-man', 'grow')}Start $ /mo + growth %/mo…</button>`}
     ${hasComp ? `<button data-act="minot">${dot('drv-comp', 'minot')}Minot $/unit × units (${money((S.bv.compWeights[gl] / S.bv.compUnits) * inp.units)}/yr, seasonal)</button>` : ''}
     ${hasComp && S.bv.compShapes && S.bv.compShapes[gl] ? `<button data-act="t3avg" title="Weighted average of the comp's last 3 months (1-2-1), per-unit scaled, × (1+growth), rounded to $250 — your MROUND formula">${dot('drv-comp', 't3avg')}T3 actuals avg × growth → MROUND $250…</button>` : ''}
-    ${S.bv.annual ? `<button data-act="shape" title="Pick how this GL's own trailing-12 history becomes the budget: same month × factor (template), 1-2-1 weighted distribution, flat T12/12, last actual month flat, average of active months, or the T12 total on the GL's seasonal curve">${dot('drv-base', 'shape')}Own T12 → shape × factor…</button>` : ''}
+    ${S.bv.annual ? `<button data-act="shape" title="Pick how this GL's own trailing-12 history becomes the budget: same month × factor (template), 1-2-1 weighted distribution, the turnover curve, or the T12 total on the GL's seasonal curve (GLs that have one). Flat is the first item of this menu: Flat + growth over T12">${dot('drv-base', 'shape')}Own T12 → shape × factor…</button>` : ''}
     ${S.bv.annual && acc.pcode && ['1', 'loss', '2', '3'].includes(acc.pcode) && gl !== '4994' ? `<button data-act="pctgpr" title="This line as a % of budget GPR">${dot('drv-base', 'pctgpr')}% of GPR…</button>` : ''}
     ${S.bv.annual && S.bv.template && S.bv.template.suggestions && S.bv.template.suggestions[gl] && S.bv.template.suggestions[gl].some((v) => v) ? `<button data-act="suggest" title="${esc((S.bv.template.suggestionNotes[gl] || []).join('; '))}">${dot('drv-corp', 'suggest')}Corporate suggestion (${money(S.bv.template.suggestions[gl].reduce((a, v) => a + v, 0))}/yr)…</button>` : ''}
     ${(S.bv.sellerT12 || []).length ? `<button data-act="seller" title="${S.bv.annual ? 'This GL\'s own trailing-12 months × growth. No GL to pick: the row is the GL. Shift-click to take another statement line instead. A GL with no T12 offers its own current-year budget.' : 'Match this GL to a seller T12 line and take its monthly actuals × growth'}">${dot('drv-t12', 'seller')}${S.bv.annual ? 'Own T12 actuals × growth (this GL)' : 'Seller actuals — match a seller line…'}</button>` : ''}
     ${S.bv.annual && fcBudgetRow(S.bv, gl) ? `<button data-act="ownBudget" title="This GL's own current-year budget, month by month, × growth. It is read from the Yardi template along with the T12: no GL to pick.">${dot('drv-t12', 'ownBudget')}CY budget × growth (this GL · ${money(fcBudgetRow(S.bv, gl).total)})</button>` : ''}
-    ${(S.bv.sellerT12 || []).length ? `<button data-act="t12curve" title="${S.bv.annual ? 'Take a statement line\'s T12 total × growth and spread it on a clean seasonal curve' : 'For non-accrual seller billing (credits/gaps/spikes): the ANNUAL total is still right even when the months are garbage. Takes the seller line\'s T12 total × growth and spreads it on a clean seasonal curve.'}">${dot('drv-t12', 't12curve')}${S.bv.annual ? 'T12 TOTAL → seasonal curve… (this GL)' : 'Seller T12 TOTAL → seasonal curve… (bad bills)'}</button>` : ''}
+    ${(S.bv.sellerT12 || []).length && !(S.bv.annual && !glHasCurve(gl)) ? `<button data-act="t12curve" title="${S.bv.annual ? 'Take a statement line\'s T12 total × growth and spread it on a clean seasonal curve' : 'For non-accrual seller billing (credits/gaps/spikes): the ANNUAL total is still right even when the months are garbage. Takes the seller line\'s T12 total × growth and spreads it on a clean seasonal curve.'}">${dot('drv-t12', 't12curve')}${S.bv.annual ? 'T12 TOTAL → seasonal curve… (this GL)' : 'Seller T12 TOTAL → seasonal curve… (bad bills)'}</button>` : ''}
     <button data-act="link" title="Set this GL equal to another budget line × a weight (e.g. sewer = water × 0.8). LIVE: re-follows the source on every regeneration.">${dot('drv-fee', 'link')}= another line × weight… (moves in conjunction)</button>
     ${line && line.months.some((v) => v) ? `<button data-act="smooth" title="Gentle: only the months that are wrong move. A spike gives its excess to the low months next to it and a credit month is netted against the nearest high month; ordinary months are not touched. A line with nothing wrong is left alone unless you ask for a light pass. No negative months; every month rounded to $5, so the total can move by a few dollars. The line keeps its formula chip and gains a SMOOTH chip.">${dot('drv-t12', 'smooth')}Smooth missed bills — spikes into surrounding months</button>` : ''}
     ${line && (line.driver || {}).method === 'recovery' ? `<button data-act="recmap" title="Pick exactly which utility expense lines this reimbursement recovers (recovery % × their prior month). Claims are exclusive — a line you take here is released by whichever reim had it.">${dot('drv-t12', 'recmap')}Edit what this reim recovers…</button>` : ''}
@@ -5450,7 +5460,7 @@ function moveOutsHtml(tpl, exp) {
   return `<div class="fld" style="grid-column:1/-1"><label>PY move-outs (template MoveOuts sheet, reference only): ${sum(sch)} scheduled + ${sum(un)} unscheduled = ${sum(sch) + sum(un)} · colour = move-outs ÷ expirations (red over 40%, amber 30-40%)</label>
     <table style="font-size:11.5px;border-collapse:collapse"><tr>${MONTHS.map((m) => `<th style="text-align:right;font-weight:500;color:var(--muted);padding:1px 6px">${m}</th>`).join('')}</tr><tr>${cells}</tr></table></div>`;
 }
-const SHAPE_LABELS = { turns: 'Turnover curve: T12 total on lease expirations, +1 month lag', actual: 'Same month × factor (template default)', wavg: '1-2-1 weighted distribution × factor', flat: 'T12 total ÷ 12, flat', curve: 'T12 total on the GL seasonal curve', last: 'Last actual month, flat', avgnz: 'Average of active months, flat' };
+const SHAPE_LABELS = { turns: 'Turnover curve: T12 total on lease expirations, +1 month lag', actual: 'Same month × factor (template default)', wavg: '1-2-1 weighted distribution × factor', flat: 'T12 total ÷ 12, flat', curve: 'T12 total on the GL seasonal curve' };
 
 function annualInputsHtml(inp) {
   const g = inp.gpr || {};
@@ -5635,7 +5645,8 @@ function openShapeMenu(b, gl, acc, anchorBtn, inp) {
   menu.className = 'rowmenu';
   menu.innerHTML = `
     <div class="rm-head">${gl} ${esc(acc.name || '')} — own history → budget</div>
-    ${Object.entries(SHAPE_LABELS).map(([k, label]) => `<button data-sh="${k}">${shapeChip(k)} ${curShape === k ? '✓ ' : ''}${label}</button>`).join('')}
+    ${Object.entries(SHAPE_LABELS).filter(([k]) => (k !== 'curve' || glHasCurve(gl)) && (k !== 'flat' || curShape === 'flat')).map(([k, label]) => `<button data-sh="${k}">${shapeChip(k)} ${curShape === k ? '✓ ' : ''}${label}</button>`).join('')}
+    ${RETIRED_SHAPES.filter(([k]) => k === curShape).map(([k, t]) => `<button data-sh="${k}" disabled title="No longer offered; this line keeps it until you pick another">${shapeChip(k)} ✓ ${t}</button>`).join('')}
     <button data-sh="" style="color:var(--dim)">Template default for this GL</button>
     ${hasT12(gl) && !(line && line.driver && FIT_SKIP.has(line.driver.method) && !line.override) ? `<div class="rm-head" style="margin-top:4px">Monthly spread</div><button data-fit="1" title="Lean this line's months toward its own trailing-12 months; the year total does not change">Fit to T12 %… <span class="muted">(now ${Math.round(((bl.glFit || {})[gl] ?? fitOfLine(line)) * 100)}%)</span></button>` : ''}`;
   const r = anchorBtn.getBoundingClientRect();
