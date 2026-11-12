@@ -1,7 +1,7 @@
 import { rosterWagesFor, rosterCoverage, type RosterLink } from './payroll-data.js';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import multer from 'multer';
-import { query, tx, inRegion, regionOfRequest } from './db.js';
+import { query, tx, inRegion, regionOfRequest, currentRegion } from './db.js';
 import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
@@ -9,6 +9,7 @@ import {
   acqCalendarPlan, applyPlanSlice, postedSinceClosing, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
   refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
+import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
 import {
@@ -172,6 +173,30 @@ router.get('/state', h(async (_req, res) => {
     requiredLines: await loadRequiredLines(),
     guidance: stateGuidance,
   });
+}));
+
+/* ---- budget review checklist (Troy 2026-11-12, the "Budget Review" workbook): per region, null = the region's
+   built-in rules (shared/review.ts). The Summary tab's Review view checks every budget against them. ---- */
+async function loadReviewRules(): Promise<{ rules: ReviewRule[]; isDefault: boolean }> {
+  const region = currentRegion() === 'kc' ? 'kc' : 'nd';
+  try {
+    const v = (await query('select review_rules from app_meta where id=1')).rows[0]?.review_rules;
+    const r = normalizeReviewRules(v);
+    if (r) return { rules: r, isDefault: false };
+  } catch { /* column not migrated yet */ }
+  return { rules: DEFAULT_REVIEW_RULES[region], isDefault: true };
+}
+router.get('/review-rules', h(async (_req, res) => {
+  const r = await loadReviewRules();
+  res.json({ ...r, kinds: REVIEW_KINDS, defaults: DEFAULT_REVIEW_RULES[currentRegion() === 'kc' ? 'kc' : 'nd'] });
+}));
+router.put('/review-rules', requireAdmin, h(async (req, res) => {
+  // { rules: [...] } saves this region's list; { reset: true } goes back to the built-in rules
+  const rules = req.body?.reset ? null : normalizeReviewRules(req.body?.rules);
+  if (!req.body?.reset && !rules) return res.status(400).json({ error: 'rules must be a list' });
+  await query('update app_meta set review_rules=$1 where id=1', [rules ? JSON.stringify(rules) : null]);
+  logChange(req.session.username || '', 'budget review rules', { n: rules ? rules.length : 'defaults' });
+  res.json({ ...(await loadReviewRules()), kinds: REVIEW_KINDS });
 }));
 
 /* ---- budget guidance ranges (per region; exec team 2027 guidance by default) ---- */
@@ -1762,16 +1787,23 @@ router.get('/summary', h(async (req, res) => {
        from budgets b join properties p on p.code = b.property_code
       where b.year = $1 order by b.property_code, b.updated_at desc`, [year])).rows as any[];
   const out: any[] = [];
+  const review = await loadReviewRules();
   for (const r of rows) {
     const lb = await loadBudget(r.id);
     if (!lb) continue;
     const lines = effectiveLines(lb);
+    // the review checklist: each rule on this budget's months laid out Jan..Dec, against its own trailing-12
+    const sm = Number(lb.budget.inputs?.startMonth) || 1;
+    const calOf = (m: Months | undefined): number[] | null => (m ? Array.from({ length: 12 }, (_, c) => m[(c - (sm - 1) + 12) % 12] || 0) : null);
+    const byGl = new Map(lines.map((l) => [l.gl_code, l.months]));
+    const unitsR = Number(lb.budget.inputs?.units) || Number(r.units) || 0;
+    const reviewRes = review.rules.map((rule) => reviewCell(rule, { code: r.property_code, months: calOf(byGl.get(rule.gl)), t12: lb.annual && lb.actualCal ? (lb.actualCal[rule.gl] || null) : undefined, units: unitsR }));
     out.push({ id: r.id, code: r.property_code, name: r.name, region: String(r.market || '').trim() || 'Other', type: r.budget_type, status: r.status, updatedAt: r.updated_at,
                stale: lb.budget.calc_version !== ENGINE_VERSION, ...summaryOf(lb, lines), units: Number(lb.budget.inputs?.units) || Number(r.units) || 0,
-               cmp: compareOf(lb, lines) });
+               cmp: compareOf(lb, lines), review: reviewRes });
   }
   const years = (await query('select distinct year from budgets order by year desc')).rows.map((x: any) => Number(x.year));
-  res.json({ year, years, properties: out, guidance: await loadGuidance() });
+  res.json({ year, years, properties: out, guidance: await loadGuidance(), reviewRules: review.rules, reviewDefault: review.isDefault });
 }));
 /* Rename the Summary panel's column headers ("Nov. 23 T12" …) — no recalculation. */
 router.post('/budgets/:id/summary-labels', h(async (req, res) => {

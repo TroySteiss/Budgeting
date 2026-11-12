@@ -253,7 +253,7 @@ async function switchRegion(r) {
   S.region = r;
   try { localStorage.setItem('bt-region', r); } catch {}
   document.body.dataset.region = r;
-  S.view = 'dash'; S.bv = null; S.pendingRow = null; S.sum = null; S.err = '';
+  S.view = 'dash'; S.bv = null; S.pendingRow = null; S.sum = null; S.revRules = null; S.err = '';
   S.undo = { budgetId: null, stack: [] };
   S.upload = { kind: 'yardi_template', files: [], parsed: null, busy: false, msg: '', err: '' };
   S.pay = { st: null, cycle: null, cycleId: null, region: '*', iterId: null, compare: true, loading: false, err: '', msg: '', newCycle: false };
@@ -5417,6 +5417,60 @@ function wirePayAdmin(el, st) {
   }));
 }
 
+/* ---- Settings -> Budget review checklist (Troy 2026-11-12, the "Budget Review" workbook): this region's rules, one
+   per known pattern; the Summary tab's Review view checks every budget against them. Loaded on first view of
+   Settings (GET /review-rules); admins edit, add, remove, or go back to the built-in rules. ---- */
+function reviewRulesSettingsHtml() {
+  if (!S.revRules) { GET('/review-rules').then((r) => { S.revRules = r; render(); }).catch(() => {}); return '<div class="card"><h2>Budget review checklist</h2><p class="muted">Loading…</p></div>'; }
+  const R = S.revRules, admin = S.auth.isAdmin;
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const kindOf = (k) => R.kinds.find((x) => x.kind === k) || {};
+  const row = (r, i) => {
+    const k = kindOf(r.kind);
+    if (!admin) return `<tr><td><b>${esc(r.gl)}</b></td><td>${esc(r.label)}</td><td>${esc(k.label || r.kind)}${k.month && r.month ? ` · ${MON[r.month - 1]}` : ''}${k.amount && r.amount != null ? ` · $${r.amount}` : ''}${k.pct && r.pct != null ? ` · ${+(r.pct * 100).toFixed(2)}%` : ''}</td><td>${esc((r.props || []).join(', ').toUpperCase()) || 'all'}</td></tr>`;
+    return `<tr data-rvi="${i}">
+      <td><input data-rf="gl" value="${esc(r.gl)}" style="width:52px"></td>
+      <td><input data-rf="label" value="${esc(r.label)}" style="width:100%; min-width:220px"></td>
+      <td><select data-rf="kind">${R.kinds.map((x) => `<option value="${x.kind}" ${x.kind === r.kind ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select></td>
+      <td><select data-rf="month" ${k.month ? '' : 'disabled'}><option value=""></option>${MON.map((m, j) => `<option value="${j + 1}" ${r.month === j + 1 ? 'selected' : ''}>${m}</option>`).join('')}</select></td>
+      <td><input data-rf="amount" value="${r.amount ?? ''}" ${k.amount ? '' : 'disabled'} style="width:62px; text-align:right" placeholder="$"></td>
+      <td><input data-rf="pct" value="${r.pct != null ? +(r.pct * 100).toFixed(3) : ''}" ${k.pct ? '' : 'disabled'} style="width:52px; text-align:right" placeholder="%"></td>
+      <td><input data-rf="props" value="${esc((r.props || []).join(', ').toUpperCase())}" placeholder="all" style="width:120px" title="Property codes the rule applies to, comma separated; blank = every property"></td>
+      <td><button class="rb" data-rvdel="${i}" title="Remove this rule">✕</button></td></tr>`;
+  };
+  return `<div class="card">
+    <h2>Budget review checklist <span class="badge">${R.rules.length}</span>${R.isDefault ? ' <span class="badge">built-in</span>' : ''}</h2>
+    <p class="muted" style="margin:0 0 6px">Known patterns every budget in this region is checked against on the Summary tab's <b>Review</b> view (from the budget review workbook): a month that should stand out, every month, quarterly, the same each quarter, zero, budgeted, a $ every month, $ per unit in a month, a % over the T12, or a reminder. Properties: blank = all; list codes to keep a rule to some (e.g. Healthy Homes on the KC sites). A checklist only: nothing is changed by it.</p>
+    <div style="overflow-x:auto"><table class="list rvset">
+      <tr><th>GL</th><th>What to look for</th><th>Check</th><th>Month</th><th>$</th><th>%</th><th>Properties</th>${admin ? '<th></th>' : ''}</tr>
+      ${R.rules.map(row).join('')}
+    </table></div>
+    ${admin ? `<div class="row" style="justify-content:space-between; margin-top:6px">
+      <span><button class="btn sub sm" id="rv-add">+ Add rule</button> ${R.isDefault ? '' : `<button class="btn sub sm" id="rv-reset" title="Forget this region's own list and use the built-in rules again">Use built-in rules</button>`}</span>
+      <button class="btn sm" id="rv-save">Save</button></div>` : ''}
+  </div>`;
+}
+function wireReviewRules(el) {
+  const R = S.revRules; if (!R || !S.auth.isAdmin) return;
+  // read the table back into rules (keeps edits when a row is added or removed before saving)
+  const read = () => [...el.querySelectorAll('tr[data-rvi]')].map((tr) => {
+    const v = (f) => { const x = tr.querySelector(`[data-rf="${f}"]`); return x ? x.value.trim() : ''; };
+    const r = R.rules[Number(tr.dataset.rvi)] || {};
+    return { id: r.id || `r${Date.now().toString(36)}${tr.dataset.rvi}`, gl: v('gl'), label: v('label'), kind: v('kind'),
+      month: v('month') ? Number(v('month')) : null, amount: v('amount') === '' ? null : Number(v('amount').replace(/[$,]/g, '')),
+      pct: v('pct') === '' ? null : Number(v('pct').replace(/%/g, '')) / 100, props: v('props').split(/[\s,]+/).map((c) => c.toLowerCase()).filter(Boolean) };
+  });
+  el.querySelectorAll('tr[data-rvi] [data-rf="kind"]').forEach((sel) => sel.addEventListener('change', () => { R.rules = read(); render(); }));
+  el.querySelectorAll('[data-rvdel]').forEach((b) => b.addEventListener('click', () => { const rs = read(); rs.splice(Number(b.dataset.rvdel), 1); R.rules = rs; render(); }));
+  { const a = el.querySelector('#rv-add'); if (a) a.addEventListener('click', () => { R.rules = [...read(), { id: `r${Date.now().toString(36)}`, gl: '', label: '', kind: 'peak', month: 1, amount: null, pct: null, props: [] }]; render(); }); }
+  { const x = el.querySelector('#rv-reset'); if (x) x.addEventListener('click', async () => { if (!confirm("Go back to the built-in review rules for this region? This region's own list is forgotten.")) return; S.revRules = { ...R, ...(await PUT('/review-rules', { reset: true })) }; S.sum = null; render(); }); }
+  { const sv = el.querySelector('#rv-save'); if (sv) sv.addEventListener('click', async () => {
+    const rs = read();
+    if (rs.some((r) => !/^\d{4}$/.test(r.gl))) { alert('Every rule needs a four-digit GL.'); return; }
+    try { S.revRules = { ...R, ...(await PUT('/review-rules', { rules: rs })) }; S.sum = null; render(); } catch (e) { alert(e.message); }
+  }); }
+}
+
 /* the region's budget guidance ranges (exec team 2027 guidance by default) */
 const GUIDANCE_FIELDS = [
   ['incomePct', 'Total income growth', true], ['expensePct', 'Total expense growth', true],
@@ -5453,6 +5507,7 @@ function renderSettings(el) {
       ${S.auth.isAdmin ? '<p class="muted">Edit a name or unit count and press Enter to save. Role saves when picked: a <b>subject</b> is budgeted here (dashboard list, New budget dialog); a <b>comp</b> is comparison data only. Changing it never touches comp sets or existing budgets.</p>' : ''}
     </div>
     ${guidanceSettingsHtml(st)}
+    ${reviewRulesSettingsHtml()}
     <div class="card">
       <h2>Required budget lines <span class="badge">${(st.requiredLines || []).length}</span></h2>
       <p class="muted" style="margin:0 0 6px">GLs every annual budget in this region must carry. A budget with one at zero is flagged under <b>Defaults in use</b> and before a Yardi export. One per line: <code>GL — why</code>.</p>
@@ -5482,6 +5537,7 @@ function renderSettings(el) {
     await POST('/properties', { ...p, code: p.code, name: box.value.trim(), portfolioId: p.portfolio_id });
     await refreshState(); render();
   }));
+  wireReviewRules(el);
   { const gs = el.querySelector('#gd-save'); if (gs) gs.addEventListener('click', async () => {
     const out = {};
     el.querySelectorAll('[data-gdk]').forEach((box) => {
@@ -6180,6 +6236,11 @@ function renderSummary(el) {
   if (S.sum.err) { el.innerHTML = `<div class="card"><p class="err">${esc(S.sum.err)}</p></div>`; return; }
   const d = S.sum.data, G = d.guidance || null;
   const store = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { /* storage blocked */ } return null; };
+  // two views of the same budgets: the numbers, and the review checklist (Troy 2026-11-12, "Budget Review" workbook)
+  if (!S.sumView) S.sumView = store('bt-sumview') || 'numbers';
+  const viewSeg = `<span class="edseg"><button data-sumview="numbers" class="${S.sumView === 'numbers' ? 'on' : ''}" title="Every property's budget against the T12 / UW, with the guidance colours">Numbers</button><button data-sumview="review" class="${S.sumView === 'review' ? 'on' : ''}" title="The budget review checklist: each known pattern (January rebates, April accounting fee, November gift cards, bonuses each quarter, snow removal...) checked on every budget">Review</button></span>`;
+  const wireView = () => el.querySelectorAll('[data-sumview]').forEach((b) => b.addEventListener('click', () => { S.sumView = b.dataset.sumview; store('bt-sumview', S.sumView); render(); }));
+  if (S.sumView === 'review') { renderReview(el, d, viewSeg); wireView(); return; }
   if (!S.sumMode) S.sumMode = store('bt-summode') || 'pct';
   if (S.sumDetail == null) S.sumDetail = store('bt-sumdetail') === '1';
   const mode = S.sumMode;
@@ -6269,6 +6330,7 @@ function renderSummary(el) {
       <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:8px; gap:8px; flex-wrap:wrap">
         <h2 style="margin:0">Summary <span class="badge">${d.properties.length} budgets</span></h2>
         <div class="row" style="align-items:center; gap:8px; flex-wrap:wrap">
+          ${viewSeg}
           <span class="edseg">${modeBtn('pct', 'Δ %', 'Growth of each subtotal over the T12 (UW Year 1 for acquisitions)')}${modeBtn('dlr', 'Δ $', 'Budget minus the T12 / UW, in dollars')}${modeBtn('bud', 'Budget $', 'The budget subtotal')}${modeBtn('ref', 'T12 $', 'The T12 (UW Year 1 for acquisitions) subtotal')}</span>
           <button class="btn sub sm" id="sum-detail" title="Show or hide GPR, loss to lease, concessions, vacancy, utility and other income">${S.sumDetail ? '▾ Hide' : '▸ Show'} income detail</button>
           <label class="muted" style="font-size:12px">Budget year</label><select id="sum-year">${[...new Set([d.year, ...d.years])].sort((a, b) => b - a).map((y) => `<option value="${y}" ${y === d.year ? 'selected' : ''}>${y}</option>`).join('')}</select>
@@ -6290,4 +6352,45 @@ function renderSummary(el) {
   el.querySelector('#sum-detail').addEventListener('click', () => { S.sumDetail = !S.sumDetail; store('bt-sumdetail', S.sumDetail ? '1' : '0'); render(); });
   el.querySelectorAll('[data-summode]').forEach((b) => b.addEventListener('click', () => { S.sumMode = b.dataset.summode; store('bt-summode', S.sumMode); render(); }));
   el.querySelectorAll('[data-sumopen]').forEach((tr) => tr.addEventListener('click', async () => { await openBudget(Number(tr.dataset.sumopen)); }));
+  wireView();
+}
+
+/* ---- the Review view (Troy 2026-11-12, the "Budget Review" workbook: "I would like the premise to be incorporated.
+   Maybe add it as a different view"): one row per checklist rule, one column per property (grouped by region, like
+   the workbook's columns by manager), Y / N / n/a with the workbook's kind of note ("Dec not Nov", "none last
+   year", "also high Jul"). Checked by the server (shared/review.ts) on each budget and its trailing-12. Rules are
+   edited under Settings -> Budget review checklist. ---- */
+function renderReview(el, d, viewSeg) {
+  const regions = [...new Set(d.properties.map((p) => p.region))].sort();
+  const props = regions.flatMap((rg) => d.properties.filter((p) => p.region === rg).sort((a, b) => a.code.localeCompare(b.code)));
+  const rules = d.reviewRules || [];
+  const sym = { y: 'Y', n: 'N', na: 'n/a', info: '·' };
+  const cellHtml = (res, p, r) => {
+    if (!res) return '<td class="muted">—</td>';
+    const tip = `${String(p.code).toUpperCase()} · ${r.gl} ${r.label}${res.text ? `: ${res.text}` : ''}`;
+    return `<td class="rv rv-${res.status}" title="${esc(tip)}"><b>${sym[res.status] || ''}</b>${res.text ? `<div class="rvn">${esc(res.text)}</div>` : ''}</td>`;
+  };
+  const misses = props.map((p) => (p.review || []).filter((x) => x && x.status === 'n').length);
+  el.innerHTML = `
+    <div class="card">
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:8px; gap:8px; flex-wrap:wrap">
+        <h2 style="margin:0">Summary <span class="badge">${d.properties.length} budgets</span></h2>
+        <div class="row" style="align-items:center; gap:8px; flex-wrap:wrap">
+          ${viewSeg}
+          <label class="muted" style="font-size:12px">Budget year</label><select id="sum-year">${[...new Set([d.year, ...d.years])].sort((a, b) => b - a).map((y) => `<option value="${y}" ${y === d.year ? 'selected' : ''}>${y}</option>`).join('')}</select>
+          <button class="btn sub sm" id="sum-refresh" title="Reload from the budgets as they stand now">↻ Refresh</button>
+        </div>
+      </div>
+      ${props.length && rules.length ? `<div class="sumwrap"><table class="sumtbl rvtbl">
+        <tr class="grp"><th class="l stick"></th>${regions.map((rg) => { const n = props.filter((p) => p.region === rg).length; return `<th class="c rvgrp" colspan="${n}">${esc(rg)}</th>`; }).join('')}</tr>
+        <tr><th class="l stick">Check</th>${props.map((p) => `<th class="c" title="${esc(p.name || '')}"><span class="rvp" data-sumopen="${p.id}">${esc(String(p.code).toUpperCase())}</span><div class="muted" style="text-transform:none; font-weight:400">${p.units ? `${xsNum(p.units)} u` : ''}</div></th>`).join('')}</tr>
+        ${rules.map((r, i) => `<tr><td class="l stick rvrule"><b>${esc(r.gl)}</b> ${esc(r.label)}${r.props && r.props.length ? ` <span class="muted">(${esc(r.props.join(', ').toUpperCase())})</span>` : ''}</td>${props.map((p) => cellHtml((p.review || [])[i], p, r)).join('')}</tr>`).join('')}
+        <tr class="sub"><td class="l stick">To look at</td>${misses.map((n) => `<td class="c ${n ? 'rv-n' : 'rv-y'}">${n || '✓'}</td>`).join('')}</tr>
+      </table></div>
+      <p class="muted" style="font-size:11.5px; margin:8px 0 0">Each row is a known pattern from the budget review workbook, checked on every property's latest ${d.year} budget (by calendar month) against its own trailing-12. <span class="gin-key">Y</span> = the budget follows it, <span class="gout-key">N</span> = it does not (the note says how), n/a = the rule is kept to other properties, · = a reminder to check by eye. "None last year" = the trailing-12 has nothing on that GL. Hover a cell for the detail; click a property to open it. ${d.reviewDefault ? 'These are the built-in rules for this region' : 'This region\'s own rules'}: edit them under Settings → Budget review checklist.</p>`
+      : `<p class="muted">${props.length ? 'No review rules for this region: add them under Settings → Budget review checklist.' : `No ${d.year} budgets yet.`}</p>`}
+    </div>`;
+  el.querySelector('#sum-year').addEventListener('change', (e) => loadSummary(Number(e.target.value)));
+  el.querySelector('#sum-refresh').addEventListener('click', () => loadSummary(d.year));
+  el.querySelectorAll('[data-sumopen]').forEach((x) => x.addEventListener('click', async () => { await openBudget(Number(x.dataset.sumopen)); }));
 }

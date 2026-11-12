@@ -593,3 +593,15 @@ table.sumtbl tr.sub td.gin, table.sumtbl tr.grand td.gin { background: color-mix
 table.sumtbl tr.sub td.gout, table.sumtbl tr.grand td.gout { background: color-mix(in srgb, var(--bad) 20%, var(--total-bg)); }
 .gin-key { color: var(--good); font-weight: 700; }
 .gout-key { color: var(--bad); font-weight: 700; }
+
+/* Summary tab, Review view (2026-11-12): the budget review checklist, rules x properties */
+table.rvtbl td.rv { text-align: center; vertical-align: top; min-width: 64px; max-width: 120px; white-space: normal; }
+table.rvtbl td.rv-y { background: color-mix(in srgb, var(--good) 13%, var(--panel)); color: var(--good); }
+table.rvtbl td.rv-n { background: color-mix(in srgb, var(--bad) 12%, var(--panel)); color: var(--bad); }
+table.rvtbl td.rv-na { color: var(--dim); }
+table.rvtbl td.rv-info { color: var(--dim); }
+table.rvtbl .rvn { font-size: 10.5px; font-weight: 400; line-height: 1.25; margin-top: 1px; }
+table.rvtbl td.rvrule { white-space: normal; min-width: 240px; max-width: 320px; }
+table.rvtbl th.rvgrp { border-left: 2px solid var(--line); }
+table.rvtbl .rvp { cursor: pointer; color: var(--accent); }
+table.rvtbl tr.sub td.rv-y, table.rvtbl tr.sub td.rv-n { font-weight: 700; }
