@@ -105,8 +105,10 @@ function drvMetaBase(l) {
       return { cls: 'drv-rr', tag: '%GPR', label: d.avg != null ? `Vacancy ${(d.avg * 100).toFixed(2)}% of GPR every month (set flat, or the lease expirations on file cover fewer than nine months)` : '% of GPR' };
     }
     case 'contract': {
-      const d = l.driver, items = (d.items || []).map((x) => `${x.vendor || 'contract'} $${money(x.annual)}`).join(' + ');
-      return { cls: 'drv-corp', tag: d.mode === 'add' ? 'CONTRACT+' : 'CONTRACT', label: `${d.mode === 'add' ? 'Formula plus known contracts' : 'Known contracts'}: ${items} (More → Contracts & known costs…)` };
+      const d = l.driver, items = (d.items || []).map((x) => `${x.vendor || 'contract'} $${money(x.annual)}${x.review ? ` [${x.review.rowId}]` : ''}`).join(' + ');
+      // contracts filed from the ND budget review workbook keep its teal (Troy 2026-11-12: their own chip and colour)
+      const fromReview = (d.items || []).some((x) => x.review);
+      return { cls: fromReview ? 'drv-rev' : 'drv-corp', tag: (d.mode === 'add' ? 'CONTRACT+' : 'CONTRACT') + (fromReview ? '·RV' : ''), label: `${d.mode === 'add' ? 'Formula plus known contracts' : 'Known contracts'}: ${items}${fromReview ? ' — [A…] = from the ND 2027 Budget Review; hover a teal month for the row' : ''} (More → Contracts & known costs…)` };
     }
     case 'flatFee': if (l.driver.schedule) return { cls: 'drv-rr', tag: 'FEE SCHED', label: `Flat-fee package schedule: $${money(l.driver.F, 2)} per occupied unit on the fee, $${money(l.driver.R, 2)} on RUBS until each lease switches at expiration (${Math.round((l.driver.share[0] || 0) * 100)}% on the fee in the first month, ${Math.round((l.driver.share[11] || 0) * 100)}% by the last) × budgeted occupancy; this GL takes ${Math.round((l.driver.weight || 0) * 1000) / 10}% of it (last actual month's mix)` };
       return { cls: 'drv-rr', tag: 'FLAT FEE', label: `Flat utility fee per occupied unit — ${MONTHS[(l.driver.lastMonth || 1) - 1]} actual $${money(l.driver.base || 0)} × budgeted occupancy ÷ ${((l.driver.occLast || 1) * 100).toFixed(1)}% occupied that month (ties to the vacancy assumption)${l.driver.pct ? ` × ${(l.driver.pct * 100).toFixed(1)}% fee increase` : ''}` };
@@ -1875,7 +1877,17 @@ function gridHtml(bv, totals) {
     const hard = hardSet === 'all';
     // cells set by the ND 2027 Budget Review: bold teal, hover = the review row(s) behind the number. A cell typed
     // over later is hand-typed (magenta) instead.
-    const rev = l && l.driver && l.driver.method === 'review' ? (l.driver.rev || {}) : null;
+    // a CONTRACT line filed from the review: its contracts carry the row and the months they bill
+    const revFromContracts = (d) => {
+      const cells = {}, rows = {};
+      for (const x of d.items || []) {
+        if (!x.review) continue;
+        rows[x.review.rowId] = x.review;
+        for (const i of x.months || []) (cells[i] = cells[i] || []).includes(x.review.rowId) || cells[i].push(x.review.rowId);
+      }
+      return Object.keys(rows).length ? { cells, rows, file: ((d.items || []).find((x) => x.review && x.review.file) || {}).review?.file } : null;
+    };
+    const rev = l && l.driver && l.driver.method === 'review' ? (l.driver.rev || {}) : l && l.driver && l.driver.method === 'contract' ? revFromContracts(l.driver) : null;
     const revAt = (i) => (rev && rev.cells && rev.cells[i] && !isHard(i) ? rev.cells[i] : null);
     const revTip = (i) => revAt(i).map((id) => { const r = (rev.rows || {})[id] || {}; return `${id} · ${r.action || ''} · ${r.item || ''}\n${r.firmness || ''}${r.basis ? ` — ${r.basis}` : ''}${r.source ? `\nSource: ${r.source}${r.contractsRow ? ` (Contracts row ${r.contractsRow})` : ''}` : ''}`; }).join('\n\n') + `\n\nND 2027 Budget Review${rev.file ? ` · ${rev.file}` : ''}`;
     const prm = cols.fx && l && !l.override ? paramFor(a.code, l, bv.budget.inputs || {}) : null;

@@ -91,6 +91,9 @@ export interface Contract {
   months?: number[] | null; billMonth?: number | null;
   stepMonth?: number | null; stepPct?: number | null;
   mode?: 'replace' | 'add'; source?: string;
+  /** set when the contract came from the ND budget review workbook's Apply tab: the row behind it, for the bold teal
+      cells and their hover (what the number is tied to) */
+  review?: { rowId: string; item: string; action: string; firmness: string; basis: string; source: string; contractsRow: string; file?: string };
 }
 /** Flat-fee utility package schedule: $/month per occupied unit by bedroom count, the unit count by
     bedroom count, the share of occupied units already on the flat fee at the last actual month,

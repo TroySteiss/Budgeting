@@ -21,16 +21,18 @@ describe('ND review apply plan', () => {
     const far = planApply([row({ rowId: 'A001', months: winter(14770), total: 88620 })], { site: 'bcnd', lines: lines({ '6934': m12(5000) }), t12: { '6934': m12(4000) } });
     expect(far.changes[0].flags).toEqual(['+85% vs the T12 (48,000)']);  // over 25%: still planned, flagged
   });
-  it('a floor only ever raises the pool, in proportion to the rows; a pool already above it is left alone', () => {
+  it('a floor under its rows makes them the contracts on their GLs; a pool already above it is left alone', () => {
     const fire = [
       row({ rowId: 'F1', gl: '6917', action: 'at_least', pool: ['6917', '6921'], months: [0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0, 0], total: 1000 }),
       row({ rowId: 'F2', gl: '6921', action: 'at_least', pool: ['6917', '6921'], months: m12(250), total: 3000 }),
     ];
     const low = planApply(fire, { site: 'BCND', lines: lines({ '6917': m12(0), '6921': m12(100) }), t12: null });   // pool 1,200 < 4,000
     const g17 = low.changes.find((c) => c.gl === '6917')!, g21 = low.changes.find((c) => c.gl === '6921')!;
-    expect(tot(g17.newMonths) + tot(g21.newMonths)).toBeCloseTo(4000, 2);
-    expect(tot(g17.newMonths)).toBeCloseTo(700, 2);                    // 2,800 shortfall × 1,000 / 4,000
-    expect(g17.newMonths[7]).toBeCloseTo(700, 2);                      // on the row's own month
+    expect(tot(g17.newMonths) + tot(g21.newMonths)).toBeCloseTo(4000, 2);   // the pool lands on the floor
+    expect(g17.newMonths[7]).toBe(1000);                               // the inspection, in its own month
+    expect(g21.newMonths).toEqual(m12(250));                           // the monitoring contract is the line
+    expect(g17.viaContracts && g21.viaContracts).toBe(true);
+    expect(low.contracts.map((c) => [c.gl, c.amount, c.months, c.mode, c.review!.rowId])).toEqual([['6917', 1000, [8], 'replace', 'F1'], ['6921', 250, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], 'replace', 'F2']]);
     const high = planApply(fire, { site: 'BCND', lines: lines({ '6917': m12(200), '6921': m12(200) }), t12: null });
     expect(high.changes).toHaveLength(0);
     expect(high.floorsMet).toEqual([{ pool: '6917+6921', budget: 4800, floor: 4000, rowIds: ['F1', 'F2'] }]);
@@ -54,12 +56,26 @@ describe('ND review apply plan', () => {
     expect(off.changes).toHaveLength(0);
     expect(off.skipped[0].why).toMatch(/not on its % of income formula/);
   });
+  it('set rows go into Contracts & known costs: one contract per monthly amount, typed contracts kept, earlier review ones replaced', () => {
+    const snow = row({ rowId: 'A001', item: 'Snow 2026-27 – Landscape Elements ND LLC', months: winter(14770), total: 88620, source: 'LE.pdf', contractsRow: '37' });
+    const p = planApply([snow], { site: 'BCND', lines: lines({ '6934': m12(5000) }), t12: null,
+      contracts: [{ vendor: 'Ice melt', gl: '6934', kind: 'annual', amount: 1200, billMonth: 1 }, { vendor: 'old', gl: '6934', kind: 'monthly', amount: 999, review: { rowId: 'A001', item: '', action: 'set', firmness: '', basis: '', source: '', contractsRow: '' } }] as any });
+    expect(p.contracts).toHaveLength(1);
+    expect(p.contracts[0]).toMatchObject({ id: 'rv-A001', vendor: 'Landscape Elements ND LLC', gl: '6934', kind: 'monthly', per: 'month', amount: 14770, months: [1, 2, 3, 4, 11, 12], mode: 'replace', review: { rowId: 'A001', contractsRow: '37' } });
+    const c = p.changes[0];
+    expect(c.newMonths[0]).toBe(14770 + 1200);                          // the typed ice-melt contract stays, the old review one is gone
+    expect(tot(c.newMonths)).toBe(88620 + 1200);
+    const step = planApply([row({ rowId: 'S1', gl: '6331', action: 'add', months: [0, 0, 0, 0, 0, 0, 500, 500, 500, 500, 500, 500].map((v, i) => (i < 6 ? 450 : v)), total: 5700 })], { site: 'BCND', lines: lines({ '6331': m12(275) }), t12: null });
+    expect(step.contracts.map((x) => [x.amount, (x.months || []).length, x.mode])).toEqual([[450, 6, 'add'], [500, 6, 'add']]);   // a mid-year change = two contracts
+    expect(step.changes[0].newMonths).toEqual([725, 725, 725, 725, 725, 725, 775, 775, 775, 775, 775, 775]);   // on top of the formula
+  });
   it('records which row set each month, and what each row is, for the hover on the cells', () => {
     const p = planApply([
       row({ rowId: 'G1', gl: '6808', months: [0, 0, 0, 7820, 0, 0, 0, 0, 0, 0, 0, 0], total: 7820, item: 'Gutters spring' }),
       row({ rowId: 'G2', gl: '6808', months: [0, 0, 0, 0, 0, 0, 0, 0, 0, 7820, 0, 0], total: 7820, item: 'Gutters fall', source: 'Kens.pdf', contractsRow: '12' }),
     ], { site: 'BCND', lines: lines({ '6808': [0, 0, 0, 0, 0, 610, 0, 0, 0, 0, 0, 0] }), t12: null });
-    expect(p.changes[0].cells).toEqual({ 3: ['G1'], 5: ['G1', 'G2'], 9: ['G2'] });   // June's 610 was zeroed by the set
+    expect(p.changes[0].cells).toEqual({ 3: ['G1'], 9: ['G2'] });       // the months the contracts bill
+    expect(p.changes[0].newMonths[5]).toBe(0);                            // June's 610: the contracts are the line now
     expect(p.rows.G2).toMatchObject({ item: 'Gutters fall', action: 'set', source: 'Kens.pdf', contractsRow: '12' });
   });
   it('trash (5169) and pest (5158) stay on their own GLs; the other reimbursements still fold into 5170 (Troy 2026-11-12)', () => {

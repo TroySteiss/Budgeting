@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, parseReviewApply, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
-  acqCalendarPlan, applyPlanSlice, postedSinceClosing, y1MonthsIn, uwCheck, sinceClosing, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
+  acqCalendarPlan, applyPlanSlice, postedSinceClosing, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
   refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
@@ -238,7 +238,7 @@ function planFor(rows: ApplyRow[], lb: LoadedBudget): ApplyPlan {
   const lines = new Map(lb.lines.map((l) => [l.gl_code, { months: calOfLine(l.months, sm), override: l.override, driver: l.driver }]));
   const ins = uwInsuranceRate(lb), units = Number(lb.budget.inputs?.units) || 0;
   const floors = ins && units ? { '6108': { annual: ins * units, why: `the UW model carries $${ins}/unit insurance for this site` } } : undefined;
-  return planApply(rows, { site: String(lb.budget.property_code), lines, t12: lb.actualCal || null, floors });
+  return planApply(rows, { site: String(lb.budget.property_code), lines, t12: lb.actualCal || null, floors, contracts: lb.budget.inputs?.contracts || [] });
 }
 function noiWith(lb: LoadedBudget, changes: ApplyPlan['changes']): number {
   const sm = Number(lb.budget.inputs?.startMonth) || 1;
@@ -302,7 +302,23 @@ router.post('/review-apply/apply', h(async (req, res) => {
     const at = new Date().toISOString();
     const lines = lb.lines.map((l) => ({ ...l }));
     const entries: any[] = [];
+    // contracts go into Contracts & known costs (Troy 2026-11-12): on each picked GL built from contracts, the review
+    // contracts of an earlier apply are replaced by this plan's; contracts typed by hand stay
+    const conGls = new Set(changes.filter((c) => c.viaContracts).map((c) => c.gl));
+    let contracts = [...(lb.budget.inputs?.contracts || [])].filter((c: any) => !(c && c.review && conGls.has(c.gl)));
+    contracts = [...contracts, ...plan.contracts.filter((c) => conGls.has(c.gl)).map((c) => ({ ...c, review: { ...c.review!, file: filename } }))];
+    const units = Number(lb.budget.inputs?.units) || 0;
     for (const c of changes) {
+      if (c.viaContracts) {
+        // built from its contracts exactly as the engine will on every recalculation: not locked, chip CONTRACT
+        let ln = lines.find((l) => l.gl_code === c.gl);
+        const old = ln ? sum(ln.months) : 0;
+        const cl = contractLine(contracts.filter((x: any) => x.gl === c.gl), units, sm, ln && !ln.override ? { months: ln.months, driver: ln.driver } : null);
+        if (!ln) { ln = { gl_code: c.gl, months: zero12(), driver: { method: 'manual' } as any, override: false, note: '' }; lines.push(ln); }
+        ln.months = cl.months; ln.driver = cl.driver as any; ln.override = false;
+        entries.push({ gl: c.gl, old: r2(old), new: r2(sum(ln.months)), rows: c.rowIds, kinds: c.kinds, flags: c.flags, contracts: true });
+        continue;
+      }
       let ln = lines.find((l) => l.gl_code === c.gl);
       if (!ln) { ln = { gl_code: c.gl, months: zero12(), driver: { method: 'manual' } as any, override: false, note: '' }; lines.push(ln); }
       const old = sum(ln.months);
@@ -320,6 +336,7 @@ router.post('/review-apply/apply', h(async (req, res) => {
       entries.push({ gl: c.gl, old: r2(old), new: r2(sum(ln.months)), rows: c.rowIds, kinds: c.kinds, flags: c.flags });
     }
     await saveLines(lb.budget.id, lines);
+    if (conGls.size) await query('update budgets set inputs=$2 where id=$1', [lb.budget.id, JSON.stringify({ ...(lb.budget.inputs || {}), contracts })]);
     await query('update budgets set updated_at=now() where id=$1', [lb.budget.id]);
     logChange(user, 'ND review apply', { id: lb.budget.id, site: lb.budget.property_code, file: filename, changes: entries });
     log.push({ budgetId: lb.budget.id, site: lb.budget.property_code, changes: entries });

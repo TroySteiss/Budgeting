@@ -953,6 +953,31 @@ export function contractMonths(c: Contract, units: number, startMonth = 1): Mont
   return out;
 }
 
+/** The contracts on file by GL (a GL off the chart or a zero amount is skipped). */
+export function contractsByGl(cs: Contract[] | null | undefined, onChart: (gl: string) => boolean): Map<string, Contract[]> {
+  const out = new Map<string, Contract[]>();
+  for (const c of cs || []) {
+    if (!c || !c.gl || !onChart(c.gl) || !(Number(c.amount) > 0)) continue;
+    if (!out.has(c.gl)) out.set(c.gl, []);
+    out.get(c.gl)!.push(c);
+  }
+  return out;
+}
+/** One GL's line from its contracts: their months summed — the whole line ('replace', when any contract replaces) or
+    on top of the line's own formula ('add', when all add). The driver lists each contract; a contract from the review
+    workbook carries its row and the months it fills (the grid marks those cells and names the row on hover). */
+export function contractLine(cs: Contract[], units: number, startMonth: number, prev: { months: Months; driver?: any } | null): { months: Months; driver: Record<string, any> } {
+  const add = cs.every((c) => c.mode === 'add');
+  const tot = zero12();
+  const items = cs.map((c) => {
+    const m = contractMonths(c, units, startMonth);
+    m.forEach((v, i) => { tot[i] = r2(tot[i] + v); });
+    return { vendor: c.vendor || '', annual: r2(sum(m)), kind: c.kind, ...(c.review ? { review: c.review, months: m.map((v, i) => (v ? i : -1)).filter((i) => i >= 0) } : {}) };
+  });
+  const months = add && prev ? prev.months.map((v, i) => r2(v + tot[i])) as Months : tot;
+  return { months, driver: { method: 'contract', mode: add ? 'add' : 'replace', items, ...(add && prev ? { base: prev.driver } : {}) } };
+}
+
 /** Recurring journal splits by site (KB A1: "Every month, 41.11% of common electric, sewer, trash,
     water, insurance, management fee and RE tax moves to TPNDC... Budget on the same basis"). */
 export const ALLOC_OUT_DEFAULTS: Record<string, { to: string; pct: number; gls: string[] }> = {
@@ -1823,23 +1848,9 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
 
   /* ---- known contracts and recurring costs (inputs.contracts): set the line, or sit on top of its
      formula. Before the fee, so a contracted income line (a commercial lease) is in its basis. ---- */
-  const byGlContracts = new Map<string, Contract[]>();
-  for (const c of inputs.contracts || []) {
-    if (!c || !c.gl || !coaByCode.has(c.gl) || !(Number(c.amount) > 0)) continue;
-    if (!byGlContracts.has(c.gl)) byGlContracts.set(c.gl, []);
-    byGlContracts.get(c.gl)!.push(c);
-  }
-  for (const [gl, cs] of byGlContracts) {
-    const add = cs.every((c) => c.mode === 'add');
-    const tot = zero12();
-    const items = cs.map((c) => {
-      const m = contractMonths(c, units, startMonth);
-      m.forEach((v, i) => { tot[i] = r2(tot[i] + v); });
-      return { vendor: c.vendor || '', annual: r2(sum(m)), kind: c.kind };
-    });
-    const prev = lines.get(gl);
-    const months = add && prev ? prev.months.map((v, i) => r2(v + tot[i])) as Months : tot;
-    mk(gl, months, { method: 'contract', mode: add ? 'add' : 'replace', items, ...(add && prev ? { base: prev.driver } : {}) } as any);
+  for (const [gl, cs] of contractsByGl(inputs.contracts, (gl) => coaByCode.has(gl))) {
+    const cl = contractLine(cs, units, startMonth, lines.get(gl) || null);
+    mk(gl, cl.months, cl.driver as any);
   }
 
   /* ---- FIT TO T12 on any line (bl.glFit, else the formula set's rule.fit): the line keeps its year
@@ -2196,7 +2207,8 @@ export function applyPlanSlice(lines: BudgetLine[], coaList: CoaAccount[], slice
   const mark = (gl: string) => { const x = meta ? meta(gl) : null; return x ? { y1: idx, acq: x } : { y1: idx }; };
   const out = lines.map((l) => {
     seen.add(l.gl_code);
-    if (!feedsNoi(l.gl_code) || l.override) return l;
+    // locked lines and CONTRACT lines are never moved: a known cost wins over the plan (Troy 2026-11-12)
+    if (!feedsNoi(l.gl_code) || l.override || (l.driver as any)?.method === 'contract') return l;
     const s = slice.get(l.gl_code); const m = [...l.months] as Months; let touched = false;
     for (const i of idx) { const v = s ? s[i] : 0; if (v || m[i]) touched = true; m[i] = v; }
     if (!touched) return l;

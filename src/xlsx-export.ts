@@ -89,9 +89,18 @@ const isHardCell = (ln: BudgetLine | undefined, i: number): boolean => { if (!ln
 /** Cells set by the ND 2027 Budget Review workbook (driver method 'review'): bold deep teal, as in the app, with an
     Excel note naming the review row(s) each one is tied to (Troy 2026-11-12). A cell typed over later is hard-coded. */
 const REVIEW_FONT = { size: 8, bold: true, color: { argb: 'FF00796B' } };
-const reviewRowsAt = (ln: BudgetLine | undefined, i: number): string[] | null => { const d = (ln?.driver as any) || {}; return d.method === 'review' && d.rev?.cells?.[i] ? d.rev.cells[i] : null; };
+// a REVIEW line (reclass / fee rate) carries rev.cells; a CONTRACT line filed from the review carries the row on each contract
+const revOf = (ln: BudgetLine | undefined): { cells: Record<number, string[]>; rows: Record<string, any>; file?: string } | null => {
+  const d = (ln?.driver as any) || {};
+  if (d.method === 'review') return d.rev || null;
+  if (d.method !== 'contract') return null;
+  const cells: Record<number, string[]> = {}, rows: Record<string, any> = {}; let file: string | undefined;
+  for (const x of d.items || []) { if (!x.review) continue; rows[x.review.rowId] = x.review; file = file || x.review.file; for (const i of x.months || []) { cells[i] = cells[i] || []; if (!cells[i].includes(x.review.rowId)) cells[i].push(x.review.rowId); } }
+  return Object.keys(rows).length ? { cells, rows, file } : null;
+};
+const reviewRowsAt = (ln: BudgetLine | undefined, i: number): string[] | null => { const r = revOf(ln); return r && r.cells?.[i] ? r.cells[i] : null; };
 const reviewNote = (ln: BudgetLine | undefined, i: number): string => {
-  const d = (ln?.driver as any) || {}; const ids = reviewRowsAt(ln, i) || [];
+  const d = { rev: revOf(ln) }; const ids = reviewRowsAt(ln, i) || [];
   return ids.map((id) => { const r = d.rev?.rows?.[id] || {}; return `${id} · ${r.action || ''} · ${r.item || ''}\n${r.firmness || ''}${r.basis ? ` — ${r.basis}` : ''}${r.source ? `\nSource: ${r.source}${r.contractsRow ? ` (Contracts row ${r.contractsRow})` : ''}` : ''}`; }).join('\n\n') + (d.rev?.file ? `\n\nFrom ${d.rev.file}` : '');
 };
 const MON3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
