@@ -141,6 +141,9 @@ export interface BudgetInputs {
   /** annual, new acquisition (Troy 2026-11-12): how far the posted months since closing move each category's GL mix
       away from the acquisition plan's (0 = the plan's mix, 1 = the posted mix; unset = ACQ_FIT_DEFAULT 50%) */
   acqFit?: number;
+  /** annual (Troy 2026-11-12): per payroll line, the properties its % of wages and monthly shape are borrowed from
+      (several = pooled: their wages and that GL added together). Wins over burdenFrom for that line. */
+  burdenFromGl?: Record<string, string[]>;
   /** annual: share of the previous month's delinquency (5035) collected as prior-period collections (5036); unset = the trailing-12 rate, capped at 100% */
   collectPct?: number;
   /** annual budgets: the per-GL formula rules this budget runs on — a COPY of the saved formula

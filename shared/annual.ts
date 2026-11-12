@@ -664,7 +664,7 @@ export interface FormulaSet {
   settings: {
     baseline?: Pick<NonNullable<BudgetInputs['baseline']>, 'source' | 'shape' | 'mround' | 'growthPct' | 'useUtilForecast' | 'costDrift'>;
     ltl?: { mode?: any; renewalPct?: number; burnoffRenew?: number; burnoffNew?: number; followGpr?: boolean };
-    vacancyExpWeight?: number; burdenBasis?: 't12' | 'budget' | 'mix'; burdenFrom?: string; wageSource?: 'payroll' | 'manual'; payrollRaisePct?: number;
+    vacancyExpWeight?: number; burdenBasis?: 't12' | 'budget' | 'mix'; burdenFrom?: string; burdenFromGl?: Record<string, string[]>; wageSource?: 'payroll' | 'manual'; payrollRaisePct?: number;
   };
   /** FIT to T12 (0..1) on lines the engine builds (% of GPR, corporate rate, …), which carry no per-GL
       rule. History-based lines keep their fit on the rule (`rule.fit`). Troy 2026-11-12. */
@@ -714,6 +714,7 @@ export function formulaSetFromBudget(lines: BudgetLine[], inputs: BudgetInputs):
   if (inputs.vacancyExpWeight != null) settings.vacancyExpWeight = inputs.vacancyExpWeight;
   if (inputs.burdenBasis) settings.burdenBasis = inputs.burdenBasis;
   if (inputs.burdenFrom) settings.burdenFrom = inputs.burdenFrom;
+  if (inputs.burdenFromGl && Object.keys(inputs.burdenFromGl).length) settings.burdenFromGl = { ...inputs.burdenFromGl };
   if (inputs.wageSource) settings.wageSource = inputs.wageSource;
   if (inputs.payrollRaisePct != null) settings.payrollRaisePct = inputs.payrollRaisePct;
   // row picks the rules cannot carry: payroll (64xx) and 6350 are built from the row settings alone
@@ -752,6 +753,7 @@ export function applyFormulaSet(inputs: BudgetInputs, set: FormulaSet, from: { i
     ...(st.vacancyExpWeight != null ? { vacancyExpWeight: st.vacancyExpWeight } : {}),
     ...(st.burdenBasis ? { burdenBasis: st.burdenBasis } : {}),
     ...(st.burdenFrom ? { burdenFrom: st.burdenFrom } : {}),
+    ...(st.burdenFromGl ? { burdenFromGl: { ...st.burdenFromGl } } : {}),
     ...(st.wageSource ? { wageSource: st.wageSource } : {}),
     ...(st.payrollRaisePct != null ? { payrollRaisePct: st.payrollRaisePct } : {}),
   } as BudgetInputs;
@@ -878,6 +880,8 @@ export interface AnnualSources {
       wages — the annual ratio AND each calendar month's own ratio — from this property's
       statements instead of the budget's own. Wages stay the budget's own. */
   burdenSrc?: { code: string; actual: Record<string, Months> | null; budget: Record<string, Months> | null } | null;
+  /** per payroll line: pooled donor history for that GL's % of wages (inputs.burdenFromGl); wins over burdenSrc */
+  burdenGl?: Record<string, { code: string; actual: Record<string, Months> | null; budget: Record<string, Months> | null }> | null;
   /** when ownership began ('YYYY-MM': the Yardi template's acquisition date, else the start of
       the property's acquisition budget) and the first-year management fee % that budget ran on */
   acquisition?: { start?: string | null; firstYearPct?: number | null } | null;
@@ -1738,7 +1742,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const ownShape = bl.glShape?.[a.code] ?? (BURDEN_LAST_GLS.has(a.code) ? 'last' : undefined);
     if (ownShape && baseline(a, ownShape, bl.glGrowth?.[a.code] ?? (BURDEN_LAST_GLS.has(a.code) ? 0 : raise - 1))) continue;
     // the history the ratios are read from: this property's own, or the one picked to borrow from
-    const donor = src.burdenSrc || null;
+    const donor = src.burdenGl?.[a.code] || src.burdenSrc || null;
     const rAct = donor ? donor.actual : src.actual, rBud = donor ? donor.budget : src.budget;
     const t12Ratio = ratioIn(rAct, a.code);
     const budgetRatio = ratioIn(rBud, a.code);

@@ -516,6 +516,8 @@ interface LoadedBudget {
   rosterLink: RosterLink | null;
   /** annual: another property's statements, when the non-wage payroll ratios are borrowed from it (inputs.burdenFrom) */
   burdenSrc: { code: string; actual: Record<string, Months> | null; budget: Record<string, Months> | null; period: string; found: boolean } | null;
+  /** annual: per payroll line, the properties its % of wages is borrowed from, pooled (inputs.burdenFromGl) */
+  burdenGlSrc: Record<string, { code: string; codes: string[]; missing: string[]; actual: Record<string, Months> | null; budget: Record<string, Months> | null }>;
   /** annual: when ownership began + the acquisition budget's first-year management fee % */
   acquisition: { start: string | null; firstYearPct: number | null } | null;
   /** annual: the property's acquisition (UW Year-1) budget, when its 12 ownership months reach into this budget's year */
@@ -652,6 +654,44 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     const bud = rows.find((r) => r.kind === 'budget');
     burdenSrc = { code: donorCode, actual: t?.cal || null, budget: bud ? stmtCalendar(bud.data) : null, period: t?.period || '', found: !!t };
   }
+  // PER-LINE donors (Troy 2026-11-12: "I should be able to take the ratio from Minot or BCND/ECND to calculate the
+  // FHND pre-acquisition months for 401K contributions, as sites like Minot will have annual spikes reflected,
+  // whereas FHND wont"): inputs.burdenFromGl { gl: [codes] }. Several donors are POOLED — their wages and that GL
+  // added together month by month — so the ratio and its monthly shape (annual true-ups included) are the group's.
+  const burdenGlSrc: LoadedBudget['burdenGlSrc'] = {};
+  const perGl: Record<string, string[]> = annual && budget.inputs?.burdenFromGl && typeof budget.inputs.burdenFromGl === 'object' ? budget.inputs.burdenFromGl : {};
+  if (Object.keys(perGl).length) {
+    const own = String(budget.property_code || '').toLowerCase();
+    const codes = [...new Set(Object.values(perGl).flat().map((c) => String(c).trim().toLowerCase()).filter((c) => c && c !== own))];
+    const donors = new Map<string, { actual: Record<string, Months> | null; budget: Record<string, Months> | null; period: string }>();
+    for (const c of codes) {
+      const rows = (await query(`select kind, data from stmt_snapshots where property_code=$1 and kind in ('actual','budget') order by created_at desc`, [c])).rows as { kind: string; data: StmtData }[];
+      const t = trailing12(rows.filter((r) => r.kind === 'actual').map((r) => r.data));
+      const bud = rows.find((r) => r.kind === 'budget');
+      donors.set(c, { actual: t?.cal || null, budget: bud ? stmtCalendar(bud.data) : null, period: t?.period || '' });
+    }
+    // a region named when the donors are exactly its properties (other than this one)
+    const markets = (await query('select code, market from properties')).rows as { code: string; market: string | null }[];
+    const regionOf = (list: string[]): string | null => {
+      const ms = [...new Set(list.map((c) => markets.find((m) => m.code === c)?.market || ''))];
+      if (ms.length !== 1 || !ms[0] || list.length < 2) return null;
+      const all = markets.filter((m) => m.market === ms[0] && m.code !== own).map((m) => m.code);
+      return all.length === list.length ? ms[0] : null;
+    };
+    for (const [gl, list0] of Object.entries(perGl)) {
+      const list = [...new Set((list0 || []).map((c) => String(c).trim().toLowerCase()).filter((c) => c && c !== own))];
+      const have = list.filter((c) => donors.get(c)?.actual);
+      const pool = (key: 'actual' | 'budget'): Record<string, Months> | null => {
+        const out: Record<string, Months> = {}; let n = 0;
+        for (const c of have) {
+          const cal = donors.get(c)![key]; if (!cal) continue; n++;
+          for (const g of [...WAGE_GLS, gl]) { const m = cal[g]; if (!m) continue; out[g] = (out[g] || zero12()).map((v, i) => r2(v + (m[i] || 0))) as Months; }
+        }
+        return n ? out : null;
+      };
+      burdenGlSrc[gl] = { code: regionOf(list) || list.join('+'), codes: have, missing: list.filter((c) => !have.includes(c)), actual: have.length ? pool('actual') : null, budget: have.length ? pool('budget') : null };
+    }
+  }
   // when ownership began and the first-year management fee: the Yardi template's acquisition
   // date wins for the date; the rate comes from the property's own acquisition budget (UW Y1)
   let acquisition: { start: string | null; firstYearPct: number | null } | null = null;
@@ -784,7 +824,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     if (stmtActual?.rows?.length || actualCal) sellerRows = ownT12Rows(stmtActual, actualCal, (gl) => coaMap.get(gl) || null);
   }
   const guidance = await loadGuidance();
-  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, rollMarket, sellerUtil, charges, sellerRows, defaultRules, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, burdenSrc, guidance, refKey,
+  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, rollMarket, sellerUtil, charges, sellerRows, defaultRules, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, burdenSrc, burdenGlSrc, guidance, refKey,
            annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs, priorT12 };
 }
 
@@ -950,6 +990,8 @@ function budgetView(lb: LoadedBudget) {
     payrollWages: lb.payrollWages,
     // which property the payroll ratios are borrowed from, and whether it has statements on file
     burdenSrc: lb.burdenSrc ? { code: lb.burdenSrc.code, period: lb.burdenSrc.period, found: lb.burdenSrc.found } : null,
+    // per payroll line: the donor properties its % of wages is pooled from (and any picked with no statements on file)
+    burdenGlSrc: Object.fromEntries(Object.entries(lb.burdenGlSrc || {}).map(([gl, d]) => [gl, { code: d.code, codes: d.codes, missing: d.missing }])),
     // ownership start + first-year management fee % on file (annual) — the Assumptions defaults
     acquisition: lb.acquisition,
     // Year-1 plan in this budget: which months it supplies and how Year 1 stands against the UW NOI
@@ -1137,7 +1179,8 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   if (lb.annual) {
     // ANNUAL: the property's own statements + the Yardi template rules (shared/annual.ts)
     const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: effectiveRules(inputs, loadAnnualRules() as any, lb.defaultRules) as any, comps: lb.comps, payrollWages: wages, wagesLive: live ? { label: live.label, effective: live.effective, draft: live.draft, monthly: live.monthly as Record<string, Months> } : null, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code, acquisition: lb.acquisition,
-      burdenSrc: lb.burdenSrc && lb.burdenSrc.found && String(inputs.burdenFrom || '').toLowerCase() === lb.burdenSrc.code ? { code: lb.burdenSrc.code, actual: lb.burdenSrc.actual, budget: lb.burdenSrc.budget } : null };
+      burdenSrc: lb.burdenSrc && lb.burdenSrc.found && String(inputs.burdenFrom || '').toLowerCase() === lb.burdenSrc.code ? { code: lb.burdenSrc.code, actual: lb.burdenSrc.actual, budget: lb.burdenSrc.budget } : null,
+      burdenGl: Object.fromEntries(Object.entries(lb.burdenGlSrc || {}).filter(([gl, d]) => d.actual && (inputs.burdenFromGl || {})[gl]?.length).map(([gl, d]) => [gl, { code: d.code, actual: d.actual, budget: d.budget }])) };
     lines = existing ? regenerateAnnual(existing, lb.coa, inputs, src) : generateAnnualLines(lb.coa, inputs, src);
   } else {
     lines = existing

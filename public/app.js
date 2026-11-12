@@ -2792,6 +2792,64 @@ function glDatalist() {
   return `<datalist id="gl-dl">${((S.state && S.state.coa) || []).filter((a) => a.kind === 'detail').map((a) => `<option value="${a.code}">${esc(a.name)}</option>`).join('')}</datalist>`;
 }
 const glName = (gl) => (((S.state && S.state.coa) || []).find((a) => a.code === gl) || {}).name || '';
+/* wage GLs (mirrors WAGE_GLS in shared/domain.ts): a payroll line that is not one of these is a % of wages */
+const BUDGET_WAGE_GLS = ['6402', '6404', '6405', '6407'];
+/* One payroll line's % of wages from other properties (Troy 2026-11-12: "take the ratio from Minot or BCND/ECND to
+   calculate the FHND pre-acquisition months for 401K contributions, as sites like Minot will have annual spikes
+   reflected, whereas FHND wont"). Properties grouped by region; ticking a region ticks all of its properties.
+   Several = pooled (their wages and this GL added month by month). Saves inputs.burdenFromGl[gl] and recalculates;
+   a shape picked on the row for this GL is dropped so the ratio governs. */
+function openBurdenFrom(b, gl, acc) {
+  const dlg = ensureDlg('bfrom-dlg');
+  const inp = S.bv.budget.inputs || {};
+  const own = String(b.property_code).toLowerCase();
+  const cur = new Set(((inp.burdenFromGl || {})[gl] || []).map((c) => String(c).toLowerCase()));
+  const withStmt = new Set((S.state.stmtSnapshots || []).filter((x) => x.kind === 'actual').map((x) => String(x.property_code).toLowerCase()));
+  const props = (S.state.properties || []).filter((p) => String(p.code).toLowerCase() !== own);
+  const regions = [...new Set(props.map((p) => p.market || 'Other'))].sort();
+  const src = (S.bv.burdenGlSrc || {})[gl];
+  dlg.innerHTML = `<h2>${esc(gl)} ${esc(acc.name || '')}: % of wages from other properties</h2>
+    <p class="muted" style="font-size:12px; margin:0 0 8px">This line = the picked properties' ${esc(gl)} as a % of their wages, month by month (so an annual true-up or a quarterly bonus lands in the same month here), × this property's own budgeted wages. Several properties are pooled. Only this line changes; the other payroll lines keep their own ratios. Properties with no actual statement on file can't be used.</p>
+    ${src && src.missing && src.missing.length ? `<p class="err" style="font-size:12px">No statements on file for ${esc(src.missing.join(', ').toUpperCase())} — left out of the pool.</p>` : ''}
+    <div style="max-height:52vh; overflow:auto; border:1px solid var(--line); border-radius:6px; padding:6px 10px">
+      ${regions.map((rg) => {
+        const ps = props.filter((p) => (p.market || 'Other') === rg);
+        const usable = ps.filter((p) => withStmt.has(String(p.code).toLowerCase()));
+        return `<div style="margin:6px 0">
+          <label style="font-weight:700"><input type="checkbox" data-bfreg="${esc(rg)}" ${usable.length && usable.every((p) => cur.has(String(p.code).toLowerCase())) ? 'checked' : ''} ${usable.length ? '' : 'disabled'}> ${esc(rg)} <span class="muted" style="font-weight:400">(all ${usable.length})</span></label>
+          <div style="display:flex; flex-wrap:wrap; gap:4px 14px; margin:3px 0 0 22px">${ps.map((p) => { const c = String(p.code).toLowerCase(), ok = withStmt.has(c); return `<label title="${ok ? '' : 'no actual statement on file'}" class="${ok ? '' : 'muted'}"><input type="checkbox" data-bfp="${esc(c)}" data-bfr="${esc(rg)}" ${cur.has(c) ? 'checked' : ''} ${ok ? '' : 'disabled'}> ${esc(c.toUpperCase())}${p.name && p.name.toLowerCase() !== c ? ` · ${esc(p.name)}` : ''}</label>`; }).join('')}</div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="row" style="justify-content:space-between; margin-top:10px">
+      <span>${cur.size ? '<button class="btn sub" id="bf-own">Use this property\'s own history</button>' : ''}</span>
+      <span><button class="btn sub" id="bf-x">Cancel</button> <button class="btn" id="bf-save">Save &amp; recalculate</button></span>
+    </div>`;
+  dlg.querySelectorAll('[data-bfreg]').forEach((rb) => rb.addEventListener('change', () => {
+    dlg.querySelectorAll(`[data-bfr="${CSS.escape(rb.dataset.bfreg)}"]:not(:disabled)`).forEach((c) => { c.checked = rb.checked; });
+  }));
+  dlg.querySelectorAll('[data-bfp]').forEach((c) => c.addEventListener('change', () => {
+    const rb = dlg.querySelector(`[data-bfreg="${CSS.escape(c.dataset.bfr)}"]`);
+    const all = [...dlg.querySelectorAll(`[data-bfr="${CSS.escape(c.dataset.bfr)}"]:not(:disabled)`)];
+    if (rb) rb.checked = all.length > 0 && all.every((x) => x.checked);
+  }));
+  const save = async (codes) => {
+    const map = { ...(inp.burdenFromGl || {}) };
+    if (codes.length) map[gl] = codes; else delete map[gl];
+    const bl = inp.baseline || {};
+    const glShape = { ...(bl.glShape || {}) }; delete glShape[gl];   // the ratio governs this line, not a row shape
+    dlg.close();
+    try { await saveInputs(b, { burdenFromGl: map, baseline: { ...bl, glShape } }); } catch (e) { alert(e.message); }
+  };
+  dlg.querySelector('#bf-x').addEventListener('click', () => dlg.close());
+  { const o = dlg.querySelector('#bf-own'); if (o) o.addEventListener('click', () => save([])); }
+  dlg.querySelector('#bf-save').addEventListener('click', () => {
+    const codes = [...dlg.querySelectorAll('[data-bfp]:checked')].map((c) => c.dataset.bfp);
+    if (!codes.length) { alert('Tick at least one property, or use this property\'s own history.'); return; }
+    save(codes);
+  });
+  dlg.showModal();
+}
 function ensureDlg(id) {
   let dlg = document.getElementById(id);
   if (!dlg) { dlg = document.createElement('dialog'); dlg.id = id; document.body.appendChild(dlg); }
@@ -3782,7 +3840,7 @@ function openRowTools(b, gl, anchorBtn) {
   const menu = document.createElement('div');
   menu.className = 'rowmenu';
   // the chip each tool leaves on the row — same tag and colour as the grid (Troy 2026-11-11)
-  const TOOL_CHIP = { undrop: ['drv-base', 'T12/12'], flatGrow: ['drv-base', 'T12/12'], ownFormula: ['drv-uw', 'OWN'], zero: ['drv-int', 'ZERO'], flatAnnual: ['drv-man', 'MAN'], flatMonthly: ['drv-man', 'MAN'], grow: ['drv-man', 'MAN'], minot: ['drv-comp', 'MINOT'], t3avg: ['drv-comp', 'T3'], shape: ['drv-base', 'SHAPE'], pctgpr: ['drv-base', '%GPR'], suggest: ['drv-corp', 'CORP'], seller: ['drv-t12', 'SLR'], ownBudget: ['drv-t12', 'CY BUD'], t12curve: ['drv-t12', 'T12C'], link: ['drv-fee', 'LINK'], smooth: ['drv-t12', 'SMOOTH'], recmap: ['drv-t12', 'REC'], wavg: ['drv-comp', 'WAVG'], reset: ['drv-uw', 'ENGINE'] };
+  const TOOL_CHIP = { undrop: ['drv-base', 'T12/12'], flatGrow: ['drv-base', 'T12/12'], ownFormula: ['drv-uw', 'OWN'], zero: ['drv-int', 'ZERO'], flatAnnual: ['drv-man', 'MAN'], flatMonthly: ['drv-man', 'MAN'], grow: ['drv-man', 'MAN'], minot: ['drv-comp', 'MINOT'], t3avg: ['drv-comp', 'T3'], shape: ['drv-base', 'SHAPE'], pctgpr: ['drv-base', '%GPR'], suggest: ['drv-corp', 'CORP'], seller: ['drv-t12', 'SLR'], ownBudget: ['drv-t12', 'CY BUD'], t12curve: ['drv-t12', 'T12C'], link: ['drv-fee', 'LINK'], smooth: ['drv-t12', 'SMOOTH'], recmap: ['drv-t12', 'REC'], wavg: ['drv-comp', 'WAVG'], reset: ['drv-uw', 'ENGINE'], burdenFrom: ['drv-pay', '%WAGES'] };
   const dot = (cls, act) => { const c = act && TOOL_CHIP[act]; return c ? `${chipHtml(c[0], c[1])} ` : `<span class="dot ${cls}" style="margin-right:6px"></span>`; };
   menu.innerHTML = `
     <div class="rm-head">${gl} ${esc(acc.name || '')}<br>
@@ -3803,6 +3861,7 @@ function openRowTools(b, gl, anchorBtn) {
     ${(S.bv.sellerT12 || []).length ? `<button data-act="seller" title="${S.bv.annual ? 'This GL\'s own trailing-12 months × growth. No GL to pick: the row is the GL. Shift-click to take another statement line instead. A GL with no T12 offers its own current-year budget.' : 'Match this GL to a seller T12 line and take its monthly actuals × growth'}">${dot('drv-t12', 'seller')}${S.bv.annual ? 'Own T12 actuals × growth (this GL)' : 'Seller actuals — match a seller line…'}</button>` : ''}
     ${S.bv.annual && fcBudgetRow(S.bv, gl) ? `<button data-act="ownBudget" title="This GL's own current-year budget, month by month, × growth. It is read from the Yardi template along with the T12: no GL to pick.">${dot('drv-t12', 'ownBudget')}CY budget × growth (this GL · ${money(fcBudgetRow(S.bv, gl).total)})</button>` : ''}
     ${(S.bv.sellerT12 || []).length && !(S.bv.annual && !glHasCurve(gl)) ? `<button data-act="t12curve" title="${S.bv.annual ? 'Take a statement line\'s T12 total × growth and spread it on a clean seasonal curve' : 'For non-accrual seller billing (credits/gaps/spikes): the ANNUAL total is still right even when the months are garbage. Takes the seller line\'s T12 total × growth and spreads it on a clean seasonal curve.'}">${dot('drv-t12', 't12curve')}${S.bv.annual ? 'T12 TOTAL → seasonal curve… (this GL)' : 'Seller T12 TOTAL → seasonal curve… (bad bills)'}</button>` : ''}
+    ${S.bv.annual && acc.pcode === '10' && !BUDGET_WAGE_GLS.includes(gl) && gl !== '6413' ? `<button data-act="burdenFrom" title="Take this line's % of wages and its monthly shape (annual true-ups, quarterly bonuses) from other properties — one, several pooled, or a whole region — applied to this property's own wages. Only this line; the others keep their own ratios.">${dot('drv-pay', 'burdenFrom')}% of wages from other properties…${((S.bv.budget.inputs || {}).burdenFromGl || {})[gl] ? ` <span class="muted">(${esc(((S.bv.burdenGlSrc || {})[gl] || {}).code || ((S.bv.budget.inputs || {}).burdenFromGl[gl] || []).join('+').toUpperCase())})</span>` : ''}</button>` : ''}
     <button data-act="link" title="Set this GL equal to another budget line × a weight (e.g. sewer = water × 0.8). LIVE: re-follows the source on every regeneration.">${dot('drv-fee', 'link')}= another line × weight… (moves in conjunction)</button>
     ${line && line.months.some((v) => v) ? `<button data-act="smooth" title="Gentle: only the months that are wrong move. A spike gives its excess to the low months next to it and a credit month is netted against the nearest high month; ordinary months are not touched. A line with nothing wrong is left alone unless you ask for a light pass. No negative months; every month rounded to $5, so the total can move by a few dollars. The line keeps its formula chip and gains a SMOOTH chip.">${dot('drv-t12', 'smooth')}Smooth missed bills — spikes into surrounding months</button>` : ''}
     ${line && (line.driver || {}).method === 'recovery' ? `<button data-act="recmap" title="Pick exactly which utility expense lines this reimbursement recovers (recovery % × their prior month). Claims are exclusive — a line you take here is released by whichever reim had it.">${dot('drv-t12', 'recmap')}Edit what this reim recovers…</button>` : ''}
@@ -3889,6 +3948,7 @@ function openRowTools(b, gl, anchorBtn) {
       openT12CurveMatch(b, gl, acc, anchorBtn, put, inp);
       return;
     }
+    if (act === 'burdenFrom') { openBurdenFrom(b, gl, acc); return; }
     if (act === 'link') {
       openLinkLineMatch(b, gl, acc, anchorBtn, put);
       return;

@@ -1196,6 +1196,26 @@ describe('payroll ratios from another property (Troy 2026-11-10): the % of wages
     expect(set.settings.burdenFrom).toBe('clnd');
     expect(applyFormulaSet(inputs, set, { id: 1, name: 's' }).burdenFrom).toBe('clnd');
   });
+  // Troy 2026-11-12: "take the ratio from Minot or BCND/ECND ... for 401K contributions, as sites like Minot will have
+  // annual spikes reflected, whereas FHND wont" — one line from a pooled group, the rest stay on their own history
+  it('one line can borrow from a pooled group; the other lines keep this property\'s own ratios', () => {
+    // the pooled donors: wages 5,000 + 3,000 a month; the bonus line spikes in January (annual true-up) at both
+    const pooled = { '6402': f(8000), '6408': cal([4000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 400]) };
+    const one = generateAnnualLines(coaList, inputs, { ...src, burdenGl: { '6408': { code: 'Minot ND', actual: pooled, budget: null } } });
+    const b = L(one, '6408').months;
+    expect(b[0]).toBeCloseTo(0.5 * 3000, 0);                            // January: 4,000 / 8,000 of that month's wages
+    expect(b[11]).toBeCloseTo(0.05 * 3000, 0);
+    expect(b.slice(1, 11).every((v) => v === 0)).toBe(true);
+    expect(L(one, '6408').driver).toMatchObject({ method: 'burdenRatio', from: 'Minot ND' });
+    expect(L(one, '6418').months).toEqual(L(ownRun, '6418').months);   // taxes: still this property's own 10%
+    expect((L(one, '6418').driver as any).from).toBeUndefined();
+    // the per-line pick wins over a whole-budget donor for that line only
+    const both = generateAnnualLines(coaList, inputs, { ...src, burdenSrc: { code: 'clnd', actual: donorActual, budget: null }, burdenGl: { '6408': { code: 'Minot ND', actual: pooled, budget: null } } });
+    expect((L(both, '6408').driver as any).from).toBe('Minot ND');
+    expect((L(both, '6418').driver as any).from).toBe('clnd');
+    const set = formulaSetFromBudget(one, { ...inputs, burdenFromGl: { '6408': ['clnd', 'tcnd'] }, rules: {} });
+    expect(applyFormulaSet(inputs, set, { id: 1, name: 's' }).burdenFromGl).toEqual({ '6408': ['clnd', 'tcnd'] });
+  });
 });
 
 describe('Summary panel (Troy 2026-11-10): the budget-comps rows, labels and T12 trend windows', () => {
