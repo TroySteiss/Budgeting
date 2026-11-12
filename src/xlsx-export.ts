@@ -91,6 +91,7 @@ const MON3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oc
 function driverLabel(d: any): string {
   let base = driverLabelBase(d);
   // 2027 notes pass: one-time items out of the T12, and the recurring-journal split
+  if (d?.qShift) base += `; quarter shift: year total kept, dollars moved so NOI lands at ${(d.qShift.targets || []).map((t: number, i: number) => `Q${i + 1} ${(t * 100).toFixed(1)}%`).join(' / ')}${d.qShift.capped ? ' (stopped short at the floor)' : ''}`;
   if (d?.fitT12) base += `; months ${Math.round(d.fitT12 * 100)}% fitted to its own T12 (total unchanged)`;
   if (d?.oneTime) base += `; $${Math.round(d.oneTime).toLocaleString('en-US')} of one-time items taken out of the T12 first`;
   if (d?.allocOut) base += `; ${Math.round(d.allocOut.pct * 10000) / 100}% to ${String(d.allocOut.to).toUpperCase()} by recurring journal ($${Math.round(d.allocOut.out).toLocaleString('en-US')} of $${Math.round(d.allocOut.gross).toLocaleString('en-US')})`;

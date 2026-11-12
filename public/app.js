@@ -38,6 +38,7 @@ function drvMeta(l) {
   if (l && l.driver && l.driver.smooth && l.driver.method !== 'smooth') {
     extra.push({ cls: 'drv-t12', tag: 'SMOOTH', label: `Missed-bill smoothing ×${l.driver.smooth.passes || 0} on top of this formula: spikes spread into the surrounding months, no negative months, every month rounded to $${l.driver.smooth.mult || 5}. The months are now fixed; 🔓 puts the line back on its formula.` });
   }
+  if (l && l.driver && l.driver.qShift) { const q = l.driver.qShift; extra.push({ cls: 'drv-fee', tag: q.capped ? 'Q-SHIFT·cap' : 'Q-SHIFT', label: `Carries part of the quarter shift: its year total is unchanged, its dollars sit in other quarters so NOI lands at ${(q.targets || []).map((v, i) => `Q${i + 1} ${(v * 100).toFixed(1)}%`).join(' · ')}${q.capped ? ` — stopped at ${Math.round(q.lam * 100)}% of the shift (a quarter reached half its formula amount)` : ''}. More → Shift NOI between quarters…` }); }
   if (l && l.driver && l.driver.fitT12) extra.push({ cls: 'drv-t12', tag: `FIT ${Math.round(l.driver.fitT12 * 100)}%`, label: `Months lean ${Math.round(l.driver.fitT12 * 100)}% toward this GL's own trailing-12 months (year total unchanged) — row menu or section header "fit to T12"` });
   // one-time items taken out of this GL's trailing-12 before the formula read it (More → One-time items)
   if (l && l.driver && l.driver.oneTime) extra.push({ cls: 'drv-t12', tag: '−1X', label: `$${money(l.driver.oneTime)} of one-time items taken out of the trailing-12 before this formula read it (More → One-time items out of the T12…)` });
@@ -1153,7 +1154,8 @@ function renderEditor(el) {
       <button data-x="contracts" title="Signed contracts and recurring costs (snow, elevators, SmartRent, annual invoices, a commercial lease…). A line with a contract on it takes the contract amounts instead of its history.">✎ Contracts & known costs…${((bv.budget.inputs || {}).contracts || []).length ? ` (${bv.budget.inputs.contracts.length})` : ''}</button>
       <button data-x="onetime" title="Take one-time items (an unreversed accrual, a one-off repair, a catch-up bill) out of the trailing-12 before the formulas read it">✂ One-time items out of the T12…${((bv.budget.inputs || {}).t12Adjust || []).length ? ` (${bv.budget.inputs.t12Adjust.length})` : ''}</button>
       <button data-x="feesched" title="Flat-fee utility package by bedroom count: reimbursement income from fee × occupied units, with RUBS leases switching at expiration">⌂ Flat-fee package schedule…</button>
-      <button data-x="split" title="Recurring journal split to a companion property (TPND → TPNDC 41.11%)">⇄ Journal split to another property…</button>` : ''}
+      <button data-x="split" title="Recurring journal split to a companion property (TPND → TPNDC 41.11%)">⇄ Journal split to another property…</button>
+      <button data-x="qshift" title="Move NOI share between quarters on the lines you pick (aggressive Q4, conservative Q1…); the year's NOI stays the same. Also on the NOI row's % by quarter.">◫ Shift NOI between quarters…${(bv.budget.inputs || {}).qShift ? ' ✓' : ''}</button>` : ''}
       ${bv.annual ? `<button data-x="fpush" title="Give the way this budget builds whole sections (e.g. Contract Services) to the other budgets you pick. Only those sections change there; preview first.">⇉ Copy section formulas to other budgets…</button>` : ''}
       <button data-x="copy" title="Replay another budget's named formulas here, re-evaluated on this property's own data">⧉ Copy formulas from another budget…</button>
       ${ov.length ? `<button data-x="ovr" title="Audit this budget's overridden lines — release old MROUND-locks back to live formulas">🔓 Overrides: ${ov.length - fixed} formula · ${fixed} fixed</button>` : ''}
@@ -1175,6 +1177,7 @@ function renderEditor(el) {
       { const c2 = menu.querySelector('[data-x="onetime"]'); if (c2) c2.addEventListener('click', () => openOneTime(b)); }
       { const c3 = menu.querySelector('[data-x="feesched"]'); if (c3) c3.addEventListener('click', () => openFeeSchedule(b)); }
       { const c4 = menu.querySelector('[data-x="split"]'); if (c4) c4.addEventListener('click', () => openAllocSplit(b)); }
+      { const c5 = menu.querySelector('[data-x="qshift"]'); if (c5) c5.addEventListener('click', () => openQShift(b, (((bv.budget.inputs || {}).qShift) || {}).targets || [null, null, null, null])); }
       const o = menu.querySelector('[data-x="ovr"]'); if (o) o.addEventListener('click', () => openOverridesAudit(b));
       menu.querySelector('[data-x="cols"]').addEventListener('click', () => setTimeout(() => openColsMenu(anchor, labels), 0));
       menu.querySelector('[data-x="side"]').addEventListener('click', () => { localStorage.setItem('bt-side', sideOn ? '0' : '1'); render(); });
@@ -1200,6 +1203,13 @@ function renderEditor(el) {
   document.getElementById('recalc').addEventListener('click', async () => { pushUndo(); S.bv = await POST(`/budgets/${b.id}/recalc`); render(); });
   { const sr = document.getElementById('stale-recalc'); if (sr) sr.addEventListener('click', async () => { pushUndo(); S.bv = await POST(`/budgets/${b.id}/recalc`); render(); }); }
   { const tk = document.getElementById('tag-key'); if (tk) tk.addEventListener('click', openTagKey); }
+  // quarter shift: the NOI row's share boxes → the lever picker with a preview
+  const qsTargets = () => [0, 1, 2, 3].map((q) => { const box = el.querySelector(`input.qs-in[data-qs="${q}"]`); const v = box ? parseFloat(String(box.value).replace(/[%\s]/g, '')) : NaN; return Number.isFinite(v) ? v / 100 : null; });
+  { const qo = document.getElementById('qs-open'); if (qo) qo.addEventListener('click', (e) => { e.stopPropagation(); openQShift(b, qsTargets()); }); }
+  el.querySelectorAll('input.qs-in').forEach((box) => {
+    box.addEventListener('click', (e) => e.stopPropagation());
+    box.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); openQShift(b, qsTargets()); } });
+  });
   // section increase %: stays out of the header row's collapse click; Enter / leaving the box applies
   el.querySelectorAll('input.secpct-in').forEach((box) => {
     box.parentElement.addEventListener('click', (e) => e.stopPropagation());
@@ -1649,13 +1659,17 @@ function gridHtml(bv, totals) {
       // (the % is always the whole quarter's, hidden months included)
       if (S.showQDist && ann) {
         const calYear = labels === MONTHS || /^Jan/i.test(labels[0]);
-        rows.push(`<tr class="dist qdist"><td></td><td class="name">% of ${bv.annual ? bv.budget.year : 'Year 1'} by quarter</td>
+        // NOI (annual): each quarter's share is a box — type the share it should carry, then "shift…"
+        const noiQ = a.code === '7280' && bv.annual;
+        const qsT = noiQ ? (((bv.budget.inputs || {}).qShift || {}).targets || []) : [];
+        rows.push(`<tr class="dist qdist${noiQ ? ' qshift' : ''}"><td></td><td class="name">% of ${bv.annual ? bv.budget.year : 'Year 1'} by quarter${noiQ ? ` <button class="rb" id="qs-open" title="Move NOI share between quarters on the lines you pick; the year's NOI stays the same">${(bv.budget.inputs || {}).qShift ? 'shift ✓…' : 'shift…'}</button>` : ''}</td>
           ${cols.fx ? '<td></td>' : ''}
           ${[0, 1, 2, 3].map((q) => {
             const vis = monthIdx.filter((i) => Math.floor(i / 3) === q).length;
             if (!vis) return '';
             const qs = m[q * 3] + m[q * 3 + 1] + m[q * 3 + 2];
             const nm = calYear ? `Q${q + 1}` : `${labels[q * 3]}–${labels[q * 3 + 2]}`;
+            if (noiQ) return `<td colspan="${vis}" class="q" title="${nm}: ${money(qs)} of ${money(ann)}. Type the share of the year's NOI this quarter should carry (blank = absorbs the rest), then shift…">${nm} · <input class="qs-in" data-qs="${q}" value="${qsT[q] != null ? +(qsT[q] * 100).toFixed(2) : ''}" placeholder="${((qs / ann) * 100).toFixed(1)}">%</td>`;
             return `<td colspan="${vis}" class="q" title="${nm}: ${money(qs)} of ${money(ann)}">${nm} · ${((qs / ann) * 100).toFixed(1)}%</td>`;
           }).join('')}
           ${cols.annual ? '<td>100%</td>' : ''}${refBlank}${cols.punit ? '<td></td>' : ''}${cols.note ? '<td></td>' : ''}</tr>`);
@@ -2744,6 +2758,71 @@ function openFeeSchedule(b) {
     await saveInputs(b, { utilities: { ...ut, billing: 'flat', feeSchedule: next } });
   });
   dlg.showModal();
+}
+
+/* Quarter shift (Troy 2026-11-11): the NOI share each quarter should carry + the lines that carry it. */
+function openQShift(b, targets) {
+  const dlg = ensureDlg('qshift-dlg');
+  const inp = S.bv.budget.inputs || {};
+  const cur = inp.qShift || null;
+  const coa = new Map(((S.state && S.state.coa) || []).map((a) => [a.code, a]));
+  const lineBy = new Map((S.bv.lines || []).map((l) => [l.gl_code, l]));
+  const SKIP = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest', 'mgmtPct']);
+  // the lines that can carry it: operating expense GLs with dollars, not typed / contract / fee / debt
+  const cands = (S.bv.lines || []).filter((l) => { const n = Number(l.gl_code); return n >= 6101 && n <= 7069 && l.gl_code !== '6112' && !l.override && l.driver && !SKIP.has(l.driver.method) && sumM(l.months) > 0 && l.months.every((v) => v >= 0); })
+    .map((l) => ({ gl: l.gl_code, name: (coa.get(l.gl_code) || {}).name || '', section: (coa.get(l.gl_code) || {}).section || '', annual: sumM(l.months) }))
+    .sort((x, y) => Number(x.gl) - Number(y.gl));
+  const bySec = {};
+  for (const c of cands) (bySec[c.section] = bySec[c.section] || []).push(c);
+  const picked = new Set((cur && cur.gls) || []);
+  let vac = !!(cur && cur.vacancy);
+  let t = [0, 1, 2, 3].map((q) => (targets[q] != null ? targets[q] : null));
+  let rep = null, err = '';
+  // NOI by quarter as it stands (the editor's own monthly NOI) until a preview comes back
+  const nm = ((S.bv.kpis || {}).monthly || {}).noi || [];
+  const nowQ = [0, 1, 2, 3].map((q) => (nm[q * 3] || 0) + (nm[q * 3 + 1] || 0) + (nm[q * 3 + 2] || 0));
+  const q4 = (arr) => (arr || []).map((v) => money(v));
+  const draw = () => {
+    const before = rep ? rep.before : nowQ, after = rep ? rep.after : null;
+    const tot = (a) => (a || []).reduce((x, y) => x + y, 0);
+    dlg.innerHTML = `<h2>Shift NOI between quarters</h2>
+      <p class="muted" style="font-size:12px; margin:0 0 8px">Type the share of the year's NOI a quarter should carry (blank quarters absorb the rest). Pick the lines that carry it: their dollars move between quarters, their year totals stay, and the year's NOI does not change. No quarter of a picked line drops below half its formula amount. Kept as a rule, so Recalc keeps the shares.</p>
+      <div class="row" style="gap:10px">${[0, 1, 2, 3].map((q) => `<div class="fld"><label>Q${q + 1} share of NOI (%)</label><input data-tq="${q}" value="${t[q] != null ? +(t[q] * 100).toFixed(2) : ''}" placeholder="${before ? ((before[q] / tot(before)) * 100).toFixed(1) : '—'}" style="width:70px; text-align:right"></div>`).join('')}</div>
+      <div style="margin:8px 0 4px"><label title="The same annual vacancy average, landing in other quarters: moves rental income (and the fee with it)"><input type="checkbox" id="qs-vac" ${vac ? 'checked' : ''}> <b>Vacancy timing</b> <span class="muted">— same annual vacancy, more of it in some quarters</span></label></div>
+      <div style="max-height:34vh; overflow:auto; border:1px solid var(--line); border-radius:8px; padding:6px 10px">
+        ${Object.entries(bySec).map(([sec, list]) => `<div style="margin:6px 0 2px"><label style="font-weight:650; font-size:12px; color:var(--dim); text-transform:uppercase"><input type="checkbox" data-qsec="${esc(sec)}" ${list.every((c) => picked.has(c.gl)) ? 'checked' : ''}> ${esc(sec.replace(/_/g, ' '))}</label></div>
+          ${list.map((c) => `<label style="display:flex; gap:6px; font-size:12px; padding-left:16px"><input type="checkbox" data-qgl="${c.gl}" ${picked.has(c.gl) ? 'checked' : ''}> <span style="width:44px">${c.gl}</span> <span style="flex:1">${esc(c.name)}</span> <span class="muted">${money(c.annual)}</span></label>`).join('')}`).join('') || '<p class="muted">No expense lines can carry a shift (typed, contract or empty).</p>'}
+      </div>
+      ${rep ? `<table class="list" style="margin-top:8px"><tr><th></th>${[0, 1, 2, 3].map((q) => `<th class="num">Q${q + 1}</th>`).join('')}<th class="num">Year</th></tr>
+        <tr><td>NOI now</td>${q4(before).map((v, q) => `<td class="num">${v}<div class="muted" style="font-size:10.5px">${((before[q] / tot(before)) * 100).toFixed(1)}%</div></td>`).join('')}<td class="num">${money(tot(before))}</td></tr>
+        <tr><td><b>After</b></td>${q4(after).map((v, q) => `<td class="num"><b>${v}</b><div class="muted" style="font-size:10.5px">${((after[q] / tot(after)) * 100).toFixed(1)}%</div></td>`).join('')}<td class="num">${money(tot(after))}</td></tr>
+      </table>
+      ${rep.capped ? `<div class="err">The picked lines carry only ${Math.round((rep.lam || 0) * 100)}% of this shift before a quarter reaches half its formula amount. Pick more lines (or vacancy timing) or ask for less.</div>` : !rep.landed ? '<div class="err">The shift does not fully land: typed lines or Year-1 plan months hold part of those quarters in place.</div>' : ''}
+      ${(rep.moved || []).length ? `<details style="margin-top:4px"><summary class="muted" style="font-size:12px; cursor:pointer">What moves (${rep.moved.length} lines)</summary><table class="list">${rep.moved.map((m) => `<tr><td>${m.gl}</td><td>${esc(m.name)}</td>${m.after.map((v, q) => `<td class="num">${money(v)}<div class="muted" style="font-size:10px">${v - m.before[q] >= 0 ? '+' : ''}${money(v - m.before[q])}</div></td>`).join('')}</tr>`).join('')}</table></details>` : ''}` : ''}
+      <div class="err" style="margin-top:6px">${esc(err)}</div>
+      <div class="row" style="justify-content:space-between; margin-top:8px">
+        <span>${cur ? '<button class="btn sub" id="qs-clear" title="Remove the shift: every line goes back to its own formula months">Remove shift</button>' : ''}</span>
+        <span><button class="btn sub" id="qs-x">Close</button> <button class="btn sub" id="qs-prev">Preview</button> <button class="btn" id="qs-apply" ${rep && !rep.capped && rep.landed ? '' : 'disabled title="Preview first"'}>Apply</button></span>
+      </div>`;
+    dlg.querySelectorAll('[data-tq]').forEach((box) => box.addEventListener('change', () => { const v = parseFloat(String(box.value).replace(/[%\s]/g, '')); t[Number(box.dataset.tq)] = Number.isFinite(v) ? v / 100 : null; rep = null; draw(); }));
+    dlg.querySelector('#qs-vac').addEventListener('change', (e) => { vac = e.target.checked; rep = null; draw(); });
+    dlg.querySelectorAll('[data-qgl]').forEach((cb) => cb.addEventListener('change', () => { if (cb.checked) picked.add(cb.dataset.qgl); else picked.delete(cb.dataset.qgl); rep = null; draw(); }));
+    dlg.querySelectorAll('[data-qsec]').forEach((cb) => cb.addEventListener('change', () => { for (const c of bySec[cb.dataset.qsec] || []) { if (cb.checked) picked.add(c.gl); else picked.delete(c.gl); } rep = null; draw(); }));
+    dlg.querySelector('#qs-x').addEventListener('click', () => dlg.close());
+    const body = () => ({ targets: t, gls: [...picked], vacancy: vac });
+    dlg.querySelector('#qs-prev').addEventListener('click', async () => {
+      err = '';
+      try { rep = (await POST(`/budgets/${b.id}/qshift`, body())).report; } catch (e2) { err = e2.message; rep = null; }
+      draw();
+    });
+    dlg.querySelector('#qs-apply').addEventListener('click', async () => {
+      try { pushUndo(); const r = await POST(`/budgets/${b.id}/qshift`, { ...body(), apply: true }); S.bv = r.view; dlg.close(); render(); }
+      catch (e2) { S.undo.stack.pop(); err = e2.message; draw(); }
+    });
+    { const c = dlg.querySelector('#qs-clear'); if (c) c.addEventListener('click', async () => { pushUndo(); const r = await POST(`/budgets/${b.id}/qshift`, { clear: true, apply: true }); S.bv = r.view; dlg.close(); render(); }); }
+  };
+  draw();
+  if (!dlg.open) dlg.showModal();
 }
 
 /* Recurring journal split (TPND → TPNDC). Off / site default / custom. */

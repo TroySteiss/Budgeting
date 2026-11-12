@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, type BudgetGuidance } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, type BudgetGuidance, noiQuarters } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
@@ -1834,6 +1834,52 @@ router.post('/budgets/:id/tie-growth', h(async (req, res) => {
   await saveLines(id, lines, true);
   logChange(user, 'tie growth target', { id, pcode: key, pct, target, how });
   res.json(budgetView((await loadBudget(id))!));
+}));
+
+/* QUARTER SHIFT (Troy 2026-11-11): preview, apply or clear `inputs.qShift`. Preview builds the budget
+   with the shift and reports NOI by quarter before / after and what each picked line moved; nothing is
+   saved unless apply=true and the shift lands (a shift the picked lines cannot fully carry is refused). */
+router.post('/budgets/:id/qshift', h(async (req, res) => {
+  const id = Number(req.params.id);
+  const lb = await loadBudget(id);
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  if (!lb.annual) return res.status(400).json({ error: 'The quarter shift is for annual budgets' });
+  const body = req.body || {};
+  const inputs: BudgetInputs = JSON.parse(JSON.stringify(lb.budget.inputs));
+  const before = effectiveLines(lb);
+  if (body.clear) {
+    inputs.qShift = null;
+  } else {
+    const targets = (Array.isArray(body.targets) ? body.targets : []).slice(0, 4).map((v: any) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v)));
+    while (targets.length < 4) targets.push(null);
+    const gls = (Array.isArray(body.gls) ? body.gls : []).map(String).filter((g: string) => /^\d{4}$/.test(g));
+    if (!targets.some((v: any) => v != null)) return res.status(400).json({ error: 'Type the NOI share for at least one quarter' });
+    if (!gls.length && !body.vacancy) return res.status(400).json({ error: 'Pick the lines that carry the shift (expense lines and/or vacancy timing)' });
+    inputs.qShift = { targets, gls, vacancy: !!body.vacancy };
+  }
+  const built = buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lb.lines).lines;
+  const after = effectiveLines({ ...lb, lines: built, budget: { ...lb.budget, inputs } });
+  const nb = noiQuarters(before), na = noiQuarters(after);
+  const qOf = (m: Months) => [0, 1, 2, 3].map((q) => r2(m[q * 3] + m[q * 3 + 1] + m[q * 3 + 2]));
+  const moved = built.filter((l) => (l.driver as any)?.qShift).map((l) => {
+    const b = before.find((x) => x.gl_code === l.gl_code);
+    const qb = qOf(b ? b.months : zero12()), qa = qOf(l.months);
+    return { gl: l.gl_code, name: lb.coaMap.get(l.gl_code)?.name || '', before: qb, after: qa, moved: r2(qa.reduce((a, v, q) => a + Math.abs(v - qb[q]), 0) / 2) };
+  });
+  const lam = (built.find((l) => (l.driver as any)?.qShift)?.driver as any)?.qShift?.lam ?? null;
+  const targets = (built.find((l) => (l.driver as any)?.qShift)?.driver as any)?.qShift?.targets || null;
+  // typed lines and a new acquisition's Year-1 months are laid on after the engine: check the shares really land
+  const naTot = na.reduce((a, b) => a + b, 0);
+  const landed = !targets || (naTot !== 0 && na.every((v, q) => Math.abs(v / naTot - targets[q]) < 0.002));
+  const report = { before: nb, after: na, moved, lam, capped: lam != null && lam < 0.999, targets, landed };
+  if (body.apply) {
+    if (!body.clear && (!moved.length || report.capped || !landed)) return res.status(400).json({ error: report.capped ? `The picked lines can only carry ${Math.round((lam || 0) * 100)}% of that shift without a quarter dropping under half its formula amount — pick more lines or a smaller shift. Nothing was changed.` : !moved.length ? 'None of the picked lines could move (typed, contract or no amount). Nothing was changed.' : 'The shift does not land: typed lines or the Year-1 plan months hold part of those quarters in place. Nothing was changed.', report });
+    await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(inputs)]);
+    await saveLines(id, built, true);
+    logChange(req.session.username || '', body.clear ? 'quarter shift cleared' : 'quarter shift', { id, qShift: inputs.qShift });
+    return res.json({ report, view: budgetView((await loadBudget(id))!) });
+  }
+  res.json({ report });
 }));
 
 router.post('/budgets/:id/rebalance', h(async (req, res) => {

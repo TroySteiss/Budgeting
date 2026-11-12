@@ -531,3 +531,8 @@ td.gdash.gok b { color: #1f6b3a; }
 .tie .gnotes { margin-top: 6px; border-top: 1px solid var(--line, #e3e0d6); padding-top: 4px; }
 .tie .gn { font-size: 11.5px; line-height: 1.5; }
 .tie .gn .gd { width: 14px; height: 14px; line-height: 14px; font-size: 10px; }
+
+/* quarter shift: share boxes on the NOI row's by-quarter line */
+tr.qdist.qshift input.qs-in { width: 46px; font-size: 11px; text-align: right; padding: 0 3px; border: 1px solid var(--line, #d9d4c7); border-radius: 4px; }
+tr.qdist.qshift input.qs-in::placeholder { color: #9aa5a0; font-style: italic; }
+#qshift-dlg { width: min(760px, 96vw); }

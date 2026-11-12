@@ -39,7 +39,7 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-11c';
+export const ENGINE_VERSION = '2026-11-11d';
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -1071,6 +1071,103 @@ export function guidanceCheck(a: {
   };
 }
 
+/* ---------------- quarter shift (see generateAnnualLines) ---------------- */
+export interface QShift { targets: (number | null)[]; gls?: string[]; vacancy?: boolean; floor?: number }
+const qSums = (m: Months): number[] => [0, 1, 2, 3].map((q) => m[q * 3] + m[q * 3 + 1] + m[q * 3 + 2]);
+const noiOf = (lines: Map<string, BudgetLine>): Months => rollup(new Map([...lines].map(([g, l]) => [g, l.months]))).get('7280') || zero12();
+/** NOI by quarter (budget-month quarters: months 0-2, 3-5, 6-8, 9-11). */
+export function noiQuarters(lines: BudgetLine[]): number[] { return qSums(rollup(new Map(lines.map((l) => [l.gl_code, l.months]))).get('7280') || zero12()).map(r2); }
+/** The quarters' NOI shares a shift asks for: typed shares stand, blank ones split what is left in
+    proportion to their current NOI. null when the typed shares cannot add up to 100%. */
+export function qShiftTargets(targets: (number | null)[], now: number[]): number[] | null {
+  const t = [0, 1, 2, 3].map((q) => { const v = targets[q]; return v == null || !Number.isFinite(Number(v)) ? null : Number(v); });
+  const setSum = t.reduce((a: number, v) => a + (v ?? 0), 0);
+  const free = [0, 1, 2, 3].filter((q) => t[q] == null);
+  if (!free.length) return Math.abs(setSum - 1) <= 0.001 ? (t as number[]) : null;
+  const freeNow = free.reduce((a, q) => a + now[q], 0);
+  const rest = 1 - setSum;
+  const tot = now.reduce((a, b) => a + b, 0) || 1;
+  return t.map((v, q) => (v != null ? v : freeNow ? rest * (now[q] / tot) / (freeNow / tot) : rest / free.length));
+}
+/** Solve the shift on the built lines in place. Returns the lever GLs moved and λ (1 = all the way). */
+export function quarterShiftSolve(lines: Map<string, BudgetLine>, coaByCode: Map<string, CoaAccount>, qs: QShift, afterMove?: () => void): { moved: string[]; lam: number; targets: number[] } | null {
+  const N0 = qSums(noiOf(lines));
+  const N = N0.reduce((a, b) => a + b, 0);
+  if (!N) return null;
+  const shares = qShiftTargets(qs.targets, N0);
+  if (!shares) return null;
+  const D = shares.map((v) => v * N);
+  const floor = Math.min(0.95, Math.max(0, qs.floor ?? 0.5));
+  const LEVER_SKIP = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest', 'mgmtPct']);
+  // the levers, as positive quarter amounts: expense lines as posted, vacancy as its magnitude
+  type Lever = { gl: string; sign: 1 | -1; base: Months; Q: number[]; A: number };
+  const levers: Lever[] = [];
+  for (const gl of qs.gls || []) {
+    const ln = lines.get(gl); const acc = coaByCode.get(gl); const n = parseInt(gl, 10);
+    if (!ln || !acc || acc.kind !== 'detail' || !(n >= 6101 && n <= 7069) || gl === '6112' || LEVER_SKIP.has((ln.driver as any)?.method)) continue;
+    const Q = qSums(ln.months); const A = Q.reduce((a, b) => a + b, 0);
+    if (A > 0 && Q.every((v) => v >= 0)) levers.push({ gl, sign: 1, base: ln.months.slice() as Months, Q, A });
+  }
+  if (qs.vacancy) {
+    const ln = lines.get('5031');
+    if (ln && (ln.driver as any)?.method === 'vacancy') {
+      const mag = ln.months.map((v) => -v) as Months; const Q = qSums(mag); const A = Q.reduce((a, b) => a + b, 0);
+      if (A > 0 && Q.every((v) => v >= 0)) levers.push({ gl: '5031', sign: -1, base: ln.months.slice() as Months, Q, A });
+    }
+  }
+  const Atot = levers.reduce((a, l) => a + l.A, 0);
+  if (!levers.length || !Atot) return null;
+  const E = [0, 1, 2, 3].map((q) => levers.reduce((a, l) => a + l.Q[q], 0));   // the levers' combined amount by quarter
+  // one % change per quarter shared by every lever (k[q]); each lever is then renormalized to its own
+  // year total (c). A $0 quarter stays $0 and each line keeps its seasonality. Fixed point on k.
+  const solveK = (want: number[]): number[] => {
+    let k = [1, 1, 1, 1];
+    for (let it = 0; it < 60; it++) {
+      const got = [0, 0, 0, 0];
+      for (const l of levers) {
+        const c = l.A / l.Q.reduce((a, v, q) => a + v * k[q], 0);
+        for (let q = 0; q < 4; q++) got[q] += l.Q[q] * k[q] * c;
+      }
+      let done = true;
+      k = k.map((v, q) => { if (!got[q] || want[q] <= 0) return v; const r = want[q] / got[q]; if (Math.abs(r - 1) > 1e-7) done = false; return v * r; });
+      if (done) break;
+    }
+    return k;
+  };
+  const ratios = (k: number[]) => levers.map((l) => { const c = l.A / l.Q.reduce((a, v, q) => a + v * k[q], 0); return k.map((v) => v * c); });
+  const feasible = (k: number[]) => ratios(k).every((r, i) => r.every((v, q) => !levers[i].Q[q] || (v >= floor - 1e-9 && Number.isFinite(v))));
+  const kFor = (delta: number[], lam: number) => solveK(E.map((v, q) => Math.max(0, v - lam * delta[q])));
+  const apply = (delta: number[]): number => {
+    // the largest share of the move (lam) that keeps every lever's quarters at or above the floor
+    let lam = 1;
+    if (!feasible(kFor(delta, 1))) {
+      let lo = 0, hi = 1;
+      for (let it = 0; it < 30; it++) { const mid = (lo + hi) / 2; if (feasible(kFor(delta, mid))) lo = mid; else hi = mid; }
+      lam = lo;
+    }
+    const k = kFor(delta, lam);
+    const rs = ratios(k);
+    levers.forEach((l, i) => {
+      const mag = l.base.map((v) => v * l.sign) as Months;
+      const w = mag.map((v, m) => Math.max(0, v * rs[i][Math.floor(m / 3)])) as Months;
+      // penny-exact: the year total of the lever is unchanged
+      lines.get(l.gl)!.months = spreadMonthly(r2(l.A), w).map((v) => (v === 0 ? 0 : r2(v * l.sign))) as Months;
+    });
+    afterMove?.();
+    return lam;
+  };
+  let delta = D.map((v, q) => v - N0[q]);
+  let lam = 1;
+  for (let pass = 0; pass < 4; pass++) {
+    lam = apply(delta);
+    const N1 = qSums(noiOf(lines));
+    const err = D.map((v, q) => v - N1[q]);
+    if (lam < 0.999 || Math.max(...err.map(Math.abs)) < 1) break;
+    delta = delta.map((v, q) => v + err[q]);
+  }
+  return { moved: levers.map((l) => l.gl), lam: Math.round(lam * 1000) / 1000, targets: shares.map((v) => Math.round(v * 10000) / 10000) };
+}
+
 export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs, src: AnnualSources): BudgetLine[] {
   const lines = new Map<string, BudgetLine>();
   const mk = (gl: string, months: Months, driver: Driver, note = ''): void => {
@@ -1609,13 +1706,13 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   /* ---- management fee: % of the PRIOR month's total income, rounded to the dollar
      (2027 template: the fee bills a month in arrears, so January runs on December's
      budgeted income; without a current-year budget January runs on its own income) ---- */
-  const monthsMap = new Map<string, Months>();
-  for (const [gl, ln] of lines) monthsMap.set(gl, ln.months);
-  const totalIncome = rollup(monthsMap).get('5500') || zero12();
   const feePct = inputs.mgmtPct || tpl?.mgmtFee?.actualPct || 0;
-  if (isSet('6112')) {
-    // a shape chosen on the row: already built above
-  } else if (feePct) {
+  const feeEngine = !isSet('6112') && !!feePct;
+  // rebuildable: the quarter shift below can move income between months, and the fee follows income
+  const buildFee = (): void => {
+    const monthsMap = new Map<string, Months>();
+    for (const [gl, ln] of lines) monthsMap.set(gl, ln.months);
+    const totalIncome = rollup(monthsMap).get('5500') || zero12();
     const prevCal = (startMonth + 10) % 12;                                   // calendar index of the month before the budget starts
     const budIncome = src.budget && Object.keys(src.budget).length ? rollup(new Map(Object.entries(src.budget) as [string, Months][])).get('5500') : null;
     const before = budIncome && budIncome[prevCal] ? budIncome[prevCal] : totalIncome[0];
@@ -1625,7 +1722,10 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const fy = { pct: inputs.mgmtFirstYear?.pct !== undefined ? inputs.mgmtFirstYear.pct : src.acquisition?.firstYearPct, start: inputs.mgmtFirstYear?.start || src.acquisition?.start };
     const fr = mgmtFeeRates(inputs.year, startMonth, feePct, fy);
     mk('6112', basis.map((v, i) => Math.round(v * fr.rates[i])) as Months, { method: 'mgmtPct', pct: feePct, priorMonth: true, ...(fr.firstMonths ? { firstYear: { pct: fy.pct, months: fr.firstMonths, through: fr.through } } : {}) } as any);
-  }
+  };
+  if (isSet('6112')) {
+    // a shape chosen on the row: already built above
+  } else if (feePct) buildFee();
   else if (coaByCode.has('6112')) baseline(coaByCode.get('6112')!);
   fitLine('6112');
 
@@ -1647,14 +1747,31 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   /* ---- recurring journal split (TPND -> TPNDC): the property keeps (1 - pct) of the engine-built
      lines on the split GLs. Lines built from its own history already post net of the journal. ---- */
   const alloc = allocOutFor(inputs, src.propertyCode);
-  if (alloc) {
-    for (const gl of alloc.gls) {
+  const allocLine = (gl: string): void => {
+    if (!alloc || !alloc.gls.includes(gl)) return;
+    const ln = lines.get(gl);
+    const method = (ln?.driver as any)?.method;
+    if (!ln || !ALLOC_ENGINE_METHODS.has(method)) return;
+    const gross = sum(ln.months);
+    ln.months = ln.months.map((v) => r2(v * (1 - alloc.pct))) as Months;
+    ln.driver = { ...(ln.driver as any), allocOut: { to: alloc.to, pct: alloc.pct, gross: r2(gross), out: r2(gross - sum(ln.months)) } } as any;
+  };
+  if (alloc) for (const gl of alloc.gls) allocLine(gl);
+
+  /* ---- QUARTER SHIFT (Troy 2026-11-11: "shift some of the NOI share from one quarter to another,
+     ie, aggressive Q4 and conservative Q1"). `inputs.qShift` = the NOI share each quarter should carry
+     (blank quarters absorb the rest in proportion) and the lines Troy picked to carry it: expense lines
+     (their dollars move between quarters) and/or vacancy timing (the same annual vacancy, landing in
+     other quarters). Every lever keeps its year total; inside a quarter its months keep their own
+     pattern. Re-solved on every build so a recalc keeps the shares. No quarter of a lever goes below
+     `floor` (default half) of what its formula gave; past that the shift stops short (driver
+     qShift.capped) rather than forcing it. The fee is rebuilt when vacancy moves (it follows income). ---- */
+  const qs = inputs.qShift;
+  if (qs && Array.isArray(qs.targets) && qs.targets.some((v) => v != null && Number.isFinite(Number(v)))) {
+    const res = quarterShiftSolve(lines, coaByCode, qs, () => { if (feeEngine) { buildFee(); fitLine('6112'); allocLine('6112'); } });
+    if (res) for (const gl of res.moved) {
       const ln = lines.get(gl);
-      const method = (ln?.driver as any)?.method;
-      if (!ln || !ALLOC_ENGINE_METHODS.has(method)) continue;
-      const gross = sum(ln.months);
-      ln.months = ln.months.map((v) => r2(v * (1 - alloc.pct))) as Months;
-      ln.driver = { ...(ln.driver as any), allocOut: { to: alloc.to, pct: alloc.pct, gross: r2(gross), out: r2(gross - sum(ln.months)) } } as any;
+      if (ln) ln.driver = { ...(ln.driver as any), qShift: { lam: res.lam, capped: res.lam < 0.999, targets: res.targets } } as any;
     }
   }
 

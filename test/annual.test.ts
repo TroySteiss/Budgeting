@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, mgmtFeeRates, summaryColumn, sumSummaryCols, summaryLabels, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, contractMonths, flatFeeFromSchedule, guidanceCheck, fitToT12, type TemplateData, type AnnualSources,
+  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, contractMonths, flatFeeFromSchedule, guidanceCheck, fitToT12, noiQuarters, qShiftTargets, type TemplateData, type AnnualSources,
 } from '../shared/annual.js';
 import { sum, zero12, rollup, CURVES, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
 import { parseYardiBudgetTemplate, parseRentRoll, parseMonarchStatement, detectUploadKind } from '../src/importers.js';
@@ -1538,5 +1538,49 @@ describe('fit to T12 on any line', () => {
   it('a curve line keeps its own blend (no second fit), contracts are never fitted', () => {
     const c = withFit({ '6620': 0.5 }, { contracts: [{ vendor: 'x', gl: '6620', kind: 'monthly', amount: 100 }] });
     expect(L(c, '6620').months).toEqual(Array(12).fill(100));
+  });
+});
+
+/* Quarter shift (Troy 2026-11-11): move NOI share between quarters on the lines picked; year totals kept. */
+describe('quarter shift', () => {
+  const actual = synthetic();
+  const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
+  const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
+  const base = generateAnnualLines(coaList, { ...inputs, mgmtPct: 0.04 }, src);
+  const N0 = noiQuarters(base);
+  const yearNoi = N0.reduce((a, b) => a + b, 0);
+  it('qShiftTargets: typed shares stand, blank quarters split the rest in proportion', () => {
+    const t = qShiftTargets([0.2, null, null, 0.3], [25, 25, 25, 25])!;
+    expect(t[0]).toBe(0.2); expect(t[3]).toBe(0.3);
+    expect(t[1]).toBeCloseTo(0.25, 6); expect(t[2]).toBeCloseTo(0.25, 6);
+    expect(qShiftTargets([0.2, 0.2, 0.2, 0.2], [1, 1, 1, 1])).toBeNull();   // all typed, not 100%
+  });
+  it('expense levers move NOI from Q1 into Q4; NOI for the year and each lever total unchanged', () => {
+    const q1 = N0[0] / yearNoi - 0.01, q4 = N0[3] / yearNoi + 0.01;
+    const sh = generateAnnualLines(coaList, { ...inputs, mgmtPct: 0.04, qShift: { targets: [q1, null, null, q4], gls: ['6302', '6604', '6620', '6702'] } }, src);
+    const N1 = noiQuarters(sh);
+    expect(N1.reduce((a, b) => a + b, 0)).toBeCloseTo(yearNoi, 0);
+    expect(N1[0] / yearNoi).toBeCloseTo(q1, 3);
+    expect(N1[3] / yearNoi).toBeCloseTo(q4, 3);
+    for (const gl of ['6302', '6604', '6620', '6702']) expect(sum(L(sh, gl).months)).toBeCloseTo(sum(L(base, gl).months), 2);
+    expect((L(sh, '6604').driver as any).qShift.capped).toBe(false);
+    expect((L(sh, '6402').driver as any).qShift).toBeUndefined();   // not picked: untouched
+    expect(L(sh, '6402').months).toEqual(L(base, '6402').months);
+  });
+  it('vacancy timing moves income; the fee follows; year NOI kept', () => {
+    const q1 = N0[0] / yearNoi - 0.005;
+    const sh = generateAnnualLines(coaList, { ...inputs, mgmtPct: 0.04, qShift: { targets: [q1, null, null, null], vacancy: true } }, src);
+    const N1 = noiQuarters(sh);
+    expect(sum(L(sh, '5031').months)).toBeCloseTo(sum(L(base, '5031').months), 2);
+    expect(N1[0] / yearNoi).toBeCloseTo(q1, 3);
+    expect(Math.abs(N1.reduce((a, b) => a + b, 0) - yearNoi)).toBeLessThan(Math.abs(yearNoi) * 0.001);
+  });
+  it('a shift too big for the picked lines stops at the floor and says so', () => {
+    const sh = generateAnnualLines(coaList, { ...inputs, mgmtPct: 0.04, qShift: { targets: [0.05, null, null, 0.45], gls: ['6302'] } }, src);
+    const d = L(sh, '6302').driver as any;
+    expect(d.qShift.capped).toBe(true);
+    const Q = [0, 1, 2, 3].map((q) => L(sh, '6302').months.slice(q * 3, q * 3 + 3).reduce((a, b) => a + b, 0));
+    const Qb = [0, 1, 2, 3].map((q) => L(base, '6302').months.slice(q * 3, q * 3 + 3).reduce((a, b) => a + b, 0));
+    for (let q = 0; q < 4; q++) expect(Q[q]).toBeGreaterThanOrEqual(Qb[q] * 0.5 - 0.05);
   });
 });
