@@ -1010,6 +1010,31 @@ describe('saved formula sets (Troy 2026-11-09): the recipe of a budget, without 
     const tpl = applyFormulaSet(base, { rules: {}, settings: {} }, { id: null, name: 'Template defaults' });
     expect(tpl.rules).toEqual({});
   });
+  it('"Zero out row" (saved as an edited line) travels with the set; a zeroed row typed over does not', () => {
+    const zr = built.map((l) => (l.gl_code === '6920' ? { ...l, override: true, months: zero12(), driver: { method: 'zero' } as any } : l));
+    const z = formulaSetFromBudget(zr, srcInputs);
+    expect(z.rules['6920']).toEqual({ method: 'zero' });
+    const t = applyFormulaSet(base, z, { id: 1, name: 'z' });
+    const ls = generateAnnualLines(coaList, t, { ...src, rules: t.rules as any });
+    expect(sum(L(ls, '6920').months)).toBe(0);
+    const typed = formulaSetFromBudget(built.map((l) => (l.gl_code === '6920' ? { ...l, override: true, months: cal(Array(12).fill(50)), driver: { method: 'zero', revised: true } as any } : l)), srcInputs);
+    expect(typed.rules['6920']).toBeUndefined();
+  });
+  it('increase %s land as picked: a row % and a section % under a typed category % keep their own %', () => {
+    const a6920 = coaList.find((a) => a.code === '6920')!;
+    const sec = coaList.find((a) => a.code === '6332')!.section!;
+    const inp = { ...srcInputs, baseline: { ...srcInputs.baseline!, glGrowth: { ...srcInputs.baseline!.glGrowth, '6920': 0.05 }, secGrowth: { [sec]: 0.06 }, growthPct: { [a6920.pcode!]: 0.08, [coaList.find((a) => a.code === '6332')!.pcode!]: 0.02 } } };
+    const ls0 = generateAnnualLines(coaList, inp, src);
+    const s2 = formulaSetFromBudget(ls0, inp);
+    expect(s2.row!.glGrowth!['6920']).toBe(0.05);
+    expect(s2.row!.secGrowth).toEqual({ [sec]: 0.06 });
+    const t = applyFormulaSet(base, s2, { id: 2, name: 'pct' });
+    const ls = generateAnnualLines(coaList, t, { ...src, rules: t.rules as any });
+    expect((L(ls, '6920').driver as any).pct).toBeCloseTo(0.05, 6);        // not the 8% category
+    const secLine = coaList.find((a) => a.section === sec && a.kind === 'detail' && a.code !== '6332' && L(ls0, a.code) && (L(ls0, a.code).driver as any)?.method === 'baseline');
+    if (secLine) expect((L(ls, secLine.code).driver as any).pct).toBeCloseTo((L(ls0, secLine.code).driver as any).pct, 6);
+    expect((L(ls, '6332').driver as any).pct).toBeCloseTo((L(ls0, '6332').driver as any).pct, 6);
+  });
 });
 
 describe('first-year management fee (Troy 2026-11-09): 3% for the first 12 months of ownership, then the regular %', () => {
@@ -1134,8 +1159,8 @@ describe('section increase % (Troy 2026-11-10): typed on a section header, flows
     const built = generateAnnualLines(coaList, { ...withSec(), rules: {} }, src);
     const set = formulaSetFromBudget(built, { ...withSec(), rules: {} });
     expect(set.rules['6332'].factor).toBe(0.07);
-    const target = applyFormulaSet(withSec(), set, { id: 1, name: 's' });
-    expect(target.baseline!.secGrowth).toEqual({});
+    const target = applyFormulaSet({ ...withSec(), baseline: { ...withSec().baseline!, secGrowth: { other: 0.09 } } }, set, { id: 1, name: 's' });
+    expect(target.baseline!.secGrowth).toEqual(withSec().baseline!.secGrowth);   // the set's, not the target's own
   });
 });
 

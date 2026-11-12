@@ -793,6 +793,40 @@ function summaryOf(lb: LoadedBudget, lines: BudgetLine[]) {
   };
 }
 
+/** The Summary tab's row for one budget (Troy 2026-11-12: "all of the items we look at in the property level
+    'compare to' section"): the compare card's subtotals with the same math (computeTieout), always against the
+    trailing-12 for an annual budget — the guidance is growth over the T12, whatever the card is set to — and
+    against the UW Year 1 for an acquisition. Plus the dashboard row's KPIs and guidance scorecard. */
+function compareOf(lb: LoadedBudget, lines: BudgetLine[]) {
+  const units = Number(lb.budget.inputs?.units) || 0;
+  const t12 = lb.refs.find((x) => x.key === 'actual');
+  const ref = lb.annual ? (lb.actualCal ? refFromCalendar(lb.coa, lb.actualCal, units, t12?.label || 'T12 actuals') : null) : lb.uw;
+  const t = computeTieout(lines, lb.coaMap, ref);
+  const cat: Record<string, { ref: number; bud: number }> = {};
+  for (const r of t.rows) cat[r.pcode] = { ref: r.uw, bud: r.budget };
+  cat.egi = { ref: t.egi.uw, bud: t.egi.budget };
+  cat.toe = { ref: t.toe.uw, bud: t.toe.budget };
+  cat.noi = { ref: t.noi.uw, bud: t.noi.budget };
+  const k = kpis(new Map(lines.map((l) => [l.gl_code, l.months])), Number(lb.budget.inputs?.capital) || 0);
+  const gr = lb.annual && lb.actualCal ? guidanceCheck({ lines, coaList: lb.coa, t12: lb.actualCal, cyBudget: lb.budgetCal, lastMonth: lb.lastMonth || 10,
+    startMonth: Number(lb.budget.inputs?.startMonth) || 1, units, capital: Number(lb.budget.inputs?.capital) || 0, guidance: lb.guidance }) : null;
+  const ovF = lb.lines.filter((l: any) => l.override && l.driver?.method && !['manual', 'setTotal', 'zero'].includes(l.driver.method)).length;
+  return {
+    hasRef: !!ref,
+    refKind: lb.annual ? 'T12' : 'UW',
+    refLabel: lb.annual ? (t12 ? `${t12.label}${t12.period ? ` ${t12.period}` : ''}` : 'no T12 on file') : (lb.uw ? 'UW Year 1' : 'no UW linked'),
+    cat,
+    // insurance guidance is a $/unit rate on 6108 over the T12 category (other insurance lines held)
+    ins6108: lb.annual && t12 ? Number(t12.byGl['6108'] || 0) : 0,
+    income: k.income, expense: k.expense, noi: k.noi, coc: k.coc, capital: Number(lb.budget.inputs?.capital) || 0,
+    startMonth: Number(lb.budget.inputs?.startMonth) || 1,
+    overrides: lb.lines.filter((l) => l.override).length, overridesFormula: ovF,
+    savePoints: (lb.savePoints || []).length,
+    ltlMode: lb.budget.inputs?.ltl?.mode === 'ramp' ? 'ramp' : 'leases',
+    guide: gr ? { growth: gr.growth, flags: gr.flags, bad: gr.bad, miss: gr.items.filter((i) => i.status === 'check' || i.status === 'bad').map((i) => i.label) } : null,
+  };
+}
+
 function budgetView(lb: LoadedBudget) {
   const lines = effectiveLines(lb);
   const monthsMap = new Map(lines.map((l) => [l.gl_code, l.months]));
@@ -1608,11 +1642,13 @@ router.get('/summary', h(async (req, res) => {
   for (const r of rows) {
     const lb = await loadBudget(r.id);
     if (!lb) continue;
+    const lines = effectiveLines(lb);
     out.push({ id: r.id, code: r.property_code, name: r.name, region: String(r.market || '').trim() || 'Other', type: r.budget_type, status: r.status, updatedAt: r.updated_at,
-               stale: lb.budget.calc_version !== ENGINE_VERSION, ...summaryOf(lb, effectiveLines(lb)), units: Number(lb.budget.inputs?.units) || Number(r.units) || 0 });
+               stale: lb.budget.calc_version !== ENGINE_VERSION, ...summaryOf(lb, lines), units: Number(lb.budget.inputs?.units) || Number(r.units) || 0,
+               cmp: compareOf(lb, lines) });
   }
   const years = (await query('select distinct year from budgets order by year desc')).rows.map((x: any) => Number(x.year));
-  res.json({ year, years, properties: out });
+  res.json({ year, years, properties: out, guidance: await loadGuidance() });
 }));
 /* Rename the Summary panel's column headers ("Nov. 23 T12" …) — no recalculation. */
 router.post('/budgets/:id/summary-labels', h(async (req, res) => {

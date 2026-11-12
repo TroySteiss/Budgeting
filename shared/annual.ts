@@ -671,7 +671,7 @@ export interface FormulaSet {
   fit?: Record<string, number>;
   /** Row choices (shape, increase %, MROUND) on the GLs whose builders read only these, not the rules:
       payroll (64xx: raises, burden shapes) and 6350. A set that dropped them reset those lines. */
-  row?: { glShape?: Record<string, BaselineShape>; glGrowth?: Record<string, number>; glMround?: Record<string, number> };
+  row?: { glShape?: Record<string, BaselineShape>; glGrowth?: Record<string, number>; glMround?: Record<string, number>; secGrowth?: Record<string, number> };
 }
 /** Methods whose months never take a T12 fit (mirrors the generator's FIT_SKIP). */
 const FIT_NEVER = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest']);
@@ -683,9 +683,12 @@ export function formulaSetFromBudget(lines: BudgetLine[], inputs: BudgetInputs):
   const fit: Record<string, number> = {};
   const bl = inputs.baseline || ({} as NonNullable<BudgetInputs['baseline']>);
   for (const l of lines) {
-    if (l.override) continue;                                        // a hand-typed line is a hard code
     const d = (l.driver || {}) as any;
-    if (d.method === 'zero') { rules[l.gl_code] = { method: 'zero' }; continue; }
+    // a deliberate zero-out. "Zero out row" saves it as an edited line (override), so it is checked BEFORE the
+    // hand-typed skip (Troy 2026-11-12: "zeroing rows is not applied from saved formula set"). A zeroed line
+    // later typed over (revised, or any month non-zero) is a hard code like any other.
+    if (d.method === 'zero' && !d.revised && (l.months || []).every((v) => !Number(v))) { rules[l.gl_code] = { method: 'zero' }; continue; }
+    if (l.override) continue;                                        // a hand-typed line is a hard code
     if (d.method !== 'baseline') {                                   // engine-driven lines (GPR, LTL, payroll, fee…) carry no per-GL rule…
       const f = Number(bl.glFit?.[l.gl_code] ?? d.fitT12 ?? 0) || 0;  // …but a FIT picked on the row travels with the set
       if (f > 0 && !FIT_NEVER.has(d.method)) fit[l.gl_code] = Math.round(Math.min(1, f) * 1000) / 1000;
@@ -715,11 +718,20 @@ export function formulaSetFromBudget(lines: BudgetLine[], inputs: BudgetInputs):
   if (inputs.payrollRaisePct != null) settings.payrollRaisePct = inputs.payrollRaisePct;
   // row picks the rules cannot carry: payroll (64xx) and 6350 are built from the row settings alone
   // (raise %, burden shape), so those travel as-is. Every other row pick is already folded into its rule.
+  // INCREASE %s travel as picked, on every formula line (Troy 2026-11-12: "Same thing w increase %'s"): the
+  // rule's factor is the % the line resolved to, but on the receiving budget a category % from the set's
+  // settings outranks a rule factor, so a row % or section % typed under a category % came back as the
+  // category %. Carrying the row %s (glGrowth) and section %s (secGrowth) makes the receiving budget
+  // resolve every line's % exactly as the source did.
   const rowOnly = (gl: string) => /^64\d\d$/.test(gl) || gl === '6350';
-  const live = new Set(lines.filter((l) => !l.override && rowOnly(l.gl_code)).map((l) => l.gl_code));
-  const keep = <T>(o: Record<string, T> | undefined): Record<string, T> => Object.fromEntries(Object.entries(o || {}).filter(([gl, v]) => live.has(gl) && v != null));
+  const formula = new Set(lines.filter((l) => !l.override).map((l) => l.gl_code));
+  const live = new Set([...formula].filter(rowOnly));
+  const keepIn = <T>(o: Record<string, T> | undefined, set: Set<string>): Record<string, T> => Object.fromEntries(Object.entries(o || {}).filter(([gl, v]) => set.has(gl) && v != null));
+  const keep = <T>(o: Record<string, T> | undefined) => keepIn(o, live);
   const row: NonNullable<FormulaSet['row']> = {};
-  const rs = keep(bl.glShape as any), rg = keep(bl.glGrowth as any), rm = keep(bl.glMround as any);
+  const rs = keep(bl.glShape as any), rg = keepIn(bl.glGrowth as any, formula), rm = keep(bl.glMround as any);
+  const sg = Object.fromEntries(Object.entries(bl.secGrowth || {}).filter(([, v]) => v != null && Number.isFinite(Number(v))));
+  if (Object.keys(sg).length) row.secGrowth = sg as any;
   if (Object.keys(rs).length) row.glShape = rs as any;
   if (Object.keys(rg).length) row.glGrowth = rg as any;
   if (Object.keys(rm).length) row.glMround = rm as any;
@@ -735,7 +747,7 @@ export function applyFormulaSet(inputs: BudgetInputs, set: FormulaSet, from: { i
     ...inputs,
     rules: { ...(set.rules || {}) },
     rulesFrom: { id: from.id, name: from.name, at: new Date().toISOString() },
-    baseline: { ...DEFAULT_BASELINE, ...(inputs.baseline || {}), ...clean(st.baseline), glShape: { ...(set.row?.glShape || {}) }, glGrowth: { ...(set.row?.glGrowth || {}) }, glMround: { ...(set.row?.glMround || {}) }, glFit: { ...(set.fit || {}) }, secGrowth: {} } as any,
+    baseline: { ...DEFAULT_BASELINE, ...(inputs.baseline || {}), ...clean(st.baseline), glShape: { ...(set.row?.glShape || {}) }, glGrowth: { ...(set.row?.glGrowth || {}) }, glMround: { ...(set.row?.glMround || {}) }, glFit: { ...(set.fit || {}) }, secGrowth: { ...(set.row?.secGrowth || {}) } } as any,
     ltl: { ...(inputs.ltl || ({} as any)), ...clean(st.ltl) },
     ...(st.vacancyExpWeight != null ? { vacancyExpWeight: st.vacancyExpWeight } : {}),
     ...(st.burdenBasis ? { burdenBasis: st.burdenBasis } : {}),

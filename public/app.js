@@ -2190,9 +2190,11 @@ function formulaSetOptions(cur) {
     + opt('template', 'Template defaults only (no saved set)')
     + opt('grks', 'GRKS 2026 draft (the old default)');
 }
+/* a deliberate zero-out ("Zero out row" saves it as an edited line) — it travels in saved sets and section copies */
+const zeroedLine = (l) => !!l && !!l.driver && l.driver.method === 'zero' && !l.driver.revised && (l.months || []).every((v) => !Number(v));
 async function saveFormulaSet(b) {
-  const lines = (S.bv.lines || []).filter((l) => !l.override && l.driver && (l.driver.method === 'baseline' || l.driver.method === 'zero'));
-  const hard = (S.bv.lines || []).filter((l) => l.override).length;
+  const lines = (S.bv.lines || []).filter((l) => (!l.override && l.driver && l.driver.method === 'baseline') || zeroedLine(l));
+  const hard = (S.bv.lines || []).filter((l) => l.override && !zeroedLine(l)).length;
   const name = (prompt(`Save this budget's formulas under a name.\n\nSaved: ${lines.length} line formulas (shape, increase factor, rounding, zero-outs) and the formula settings (category factors, cost drift, loss-to-lease renewal / burnoff, vacancy curve, payroll basis).\nNOT saved: ${hard} hand-typed line${hard === 1 ? '' : 's'}, any dollar amount, GPR steps, the vacancy average, expirations.\n\nName:`, `${b.property_code.toUpperCase()} ${b.year}`) || '').trim();
   if (!name) return;
   try {
@@ -2529,7 +2531,7 @@ function openCopyFormulasOut(b) {
   for (const a of coa) {
     if (a.kind !== 'detail') continue;
     const l = lines.get(a.code);
-    if (!l || l.override || !l.driver || !['baseline', 'zero'].includes(l.driver.method)) continue;
+    if (!l || !l.driver || !(zeroedLine(l) || (!l.override && ['baseline', 'zero'].includes(l.driver.method)))) continue;
     let s = secs.find((x) => x.key === a.section);
     if (!s) { const h = coa.find((x) => x.kind === 'header' && x.section === a.section); s = { key: a.section, name: h ? h.name : String(a.section).replace(/_/g, ' '), n: 0, shapes: new Set() }; secs.push(s); }
     s.n++; if (l.driver.shape) s.shapes.add(l.driver.shape);
@@ -3507,7 +3509,9 @@ function smoothMonths(months, opt) {
      1. a month against the line's sign (a credit on an expense) is taken out of the nearest high month;
      2. a spike (more than 1.5x the typical month AND 1.5x both months beside it) gives its EXCESS to the low months within three months
         of it, nearest first and the months before it first (a catch-up bill follows the missed ones),
-        filling each only up to the typical month. What does not fit stays in the spike.
+        filling each only up to the typical month. What does not fit stays in the spike;
+     3. a sudden drop (a run of 1-3 months under 35% of the typical month and of the months either side) is
+        filled back to the level beside it, taken from every other month in proportion.
    Months that were already ordinary are not touched. When nothing qualifies the line is left alone unless
    the user says yes to one half-strength 1-2-1 pass. Total kept, then MROUND $5. */
 function smoothGentle(months, opt) {
@@ -3537,6 +3541,33 @@ function smoothGentle(months, opt) {
     for (let d = 1; d <= 3 && excess > 0.005; d++) for (const j of near(i, d)) {
       const give = Math.min(excess, Math.max(0, med - w[j]));
       if (give > 0) { w[j] += give; w[i] -= give; excess -= give; moved += give; }
+    }
+  }
+  // 3. drops (Troy 2026-11-12: "Smoothing only looks for spikes, not massive drops"): a run of at most
+  //    three months that falls off a cliff — each under 35% of the typical month AND under 35% of the
+  //    average of the months on either side of the run, which themselves sit at half the typical month or
+  //    more — is filled back to the level around it (never above the typical month). A real seasonal low
+  //    tapers in (its neighbours are in between), and a long off-season (snow in summer) is more than
+  //    three months, so neither qualifies. The fill comes out of every other month in proportion, so the
+  //    year total and the rest of the line's shape are kept.
+  if (med > 0) {
+    const dip = Array(12).fill(false);
+    const deep = (v) => v < 0.35 * med && med - v >= 50;
+    for (let i = 0; i < 12;) {
+      if (!deep(w[i])) { i++; continue; }
+      let j = i; while (j + 1 < 12 && deep(w[j + 1])) j++;
+      const sides = [i - 1, j + 1].filter((k) => k >= 0 && k < 12).map((k) => w[k]);
+      const level = sides.length ? sides.reduce((a, v) => a + v, 0) / sides.length : 0;
+      const sharp = j - i < 3 && sides.length && level >= 0.5 * med && Math.max(...w.slice(i, j + 1)) < 0.35 * level;
+      if (sharp) for (let k = i; k <= j; k++) dip[k] = Math.min(med, level);
+      i = j + 1;
+    }
+    const add = dip.reduce((a, t, k) => a + (t ? t - w[k] : 0), 0);
+    const rest = w.reduce((a, v, k) => a + (dip[k] ? 0 : Math.max(0, v)), 0);
+    if (add > 0 && rest > add) {
+      const k2 = (rest - add) / rest;
+      w = w.map((v, k) => (dip[k] ? dip[k] : v > 0 ? v * k2 : v));
+      moved += add;
     }
   }
   // nothing was wrong enough: one soft pass (half way to a 1-2-1), reflective edges keep the total
@@ -5930,108 +5961,175 @@ function editorViewToggle(main) {
   wireSummaryLabels(holder, b.id, (bv) => { S.bv = bv; render(); });
 }
 
-/* ---- the Summary tab: the workbook's "Schedule" table for every property, by region ---- */
+/* ---- the Summary tab (Troy 2026-11-12: "should look more like the 'Budgets' [list]. It should have all of
+   the items we look at in the property level 'compare to' section, with conditional formatting based off of
+   the budget guidance sheet. I do not want different panes, I just want different subtotals for each region
+   that act as separators"). ONE table: the dashboard Budgets columns, then every compare-card subtotal for
+   each property's latest budget of the year. A subtotal row closes each region (properties.market), and an
+   all-properties total closes the table. Numbers come from GET /summary (`compareOf` in routes.ts: the same
+   computeTieout as the compare card, always vs the T12 for annual budgets, UW Year 1 for acquisitions). ---- */
 async function loadSummary(year) {
   S.sum = { ...(S.sum || {}), loading: true, err: '' };
-  try { S.sum = { data: await GET(`/summary${year ? `?year=${year}` : ''}`), loading: false, err: '', open: (S.sum && S.sum.open) || {} }; }
-  catch (e) { S.sum = { data: null, loading: false, err: e.message, open: {} }; }
+  try { S.sum = { data: await GET(`/summary${year ? `?year=${year}` : ''}`), loading: false, err: '' }; }
+  catch (e) { S.sum = { data: null, loading: false, err: e.message }; }
   render();
 }
-/* The workbook's conditional formatting on the Schedule sheet: a 3-colour scale down each growth
-   column, over the property rows only — lowest value green (#63BE7B), the median yellow
-   (#FFEB84), highest red (#F8696B). Returns a colour per value (null for blanks). */
-function xsColorScale(vals) {
-  const nums = vals.filter((v) => v != null && Number.isFinite(v)).slice().sort((x, y) => x - y);
-  if (nums.length < 2) return vals.map(() => null);
-  const lo = nums[0], hi = nums[nums.length - 1];
-  const pos = (nums.length - 1) * 0.5, base = Math.floor(pos);
-  const mid = nums[base] + (nums[Math.min(base + 1, nums.length - 1)] - nums[base]) * (pos - base);   // Excel's 50th percentile
-  const G = [0x63, 0xBE, 0x7B], Y = [0xFF, 0xEB, 0x84], R = [0xF8, 0x69, 0x6B];
-  const mix = (c1, c2, t) => `rgb(${c1.map((x, i) => Math.round(x + (c2[i] - x) * Math.min(1, Math.max(0, t)))).join(',')})`;
-  return vals.map((v) => {
-    if (v == null || !Number.isFinite(v)) return null;
-    if (hi === lo) return mix(Y, Y, 0);
-    return v <= mid ? mix(G, Y, mid === lo ? 1 : (v - lo) / (mid - lo)) : mix(Y, R, hi === mid ? 1 : (v - mid) / (hi - mid));
-  });
+/* the compare card's rows, in its order. `of` = a subtotal of other rows; `d` = income detail (shown when opened) */
+const SUM_COLS = [
+  { k: '1', h: 'GPR', t: 'Gross Potential Rent', d: true },
+  { k: 'loss', h: 'LTL', t: 'Loss to Lease', d: true },
+  { k: 'ngpr', h: 'Net GPR', t: 'Net Gross Potential Rent', of: ['1', 'loss'], d: true },
+  { k: '2', h: 'Conc.', t: 'Concessions', d: true },
+  { k: '3', h: 'Vac / loss', t: 'Vacancy, Delinq & Other Loss', d: true },
+  { k: 'rental', h: 'Rental inc', t: 'Total Rental Income', of: ['1', 'loss', '2', '3'] },
+  { k: '4', h: 'Util inc', t: 'Utility Income', d: true },
+  { k: '5', h: 'Other inc', t: 'Other Income', d: true },
+  { k: 'oth', h: 'Other + util', t: 'Total Other + Utility Income', of: ['4', '5'] },
+  { k: 'egi', h: 'Total inc', t: 'Total Income (EGI)', big: true },
+  { k: '6', h: 'Insur.', t: 'Insurance' },
+  { k: '7', h: 'Mgmt fee', t: 'Management Fee' },
+  { k: '8', h: 'RE tax', t: 'RE & PP Taxes' },
+  { k: '9', h: 'Admin', t: 'Admin & Acct' },
+  { k: '10', h: 'Payroll', t: 'Payroll' },
+  { k: '11', h: 'Mktg', t: 'Marketing' },
+  { k: '12', h: 'Utilities', t: 'Utilities' },
+  { k: '13', h: 'R&M', t: 'R&M' },
+  { k: '14', h: 'Rehab', t: 'Rehab / Reserves' },
+  { k: 'toe', h: 'OpEx', t: 'Total OpEx', big: true },
+  { k: 'noi', h: 'NOI', t: 'NOI', big: true },
+];
+function sumVal(cat, c) {
+  if (!cat) return null;
+  const parts = c.of || [c.k];
+  if (!parts.some((p) => cat[p])) return null;
+  return parts.reduce((a, p) => ({ ref: a.ref + ((cat[p] || {}).ref || 0), bud: a.bud + ((cat[p] || {}).bud || 0) }), { ref: 0, bud: 0 });
 }
-function scheduleTableHtml(region, props) {
-  const year = S.sum.data.year;
-  const cyLabel = (props.find((p) => p.cyBudgetLabel) || {}).cyBudgetLabel || `${year - 1} budget`;
-  const cyHead = /^\d{4} budget$/i.test(cyLabel) ? `NOI Growth over ${cyLabel.replace(/ budget$/i, '')}'s Budget` : `NOI Growth over the ${String(cyLabel).replace(/^budget /i, '')} Budget`;
-  const tr = (p) => {
-    const noi = p.bud ? p.bud.noi : null;
-    const t = [0, 1, 2].map((i) => ((p.noiTrend || [])[i] || {}).noi ?? null);
-    const taxInc = p.bud && p.t12 ? p.bud.tax - p.t12.tax : null, feeInc = p.bud && p.t12 ? p.bud.fee - p.t12.fee : null;
-    const adj = (base) => (base && noi != null && taxInc != null ? ((noi + taxInc + feeInc) - base) / base : null);
-    return { p, units: p.units || 0, t, noi, taxInc, feeInc, g: t.map((x) => (x && noi != null ? (noi - x) / x : null)), overBud: p.cyBudgetNoi && noi != null ? (noi - p.cyBudgetNoi) / p.cyBudgetNoi : null,
-             incT4: p.bud && p.t4 && p.t4.income ? (p.bud.income - p.t4.income) / p.t4.income : null, adj: t.map(adj) };
-  };
-  const rows = props.map(tr);
-  // a trend window is a column only when at least one property has it on file (blank columns are dropped)
-  const withT = props.find((p) => (p.noiTrend || []).length === 3);
-  const tl = withT ? withT.noiTrend.map((t) => t.label) : ['', '', ''];
-  const win = [0, 1, 2].filter((i) => rows.some((r) => r.t[i] != null));
-  const sumOf = (f, only) => { const vals = rows.filter((r) => !only || only(r)).map(f).filter((x) => x != null); return vals.length ? vals.reduce((a, b) => a + b, 0) : null; };
-  const avgOf = (f) => { const vals = rows.map(f).filter((x) => x != null); return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null; };
-  // the Average row's growth is on the summed dollars of the properties that HAVE that window
-  const tot = win.map((i) => {
-    const has = (r) => r.t[i] != null && r.noi != null;
-    const T = sumOf((r) => r.t[i], has), N = sumOf((r) => r.noi, has), X = sumOf((r) => (r.taxInc || 0) + (r.feeInc || 0), has);
-    return { T: sumOf((r) => r.t[i]), g: T ? (N - T) / T : null, adj: T ? ((N + X) - T) / T : null };
-  });
-  const scale = (f) => xsColorScale(rows.map(f));
-  const cs = { g: win.map((i) => scale((r) => r.g[i])), overBud: scale((r) => r.overBud), incT4: scale((r) => r.incT4), adj: win.map((i) => scale((r) => r.adj[i])) };
-  const cell = (html, bg) => `<td${bg ? ` style="background:${bg}"` : ''}>${html}</td>`;
-  const body = rows.map((r, n) => `<tr class="${n === rows.length - 1 ? 'sch-last' : ''}">
-      ${cell(xsNum(r.units))}<td class="sch-prop" data-sumopen="${r.p.id}" title="Open this budget's summary${r.p.stale ? ' — calculated on older formulas, recalc it' : ''}">${esc(String(r.p.code).toUpperCase())}${r.p.stale ? ' <span class="sch-stale">⚠</span>' : ''}</td>
-      ${win.map((i) => cell(xsNum(r.t[i]))).join('')}${cell(xsNum(r.noi))}
-      ${win.map((i, k) => cell(xsPct(r.g[i], 2), cs.g[k][n])).join('')}${cell(xsPct(r.overBud, 2), cs.overBud[n])}${cell(xsPct(r.incT4, 2), cs.incT4[n])}
-      ${win.map((i, k) => cell(xsPct(r.adj[i], 2), cs.adj[k][n])).join('')}</tr>`).join('');
-  return `<div class="xsum sch"><table>
-    <tr class="sch-h"><td>Unit count</td><td>Property</td>
-      ${win.map((i) => `<td>${esc(tl[i])} T12 NOI Trend</td>`).join('')}<td>${year} NOI Budget</td>
-      ${win.map((i) => `<td>${esc(tl[i])} T12 NOI Growth</td>`).join('')}<td>${esc(cyHead)}</td><td>Income Growth over T4</td>
-      ${win.map((i) => `<td>NOI Increase Tax and MGMT Fee Adjusted ${esc(tl[i])} T12</td>`).join('')}</tr>
-    ${body}
-    <tr class="sch-avg"><td>${xsNum(sumOf((r) => r.units))}</td><td>Average</td>
-      ${tot.map((x) => cell(xsNum(x.T))).join('')}${cell(xsNum(sumOf((r) => r.noi)))}
-      ${tot.map((x) => cell(xsPct(x.g, 2))).join('')}${cell(xsPct(avgOf((r) => r.overBud), 2))}${cell(xsPct(avgOf((r) => r.incT4), 2))}
-      ${tot.map((x) => cell(xsPct(x.adj, 2))).join('')}</tr>
-  </table></div>`;
-}
-function regionAvgSummary(region, props) {
-  const add = (k) => { const cols = props.map((p) => p[k]).filter(Boolean); if (!cols.length) return null; const out = {}; for (const f of Object.keys(cols[0])) out[f] = cols.reduce((a, c) => a + (c[f] || 0), 0); return out; };
-  const first = props.find((p) => p.t12) || props[0];
-  return { labels: first.labels, capital: props.reduce((a, p) => a + (p.capital || 0), 0), units: props.reduce((a, p) => a + (p.units || 0), 0), t12: add('t12'), t4: add('t4'), bud: add('bud') };
+/* The guidance for one compare row: the same numbers the compare card puts in an empty target box (GT in
+   tieGrowthHtml). Income lines at the income %, expense categories / OpEx at the expense %, RE taxes, payroll,
+   insurance as the $/unit rate over the T12 category, NOI at least the NOI %. Returns [lo, hi, text] or null. */
+function sumGuideRange(G, key, ctx) {
+  if (!G) return null;
+  const tol = G.tolerance ?? 0.0025;
+  const p = (v) => `${+(v * 100).toFixed(2)}%`;
+  if (key === 'noi') return [G.noiPct, null, `at least ${p(G.noiPct)}`];
+  let pt = { rental: G.incomePct, egi: G.incomePct, '4': G.incomePct, '5': G.incomePct, '8': G.reTaxPct, '10': G.payrollPct,
+    '9': G.expensePct, '11': G.expensePct, '12': G.expensePct, '13': G.expensePct, '14': G.expensePct, toe: G.expensePct }[key];
+  if (key === '6' && ctx && ctx.r6 && ctx.units) pt = ((G.insurancePerUnit * ctx.units) + (ctx.r6 - (ctx.g6108 || 0))) / ctx.r6 - 1;
+  return pt == null ? null : [pt - tol, pt + tol, `${p(pt)} ±${+(tol * 100).toFixed(2)} pt`];
 }
 function renderSummary(el) {
   if (!S.sum || (!S.sum.data && !S.sum.loading && !S.sum.err)) { loadSummary(S.dashYear); el.innerHTML = '<div class="card"><p class="muted">Loading…</p></div>'; return; }
   if (S.sum.loading && !S.sum.data) { el.innerHTML = '<div class="card"><p class="muted">Loading…</p></div>'; return; }
   if (S.sum.err) { el.innerHTML = `<div class="card"><p class="err">${esc(S.sum.err)}</p></div>`; return; }
-  const d = S.sum.data;
+  const d = S.sum.data, G = d.guidance || null;
+  const store = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { /* storage blocked */ } return null; };
+  if (!S.sumMode) S.sumMode = store('bt-summode') || 'pct';
+  if (S.sumDetail == null) S.sumDetail = store('bt-sumdetail') === '1';
+  const mode = S.sumMode;
+  const cols = SUM_COLS.filter((c) => S.sumDetail || !c.d);
+  const pct = (v, dp = 1) => (v == null || !Number.isFinite(v) ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(dp)}%`);
+  const gr = (bud, ref) => (ref ? (bud - ref) / Math.abs(ref) : null);
   const regions = [...new Set(d.properties.map((p) => p.region))].sort();
+
+  /* one row's figures: a property, or the sum of several */
+  function rowData(props) {
+    const has = props.filter((p) => p.cmp && p.cmp.hasRef);
+    // a subtotal adds like with like: the T12-based (annual) budgets when there are any, else the UW-based ones
+    const kind = has.some((p) => p.cmp.refKind === 'T12') ? 'T12' : 'UW';
+    const inc = has.filter((p) => p.cmp.refKind === kind);
+    const cat = {};
+    for (const p of inc) for (const [k, v] of Object.entries(p.cmp.cat)) { cat[k] = cat[k] || { ref: 0, bud: 0 }; cat[k].ref += v.ref; cat[k].bud += v.bud; }
+    const sumOf = (f, list = props) => list.reduce((a, p) => a + (f(p) || 0), 0);
+    const cyHas = props.filter((p) => p.cyBudgetNoi != null && p.cmp);
+    const cap = sumOf((p) => p.cmp && p.cmp.capital);
+    return {
+      kind, n: props.length, nRef: inc.length, cat: inc.length ? cat : null,
+      ctx: { units: sumOf((p) => p.units, inc), r6: (cat['6'] || {}).ref || 0, g6108: sumOf((p) => p.cmp.ins6108, inc) },
+      income: sumOf((p) => p.cmp && p.cmp.income), expense: sumOf((p) => p.cmp && p.cmp.expense), noi: sumOf((p) => p.cmp && p.cmp.noi),
+      noiVar: inc.length ? cat.noi.bud - cat.noi.ref : null, egiVar: inc.length ? cat.egi.bud - cat.egi.ref : null,
+      overCy: cyHas.length ? gr(sumOf((p) => p.cmp.noi, cyHas), sumOf((p) => p.cyBudgetNoi, cyHas)) : null,
+      coc: cap ? sumOf((p) => p.cmp && p.cmp.coc != null ? p.cmp.coc * p.cmp.capital : 0) / cap : null,
+      units: sumOf((p) => p.units),
+    };
+  }
+  function cmpCells(r, useGuide) {
+    return cols.map((c, i) => {
+      const v = sumVal(r.cat, c);
+      if (!v) return `<td class="${i === 0 ? 'cmp1' : ''} muted">—</td>`;
+      const g = gr(v.bud, v.ref);
+      const rg = useGuide && G ? sumGuideRange(G, c.k, r.ctx) : null;
+      const inn = rg && g != null ? (rg[0] == null || g >= rg[0] - 1e-9) && (rg[1] == null || g <= rg[1] + 1e-9) : null;
+      const shown = mode === 'pct' ? pct(g) : mode === 'dlr' ? money(v.bud - v.ref) : mode === 'bud' ? money(v.bud) : money(v.ref);
+      const tip = `${c.t}: ${r.kind === 'T12' ? 'T12' : 'UW Y1'} ${money(v.ref)} → budget ${money(v.bud)} (Δ ${money(v.bud - v.ref)}, ${pct(g)})${rg ? ` · guidance ${rg[2]}: ${inn ? 'within' : 'outside'}` : ''}`;
+      return `<td class="${i === 0 ? 'cmp1' : ''} ${c.big ? 'big' : ''} ${inn == null ? '' : inn ? 'gin' : 'gout'}" title="${esc(tip)}">${shown}</td>`;
+    }).join('');
+  }
+  const varCell = (v, kind) => (v == null ? '<td class="muted">—</td>' : `<td class="${Math.abs(v) < 1 ? 'tied' : v < 0 ? 'neg' : ''}" title="vs ${kind === 'T12' ? 'the T12' : 'UW Year 1'}">${Math.abs(v) < 1 ? 'tied' : money(v)}</td>`);
+  const cyCell = (v) => (v == null ? '<td class="muted">—</td>' : `<td class="${v < 0 ? 'gout' : ''}" title="${v < 0 ? 'Below the current-year budget NOI (the guidance: never below it)' : 'NOI over the current-year budget'}">${pct(v)}</td>`);
+  const guideCell = (r) => {
+    if (r.kind !== 'T12' || !r.cat) return '<td class="muted">—</td>';
+    const gi = gr(r.cat.egi.bud, r.cat.egi.ref), ge = gr(r.cat.toe.bud, r.cat.toe.ref), gn = gr(r.cat.noi.bud, r.cat.noi.ref);
+    const low = gn != null && G && gn < G.noiPct - 1e-9;
+    return `<td class="gdash ${gn != null && gn < 0 ? 'gbad' : low ? 'gchk' : 'gok'} l"><b>NOI ${pct(gn)}</b><div class="muted" style="font-size:10.5px">inc ${pct(gi)} · exp ${pct(ge)}${r.n > 1 && r.nRef < r.n ? ` · ${r.nRef} of ${r.n}` : ''}</div></td>`;
+  };
+  function propRow(p) {
+    const r = rowData([p]), c = p.cmp || {};
+    const sm = c.startMonth > 1 ? `${MONTHS[c.startMonth - 1]}-${String(d.year).slice(2)} – ${MONTHS[(c.startMonth + 10) % 12]}-${String(d.year + 1).slice(2)}` : String(d.year);
+    const ov = c.overrides || 0;
+    const annual = p.type === 'annual';
+    return `<tr class="click" data-sumopen="${p.id}">
+      <td class="l stick"><b>${esc(p.code)}</b> · ${esc(p.name || '')}${p.stale ? ' <span class="sch-stale" title="Calculated on older formulas: recalc it">⚠</span>' : ''}<div class="muted" style="font-size:10.5px">${p.units ? `${xsNum(p.units)} units` : ''}</div></td>
+      <td class="l"><b>${sm}</b> <span class="muted">${annual ? 'annual' : 'acquisition · UW Y1'}</span><div class="muted" style="font-size:10.5px">${ov ? `${ov} override${ov === 1 ? '' : 's'}` : 'no overrides'}${c.ltlMode === 'leases' ? ' · per-lease LTL' : ''}${c.savePoints ? ` · ${c.savePoints} save pt${c.savePoints === 1 ? '' : 's'}` : ''}</div></td>
+      <td>${money(r.income)}</td><td>${money(r.expense)}</td><td><b>${money(r.noi)}</b></td>
+      ${varCell(r.noiVar, r.kind)}${varCell(r.egiVar, r.kind)}${annual ? guideCell(r) : '<td class="muted">—</td>'}
+      ${cmpCells(r, annual && r.kind === 'T12')}
+      ${cyCell(r.overCy)}
+      <td>${c.coc != null && c.capital ? `${(c.coc * 100).toFixed(1)}%<div class="muted" style="font-size:10.5px">on ${money(c.capital)}</div>` : '—'}</td>
+      <td class="l">${esc(p.status || '')}</td><td class="muted">${p.updatedAt ? new Date(p.updatedAt).toLocaleDateString() : ''}</td></tr>`;
+  }
+  function subRow(label, props, cls) {
+    const r = rowData(props);
+    return `<tr class="${cls}">
+      <td class="l stick">${esc(label)} <span class="muted" style="font-weight:400">· ${props.length} budget${props.length === 1 ? '' : 's'}</span><div class="muted" style="font-size:10.5px; font-weight:400">${xsNum(r.units)} units</div></td>
+      <td class="l muted" style="font-weight:400; font-size:11px">${r.cat && r.nRef < r.n ? `compare columns: ${r.nRef} of ${r.n} (${r.kind === 'T12' ? 'T12-based' : 'UW-based'})` : ''}</td>
+      <td>${money(r.income)}</td><td>${money(r.expense)}</td><td>${money(r.noi)}</td>
+      ${varCell(r.noiVar, r.kind)}${varCell(r.egiVar, r.kind)}${guideCell(r)}
+      ${cmpCells(r, r.kind === 'T12')}
+      ${cyCell(r.overCy)}
+      <td>${r.coc != null ? `${(r.coc * 100).toFixed(1)}%` : '—'}</td><td></td><td></td></tr>`;
+  }
+  const body = regions.map((rg) => {
+    const props = d.properties.filter((p) => p.region === rg).sort((a, b) => a.code.localeCompare(b.code));
+    return props.map(propRow).join('') + subRow(`${rg} subtotal`, props, 'sub');
+  }).join('') + (regions.length > 1 ? subRow('All properties', d.properties, 'grand') : '');
+  const modeBtn = (m, label, tip) => `<button data-summode="${m}" class="${mode === m ? 'on' : ''}" title="${esc(tip)}">${label}</button>`;
+  const pp = (v) => `${+(v * 100).toFixed(2)}%`;
+  const gTxt = G ? `income ${pp(G.incomePct)}, expenses ${pp(G.expensePct)}, RE taxes ${pp(G.reTaxPct)}, payroll ${pp(G.payrollPct)}, insurance $${G.insurancePerUnit}/unit, each ±${+((G.tolerance ?? 0.0025) * 100).toFixed(2)} pt; NOI at least ${pp(G.noiPct)}` : '';
+  const modeName = { pct: 'growth', dlr: 'Δ $', bud: 'budget $', ref: 'T12 / UW $' }[mode];
   el.innerHTML = `
     <div class="card">
-      <div class="row" style="justify-content:space-between; align-items:center">
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:8px; gap:8px; flex-wrap:wrap">
         <h2 style="margin:0">Summary <span class="badge">${d.properties.length} budgets</span></h2>
-        <div class="row" style="align-items:center; gap:8px"><label class="muted" style="font-size:12px">Budget year</label><select id="sum-year">${[...new Set([d.year, ...d.years])].sort((a, b) => b - a).map((y) => `<option value="${y}" ${y === d.year ? 'selected' : ''}>${y}</option>`).join('')}</select>
-          <button class="btn sub sm" id="sum-refresh" title="Reload from the budgets as they stand now">↻ Refresh</button></div>
+        <div class="row" style="align-items:center; gap:8px; flex-wrap:wrap">
+          <span class="edseg">${modeBtn('pct', 'Δ %', 'Growth of each subtotal over the T12 (UW Year 1 for acquisitions)')}${modeBtn('dlr', 'Δ $', 'Budget minus the T12 / UW, in dollars')}${modeBtn('bud', 'Budget $', 'The budget subtotal')}${modeBtn('ref', 'T12 $', 'The T12 (UW Year 1 for acquisitions) subtotal')}</span>
+          <button class="btn sub sm" id="sum-detail" title="Show or hide GPR, loss to lease, concessions, vacancy, utility and other income">${S.sumDetail ? '▾ Hide' : '▸ Show'} income detail</button>
+          <label class="muted" style="font-size:12px">Budget year</label><select id="sum-year">${[...new Set([d.year, ...d.years])].sort((a, b) => b - a).map((y) => `<option value="${y}" ${y === d.year ? 'selected' : ''}>${y}</option>`).join('')}</select>
+          <button class="btn sub sm" id="sum-refresh" title="Reload from the budgets as they stand now">↻ Refresh</button>
+        </div>
       </div>
-      <p class="muted" style="font-size:12px; margin:6px 0 0">Each property's latest ${d.year} budget, by region, in the layout of the budget-comps workbook's Schedule sheet. A T12 NOI trend column appears for each of the last three month-ends that a full trailing-12 is on file for (most properties have only the latest until an earlier statement is uploaded). Growth columns carry the workbook's colour scale. Click a property to open its own summary; the same panel is in every budget (Grid | Summary) and in the Excel exports.</p>
-    </div>
-    ${regions.map((rg) => {
-      const props = d.properties.filter((p) => p.region === rg).sort((a, b) => a.code.localeCompare(b.code));
-      const open = !!(S.sum.open || {})[rg];
-      return `<div class="card">
-        <h2 style="margin:0 0 8px">${esc(rg)} <span class="badge">${props.length}</span></h2>
-        ${scheduleTableHtml(rg, props)}
-        <div style="margin-top:10px"><button class="btn sub sm" data-sumavg="${esc(rg)}">${open ? '▾' : '▸'} ${esc(rg)} average breakdown</button></div>
-        ${open ? `<div style="margin-top:10px">${summaryPanelHtml(`${rg} Portfolio`, regionAvgSummary(rg, props))}</div>` : ''}
-      </div>`;
-    }).join('')}
-    ${d.properties.length ? '' : `<div class="card"><p class="muted">No ${d.year} budgets yet.</p></div>`}`;
+      ${d.properties.length ? `<div class="sumwrap"><table class="sumtbl">
+        <tr class="grp"><th class="l stick"></th><th colspan="7"></th><th class="cmp1 c" colspan="${cols.length}">Compare to T12 <span style="text-transform:none; font-weight:400">(acquisitions: UW Year 1) · ${modeName}</span></th><th colspan="4"></th></tr>
+        <tr><th class="l stick">Property</th><th class="l">Budget</th><th>Income</th><th>OpEx</th><th>NOI</th><th title="NOI vs the T12 (UW Year 1 for acquisitions)">Δ NOI</th><th title="Total income vs the T12 (UW Year 1 for acquisitions)">Δ EGI</th><th class="l" title="Exec-team guidance: growth over the T12">Guidance</th>
+          ${cols.map((c, i) => `<th class="${i === 0 ? 'cmp1' : ''}" title="${esc(c.t)}">${esc(c.h)}</th>`).join('')}
+          <th title="NOI over the current-year budget (the guidance: never below it)">NOI vs CY bud</th><th>CoC</th><th class="l">Status</th><th class="l">Updated</th></tr>
+        ${body}
+      </table></div>
+      <p class="muted" style="font-size:11.5px; margin:8px 0 0">Each property's latest ${d.year} budget. The compare columns are the compare card's subtotals with the same math, always against the trailing-12 for annual budgets (the guidance is growth over the T12, whatever a budget's own compare card is set to) and against UW Year 1 for acquisitions. <span class="gin-key">Green</span> = within the exec-team guidance, <span class="gout-key">red</span> = outside it${gTxt ? ` (${esc(gTxt)})` : ''}. The colours stay on in every view. Numbers typed in a budget's own target boxes are not used here. A region subtotal adds its properties' dollars, and its growth is on those sums. Hover a cell for the T12 and budget dollars; click a property to open it.</p>`
+      : `<p class="muted">No ${d.year} budgets yet.</p>`}
+    </div>`;
   el.querySelector('#sum-year').addEventListener('change', (e) => loadSummary(Number(e.target.value)));
   el.querySelector('#sum-refresh').addEventListener('click', () => loadSummary(d.year));
-  el.querySelectorAll('[data-sumavg]').forEach((b) => b.addEventListener('click', () => { S.sum.open = { ...(S.sum.open || {}), [b.dataset.sumavg]: !(S.sum.open || {})[b.dataset.sumavg] }; render(); }));
-  el.querySelectorAll('[data-sumopen]').forEach((td) => td.addEventListener('click', async () => { S.edView = 'summary'; localStorage.setItem('bt-edview', 'summary'); await openBudget(Number(td.dataset.sumopen)); }));
+  el.querySelector('#sum-detail').addEventListener('click', () => { S.sumDetail = !S.sumDetail; store('bt-sumdetail', S.sumDetail ? '1' : '0'); render(); });
+  el.querySelectorAll('[data-summode]').forEach((b) => b.addEventListener('click', () => { S.sumMode = b.dataset.summode; store('bt-summode', S.sumMode); render(); }));
+  el.querySelectorAll('[data-sumopen]').forEach((tr) => tr.addEventListener('click', async () => { await openBudget(Number(tr.dataset.sumopen)); }));
 }

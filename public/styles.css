@@ -562,3 +562,26 @@ tr.qdist.qshift input.qs-in::placeholder { color: #9aa5a0; font-style: italic; }
 
 /* the chip a formula choice produces, beside the choice (menus and pickers) */
 .rowmenu .optchip { display: inline-block; min-width: 44px; text-align: center; margin-right: 6px; font-size: 10px; }
+
+/* Summary tab (2026-11-12): one table in the Budgets-list layout + compare-card columns, region subtotal rows */
+.sumwrap { overflow-x: auto; max-width: 100%; }
+table.sumtbl { border-collapse: collapse; width: 100%; font-size: 12px; }
+table.sumtbl th { text-align: right; font-size: 10.5px; color: var(--dim); text-transform: uppercase; letter-spacing: .3px; padding: 5px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; background: var(--panel); }
+table.sumtbl tr.grp th { border-bottom: 0; padding-bottom: 0; }
+table.sumtbl tr.grp th.c { text-align: center; border-bottom: 2px solid var(--line); }
+table.sumtbl td { padding: 6px 6px; border-bottom: 1px solid var(--gridline); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+table.sumtbl .l { text-align: left; }
+table.sumtbl .stick { position: sticky; left: 0; z-index: 1; background: var(--panel); }
+table.sumtbl .cmp1 { border-left: 2px solid var(--line); }
+table.sumtbl td.big { font-weight: 700; }
+table.sumtbl td.tied { color: var(--good); }
+table.sumtbl tr.click { cursor: pointer; }
+table.sumtbl tr.click:hover td:not(.gin):not(.gout) { background: var(--hover); }
+table.sumtbl td.gin { background: color-mix(in srgb, var(--good) 15%, var(--panel)); color: var(--good); }
+table.sumtbl td.gout { background: color-mix(in srgb, var(--bad) 13%, var(--panel)); color: var(--bad); }
+table.sumtbl tr.sub td { background: var(--total-bg); font-weight: 700; border-top: 1px solid var(--line); border-bottom: 3px solid var(--line); }
+table.sumtbl tr.grand td { background: var(--grand-bg); font-weight: 800; border-top: 2px solid var(--line); }
+table.sumtbl tr.sub td.gin, table.sumtbl tr.grand td.gin { background: color-mix(in srgb, var(--good) 22%, var(--total-bg)); }
+table.sumtbl tr.sub td.gout, table.sumtbl tr.grand td.gout { background: color-mix(in srgb, var(--bad) 20%, var(--total-bg)); }
+.gin-key { color: var(--good); font-weight: 700; }
+.gout-key { color: var(--bad); font-weight: 700; }
