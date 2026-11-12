@@ -1673,13 +1673,22 @@ describe('guidance as single numbers', () => {
     expect(g.incomePct).toBe(0.031); expect(g.payrollPct).toBeCloseTo(0.035, 6); expect(g.noiPct).toBe(0.02);
     expect(g.expensePct).toBe(0.03); expect(g.tolerance).toBe(0.0025);
   });
-  it('income on target within the tolerance of its one number', () => {
+  it('income is a floor and expenses a ceiling (Troy 2026-11-12: "above rental income... green, not red. Reverse is true for expenses")', () => {
     const actual = synthetic();
     const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
     const lines = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10 });
     const r = guidanceCheck({ lines, coaList, t12: actual, lastMonth: 10, units: 10, capital: 0, guidance: { incomePct: 0.5 } })!;
-    expect(r.items.find((i) => i.key === 'income')!.status).toBe('check');
-    expect(r.items.find((i) => i.key === 'income')!.target).toBe('+50.0%');
+    expect(r.items.find((i) => i.key === 'income')!.status).toBe('check');          // below a 50% floor
+    expect(r.items.find((i) => i.key === 'income')!.target).toBe('+50.0% or better');
+    const growth = r.growth.income!, exp = r.growth.expense!;
+    // income well ABOVE its number is on target (it used to be flagged for missing a ± band)
+    const over = guidanceCheck({ lines, coaList, t12: actual, lastMonth: 10, units: 10, capital: 0, guidance: { incomePct: growth - 0.05 } })!;
+    expect(over.items.find((i) => i.key === 'income')!.status).toBe('ok');
+    // expenses well BELOW their number are on target; above it they are not
+    const under = guidanceCheck({ lines, coaList, t12: actual, lastMonth: 10, units: 10, capital: 0, guidance: { expensePct: exp + 0.05 } })!;
+    expect(under.items.find((i) => i.key === 'expense')!.status).toBe('ok');
+    const above = guidanceCheck({ lines, coaList, t12: actual, lastMonth: 10, units: 10, capital: 0, guidance: { expensePct: exp - 0.05 } })!;
+    expect(above.items.find((i) => i.key === 'expense')!.status).toBe('check');
   });
 });
 

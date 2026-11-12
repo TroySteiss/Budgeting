@@ -3101,6 +3101,12 @@ function okToExport(bv) {
    target %, and "tie" shifts that subtotal's growth factors to land there. */
 /* the guidance checks that have no row in the tie card (Troy 2026-11-11: guidance goes WHERE THE
    TARGETS ARE, not in a separate pane) — one line each, only the ones that are off or worth seeing */
+/* guidance direction (Troy 2026-11-12, the 2027 memo): income targets are floors, expense targets ceilings */
+const GUIDE_EPS = 0.0005;   // rounding only: a line that shows as the target counts as on it (mirrors shared/annual.ts)
+const GUIDE_INCOME_KEYS = new Set(['rental', 'income', 'egi', '1', 'ngpr', '4', '5', 'oth', 'noi']);
+// expense / payroll CEILINGS (the memo's top of range; Settings -> Budget guidance), never under the target number
+const expenseCeil = (G) => Math.max(G.expensePct, G.expenseMax ?? G.expensePct);
+const payrollCeil = (G) => Math.max(G.payrollPct, G.payrollMax ?? G.payrollPct);
 function guideNotesHtml(bv) {
   const g = bv.guide; if (!g) return '';
   const own = new Set(['noi', 'income', 'expense', 'rental', 'tax', 'payroll']);   // shown on their rows
@@ -3174,19 +3180,27 @@ function tieGrowthHtml(bv) {
     '9': G.expensePct, '11': G.expensePct, '12': G.expensePct, '13': G.expensePct, '14': G.expensePct,
     opex: G.expensePct,
   } : {};
-  const GR = useG ? Object.fromEntries(Object.entries(GT).map(([k, v]) => [k, [v - tol, v + tol]])) : {};
+  // DIRECTION (Troy 2026-11-12, the 2027 memo): an income number is a floor (above it = green), an expense
+  // number a ceiling (below it = green). GUIDE_EPS only absorbs rounding.
+  const ceilOf = (k, v) => (k === '10' ? payrollCeil(G) : ['9', '11', '12', '13', '14', 'opex'].includes(k) ? expenseCeil(G) : v);
+  const GR = useG ? Object.fromEntries(Object.entries(GT).map(([k, v]) => [k, GUIDE_INCOME_KEYS.has(k) ? [v - GUIDE_EPS, null] : [null, ceilOf(k, v) + GUIDE_EPS]])) : {};
   if (useG) GR.noi = [G.noiPct, null];
   const gText = (k) => (k === 'noi' && useG ? `≥${p1(G.noiPct)}` : GT[k] != null ? `${p1(GT[k])}` : '');
   const gWhy = { income: 'total income', rental: 'rental income, as total income', opex: 'total expenses', noi: 'NOI (most important) — at least', '4': 'as total income', '5': 'as total income', '6': `insurance at $${G ? G.insurancePerUnit : 275}/unit`, '8': 'RE taxes: over actuals unless documented', '10': 'payroll on performing sites, lower where NOI growth is low', '9': 'as total expenses', '11': 'as total expenses', '12': 'as total expenses', '13': 'as total expenses', '14': 'as total expenses' };
   const fillable = Object.keys(GT).filter((k) => gt[k] == null && byKeyExists(k));
   function byKeyExists(k) { return ['rental', 'income', 'opex'].includes(k) || !!byP[k]; }
   // key: a pcode, 'opex' or 'noi' → takes a target; null → display only
-  const row = (r, key, cls) => {
+  // rows with no number of their own get the DERIVED guidance the Summary tab uses (sumGuide): GPR / net GPR /
+  // other + utility at the income floor, loss to lease / concessions / vacancy no bigger a share of GPR, the fee no
+  // faster than income (Troy 2026-11-12: "If there is not a direct category number, you should easily be able to derive one")
+  const cardR = { cat: { '1': byP['1'] ? { ref: byP['1'].uw, bud: byP['1'].budget } : null, egi: { ref: t.egi.uw, bud: t.egi.budget } } };
+  const row = (r, key, cls, dk) => {
     const g = pctOf(r);
     const tgt = key != null && gt[key] != null ? gt[key] : null;
     const off = tgt != null && g != null ? Math.abs(g - tgt) : null;
     const gr = key != null ? GR[key] : null;
-    const gIn = gr && g != null ? (gr[0] == null || g >= gr[0] - 1e-9) && (gr[1] == null || g <= gr[1] + 1e-9) : null;
+    const dg = useG && !gr ? sumGuide(G, dk || key, { ref: r.uw, bud: r.budget }, cardR) : null;
+    const gIn = gr && g != null ? (gr[0] == null || g >= gr[0] - 1e-9) && (gr[1] == null || g <= gr[1] + 1e-9) : dg ? dg.ok : null;
     const vcls = off != null ? (off < 0.0015 ? 'good' : off > 0.01 ? 'bad' : '') : gIn == null ? '' : gIn ? 'good' : 'bad';
     const ph = gr ? gText(key) : '%';
     const tip = `Growth target vs ${refLabel} (%)${gr ? ` — exec-team guidance ${gText(key)}% (${gWhy[key]}); type a number to use your own` : ''}`;
@@ -3198,7 +3212,7 @@ function tieGrowthHtml(bv) {
     const tieBtn = tieTo != null ? `<button class="rb" data-tie="${key}" data-pct="${tieTo}" title="Shift this subtotal's growth factors so it lands at ${esc(refLabel)} ${fmtPct(tieTo)}${tgt == null ? ' (the guidance)' : ''}">tie</button>` : '';
     return `<tr class="${cls || ''}"><td title="${esc(r.label)}">${esc(SHORT[r.pcode] || r.label)}</td>
       <td>${money(r.uw)}</td>${t3Cell(r)}<td>${money(r.budget)}</td>
-      <td class="var ${vcls}" title="Δ ${money(r.budget - r.uw)} vs ${esc(refLabel)}">${fmtPct(g)}</td>
+      <td class="var ${vcls}" title="Δ ${money(r.budget - r.uw)} vs ${esc(refLabel)}${dg ? ` · guidance: ${esc(dg.text)}` : ''}">${fmtPct(g)}</td>
       <td class="tgt">${key != null ? `<input data-gt="${key}" value="${tgt != null ? (tgt * 100).toFixed(1) : ''}" placeholder="${esc(ph)}" class="${gr ? 'gph' : ''}" style="width:${gr ? 58 : 48}px; font-size:11px; text-align:right" title="${esc(tip)}">` : ''}${tieBtn}</td></tr>`;
   };
   const cat = (p) => (byP[p] ? row(byP[p], p) : '');
@@ -3206,20 +3220,20 @@ function tieGrowthHtml(bv) {
   const refShort = inp.refSource === 'budget' ? 'CY bud' : 'T12';
   return `<div class="tiewrap"><table${t3 ? ' class="t3"' : ''}>
     <tr><th>Subtotal</th><th title="${esc(refLabel)}">${refShort}</th>${t3 ? `<th title="T3 annualized — ${esc(t3ref.period)}">T3 ann</th>` : ''}<th>Budget</th><th>Δ%</th><th>Target</th></tr>
-    ${cat('1')}${byP.loss ? row(byP.loss, null) : ''}
-    ${row(agg(['1', 'loss'], 'Net Gross Potential Rent'), null, 'sub')}
+    ${cat('1')}${byP.loss ? row(byP.loss, null, '', 'loss') : ''}
+    ${row(agg(['1', 'loss'], 'Net Gross Potential Rent'), null, 'sub', 'ngpr')}
     ${cat('2')}${cat('3')}
     ${row(agg(['1', 'loss', '2', '3'], 'Total Rental Income'), 'rental', 'sub')}
     ${cat('4')}${cat('5')}
-    ${row(agg(['4', '5'], 'Total Other + Utility Inc'), null, 'sub')}
+    ${row(agg(['4', '5'], 'Total Other + Utility Inc'), null, 'sub', 'oth')}
     ${row({ ...t.egi, label: 'Total Income (EGI)', t3: t3 ? t3.egi : null }, 'income', 'big')}
-    ${['6', '7', '8', '9', '10', '11', '12', '13', '14'].map((p) => (p === '7' ? (byP[p] ? row(byP[p], null) : '') : cat(p))).join('')}
+    ${['6', '7', '8', '9', '10', '11', '12', '13', '14'].map((p) => (p === '7' ? (byP[p] ? row(byP[p], null, '', '7') : '') : cat(p))).join('')}
     ${row({ ...t.toe, label: 'Total OpEx', t3: t3 ? t3.toe : null }, 'opex', 'big')}
     ${row({ ...t.noi, label: 'NOI', t3: t3 ? t3.noi : null }, 'noi', 'big')}
   </table></div>
   ${useG ? guideNotesHtml(bv) : ''}
   <div class="row" style="margin-top:6px; justify-content:space-between; align-items:center">
-    <span class="muted" style="font-size:11px">Δ% = budget vs ${esc(refLabel)}.${useG ? ` Grey number in an empty box = the guidance; Δ% is green within ±${p1(tol)} of it, red outside. <b>fill blank</b> puts those numbers in the empty boxes.` : ''} <b>tie</b> lands a row on its target — the number you typed, or the guidance when the box is empty.</span>
+    <span class="muted" style="font-size:11px">Δ% = budget vs ${esc(refLabel)}.${useG ? ` Grey number in an empty box = the guidance; Δ% is green at or above it on income rows, at or below it on expense rows (NOI at least ${p1(G.noiPct)}%), red the wrong side. <b>fill blank</b> puts those numbers in the empty boxes.` : ''} <b>tie</b> lands a row on its target — the number you typed, or the guidance when the box is empty.</span>
     ${fillable.length ? `<button class="rb" id="fill-targets" title="Put the guidance number in every EMPTY target box (${fillable.length}): income lines ${p1(G.incomePct)}%, expense categories ${p1(G.expensePct)}%, RE taxes ${p1(G.reTaxPct)}%, payroll ${p1(G.payrollPct)}%, insurance at $${G.insurancePerUnit}/unit. Typed boxes and NOI are left alone. Nothing ties until you press tie.">fill ${fillable.length} blank</button>` : ''}
     ${nTargets ? `<button class="rb" id="tie-all" title="Apply every target that is set — categories first, then rental income / total income (they move GPR), then OpEx, then NOI">tie all (${nTargets})</button>` : ''}
   </div>
@@ -5306,8 +5320,10 @@ const GUIDANCE_FIELDS = [
   ['noiPct', 'NOI growth, at least', true], ['spreadMax', 'Expense growth over income growth, at most', true],
   ['marchVsLastPct', 'March rental income vs October, at least', true],
   ['insurancePerUnit', 'Insurance $/unit/yr', false], ['reTaxPct', 'RE taxes over actuals', true],
-  ['payrollPct', 'Payroll growth', true], ['spPctCapital', 'SP as a share of capital', true],
-  ['tolerance', 'Counts as on target within ±', true],
+  ['payrollPct', 'Payroll growth', true],
+  ['expenseMax', 'Expense growth, at most (green at or under)', true], ['payrollMax', 'Payroll growth, at most (green at or under)', true],
+  ['spPctCapital', 'SP as a share of capital', true],
+  ['tolerance', 'A tie lands within ±', true],
 ];
 function guidanceSettingsHtml(st) {
   const g = st.guidance || {};
@@ -6004,18 +6020,54 @@ function sumVal(cat, c) {
   if (!parts.some((p) => cat[p])) return null;
   return parts.reduce((a, p) => ({ ref: a.ref + ((cat[p] || {}).ref || 0), bud: a.bud + ((cat[p] || {}).bud || 0) }), { ref: 0, bud: 0 });
 }
-/* The guidance for one compare row: the same numbers the compare card puts in an empty target box (GT in
-   tieGrowthHtml). Income lines at the income %, expense categories / OpEx at the expense %, RE taxes, payroll,
-   insurance as the $/unit rate over the T12 category, NOI at least the NOI %. Returns [lo, hi, text] or null. */
-function sumGuideRange(G, key, ctx) {
-  if (!G) return null;
-  const tol = G.tolerance ?? 0.0025;
-  const p = (v) => `${+(v * 100).toFixed(2)}%`;
-  if (key === 'noi') return [G.noiPct, null, `at least ${p(G.noiPct)}`];
-  let pt = { rental: G.incomePct, egi: G.incomePct, '4': G.incomePct, '5': G.incomePct, '8': G.reTaxPct, '10': G.payrollPct,
-    '9': G.expensePct, '11': G.expensePct, '12': G.expensePct, '13': G.expensePct, '14': G.expensePct, toe: G.expensePct }[key];
-  if (key === '6' && ctx && ctx.r6 && ctx.units) pt = ((G.insurancePerUnit * ctx.units) + (ctx.r6 - (ctx.g6108 || 0))) / ctx.r6 - 1;
-  return pt == null ? null : [pt - tol, pt + tol, `${p(pt)} ±${+(tol * 100).toFixed(2)} pt`];
+/* The 2027 guidance memo on one compare cell (Troy 2026-11-12: "If we are above rental income, it should be
+   green, not red. Reverse is true for expenses... If there is not a direct category number, you should easily
+   be able to derive one"). Income numbers are FLOORS, expense numbers CEILINGS (Settings -> Budget guidance):
+     rental income, total income             at least the income %            (memo 2: 3.0-3.25% over Oct T12)
+     GPR, net GPR, utility / other income    at least the income %            (derived: they make up income)
+     loss to lease, concessions, vacancy     share of GPR no worse than T12   (derived: contra lines of rental income)
+     mgmt fee                                no faster than this row's income (derived: the fee is a % of income)
+     insurance                               at most $275/unit, as % over the T12 category (memo 3)
+     RE taxes, payroll                       at most their own %              (memo 3)
+     admin, marketing, utilities, R&M, rehab at most the expense %            (derived: total expense target)
+     OpEx                                    at most the expense % AND at most income growth + 50 bps (memo 3 *)
+     NOI                                     at least the NOI %               (memo 4)
+   `v` = { ref, bud } for the cell, `r` = the row (its summed categories). Returns { ok, text } or null. */
+function sumGuide(G, key, v, r) {
+  if (!G || !v || !v.ref) return null;
+  const P = (x) => `${+(x * 100).toFixed(2)}%`;
+  const cat = (r && r.cat) || {};
+  const gOf = (k) => (cat[k] && cat[k].ref ? (cat[k].bud - cat[k].ref) / Math.abs(cat[k].ref) : null);
+  const g = (v.bud - v.ref) / Math.abs(v.ref);
+  const floor = (t, why) => ({ ok: g >= t - GUIDE_EPS, text: `${P(t)} or better (${why})` });
+  const ceil = (t, why) => ({ ok: g <= t + GUIDE_EPS, text: `${P(t)} or less (${why})` });
+  switch (key) {
+    case 'noi': return floor(G.noiPct, 'NOI over the October T12');
+    case 'rental': return floor(G.incomePct, 'rental income over the October T12');
+    case 'egi': return floor(G.incomePct, 'total income over the October T12');
+    case '1': case 'ngpr': case '4': case '5': case 'oth': return floor(G.incomePct, 'derived from the income target');
+    case 'loss': case '2': case '3': {
+      const gp = cat['1'];
+      if (!gp || !gp.ref || !gp.bud) return null;
+      const sr = Math.abs(v.ref) / gp.ref, sb = Math.abs(v.bud) / gp.bud;
+      return { ok: sb <= sr + GUIDE_EPS / 5, text: `${P(sb)} of GPR vs ${P(sr)} on the T12 (derived: no bigger share of GPR than the T12)` };
+    }
+    case '7': { const gi = gOf('egi'); return gi == null ? null : { ok: g <= gi + GUIDE_EPS, text: `${P(gi)} or less (derived: the fee should grow no faster than this income)` }; }
+    case '6': {
+      const c = r && r.ctx;
+      if (!c || !c.r6 || !c.units) return null;
+      return ceil((G.insurancePerUnit * c.units + (c.r6 - (c.g6108 || 0))) / c.r6 - 1, `insurance at $${G.insurancePerUnit}/unit`);
+    }
+    case '8': return ceil(G.reTaxPct, 'RE taxes, unless documented');
+    case '10': return ceil(payrollCeil(G), 'payroll');
+    case '9': case '11': case '12': case '13': case '14': return ceil(expenseCeil(G), 'derived from the total expense ceiling');
+    case 'toe': {
+      const gi = gOf('egi');
+      const cap = gi == null ? expenseCeil(G) : Math.min(expenseCeil(G), gi + G.spreadMax);
+      return ceil(cap, gi != null && cap < expenseCeil(G) ? `income grew ${P(gi)}, and expenses may run at most ${Math.round(G.spreadMax * 10000)} bps over it` : `total expenses; also at most ${Math.round(G.spreadMax * 10000)} bps over income growth`);
+    }
+    default: return null;
+  }
 }
 function renderSummary(el) {
   if (!S.sum || (!S.sum.data && !S.sum.loading && !S.sum.err)) { loadSummary(S.dashYear); el.innerHTML = '<div class="card"><p class="muted">Loading…</p></div>'; return; }
@@ -6028,7 +6080,8 @@ function renderSummary(el) {
   const mode = S.sumMode;
   const cols = SUM_COLS.filter((c) => S.sumDetail || !c.d);
   const pct = (v, dp = 1) => (v == null || !Number.isFinite(v) ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(dp)}%`);
-  const gr = (bud, ref) => (ref ? (bud - ref) / Math.abs(ref) : null);
+  // growth of the SIGNED reference, as on the compare card: a contra line whose loss grows reads +, like its card row
+  const gr = (bud, ref) => (ref ? (bud - ref) / ref : null);
   const regions = [...new Set(d.properties.map((p) => p.region))].sort();
 
   /* one row's figures: a property, or the sum of several */
@@ -6057,15 +6110,15 @@ function renderSummary(el) {
       const v = sumVal(r.cat, c);
       if (!v) return `<td class="${i === 0 ? 'cmp1' : ''} muted">—</td>`;
       const g = gr(v.bud, v.ref);
-      const rg = useGuide && G ? sumGuideRange(G, c.k, r.ctx) : null;
-      const inn = rg && g != null ? (rg[0] == null || g >= rg[0] - 1e-9) && (rg[1] == null || g <= rg[1] + 1e-9) : null;
+      const rg = useGuide ? sumGuide(G, c.k, v, r) : null;
+      const inn = rg ? rg.ok : null;
       const shown = mode === 'pct' ? pct(g) : mode === 'dlr' ? money(v.bud - v.ref) : mode === 'bud' ? money(v.bud) : money(v.ref);
-      const tip = `${c.t}: ${r.kind === 'T12' ? 'T12' : 'UW Y1'} ${money(v.ref)} → budget ${money(v.bud)} (Δ ${money(v.bud - v.ref)}, ${pct(g)})${rg ? ` · guidance ${rg[2]}: ${inn ? 'within' : 'outside'}` : ''}`;
+      const tip = `${c.t}: ${r.kind === 'T12' ? 'T12' : 'UW Y1'} ${money(v.ref)} → budget ${money(v.bud)} (Δ ${money(v.bud - v.ref)}, ${pct(g)})${rg ? ` · guidance: ${rg.text}, ${inn ? 'met' : 'missed'}` : ''}`;
       return `<td class="${i === 0 ? 'cmp1' : ''} ${c.big ? 'big' : ''} ${inn == null ? '' : inn ? 'gin' : 'gout'}" title="${esc(tip)}">${shown}</td>`;
     }).join('');
   }
   const varCell = (v, kind) => (v == null ? '<td class="muted">—</td>' : `<td class="${Math.abs(v) < 1 ? 'tied' : v < 0 ? 'neg' : ''}" title="vs ${kind === 'T12' ? 'the T12' : 'UW Year 1'}">${Math.abs(v) < 1 ? 'tied' : money(v)}</td>`);
-  const cyCell = (v) => (v == null ? '<td class="muted">—</td>' : `<td class="${v < 0 ? 'gout' : ''}" title="${v < 0 ? 'Below the current-year budget NOI (the guidance: never below it)' : 'NOI over the current-year budget'}">${pct(v)}</td>`);
+  const cyCell = (v) => (v == null ? '<td class="muted">—</td>' : `<td class="${v < -GUIDE_EPS ? 'gout' : 'gin'}" title="${v < -GUIDE_EPS ? 'Below the current-year budget NOI (the memo: budgets set lower than the 2026 budget are unlikely to be approved)' : 'NOI at or above the current-year budget'}">${pct(v)}</td>`);
   const guideCell = (r) => {
     if (r.kind !== 'T12' || !r.cat) return '<td class="muted">—</td>';
     const gi = gr(r.cat.egi.bud, r.cat.egi.ref), ge = gr(r.cat.toe.bud, r.cat.toe.ref), gn = gr(r.cat.noi.bud, r.cat.noi.ref);
@@ -6104,7 +6157,7 @@ function renderSummary(el) {
   }).join('') + (regions.length > 1 ? subRow('All properties', d.properties, 'grand') : '');
   const modeBtn = (m, label, tip) => `<button data-summode="${m}" class="${mode === m ? 'on' : ''}" title="${esc(tip)}">${label}</button>`;
   const pp = (v) => `${+(v * 100).toFixed(2)}%`;
-  const gTxt = G ? `income ${pp(G.incomePct)}, expenses ${pp(G.expensePct)}, RE taxes ${pp(G.reTaxPct)}, payroll ${pp(G.payrollPct)}, insurance $${G.insurancePerUnit}/unit, each ±${+((G.tolerance ?? 0.0025) * 100).toFixed(2)} pt; NOI at least ${pp(G.noiPct)}` : '';
+  const gTxt = G ? `income lines ${pp(G.incomePct)} or better; NOI ${pp(G.noiPct)} or better and not below the current-year budget; expense categories ${pp(expenseCeil(G))} or less, RE taxes ${pp(G.reTaxPct)} or less, payroll ${pp(payrollCeil(G))} or less, insurance $${G.insurancePerUnit}/unit or less; OpEx ${pp(expenseCeil(G))} or less and no more than ${Math.round(G.spreadMax * 10000)} bps over income growth; loss to lease, concessions and vacancy no bigger a share of GPR than the T12; the fee no faster than income` : '';
   const modeName = { pct: 'growth', dlr: 'Δ $', bud: 'budget $', ref: 'T12 / UW $' }[mode];
   el.innerHTML = `
     <div class="card">
@@ -6124,7 +6177,7 @@ function renderSummary(el) {
           <th title="NOI over the current-year budget (the guidance: never below it)">NOI vs CY bud</th><th>CoC</th><th class="l">Status</th><th class="l">Updated</th></tr>
         ${body}
       </table></div>
-      <p class="muted" style="font-size:11.5px; margin:8px 0 0">Each property's latest ${d.year} budget. The compare columns are the compare card's subtotals with the same math, always against the trailing-12 for annual budgets (the guidance is growth over the T12, whatever a budget's own compare card is set to) and against UW Year 1 for acquisitions. <span class="gin-key">Green</span> = within the exec-team guidance, <span class="gout-key">red</span> = outside it${gTxt ? ` (${esc(gTxt)})` : ''}. The colours stay on in every view. Numbers typed in a budget's own target boxes are not used here. A region subtotal adds its properties' dollars, and its growth is on those sums. Hover a cell for the T12 and budget dollars; click a property to open it.</p>`
+      <p class="muted" style="font-size:11.5px; margin:8px 0 0">Each property's latest ${d.year} budget. The compare columns are the compare card's subtotals with the same math, always against the trailing-12 for annual budgets (the guidance is growth over the T12, whatever a budget's own compare card is set to) and against UW Year 1 for acquisitions. <span class="gin-key">Green</span> = meets the 2027 guidance memo, <span class="gout-key">red</span> = misses it${gTxt ? `: ${esc(gTxt)}` : ''}. Hover a cell for the exact target and why. The colours stay on in every view. Numbers typed in a budget's own target boxes are not used here. A region subtotal adds its properties' dollars, and its growth is on those sums. Hover a cell for the T12 and budget dollars; click a property to open it.</p>`
       : `<p class="muted">No ${d.year} budgets yet.</p>`}
     </div>`;
   el.querySelector('#sum-year').addEventListener('change', (e) => loadSummary(Number(e.target.value)));

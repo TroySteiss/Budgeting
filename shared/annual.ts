@@ -1013,13 +1013,20 @@ export interface BudgetGuidance {
   insurancePerUnit: number;                     // 6108 $/unit/yr
   reTaxPct: number;                             // 6116 vs T12
   payrollPct: number;                           // payroll category vs T12
+  /** CEILINGS for the colour / scorecard (Troy 2026-11-12, the memo's top of range: expenses 3.0-3.5%, payroll 3-4%).
+      The single numbers above stay the fill / tie targets; a line is green at or under its ceiling. */
+  expenseMax: number;
+  payrollMax: number;
   spPctCapital: number;                         // SP as a share of capital, a starting point
-  tolerance: number;                            // how close counts as on target (income / expenses / payroll / taxes)
+  tolerance: number;                            // how close a TIE lands on its number (colours use floors / ceilings)
 }
 export const DEFAULT_GUIDANCE: BudgetGuidance = {
   incomePct: 0.03, expensePct: 0.03, spreadMax: 0.005, noiPct: 0.025, noiVsCyBudget: true, marchVsLastPct: 0.015,
-  insurancePerUnit: 275, reTaxPct: 0.03, payrollPct: 0.035, spPctCapital: 0.02, tolerance: 0.0025,
+  insurancePerUnit: 275, reTaxPct: 0.03, payrollPct: 0.035, expenseMax: 0.035, payrollMax: 0.04, spPctCapital: 0.02, tolerance: 0.0025,
 };
+/** The ceilings in force: never under the target number itself. */
+export const expenseCeil = (G: BudgetGuidance): number => Math.max(G.expensePct, G.expenseMax ?? G.expensePct);
+export const payrollCeil = (G: BudgetGuidance): number => Math.max(G.payrollPct, G.payrollMax ?? G.payrollPct);
 /** Settings saved before single numbers (ranges): the low end of each range becomes the number. */
 export function normalizeGuidance(g: Record<string, any> | null | undefined): BudgetGuidance {
   const v: Record<string, any> = { ...(g || {}) };
@@ -1031,6 +1038,8 @@ export function normalizeGuidance(g: Record<string, any> | null | undefined): Bu
   return out;
 }
 export type GuideStatus = 'ok' | 'check' | 'bad' | 'info';
+/** Rounding allowance on a guidance floor / ceiling (0.05 pt): a line that shows as the target counts as on it. */
+export const GUIDE_EPS = 0.0005;
 export interface GuideItem { key: string; label: string; value: string; target: string; status: GuideStatus; must?: boolean }
 export interface GuideResult {
   growth: { rental: number | null; income: number | null; expense: number | null; noi: number | null; noiVsCy: number | null };
@@ -1050,7 +1059,11 @@ export function guidanceCheck(a: {
 }): GuideResult | null {
   if (!a.t12 || !Object.keys(a.t12).length) return null;
   const G: BudgetGuidance = normalizeGuidance(a.guidance as any);
-  const near = (v: number | null, t: number): GuideStatus => (v == null ? 'info' : Math.abs(v - t) <= G.tolerance + 1e-9 ? 'ok' : 'check');
+  // DIRECTION (Troy 2026-11-12, the 2027 memo: "If we are above rental income, it should be green, not red.
+  // Reverse is true for expenses"): an income number is a FLOOR, an expense number a CEILING. GUIDE_EPS only
+  // absorbs rounding, so a line that shows as the target counts as on it.
+  const atLeast = (v: number | null, t: number): GuideStatus => (v == null ? 'info' : v >= t - GUIDE_EPS ? 'ok' : 'check');
+  const atMost = (v: number | null, t: number): GuideStatus => (v == null ? 'info' : v <= t + GUIDE_EPS ? 'ok' : 'check');
   const start = a.startMonth || 1;
   const bud = rollup(new Map(a.lines.map((l) => [l.gl_code, l.months])));
   const ref = rollup(new Map(Object.entries(a.t12)));
@@ -1069,8 +1082,8 @@ export function guidanceCheck(a: {
   // NOI first: the most important of all
   add('noi', 'NOI vs October T12', pctTxt(noi), `${pctTxt(G.noiPct)} or better`, noi == null ? 'info' : noi < 0 ? 'bad' : noi >= G.noiPct - 1e-9 ? 'ok' : 'check', true);
   if (G.noiVsCyBudget && cyNoi) add('noicy', 'NOI vs current (2026) budget', pctTxt(noiVsCy), 'not lower', noiVsCy != null && noiVsCy < -1e-9 ? 'bad' : 'ok', true);
-  add('income', 'Total income vs October T12', pctTxt(income), pctTxt(G.incomePct), near(income, G.incomePct), true);
-  add('expense', 'Total expenses vs October T12', pctTxt(expense), pctTxt(G.expensePct), near(expense, G.expensePct), true);
+  add('income', 'Total income vs October T12', pctTxt(income), `${pctTxt(G.incomePct)} or better`, atLeast(income, G.incomePct), true);
+  add('expense', 'Total expenses vs October T12', pctTxt(expense), `${pctTxt(expenseCeil(G))} or less`, atMost(expense, expenseCeil(G)), true);
   if (income != null && expense != null) {
     const spread = expense - income;
     add('spread', 'Expense growth over income growth', `${spread > 0 ? '+' : ''}${(spread * 10000).toFixed(0)} bps`, `at most +${Math.round(G.spreadMax * 10000)} bps`, spread > G.spreadMax + 1e-9 ? 'check' : 'ok', true);
@@ -1092,21 +1105,21 @@ export function guidanceCheck(a: {
     const d: any = ins.driver || {};
     const gross = d.allocOut ? d.allocOut.gross : sum(ins.months);
     const perUnit = gross / a.units;
-    add('ins', 'Insurance per unit', `$${perUnit.toFixed(2)}${d.allocOut ? ' (before the journal split)' : ''}`, `$${G.insurancePerUnit}`, Math.abs(perUnit - G.insurancePerUnit) <= 1 ? 'ok' : 'check');
+    add('ins', 'Insurance per unit', `$${perUnit.toFixed(2)}${d.allocOut ? ' (before the journal split)' : ''}`, `$${G.insurancePerUnit} or less`, perUnit <= G.insurancePerUnit + 1 ? 'ok' : 'check');
   }
   const taxT12 = sum(a.t12['6116'] || zero12());
   if (taxT12) {
     const tl = line('6116'); const d: any = tl?.driver || {};
     const gross = d.allocOut ? d.allocOut.gross : sum(tl?.months || zero12());
     const v = g2(gross, taxT12);
-    add('tax', 'RE taxes vs T12', pctTxt(v), `${pctTxt(G.reTaxPct)} unless documented`, v != null && v > G.reTaxPct + 0.0025 ? 'check' : 'ok');
+    add('tax', 'RE taxes vs T12', pctTxt(v), `${pctTxt(G.reTaxPct)} or less unless documented`, v == null ? 'ok' : atMost(v, G.reTaxPct));
   }
   const pay = (m: Map<string, Months>, ls: { gl: string; months: Months }[]) => ls.reduce((x, l) => { const acc = a.coaList.find((c) => c.code === l.gl); return acc?.pcode === '10' ? x + sum(l.months) : x; }, 0);
   const payB = pay(bud, a.lines.map((l) => ({ gl: l.gl_code, months: l.months })));
   const payT = pay(ref, Object.entries(a.t12).map(([gl, months]) => ({ gl, months })));
   if (payT) {
     const v = g2(payB, payT);
-    add('payroll', 'Payroll vs T12', pctTxt(v), `${pctTxt(G.payrollPct)} on performing sites; lower where NOI growth is low`, v != null && v > G.payrollPct + G.tolerance + 1e-9 ? 'check' : 'ok');
+    add('payroll', 'Payroll vs T12', pctTxt(v), `${pctTxt(payrollCeil(G))} or less on performing sites; lower where NOI growth is low`, v == null ? 'ok' : atMost(v, payrollCeil(G)));
   }
   const sp = T(bud, '7500');
   if (a.capital > 0) add('sp', 'Special projects', `$${Math.round(sp).toLocaleString('en-US')} (${pctTxt(sp / a.capital).replace('+', '')} of capital)`, `about ${pctTxt(G.spPctCapital).replace('+', '')} of capital, with detail`, sp ? 'info' : 'check');
