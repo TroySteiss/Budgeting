@@ -166,6 +166,13 @@ input.fxp:focus { border-color: var(--accent); color: var(--ink); outline: none;
 .drv.drv-int { background: var(--drv-int); color: var(--drv-int-ink); }
 .drv.drv-man { background: var(--drv-man); color: var(--drv-man-ink); }
 .drv.drv-t12 { background: var(--drv-t12); color: var(--drv-t12-ink); }
+/* per-line Fit to T12 chip: faint until set, so it is findable without shouting on every row */
+.drv.fitchip { cursor: pointer; min-width: 30px; }
+.drv.fitchip.off { background: none; color: var(--dim); border-style: dashed; opacity: .55; }
+.drv.fitchip.off:hover, tr:hover .drv.fitchip.off { opacity: 1; }
+.rowmenu .fitrow button { display: inline-block; width: auto; min-width: 42px; text-align: center; border: 1px solid var(--line); padding: 4px 6px; }
+.rowmenu .fitrow button.on { font-weight: 700; border-color: var(--accent); color: var(--accent); }
+.rowmenu .fitrow button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .drv.drv-base { background: var(--drv-base); color: var(--drv-base-ink); }
 .drv.drv-corp { background: var(--drv-corp); color: var(--drv-corp-ink); }
 .dot.drv-base { background: var(--drv-base); } .dot.drv-corp { background: var(--drv-corp); }

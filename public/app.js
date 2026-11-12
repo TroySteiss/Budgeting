@@ -39,7 +39,7 @@ function drvMeta(l) {
     extra.push({ cls: 'drv-t12', tag: 'SMOOTH', label: `Missed-bill smoothing ×${l.driver.smooth.passes || 0} on top of this formula: spikes spread into the surrounding months, no negative months, every month rounded to $${l.driver.smooth.mult || 5}. The months are now fixed; 🔓 puts the line back on its formula.` });
   }
   if (l && l.driver && l.driver.qShift) { const q = l.driver.qShift; extra.push({ cls: 'drv-fee', tag: q.capped ? 'Q-SHIFT·cap' : 'Q-SHIFT', label: `Carries part of the quarter shift: its year total is unchanged, its dollars sit in other quarters so NOI lands at ${(q.targets || []).map((v, i) => `Q${i + 1} ${(v * 100).toFixed(1)}%`).join(' · ')}${q.capped ? ` — stopped at ${Math.round(q.lam * 100)}% of the shift (a quarter reached half its formula amount)` : ''}. More → Shift NOI between quarters…` }); }
-  if (l && l.driver && l.driver.fitT12) extra.push({ cls: 'drv-t12', tag: `FIT ${Math.round(l.driver.fitT12 * 100)}%`, label: `Months lean ${Math.round(l.driver.fitT12 * 100)}% toward this GL's own trailing-12 months (year total unchanged) — row menu or section header "fit to T12"` });
+  if (l && l.driver && l.driver.fitT12) extra.push({ fit: true, cls: 'drv-t12', tag: `FIT ${Math.round(l.driver.fitT12 * 100)}%`, label: `Months lean ${Math.round(l.driver.fitT12 * 100)}% toward this GL's own trailing-12 months (year total unchanged) — row menu or section header "fit to T12"` });
   // one-time items taken out of this GL's trailing-12 before the formula read it (More → One-time items)
   if (l && l.driver && l.driver.oneTime) extra.push({ cls: 'drv-t12', tag: '−1X', label: `$${money(l.driver.oneTime)} of one-time items taken out of the trailing-12 before this formula read it (More → One-time items out of the T12…)` });
   // the recurring-journal split (TPND → TPNDC)
@@ -1436,6 +1436,7 @@ function renderEditor(el) {
     openRowTools(b, btn.dataset.tools, btn);
   }));
   el.querySelectorAll('button[data-steps]').forEach((btn) => btn.addEventListener('click', (e) => { e.stopPropagation(); openGprSteps(b, btn); }));
+  el.querySelectorAll('button[data-fitgl]').forEach((btn) => btn.addEventListener('click', (e) => { e.stopPropagation(); openFitChip(b, btn.dataset.fitgl, btn); }));
   el.querySelectorAll('button[data-multi]').forEach((btn) => btn.addEventListener('click', (e) => { e.stopPropagation(); openMultiParams(b, btn.dataset.multi, btn); }));
   // per-GL history: click the account name to unfold / fold its reference rows
   el.querySelectorAll('td.name[data-hist]').forEach((td) => td.addEventListener('click', (e) => {
@@ -1736,7 +1737,7 @@ function gridHtml(bv, totals) {
     rows.push(`<tr${trCls ? ` class="${trCls}"` : ''}>
       <td class="code">${a.code}</td>
       <td class="name${histFor(a.code).length ? ' hashist' : ''}" ${histFor(a.code).length ? `data-hist="${a.code}"` : ''} title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}${histFor(a.code).length ? ' — click for the prior T12 / CY budget by month' : ''}">${histFor(a.code).length ? `<span class="hx">${histOpen(a.code) ? '▾' : '▸'}</span>` : ''}${esc(a.name)}${smell ? ` <span class="warnflag" title="Seller billing looks NON-ACCRUAL: ${esc(smell.join('; '))}. Likely bad bills — review, or smooth via WAVG / flat / Minot seasonal.">⚠</span>` : ''}${a.active === false ? ' <span class="badge" title="Deactivated GL still carrying dollars — Recalc zeroes it">inactive — recalc to zero</span>' : ''}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
-      ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${drvExtraHtml(dm)}${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? (prm.steps ? `<button class="fxp fxp-steps" data-steps="${a.code}" title="${esc(prm.label)} — click to place increases in specific months">${esc(prm.value)}</button>` : prm.multi ? `<button class="fxp fxp-steps" data-multi="${a.code}" title="${esc(prm.title || '')} — click to edit every input">${esc(prm.summary)}</button>` : `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">${/%/.test(prm.label) ? '<span class="fxu" title="percent">%</span>' : ''}`) : ''}</td>` : ''}
+      ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${drvExtraHtml({ extra: (dm.extra || []).filter((x) => !x.fit) })}${fitChipHtml(a.code, l)}${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? (prm.steps ? `<button class="fxp fxp-steps" data-steps="${a.code}" title="${esc(prm.label)} — click to place increases in specific months">${esc(prm.value)}</button>` : prm.multi ? `<button class="fxp fxp-steps" data-multi="${a.code}" title="${esc(prm.title || '')} — click to edit every input">${esc(prm.summary)}</button>` : `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">${/%/.test(prm.label) ? '<span class="fxu" title="percent">%</span>' : ''}`) : ''}</td>` : ''}
       ${monthIdx.map((i) => `<td class="m ${actIdx.has(i) ? 'drv-act' : sp ? '' : dm.cls}${isHard(i) && !actIdx.has(i) ? ' hard' : ''}"${isHard(i) && !actIdx.has(i) ? ' title="Hard-coded: this cell was typed or fixed by hand. 🔓 in the row tools puts the line back on its formula."' : ''}><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money(Math.round(m[i]) || 0) : ''}"></td>`).join('')}
       ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}${hard && ann ? ' hard' : ''}"><input data-ann="${a.code}" value="${ann ? money(Math.round(ann) || 0) : ''}" title="${bv.annual ? bv.budget.year : 'Year 1'} total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
       ${refCells(a.code, 'detail', ann, !!(l && l.override))}
@@ -2206,6 +2207,48 @@ const FIT_SHAPES = new Set(['turns', 'curve']);
 const FIT_SKIP = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest']);
 const hasT12 = (gl) => { const h = S.bv && S.bv.hist && S.bv.hist.t12; return !!(h && h.cal[gl] && h.cal[gl].some((v) => v)); };
 const fitOfLine = (l) => (l && l.driver ? (l.driver.fit || l.driver.fitT12 || 0) : 0);
+/* A FIT chip on every line that can lean toward its own T12 (Troy 2026-11-11: "I need a chip to individually fit
+   a line to T12 curve"). Faint "FIT" = off; "FIT n%" = set. Click → 0 / 25 / 50 / 75 / 100 or a typed %. Same
+   setting as the row menu's "Fit to T12 %…" and the section box (baseline.glFit); the year total never moves. */
+const fitEligible = (gl, l) => !!(l && hasT12(gl) && !(l.driver && FIT_SKIP.has(l.driver.method) && !l.override));
+const fitPctOf = (gl, l) => Math.round((((((S.bv && S.bv.budget && S.bv.budget.inputs) || {}).baseline || {}).glFit || {})[gl] ?? fitOfLine(l)) * 100);
+function fitChipHtml(gl, l) {
+  if (!fitEligible(gl, l)) return '';
+  const p = fitPctOf(gl, l);
+  return `<button class="drv drv-t12 fitchip${p ? '' : ' off'}" data-fitgl="${esc(gl)}" style="margin-left:3px" title="Fit to T12: lean this line's months ${p ? `${p}% ` : ''}toward its own trailing-12 months — the year total does not change. Click to set.">${p ? `FIT ${p}%` : 'FIT'}</button>`;
+}
+async function setLineFit(b, gl, pct) {
+  const bl = ((S.bv.budget.inputs || {}).baseline) || {};
+  const line = S.bv.lines.find((x) => x.gl_code === gl);
+  pushUndo();
+  if (line && line.override) S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { override: false });
+  S.bv = await PUT(`/budgets/${b.id}`, { inputs: { baseline: { ...bl, glFit: { ...(bl.glFit || {}), [gl]: pct / 100 } } } });
+  render();
+}
+function openFitChip(b, gl, anchorBtn) {
+  document.querySelectorAll('.rowmenu').forEach((m) => m.remove());
+  const line = S.bv.lines.find((x) => x.gl_code === gl);
+  const acc = (S.state.coa || []).find((a) => a.code === gl) || {};
+  const cur = fitPctOf(gl, line);
+  const menu = document.createElement('div');
+  menu.className = 'rowmenu';
+  menu.innerHTML = `<div class="rm-head">${esc(gl)} ${esc(acc.name || '')} — fit to T12</div>
+    <div class="muted" style="font-size:11px; padding:0 8px 4px; max-width:260px">How far the months lean toward this GL's own trailing-12 months. 0 = the formula's months, 100 = the T12 months. The year total does not change.</div>
+    <div class="fitrow" style="display:flex; gap:4px; padding:2px 8px 6px; flex-wrap:wrap">${[0, 25, 50, 75, 100].map((v) => `<button data-fv="${v}"${v === cur ? ' class="on"' : ''}>${v}%</button>`).join('')}</div>
+    <div class="fitrow" style="display:flex; gap:4px; align-items:center; padding:0 8px 6px"><input data-fin value="${cur}" style="width:54px; text-align:right"> % <button class="primary" data-fapply>Apply</button></div>`;
+  const r = anchorBtn.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, r.left + window.scrollX - 40)}px`;
+  menu.style.top = `${r.bottom + window.scrollY + 2}px`;
+  document.body.appendChild(menu);
+  menu.addEventListener('click', (e) => e.stopPropagation());
+  setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+  const go = (v) => { if (!(Number.isFinite(v) && v >= 0 && v <= 100)) { alert('Fit to T12 is a % from 0 to 100.'); return; } menu.remove(); setLineFit(b, gl, v).catch((err) => alert(err.message)); };
+  menu.querySelectorAll('[data-fv]').forEach((x) => x.addEventListener('click', () => go(Number(x.dataset.fv))));
+  const inp = menu.querySelector('[data-fin]');
+  menu.querySelector('[data-fapply]').addEventListener('click', () => go(parseFloat(String(inp.value).replace(/[%,]/g, ''))));
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(parseFloat(String(inp.value).replace(/[%,]/g, ''))); });
+  inp.focus(); inp.select();
+}
 function secFitLines(section) {
   const lines = new Map((S.bv.lines || []).map((l) => [l.gl_code, l]));
   return S.state.coa.filter((a) => a.kind === 'detail' && a.section === section).map((a) => lines.get(a.code))
