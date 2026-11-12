@@ -3308,7 +3308,8 @@ function guidanceFill(bv) {
   const byP = Object.fromEntries((bv.tieout.rows || []).map((r) => [r.pcode, r]));
   const refByGl = ((bv.refs || []).find((r) => r.key === 'actual') || {}).byGl || {};
   const r6 = (byP['6'] || {}).uw || 0, units = Number(inp.units) || 0;
-  const insT = r6 && units ? ((G.insurancePerUnit * units) + (r6 - (refByGl['6108'] || 0))) / r6 - 1 : null;
+  const insRate = Math.max(G.insurancePerUnit, Number(bv.uwInsurance) || 0);   // a site's UW rate is never lowered
+  const insT = r6 && units ? ((insRate * units) + (r6 - (refByGl['6108'] || 0))) / r6 - 1 : null;
   const GT = { rental: G.incomePct, income: G.incomePct, '4': G.incomePct, '5': G.incomePct, ...(insT != null ? { '6': insT } : {}), '8': G.reTaxPct, '10': G.payrollPct, '9': G.expensePct, '11': G.expensePct, '12': G.expensePct, '13': G.expensePct, '14': G.expensePct, opex: G.expensePct };
   const out = {};
   for (const [k, v] of Object.entries(GT)) if (gt[k] == null && (['rental', 'income', 'opex'].includes(k) || byP[k])) out[k] = Math.round(v * 100000) / 100000;
@@ -3373,7 +3374,9 @@ function tieGrowthHtml(bv) {
   const tol = G ? (G.tolerance ?? 0.0025) : 0.0025;
   const insT = (() => {   // insurance: the $/unit rate as a % over the T12 category (other pcode-6 lines held)
     const r6 = (byP['6'] || {}).uw || 0, g6108 = refByGl['6108'] || 0, units = Number(inp.units) || 0;
-    return useG && r6 && units ? ((G.insurancePerUnit * units) + (r6 - g6108)) / r6 - 1 : null;
+    // the site's own UW insurance rate when above the guidance rate (Troy 2026-11-12: CWND / RRND carry elevated rates)
+    const rate = G ? Math.max(G.insurancePerUnit, Number(bv.uwInsurance) || 0) : 0;
+    return useG && r6 && units ? ((rate * units) + (r6 - g6108)) / r6 - 1 : null;
   })();
   const GT = useG ? {
     rental: G.incomePct, income: G.incomePct, '4': G.incomePct, '5': G.incomePct,
@@ -6368,7 +6371,9 @@ function sumGuide(G, key, v, r) {
     case '6': {
       const c = r && r.ctx;
       if (!c || !c.r6 || !c.units) return null;
-      return ceil((G.insurancePerUnit * c.units + (c.r6 - (c.g6108 || 0))) / c.r6 - 1, `insurance at $${G.insurancePerUnit}/unit`);
+      const insD = c.insDollars != null ? c.insDollars : G.insurancePerUnit * c.units;
+      const rate = c.units ? insD / c.units : G.insurancePerUnit;
+      return ceil((insD + (c.r6 - (c.g6108 || 0))) / c.r6 - 1, `insurance at $${Math.round(rate * 100) / 100}/unit${rate > G.insurancePerUnit + 0.005 ? " (the site's UW rate)" : ''}`);
     }
     case '8': return ceil(G.reTaxPct, 'RE taxes, unless documented');
     case '10': return ceil(payrollCeil(G), 'payroll');
@@ -6414,7 +6419,8 @@ function renderSummary(el) {
     const cap = sumOf((p) => p.cmp && p.cmp.capital);
     return {
       kind, n: props.length, nRef: inc.length, cat: inc.length ? cat : null,
-      ctx: { units: sumOf((p) => p.units, inc), r6: (cat['6'] || {}).ref || 0, g6108: sumOf((p) => p.cmp.ins6108, inc) },
+      ctx: { units: sumOf((p) => p.units, inc), r6: (cat['6'] || {}).ref || 0, g6108: sumOf((p) => p.cmp.ins6108, inc),
+        insDollars: G ? sumOf((p) => Math.max(G.insurancePerUnit, Number(p.cmp.uwInsurance) || 0) * (p.units || 0), inc) : null },
       income: sumOf((p) => p.cmp && p.cmp.income), expense: sumOf((p) => p.cmp && p.cmp.expense), noi: sumOf((p) => p.cmp && p.cmp.noi),
       noiVar: inc.length ? cat.noi.bud - cat.noi.ref : null, egiVar: inc.length ? cat.egi.bud - cat.egi.ref : null,
       overCy: cyHas.length ? gr(sumOf((p) => p.cmp.noi, cyHas), sumOf((p) => p.cyBudgetNoi, cyHas)) : null,

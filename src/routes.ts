@@ -118,8 +118,14 @@ router.get('/state', h(async (_req, res) => {
       const own = actualsByProp.get(b.property_code) || [];
       const t12g = py ? trailing12([py, ...own.filter((r) => r.id !== b.py_stmt_id).map((r) => r.data)]) : null;
       const cyd = stmtById.get(b.cy_budget_stmt_id);
+      // the site's own UW insurance rate (its acquisition budget's UW model), as in the editor's scorecard
+      const acqAny = (budgets.rows as any[]).filter((x) => x.property_code === b.property_code && x.budget_type !== 'annual' && x.uw_snapshot_id)
+        .sort((x, y) => (y.year - x.year) || (new Date(y.updated_at).getTime() - new Date(x.updated_at).getTime()))[0];
+      const ud0 = acqAny ? uwData.get(acqAny.uw_snapshot_id) : null;
+      const insB = ud0?.basis?.['6']?.y1;
+      const insRate = insB && insB.kind === 'perUnit' ? Number(insB.value) : ud0 && Number(ud0.units) && ud0.y1?.['6'] ? Math.abs(Number(ud0.y1['6'])) / Number(ud0.units) : null;
       const gr = t12g ? guidanceCheck({ lines: ls as any, coaList: coa, t12: t12g.cal, cyBudget: cyd ? stmtCalendar(cyd) : null, lastMonth: t12g.lastMonth || 10,
-        startMonth: Number(b.inputs?.startMonth) || 1, units: Number(b.inputs?.units) || Number(b.units) || 0, capital: Number(b.inputs?.capital) || 0, guidance: stateGuidance }) : null;
+        startMonth: Number(b.inputs?.startMonth) || 1, units: Number(b.inputs?.units) || Number(b.units) || 0, capital: Number(b.inputs?.capital) || 0, guidance: stateGuidance, insurancePerUnit: insRate }) : null;
       if (gr) guide = { growth: gr.growth, flags: gr.flags, bad: gr.bad, miss: gr.items.filter((i) => i.status === 'check' || i.status === 'bad').map((i) => i.label) };
       const useBudget = b.inputs?.refSource === 'budget';
       const sd = stmtById.get(useBudget ? b.cy_budget_stmt_id : b.py_stmt_id) || stmtById.get(b.py_stmt_id);
@@ -221,7 +227,9 @@ const budOfCal = (c: number[], sm: number): Months => Array.from({ length: 12 },
 function planFor(rows: ApplyRow[], lb: LoadedBudget): ApplyPlan {
   const sm = Number(lb.budget.inputs?.startMonth) || 1;
   const lines = new Map(lb.lines.map((l) => [l.gl_code, { months: calOfLine(l.months, sm), override: l.override, driver: l.driver }]));
-  return planApply(rows, { site: String(lb.budget.property_code), lines, t12: lb.actualCal || null });
+  const ins = uwInsuranceRate(lb), units = Number(lb.budget.inputs?.units) || 0;
+  const floors = ins && units ? { '6108': { annual: ins * units, why: `the UW model carries $${ins}/unit insurance for this site` } } : undefined;
+  return planApply(rows, { site: String(lb.budget.property_code), lines, t12: lb.actualCal || null, floors });
 }
 function noiWith(lb: LoadedBudget, changes: ApplyPlan['changes']): number {
   const sm = Number(lb.budget.inputs?.startMonth) || 1;
@@ -1009,6 +1017,23 @@ function effectiveLines(lb: LoadedBudget): BudgetLine[] {
   return applyActuals(lb.lines, lb.coa, lb.budget.inputs?.actuals, Number(lb.budget.year), lb.budget.inputs?.startMonth || 1);
 }
 
+/** The site's own insurance $/unit in its UW model (acquisition budgets, and a new acquisition's annual budget through
+    its Year-1 plan): the basis when on file, else the UW insurance category over the UW units. Null = no UW. Troy
+    2026-11-12: "CWND and RRND have elevated insurance rates in the model, so don't suggest changing things like that". */
+function uwInsuranceRate(lb: LoadedBudget): number | null {
+  const pick = (u: any): number | null => {
+    if (!u) return null;
+    const b = u.basis?.['6']?.y1;
+    if (b && b.kind === 'perUnit' && Number(b.value) > 0) return Number(b.value);
+    const n = Number(u.units) || Number(lb.budget.inputs?.units) || 0;
+    return n && u.y1?.['6'] ? Math.abs(Number(u.y1['6'])) / n : null;
+  };
+  const own = lb.annual ? pick(lb.y1Plan?.uw) : pick(lb.uw);
+  if (own) return Math.round(own * 100) / 100;
+  const lb6 = (lb.uwBasisLatest?.basis as any)?.['6']?.y1;
+  return lb.y1Plan && lb6 && lb6.kind === 'perUnit' ? Number(lb6.value) : null;
+}
+
 /** UW basis vs actuals (Troy 2026-11-12, the 06.30.2026 UW books: "You should be able to fully tell how these were
     budgeted for and how it was essentially done and adapt it based on where actual expenses have hit"). For a new
     acquisition's annual budget (its year runs off the acquisition plan) and for the acquisition budget itself: how
@@ -1098,7 +1123,7 @@ function compareOf(lb: LoadedBudget, lines: BudgetLine[]) {
   cat.noi = { ref: t.noi.uw, bud: t.noi.budget };
   const k = kpis(new Map(lines.map((l) => [l.gl_code, l.months])), Number(lb.budget.inputs?.capital) || 0);
   const gr = lb.annual && lb.actualCal ? guidanceCheck({ lines, coaList: lb.coa, t12: lb.actualCal, cyBudget: lb.budgetCal, lastMonth: lb.lastMonth || 10,
-    startMonth: Number(lb.budget.inputs?.startMonth) || 1, units, capital: Number(lb.budget.inputs?.capital) || 0, guidance: lb.guidance }) : null;
+    startMonth: Number(lb.budget.inputs?.startMonth) || 1, units, capital: Number(lb.budget.inputs?.capital) || 0, guidance: lb.guidance, insurancePerUnit: uwInsuranceRate(lb) }) : null;
   const ovF = lb.lines.filter((l: any) => l.override && l.driver?.method && !['manual', 'setTotal', 'zero'].includes(l.driver.method)).length;
   return {
     hasRef: !!ref,
@@ -1107,6 +1132,7 @@ function compareOf(lb: LoadedBudget, lines: BudgetLine[]) {
     cat,
     // insurance guidance is a $/unit rate on 6108 over the T12 category (other insurance lines held)
     ins6108: lb.annual && t12 ? Number(t12.byGl['6108'] || 0) : 0,
+    uwInsurance: uwInsuranceRate(lb),
     income: k.income, expense: k.expense, noi: k.noi, coc: k.coc, capital: Number(lb.budget.inputs?.capital) || 0,
     startMonth: Number(lb.budget.inputs?.startMonth) || 1,
     overrides: lb.lines.filter((l) => l.override).length, overridesFormula: ovF,
@@ -1177,8 +1203,10 @@ function budgetView(lb: LoadedBudget) {
     // the exec team's 2027 guidance as a scorecard: growth vs the October T12, NOI vs the current budget,
     // March vs October rental income, insurance / taxes / payroll / SP (shared/annual.ts guidanceCheck)
     guide: lb.annual ? guidanceCheck({ lines, coaList: lb.coa, t12: lb.actualCal, cyBudget: lb.budgetCal, lastMonth: lb.lastMonth || 10,
-      startMonth: start, units: Number(lb.budget.inputs?.units) || 0, capital: Number(lb.budget.inputs?.capital) || 0, guidance: lb.guidance }) : null,
+      startMonth: start, units: Number(lb.budget.inputs?.units) || 0, capital: Number(lb.budget.inputs?.capital) || 0, guidance: lb.guidance, insurancePerUnit: uwInsuranceRate(lb) }) : null,
     guidance: lb.guidance,
+    // the site's own UW insurance $/unit (the insurance target when above the guidance rate)
+    uwInsurance: uwInsuranceRate(lb),
     allocOutSite: lb.annual ? ALLOC_OUT_DEFAULTS[String(lb.budget.property_code || '').toLowerCase()] || null : null,
     t12Missing: lb.annual ? lb.t12Missing : [],
     t12Dead: lb.annual ? lb.t12Dead : [],

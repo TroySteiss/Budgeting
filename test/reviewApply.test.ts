@@ -37,12 +37,12 @@ describe('ND review apply plan', () => {
   });
   it('reclass moves the whole GL to the target with no NOI change; add adds', () => {
     const p = planApply([
-      row({ rowId: 'R1', gl: '5169', action: 'reclass', targetGl: '5170' }),
+      row({ rowId: 'R1', gl: '5167', action: 'reclass', targetGl: '5170' }),
       row({ rowId: 'D1', gl: '6331', action: 'add', months: m12(507), total: 6084 }),
-    ], { site: 'BCND', lines: lines({ '5169': m12(8000), '5170': m12(1000), '6331': m12(275) }), t12: { '6331': m12(275) } });
-    expect(p.changes.find((c) => c.gl === '5169')!.newMonths).toEqual(m12(0));
+    ], { site: 'BCND', lines: lines({ '5167': m12(8000), '5170': m12(1000), '6331': m12(275) }), t12: { '6331': m12(275) } });
+    expect(p.changes.find((c) => c.gl === '5167')!.newMonths).toEqual(m12(0));
     expect(p.changes.find((c) => c.gl === '5170')!.newMonths).toEqual(m12(9000));
-    expect(p.changes.find((c) => c.gl === '5169')!.flags).toEqual([]);   // a reclass is not a history move
+    expect(p.changes.find((c) => c.gl === '5167')!.flags).toEqual([]);   // a reclass is not a history move
     expect(p.changes.find((c) => c.gl === '6331')!.newMonths).toEqual(m12(782));
     expect(p.changes.find((c) => c.gl === '6331')!.flags[0]).toMatch(/\+184% vs the T12/);
   });
@@ -61,6 +61,26 @@ describe('ND review apply plan', () => {
     ], { site: 'BCND', lines: lines({ '6808': [0, 0, 0, 0, 0, 610, 0, 0, 0, 0, 0, 0] }), t12: null });
     expect(p.changes[0].cells).toEqual({ 3: ['G1'], 5: ['G1', 'G2'], 9: ['G2'] });   // June's 610 was zeroed by the set
     expect(p.rows.G2).toMatchObject({ item: 'Gutters fall', action: 'set', source: 'Kens.pdf', contractsRow: '12' });
+  });
+  it('trash (5169) and pest (5158) stay on their own GLs; the other reimbursements still fold into 5170 (Troy 2026-11-12)', () => {
+    const p = planApply([
+      row({ rowId: 'T1', gl: '5169', action: 'reclass', targetGl: '5170' }),
+      row({ rowId: 'P1', gl: '5158', action: 'reclass', targetGl: '5170' }),
+      row({ rowId: 'S1', gl: '5167', action: 'reclass', targetGl: '5170' }),
+    ], { site: 'BCND', lines: lines({ '5169': m12(800), '5158': m12(100), '5167': m12(50), '5170': m12(1000) }), t12: null });
+    expect(p.changes.map((c) => c.gl).sort()).toEqual(['5167', '5170']);
+    expect(p.changes.find((c) => c.gl === '5170')!.newMonths).toEqual(m12(1050));
+    expect(p.skipped.map((k) => k.rowId)).toEqual(['T1', 'P1']);
+    expect(p.skipped[0].why).toMatch(/trash reimbursement stays on its own GL/);
+  });
+  it('a set never takes a line under the site\'s own floor (the UW insurance rate: CWND / RRND, Troy 2026-11-12)', () => {
+    const ins = row({ rowId: 'I1', site: 'CWND', gl: '6108', months: m12(73700 / 12), total: 73700 });
+    const floors = { '6108': { annual: 360 * 268, why: 'the UW model carries $360/unit insurance for this site' } };
+    const p = planApply([ins], { site: 'CWND', lines: lines({ '6108': m12(8040) }), t12: null, floors });
+    expect(p.changes).toHaveLength(0);
+    expect(p.skipped[0].why).toMatch(/^the UW model carries \$360\/unit insurance for this site: 73,700 would go under its 96,480/);
+    const above = planApply([row({ rowId: 'I2', site: 'CWND', gl: '6108', months: m12(9000), total: 108000 })], { site: 'CWND', lines: lines({ '6108': m12(8040) }), t12: null, floors });
+    expect(above.changes).toHaveLength(1);                               // a set at or above the floor still goes in
   });
   it('never pushes payroll, income (but reclass), push = N or check rows; a hand-typed line is flagged', () => {
     const p = planApply([

@@ -1060,6 +1060,9 @@ const rng = (a: number, b: number): string => `${(a * 100).toFixed(a * 1000 % 10
 export function guidanceCheck(a: {
   lines: BudgetLine[]; coaList: CoaAccount[]; t12: Record<string, Months> | null | undefined; cyBudget?: Record<string, Months> | null;
   lastMonth: number; startMonth?: number; units: number; capital: number; guidance?: Partial<BudgetGuidance> | null;
+  /** the site's own insurance $/unit from its UW model (Troy 2026-11-12: "CWND and RRND have elevated insurance rates in
+      the model, so don't suggest changing things like that"): used instead of the guidance rate when higher */
+  insurancePerUnit?: number | null;
 }): GuideResult | null {
   if (!a.t12 || !Object.keys(a.t12).length) return null;
   const G: BudgetGuidance = normalizeGuidance(a.guidance as any);
@@ -1109,7 +1112,8 @@ export function guidanceCheck(a: {
     const d: any = ins.driver || {};
     const gross = d.allocOut ? d.allocOut.gross : sum(ins.months);
     const perUnit = gross / a.units;
-    add('ins', 'Insurance per unit', `$${perUnit.toFixed(2)}${d.allocOut ? ' (before the journal split)' : ''}`, `$${G.insurancePerUnit} or less`, perUnit <= G.insurancePerUnit + 1 ? 'ok' : 'check');
+    const rate = Math.max(G.insurancePerUnit, Number(a.insurancePerUnit) || 0);
+    add('ins', 'Insurance per unit', `$${perUnit.toFixed(2)}${d.allocOut ? ' (before the journal split)' : ''}`, `$${Math.round(rate * 100) / 100} or less${rate > G.insurancePerUnit ? ' (this site\'s UW rate)' : ''}`, perUnit <= rate + 1 ? 'ok' : 'check');
   }
   const taxT12 = sum(a.t12['6116'] || zero12());
   if (taxT12) {

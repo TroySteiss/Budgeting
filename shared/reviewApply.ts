@@ -55,6 +55,10 @@ const sum = (m: number[]) => m.reduce((a, v) => a + (v || 0), 0);
 const zero = () => Array(12).fill(0) as number[];
 const isPayroll = (gl: string) => { const n = parseInt(gl, 10); return n >= 6400 && n <= 6470; };
 const isIncome = (gl: string) => { const n = parseInt(gl, 10); return n < 6000; };
+/** Troy 2026-11-12: "Trash and Pest are both separate GL from utilities reimbursement" — 5169 trash reimbursement and
+    5158 pest fee stay on their own lines at every site (flat fee or rolling out); only the other reimbursements fold
+    into 5170. A workbook reclass of either is not applied. */
+export const NEVER_RECLASS = new Set(['5158', '5169']);
 
 /** One budget's plan. `lines` = the budget's lines by GL, CALENDAR months Jan..Dec (2027 annual budgets start in
     January); `t12` = trailing-12 by GL (calendar) for the 25% history check; `fee` = the 6112 line's driver
@@ -63,6 +67,9 @@ export function planApply(rows: ApplyRow[], b: {
   site: string;
   lines: Map<string, { months: number[]; override?: boolean; driver?: any }>;
   t12?: Record<string, number[]> | null;
+  /** lines a set must not take below (Troy 2026-11-12: "CWND and RRND have elevated insurance rates in the model, so
+      don't suggest changing things like that"): GL -> the site's own floor and why (the UW insurance $/unit × units) */
+  floors?: Record<string, { annual: number; why: string }>;
 }): ApplyPlan {
   const site = b.site.toLowerCase();
   const mine = rows.filter((r) => r.site.toLowerCase() === site);
@@ -87,6 +94,7 @@ export function planApply(rows: ApplyRow[], b: {
     if (isPayroll(r.gl)) { skip(r, 'payroll — lives on the Payroll tab'); continue; }
     if (isIncome(r.gl) && r.action !== 'reclass') { skip(r, 'income line — the rules never push income (reclass excepted)'); continue; }
     if (r.action === 'reclass' && !/^\d{4}$/.test(r.targetGl || '')) { skip(r, 'reclass with no target GL'); continue; }
+    if (r.action === 'reclass' && NEVER_RECLASS.has(r.gl)) { skip(r, `${r.gl === '5169' ? 'trash' : 'pest'} reimbursement stays on its own GL, not folded into ${r.targetGl}`); continue; }
     live.push(r);
   }
   // 1. reclass: the GL's whole budget moves to the target
@@ -103,6 +111,10 @@ export function planApply(rows: ApplyRow[], b: {
   const sets = new Map<string, ApplyRow[]>();
   for (const r of live.filter((x) => x.action === 'set')) { if (!sets.has(r.gl)) sets.set(r.gl, []); sets.get(r.gl)!.push(r); }
   for (const [gl, rs] of sets) {
+    // a site-specific floor (the UW model's own rate): a set that would go under it is not applied
+    const fl = b.floors?.[gl];
+    const setTot = rs.reduce((a, r) => a + sum(r.months.map(Number)), 0);
+    if (fl && setTot < fl.annual - 1) { for (const r of rs) skip(r, `${fl.why}: ${Math.round(setTot).toLocaleString('en-US')} would go under its ${Math.round(fl.annual).toLocaleString('en-US')}`); continue; }
     const m = get(gl);
     for (let i = 0; i < 12; i++) m[i] = r2(rs.reduce((a, r) => a + (Number(r.months[i]) || 0), 0));
     // a set row owns every month it names, and the months it zeroes where the budget had something

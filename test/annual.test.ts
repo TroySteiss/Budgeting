@@ -1628,6 +1628,12 @@ describe('guidanceCheck', () => {
     const r = guidanceCheck({ lines, coaList, t12: actual, lastMonth: 10, units: 10, capital: 100000 })!;
     expect(r.items.find((i) => i.key === 'march')).toBeTruthy();
     expect(r.items.find((i) => i.key === 'ins')!.status).toBe('ok');   // 2027 rate is the guidance $275
+    // a site whose UW model carries a higher rate (CWND / RRND $360, Troy 2026-11-12) is held to that, not told to cut
+    const at360 = lines.map((l: any) => (l.gl_code === '6108' ? { ...l, months: Array(12).fill(300) } : l));   // $360/unit on 10 units
+    expect(guidanceCheck({ lines: at360, coaList, t12: actual, lastMonth: 10, units: 10, capital: 100000 })!.items.find((i) => i.key === 'ins')!.status).toBe('check');   // over $275
+    const own = guidanceCheck({ lines: at360, coaList, t12: actual, lastMonth: 10, units: 10, capital: 100000, insurancePerUnit: 360 })!.items.find((i) => i.key === 'ins')!;
+    expect(own.status).toBe('ok');
+    expect(own.target).toBe("$360 or less (this site's UW rate)");
     expect(r.items.find((i) => i.key === 'sp')!.status).toBe('check');  // nothing budgeted
     expect(r.quarters.length).toBe(4);
     expect(guidanceCheck({ lines, coaList, t12: null, lastMonth: 10, units: 10, capital: 0 })).toBeNull();
