@@ -1648,11 +1648,15 @@ export function budgetCsvBlockText(b: BudgetCsvParsed): string {
 /** Guess which upload a workbook is from its sheet names / title cells so the
     Data page can take any file without asking what it is first. Returns null
     when nothing recognisable is found (the user then picks the kind). */
-export type UploadKind = 'uw_book' | 'rent_roll' | 'comparison' | 'seller_t12' | 'payroll' | 'yardi_template' | 'statement' | 'staffing' | 'payroll_template';
+export type UploadKind = 'uw_book' | 'rent_roll' | 'comparison' | 'seller_t12' | 'payroll' | 'yardi_template' | 'statement' | 'staffing' | 'payroll_template' | 'review_apply';
 export function detectUploadKind(buf: Buffer): UploadKind | null {
   const wb = XLSX.read(buf, { type: 'buffer', sheetRows: 150 });
   const names = wb.SheetNames;
   if (names.some((n) => /^budget worksheet$/i.test(n)) && names.some((n) => /priorfinancials/i.test(n))) return 'yardi_template';
+  // the ND budget review workbook: an "Apply" tab headed row_id / site / gl / action / push (Troy 2026-11-12)
+  { const ap = names.find((n) => /^apply$/i.test(n.trim()));
+    if (ap) { const h = ((XLSX.utils.sheet_to_json<any[]>(wb.Sheets[ap], { header: 1, raw: true, defval: null }) as any[][])[0] || []).map((v) => String(v ?? '').trim().toLowerCase());
+      if (['row_id', 'site', 'gl', 'action', 'push'].every((k) => h.includes(k))) return 'review_apply'; } }
   if (names.some((n) => /^wages$/i.test(n))) return 'payroll';
   // Payroll Budget Workbook with a property's payroll sheet ("<Name>: FY 2027 Payroll
   // Budget" + the GL Code × month table): the tie-out reference. Checked before the
@@ -1706,6 +1710,11 @@ export function parseReviewApply(buf: Buffer): ApplyRow[] {
   const monthCols = MON.map((m) => hdr.findIndex((h) => h.startsWith(`${m}_`)));
   if (monthCols.some((c) => c < 0)) throw new Error('Apply tab is missing a month column (Jan_2027 … Dec_2027)');
   const actions = new Set(['set', 'at_least', 'add', 'rate', 'reclass', 'check']);
+  // the workbook's notes use arrows and math signs a WIN1252 database cannot store (the local one is; any text
+  // saved with the upload or on a line's driver must fit): plain equivalents, anything else outside it dropped
+  const CP1252_EXTRA = '€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ';
+  const PLAIN: Record<string, string> = { '→': '->', '←': '<-', '↔': '<->', '≈': '~', '≥': '>=', '≤': '<=', '−': '-', '≠': '!=', '✓': 'Y', '✗': 'N', '‑': '-', '⅓': '1/3', '½': '1/2' };
+  const fit = (t: string) => t.replace(/[^\u0000-ÿ]/g, (ch) => (CP1252_EXTRA.includes(ch) ? ch : PLAIN[ch] ?? ''));
   const out: ApplyRow[] = [];
   for (let r = 1; r < g.length; r++) {
     const row = g[r] || [];
@@ -1714,7 +1723,7 @@ export function parseReviewApply(buf: Buffer): ApplyRow[] {
     const action = low(row[col('action')]);
     if (!actions.has(action)) continue;
     const gl = s(row[col('gl')]).replace(/\.0+$/, '');
-    const get = (n: string) => (col(n) >= 0 ? s(row[col(n)]) : '');
+    const get = (n: string) => (col(n) >= 0 ? fit(s(row[col(n)])) : '');
     const months = monthCols.map((c) => num(row[c]));
     out.push({
       rowId: id, site: s(row[col('site')]).toLowerCase(), gl, glName: get('gl_name'), item: get('item'), action: action as ApplyRow['action'],

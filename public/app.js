@@ -463,9 +463,7 @@ function renderDash(el) {
       <button data-x="pf" title="One workbook: each site's Budget / Summary / Raw Data tabs plus a live Portfolio rollup tab — tick the 4 Bismarck sites for a Bismarck WB, the 2 Jamestown for a JT WB">⬇ Portfolio workbook</button>
       <button data-x="zip" title="ZIP of every export, sorted by report type: Yardi Uploads per year + Budget Drafts — each budget saved as an iteration">⬇ All exports (zip)</button>
       <button data-x="recalc" title="Re-run every formula on the ticked budgets (all of them when none is ticked), so a changed default or formula reaches each one. Shows NOI before and after per budget first; hand-typed lines stay; each budget gets a save point.">↻ Recalculate…</button>
-      <button data-x="act" title="Partial-month rule off the budget as it sits in Yardi: upload the month-end Property Comparison (Cash) + each property's budget CSV — every CSV comes back with the closed month set 1:1 to what posted">✓ Actualize from Yardi CSVs…</button>
-      <button data-x="revapply" title="Upload the ND 2027 Budget Review workbook: preview its Apply tab (contracts, floors, insurance, reclasses, fee) on each site's budget, tick what goes in, apply with a save point. Applied months show bold teal with a REVIEW chip.">✓ Apply ND review workbook…</button>`, (menu) => {
-      menu.querySelector('[data-x="revapply"]').addEventListener('click', () => openReviewApply());
+      <button data-x="act" title="Partial-month rule off the budget as it sits in Yardi: upload the month-end Property Comparison (Cash) + each property's budget CSV — every CSV comes back with the closed month set 1:1 to what posted">✓ Actualize from Yardi CSVs…</button>`, (menu) => {
       menu.querySelector('[data-x="recalc"]').addEventListener('click', () => { const ids = selectedIds(); openRecalcMany(ids.length ? ids.map(Number) : st.budgets.map((x) => x.id)); });
       menu.querySelector('[data-x="pf"]').addEventListener('click', () => { const ids = selectedIds(); window.open(rUrl(`/api/export/portfolio.xlsx${ids.length ? `?ids=${ids.join(',')}` : ''}`), '_blank'); });
       menu.querySelector('[data-x="zip"]').addEventListener('click', () => { const ids = selectedIds(); const all = ids.length ? ids : st.budgets.map((b) => b.id); if (all.length) window.open(rUrl(`/api/export/bundle.zip?ids=${all.join(',')}`), '_blank'); });
@@ -866,6 +864,7 @@ const UPLOAD_KINDS = [
   ['uw_book', 'UW book model (.xlsx)'],
   ['comparison', 'Property comparison (comp set)'],
   ['seller_t12', 'Seller T12 statement (monthly actuals)'],
+  ['review_apply', 'ND budget review workbook (its Apply tab)'],
 ];
 function renderUploads(el) {
   const u = S.upload;
@@ -891,6 +890,7 @@ function renderUploads(el) {
       ${u.msg ? `<div class="ok">${esc(u.msg)}</div>` : ''}
       <div id="up-preview"></div>
     </div>
+    ${reviewStoredHtml()}
     <div class="card">
       <h2>On file</h2>
       ${dataOnFileHtml(S.state)}
@@ -944,6 +944,40 @@ function renderUploads(el) {
   if (clearBtn) clearBtn.addEventListener('click', () => { u.files = []; u.parsed = null; u.err = ''; u.msg = ''; render(); });
   if (u.parsed) renderUploadPreview(el.querySelector('#up-preview'), u.parsed);
   wireDataOnFile(el);
+  { const b = el.querySelector('#rv-open'); if (b) b.addEventListener('click', () => openReviewApply()); }
+}
+/* ---- the ND budget review workbook, kept on the Data page (Troy 2026-11-12: "I need to be able to drop it into
+   data once, not redrop the same sheet"): dropped once, saved like any upload; this card names the newest one, the
+   sites it covers and where it has gone in, and opens Preview & apply from the saved copy. ---- */
+function reviewStoredHtml() {
+  if (S.revStored === undefined) { S.revStored = null; GET('/review-apply/stored').then((r) => { S.revStored = r.stored || false; render(); }).catch(() => { S.revStored = false; }); return ''; }
+  const st = S.revStored;
+  if (!st) return '';
+  const applied = Object.values(st.applied || {});
+  const doneSites = new Set(applied.map((a) => String(a.site || '').toLowerCase()));
+  return `<div class="card">
+    <div class="row" style="justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap">
+      <h2 style="margin:0">ND budget review workbook</h2>
+      <button class="btn" id="rv-open" title="Plan the saved workbook's Apply tab on each site's budget, tick what goes in, apply (a save point first)">Preview &amp; apply…</button>
+    </div>
+    <p class="muted" style="font-size:12px; margin:6px 0 0"><b>${esc(st.filename)}</b> · saved ${new Date(st.uploadedAt).toLocaleDateString()}${st.uploadedBy ? ` by ${esc(st.uploadedBy)}` : ''} · ${st.rows} rows, ${st.push} to push · drop a newer copy here to replace it.</p>
+    <div style="display:flex; flex-wrap:wrap; gap:4px 10px; margin-top:6px; font-size:12px">${st.sites.map((c) => `<span class="${doneSites.has(c) ? 'ok' : 'muted'}" style="margin:0" title="${doneSites.has(c) ? `applied ${applied.filter((a) => String(a.site).toLowerCase() === c).map((a) => `${new Date(a.at).toLocaleDateString()}${a.by ? ` by ${a.by}` : ''} (${(a.gls || []).join(', ')})`).join('; ')}` : 'not applied yet'}">${doneSites.has(c) ? '✓' : '○'} ${esc(c.toUpperCase())}</span>`).join('')}</div>
+  </div>`;
+}
+function renderReviewUploadPreview(el, parsed) {
+  const by = {};
+  for (const r of parsed.rows) { by[r.site] = by[r.site] || { n: 0, push: 0 }; by[r.site].n++; if (r.push) by[r.site].push++; }
+  el.innerHTML = `<h3>ND budget review workbook — Apply tab</h3>
+    <p class="muted" style="font-size:12px">${parsed.rows.length} rows, ${parsed.push} to push, ${parsed.sites.length} sites: ${parsed.sites.map((c) => `${esc(c.toUpperCase())} ${by[c].push}/${by[c].n}`).join(' · ')}. Saving keeps it on the Data page: apply it to each site's budget from there, now or as budgets are drafted, without dropping it again.</p>
+    <div class="row" style="margin-top:8px"><button class="btn" id="up-apply">Save to Data</button></div>`;
+  el.querySelector('#up-apply').addEventListener('click', async () => {
+    try {
+      await POST('/uploads/apply', { kind: 'review_apply', filename: parsed.filename, payload: { rows: parsed.rows } });
+      Object.assign(S.upload, { files: [], parsed: null, err: '', msg: `Saved ${parsed.filename}. Preview & apply it below.` });
+      S.revStored = undefined;
+      render();
+    } catch (e) { S.upload.err = e.message; render(); }
+  });
 }
 
 function propOptions(selected) {
@@ -966,6 +1000,7 @@ function guessProp(text) {
 }
 
 function renderUploadPreview(el, parsed) {
+  if (parsed.kind === 'review_apply') return renderReviewUploadPreview(el, parsed);
   if (parsed.kind === 'yardi_template' || parsed.kind === 'statement' || parsed.kind === 'payroll_template') return renderAnnualUploadPreview(el, parsed);
   if (parsed.kind === 'uw_book') {
     el.innerHTML = `<h3>Sheets found — map each to a property</h3>
@@ -2812,7 +2847,7 @@ const glName = (gl) => (((S.state && S.state.coa) || []).find((a) => a.code === 
    writes the lines as REVIEW (locked, months marked). ---- */
 function openReviewApply() {
   const dlg = ensureDlg('revapply-dlg');
-  let P = null, busy = '', err = '', done = null;
+  let P = null, busy = 'Planning the saved workbook on each site…', err = '', done = null;
   const year = Number(S.dashYear) || new Date().getFullYear() + 1;
   const pick = {};   // budgetId -> Set(gl)
   const tot = (m) => m.reduce((a, v) => a + (v || 0), 0);
@@ -2821,16 +2856,15 @@ function openReviewApply() {
     const ready = sites.filter((x) => x.budgetId && x.plan.changes.length);
     dlg.innerHTML = `<h2>Apply the ND 2027 Budget Review</h2>
       <p class="muted" style="font-size:12px; margin:0 0 8px">The review workbook's <b>Apply</b> tab, under its Apply Rules: set, floor (at least, by compare pool), add, reclass (into 5170), rate (the fee). Only push = Y rows; never payroll or income lines (reclass excepted). Each site's latest ${year} annual budget. Nothing changes until you press Apply; each budget gets a save point first, and the lines it writes carry the <span class="drv drv-rev" style="font-size:10px">REVIEW</span> chip with the months bold in <span class="revkey">teal</span> — hover one for the row behind it.</p>
-      ${P ? '' : `<div class="row" style="gap:8px; align-items:center"><input type="file" id="ra-file" accept=".xlsx,.xlsm"><button class="btn" id="ra-go">Preview</button></div>`}
       ${busy ? `<p class="muted">${esc(busy)}</p>` : ''}${err ? `<p class="err">${esc(err)}</p>` : ''}
       ${done ? `<div class="card" style="margin:8px 0"><b>Applied.</b> ${done.map((d) => `<div style="font-size:12px; margin-top:4px"><b>${esc(String(d.site).toUpperCase())}</b>: ${d.changes.map((c) => `${c.gl} ${money(c.old)} → ${money(c.new)} [${c.rows.join(', ')}]`).join(' · ')}</div>`).join('')}<p class="muted" style="font-size:11.5px">Each budget has a save point "Before ND review apply" to go back to.</p></div>` : ''}
-      ${P && !done ? `<p class="muted" style="font-size:12px">${esc(P.filename)}: ${P.rows.length} rows, ${P.rows.filter((r) => r.push).length} to push. ${sites.filter((x) => !x.budgetId).length ? `No ${year} budget: ${sites.filter((x) => !x.budgetId).map((x) => x.site.toUpperCase()).join(', ')}.` : ''}</p>
+      ${P && !done ? `<p class="muted" style="font-size:12px">${esc(P.filename)}: ${P.nRows} rows, ${P.nPush} to push. ${sites.filter((x) => !x.budgetId).length ? `No ${year} budget: ${sites.filter((x) => !x.budgetId).map((x) => x.site.toUpperCase()).join(', ')}.` : ''}</p>
         <div style="max-height:58vh; overflow:auto">${sites.filter((x) => x.budgetId).map((x) => {
           const sel = pick[x.budgetId];
           const ch = x.plan.changes;
           const after = x.noiBefore + ch.filter((c) => sel.has(c.gl)).reduce((a, c) => a + (c.gl < '6000' ? 1 : -1) * (tot(c.newMonths) - tot(c.oldMonths)), 0);
           return `<div class="card" style="margin:8px 0; padding:8px 10px">
-            <div class="row" style="justify-content:space-between; align-items:center"><label style="font-weight:700"><input type="checkbox" data-rasite="${x.budgetId}" ${ch.length && ch.every((c) => sel.has(c.gl)) ? 'checked' : ''} ${ch.length ? '' : 'disabled'}> ${esc(x.label)}</label>
+            <div class="row" style="justify-content:space-between; align-items:center"><label style="font-weight:700"><input type="checkbox" data-rasite="${x.budgetId}" ${ch.length && ch.every((c) => sel.has(c.gl)) ? 'checked' : ''} ${ch.length ? '' : 'disabled'}> ${esc(x.label)}</label>${(P.applied || {})[x.budgetId] ? `<span class="ok" style="margin:0; font-size:11.5px">applied ${new Date(P.applied[x.budgetId].at).toLocaleDateString()}${P.applied[x.budgetId].by ? ` by ${esc(P.applied[x.budgetId].by)}` : ''}</span>` : ''}
               <span class="muted" style="font-size:12px">NOI ${money(x.noiBefore)} → <b>${money(after)}</b> (${after - x.noiBefore >= 0 ? '+' : ''}${money(after - x.noiBefore)})</span></div>
             ${x.startMonth !== 1 ? '<p class="err" style="font-size:12px">This budget does not start in January: the workbook months are laid on its calendar months.</p>' : ''}
             ${ch.length ? `<table class="list" style="font-size:12px; margin-top:4px"><tr><th></th><th>GL</th><th>Was</th><th>Becomes</th><th>Δ</th><th>Rows</th><th>Flags</th></tr>
@@ -2840,19 +2874,8 @@ function openReviewApply() {
           </div>`; }).join('')}</div>
         <div class="row" style="justify-content:flex-end; gap:8px; margin-top:8px"><button class="btn sub" id="ra-x">Cancel</button><button class="btn" id="ra-apply" ${ready.some((x) => pick[x.budgetId].size) ? '' : 'disabled'}>Apply ${ready.reduce((a, x) => a + pick[x.budgetId].size, 0)} change${ready.reduce((a, x) => a + pick[x.budgetId].size, 0) === 1 ? '' : 's'}</button></div>` : ''}
       ${!P || done ? '<div class="row" style="justify-content:flex-end; margin-top:8px"><button class="btn sub" id="ra-x">Close</button></div>' : ''}`;
-    dlg.querySelectorAll('#ra-x').forEach((b) => b.addEventListener('click', () => { dlg.close(); if (done) { refreshState().then(render); } }));
-    const go = dlg.querySelector('#ra-go');
-    if (go) go.addEventListener('click', async () => {
-      const f = dlg.querySelector('#ra-file').files[0];
-      if (!f) { err = 'Pick the review workbook first.'; draw(); return; }
-      const fd = new FormData(); fd.append('file', f); fd.append('year', String(year));
-      busy = 'Reading the Apply tab and planning each site…'; err = ''; draw();
-      try {
-        P = await api('/review-apply/preview', { method: 'POST', body: fd });
-        for (const x of P.sites) if (x.budgetId) pick[x.budgetId] = new Set(x.plan.changes.filter((c) => !c.locked).map((c) => c.gl));
-      } catch (e) { err = e.message; }
-      busy = ''; draw();
-    });
+    if (P && !done && P.filename) { const h = dlg.querySelector('h2'); if (h) h.insertAdjacentHTML('afterend', `<p class="muted" style="font-size:11.5px; margin:-4px 0 6px">From the workbook saved on the Data page.</p>`); }
+    dlg.querySelectorAll('#ra-x').forEach((b) => b.addEventListener('click', () => { dlg.close(); if (done) { refreshState().then(render); } else render(); }));
     dlg.querySelectorAll('[data-rasite]').forEach((cb) => cb.addEventListener('change', () => {
       const x = P.sites.find((y) => String(y.budgetId) === cb.dataset.rasite);
       pick[x.budgetId] = cb.checked ? new Set(x.plan.changes.map((c) => c.gl)) : new Set(); draw();
@@ -2867,12 +2890,17 @@ function openReviewApply() {
       const n = picks.reduce((a, p) => a + p.gls.length, 0);
       if (!confirm(`Write ${n} change${n === 1 ? '' : 's'} into ${picks.length} budget${picks.length === 1 ? '' : 's'}? Each gets a save point first.`)) return;
       busy = 'Applying…'; draw();
-      try { const r = await POST('/review-apply/apply', { year, filename: P.filename, rows: P.rows, picks }); done = r.log; } catch (e) { err = e.message; }
+      try { const r = await POST('/review-apply/apply', { year, uploadId: P.uploadId, picks }); done = r.log; S.revStored = undefined; } catch (e) { err = e.message; }
       busy = ''; draw();
     });
   };
   draw();
   if (!dlg.open) dlg.showModal();
+  // plan the saved workbook straight away (no file to pick: it lives on the Data page)
+  POST('/review-apply/preview', { year }).then((r) => {
+    P = r;
+    for (const x of P.sites) if (x.budgetId) pick[x.budgetId] = new Set(x.plan.changes.filter((c) => !c.locked).map((c) => c.gl));
+  }).catch((e) => { err = e.message; }).finally(() => { busy = ''; draw(); });
 }
 /* wage GLs (mirrors WAGE_GLS in shared/domain.ts): a payroll line that is not one of these is a % of wages */
 const BUDGET_WAGE_GLS = ['6402', '6404', '6405', '6407'];

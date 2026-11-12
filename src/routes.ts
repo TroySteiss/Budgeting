@@ -229,11 +229,29 @@ function noiWith(lb: LoadedBudget, changes: ApplyPlan['changes']): number {
   for (const c of changes) m.set(c.gl, budOfCal(c.newMonths, sm));
   return kpis(m, 0).noi;
 }
+/** The review workbook saved on the Data page (newest, or by id): its rows and which budgets it has been applied to. */
+async function storedReview(id?: number | null): Promise<{ id: number; filename: string; uploadedAt: string; uploadedBy: string; rows: ApplyRow[]; applied: Record<string, { at: string; by: string; gls: string[] }> } | null> {
+  const r = (await query(`select id, filename, uploaded_at, uploaded_by, payload from uploads where kind='review_apply' ${id ? 'and id=$1' : ''} order by uploaded_at desc limit 1`, id ? [id] : [])).rows[0];
+  if (!r) return null;
+  return { id: r.id, filename: r.filename, uploadedAt: r.uploaded_at, uploadedBy: r.uploaded_by, rows: r.payload?.rows || [], applied: r.payload?.applied || {} };
+}
+router.get('/review-apply/stored', h(async (_req, res) => {
+  const st = await storedReview();
+  if (!st) return res.json({ stored: null });
+  res.json({ stored: { id: st.id, filename: st.filename, uploadedAt: st.uploadedAt, uploadedBy: st.uploadedBy, rows: st.rows.length, push: st.rows.filter((r) => r.push).length, sites: [...new Set(st.rows.map((r) => r.site))].sort(), applied: st.applied } });
+}));
 router.post('/review-apply/preview', upload.single('file'), h(async (req, res) => {
   const f = (req as any).file as Express.Multer.File | undefined;
-  if (!f) return res.status(400).json({ error: 'No file' });
-  let rows: ApplyRow[];
-  try { rows = parseReviewApply(f.buffer); } catch (e: any) { return res.status(400).json({ error: e?.message || String(e) }); }
+  let rows: ApplyRow[]; let filename = ''; let uploadId: number | null = null; let applied: any = {};
+  if (f) {
+    try { rows = parseReviewApply(f.buffer); } catch (e: any) { return res.status(400).json({ error: e?.message || String(e) }); }
+    filename = f.originalname;
+  } else {
+    // the workbook saved on the Data page (Troy 2026-11-12: "drop it into data once")
+    const st = await storedReview(Number(req.body?.uploadId) || null);
+    if (!st) return res.status(400).json({ error: 'No review workbook on file — drop it on the Data page' });
+    rows = st.rows; filename = st.filename; uploadId = st.id; applied = st.applied;
+  }
   const year = Number(req.body?.year) || new Date().getFullYear() + 1;
   const sites = [];
   for (const t of await applyTargets(rows, year)) {
@@ -243,15 +261,17 @@ router.post('/review-apply/preview', upload.single('file'), h(async (req, res) =
     sites.push({ site: t.site, budgetId: t.budgetId, label: `${String(t.lb.budget.property_code).toUpperCase()} ${t.lb.budget.year} ${t.lb.budget.label || ''}`.trim(), plan, noiBefore, noiAfter: noiWith(t.lb, plan.changes),
       startMonth: Number(t.lb.budget.inputs?.startMonth) || 1 });
   }
-  res.json({ filename: f.originalname, year, rows, sites });
+  res.json({ filename, uploadId, applied, year, rows: f ? rows : undefined, nRows: rows.length, nPush: rows.filter((r) => r.push).length, sites });
 }));
 router.post('/review-apply/apply', h(async (req, res) => {
   // { year, filename, rows (from the preview), picks: [{ budgetId, gls: [...] }] } — re-planned here on the budget as it is now
-  const rows: ApplyRow[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  // the rows come from the saved workbook (uploadId); a client-held list is the fallback for a dropped file
+  const st = req.body?.uploadId ? await storedReview(Number(req.body.uploadId)) : null;
+  const rows: ApplyRow[] = st ? st.rows : Array.isArray(req.body?.rows) ? req.body.rows : [];
   const picks: { budgetId: number; gls: string[] }[] = Array.isArray(req.body?.picks) ? req.body.picks : [];
   if (!rows.length || !picks.length) return res.status(400).json({ error: 'Nothing picked' });
   const user = req.session.username || '';
-  const filename = String(req.body?.filename || 'ND 2027 Budget Review').slice(0, 160);
+  const filename = String(st?.filename || req.body?.filename || 'ND 2027 Budget Review').slice(0, 160);
   const log: any[] = [];
   for (const pk of picks) {
     const lb = await loadBudget(Number(pk.budgetId));
@@ -286,6 +306,13 @@ router.post('/review-apply/apply', h(async (req, res) => {
     await query('update budgets set updated_at=now() where id=$1', [lb.budget.id]);
     logChange(user, 'ND review apply', { id: lb.budget.id, site: lb.budget.property_code, file: filename, changes: entries });
     log.push({ budgetId: lb.budget.id, site: lb.budget.property_code, changes: entries });
+  }
+  // the saved workbook remembers where it has gone in
+  if (st && log.length) {
+    const cur = (await query('select payload from uploads where id=$1', [st.id])).rows[0]?.payload || {};
+    const applied = { ...(cur.applied || {}) };
+    for (const l of log) applied[String(l.budgetId)] = { at: new Date().toISOString(), by: user, site: l.site, gls: l.changes.map((c: any) => c.gl) };
+    await query('update uploads set payload=$2 where id=$1', [st.id, JSON.stringify({ ...cur, applied })]);
   }
   res.json({ ok: true, log });
 }));
@@ -358,6 +385,11 @@ router.post('/uploads/parse', upload.single('file'), h(async (req, res) => {
     const coa = await loadCoa();
     return res.json({ kind, files: parseAnnualFiles(kind, req.file.originalname, buf, coa) });
   }
+  if (kind === 'review_apply') {
+    // the ND budget review workbook: its Apply tab only (Troy 2026-11-12: "drop it into data once")
+    const rows = parseReviewApply(buf);
+    return res.json({ kind, filename: req.file.originalname, rows, sites: [...new Set(rows.map((r) => r.site))].sort(), push: rows.filter((r) => r.push).length });
+  }
   if (kind === 'staffing') {
     // individual pay never flows through the Data page — the Payroll tab's own
     // gated endpoint parses AND stores in one step (no roster in any response)
@@ -417,6 +449,11 @@ router.post('/uploads/apply', h(async (req, res) => {
     [kind, filename || '', user, JSON.stringify(payload || {})]
   )).rows[0].id;
 
+  if (kind === 'review_apply') {
+    // saved as the upload itself (payload.rows); applying works off the newest one, from the Data page
+    logChange(user, 'upload review workbook', { filename, rows: (payload?.rows || []).length });
+    return res.json({ ok: true, uploadId });
+  }
   if (kind === 'uw_book') {
     // mappings: [{sheetName, propertyCode}] — sheets come from the parse payload
     const created: any[] = [];
