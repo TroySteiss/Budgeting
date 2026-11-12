@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "esbuild src/server.ts src/db.ts src/auth.ts src/migrate.ts src/routes.ts src/payroll.ts src/payroll-data.ts src/payroll-xlsx.ts src/importers.ts src/csv-export.ts src/xlsx-export.ts src/xlsx-summary.ts src/xlsx-calc.ts src/seed-if-empty.ts src/annual-rules.ts shared/domain.ts shared/annual.ts shared/payroll.ts --platform=node --format=esm --outdir=dist --outbase=. --sourcemap",
+    "build": "esbuild src/server.ts src/db.ts src/auth.ts src/migrate.ts src/routes.ts src/payroll.ts src/payroll-data.ts src/payroll-xlsx.ts src/importers.ts src/csv-export.ts src/xlsx-export.ts src/xlsx-summary.ts src/xlsx-calc.ts src/seed-if-empty.ts src/annual-rules.ts shared/domain.ts shared/annual.ts shared/payroll.ts shared/review.ts shared/reviewApply.ts --platform=node --format=esm --outdir=dist --outbase=. --sourcemap",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "migrate": "tsx src/migrate.ts",
     "dev": "tsx watch src/server.ts",
