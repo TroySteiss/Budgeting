@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, parseReviewApply, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
-  acqCalendarPlan, applyPlanSlice, postedSinceClosing, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
+  acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
   refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
@@ -146,7 +146,7 @@ router.get('/state', h(async (_req, res) => {
         const R = uwReturnsOf(ud);
         const capital = Number(b.inputs?.capital) || R.capital || 0;
         const ug = uwCheck({ lines: ls as any, startMonth: Number(b.inputs?.startMonth) || 1, target: Object.fromEntries(ap.target), y1Idx: ap.y1Idx, afterIdx: ap.afterIdx,
-          y1: y1Check(ls as any, acqPlan, Number(b.year), ud && Number(ud.noi) ? Number(ud.noi) : null), capital, cashFlow: kpis(monthsMap as any, capital).cashFlow, uw: R,
+          y1: y1Check(ls as any, acqPlan, Number(b.year), ud && Number(ud.noi) ? Number(ud.noi) : null, (() => { const ps = t12g ? postedSinceClosing(t12g.cal, { month: t12g.lastMonth, year: t12g.lastYear }, `${acqPlan.year}-${String(acqPlan.startMonth).padStart(2, '0')}`) : null; return ps ? { cal: t12g!.cal, owned: ps.owned } : null; })()), capital, cashFlow: kpis(monthsMap as any, capital).cashFlow, uw: R,
           toDate: t12g ? sinceClosing(acqPlan, t12g.cal, { month: t12g.lastMonth, year: t12g.lastYear }, `${acqPlan.year}-${String(acqPlan.startMonth).padStart(2, '0')}`) : null });
         guide = { growth: ug.growth, flags: ug.flags, bad: ug.bad, miss: ug.items.filter((i) => i.status === 'check' || i.status === 'bad').map((i) => i.label), kind: 'uw', coc: ug.coc };
       }
@@ -708,7 +708,7 @@ interface LoadedBudget {
   /** annual: when ownership began + the acquisition budget's first-year management fee % */
   acquisition: { start: string | null; firstYearPct: number | null } | null;
   /** annual: the property's acquisition (UW Year-1) budget, when its 12 ownership months reach into this budget's year */
-  y1Plan: (Y1Plan & { budgetId: number; uwNoi: number | null; uw: { y1: Record<string, number>; years?: Record<string, Record<string, number>>; basis?: UwSnapshotData['basis']; units?: number; returns?: UwSnapshotData['returns']; noi?: number; capital?: number; loan?: number; rate?: number } | null }) | null;
+  y1Plan: (Y1Plan & { budgetId: number; uwNoi: number | null; seller?: Record<string, Months> | null; uw: { y1: Record<string, number>; years?: Record<string, Record<string, number>>; basis?: UwSnapshotData['basis']; units?: number; returns?: UwSnapshotData['returns']; noi?: number; capital?: number; loan?: number; rate?: number } | null }) | null;
   /** the property's latest UW upload that carries the per-category basis (older uploads lack it) */
   uwBasisLatest: { basis: NonNullable<UwSnapshotData['basis']>; label: string } | null;
   /** annual: which reference the compare card uses — inputs.refSource, else 'uw' when the acquisition plan runs the year */
@@ -721,6 +721,16 @@ interface LoadedBudget {
 
 /** A new acquisition's annual budget runs its whole year off the acquisition (Year-1) plan: on unless the
     Year-1 months are turned off (inputs.y1Plan false); calendar-year budgets only. */
+/** A new acquisition's past financials for the monthly pattern: the seller T12 by category and what has posted since
+    closing (acqCalendarPlan `history`), and the posted months for the Year-1 check. */
+function acqHistoryOf(y1Plan: LoadedBudget['y1Plan'] | null, actualCal: Record<string, Months> | null, t12End: { month: number; year: number } | null, start: string | null | undefined) {
+  const posted = postedSinceClosing(actualCal, t12End, start || (y1Plan ? `${y1Plan.year}-${String(y1Plan.startMonth).padStart(2, '0')}` : null));
+  return {
+    posted,
+    history: { seller: y1Plan?.seller || null, postedCal: actualCal, ownedIdx: posted ? posted.owned.map((o) => o.month - 1) : [] } as AcqHistory,
+    actual: posted && actualCal ? { cal: actualCal, owned: posted.owned } : null,
+  };
+}
 const acqPlanOn = (inputs: any, y1Plan: LoadedBudget['y1Plan'] | null): boolean => !!y1Plan && inputs?.y1Plan !== false && (Number(inputs?.startMonth) || 1) === 1;
 
 /** The tie-out reference: the UW snapshot for acquisitions, the chosen
@@ -887,7 +897,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   let y1Plan: LoadedBudget['y1Plan'] = null;
   if (annual) {
     const acqB = (await query(
-      `select id, uw_snapshot_id, year, inputs->>'startMonth' as sm, inputs->>'mgmtPct' as pct from budgets
+      `select id, uw_snapshot_id, t12_snapshot_id, year, inputs->>'startMonth' as sm, inputs->>'mgmtPct' as pct from budgets
         where property_code=$1 and budget_type <> 'annual' and coalesce(inputs->>'mode','') <> 'annual' order by year desc, updated_at desc limit 1`, [budget.property_code]
     )).rows[0];
     const tplAcq = budget.template_id ? (await query(`select data->>'acquisitionDate' as d from template_snapshots where id=$1`, [budget.template_id])).rows[0]?.d : null;
@@ -902,7 +912,23 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
         // the whole UW snapshot: its NOI is the Year-1 promise, its Year-2 column the trend after Year 1
         const ud = acqB.uw_snapshot_id ? (await query(`select data from uw_snapshots where id=$1`, [acqB.uw_snapshot_id])).rows[0]?.data : null;
         const uwNoi = ud && ud.noi != null && Number.isFinite(Number(ud.noi)) ? Number(ud.noi) : null;
-        if (pl.length) y1Plan = { ...plan, budgetId: Number(acqB.id), uwNoi, uw: ud ? { y1: ud.y1 || {}, years: ud.years || undefined, basis: ud.basis || undefined, units: Number(ud.units) || undefined, returns: ud.returns || undefined, noi: Number(ud.noi) || undefined, capital: Number(ud.assumptions?.capitalToClose) || undefined, loan: Number(ud.assumptions?.loanAmount) || undefined, rate: Number(ud.assumptions?.interestRate) || undefined } : null, lines: pl.map((r: any) => ({ gl_code: r.gl_code, months: (r.months as any[]).map(Number) as Months })) };
+        // the seller T12 by category, calendar months (Troy 2026-11-12: "it still does not feel like it is considering
+        // past financials in any way. Everything is dead flat"): the monthly pattern before closing
+        let seller: Record<string, Months> | null = null;
+        if (acqB.t12_snapshot_id && ud?.t12?.length) {
+          const t = (await query('select data from t12_snapshots where id=$1', [acqB.t12_snapshot_id])).rows[0]?.data;
+          if (t?.rows?.length) {
+            const glToPcode: Record<string, string> = {};
+            for (const r of ud.t12) glToPcode[r.gl] = r.pcode;
+            seller = {};
+            for (const r of t.rows as any[]) {
+              const pc = glToPcode[r.gl]; if (!pc) continue;
+              const m = (seller[pc] = seller[pc] || zero12());
+              (r.months || []).forEach((v: any, i: number) => { const c = ((t.monthCal || [])[i] || i + 1) - 1; m[c] += Number(v) || 0; });
+            }
+          }
+        }
+        if (pl.length) y1Plan = { ...plan, budgetId: Number(acqB.id), uwNoi, seller, uw: ud ? { y1: ud.y1 || {}, years: ud.years || undefined, basis: ud.basis || undefined, units: Number(ud.units) || undefined, returns: ud.returns || undefined, noi: Number(ud.noi) || undefined, capital: Number(ud.assumptions?.capitalToClose) || undefined, loan: Number(ud.assumptions?.loanAmount) || undefined, rate: Number(ud.assumptions?.interestRate) || undefined } : null, lines: pl.map((r: any) => ({ gl_code: r.gl_code, months: (r.months as any[]).map(Number) as Months })) };
       }
     }
   }
@@ -983,18 +1009,18 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     }
     if (budgetCal) refs.push({ key: 'budget', label: budgetRefLabel(sb?.period), period: sb?.period || '', ...refColumn(budgetCal) });
     if (actualCal && t12) { const a4 = annualizedFromCal(actualCal, t12.lastMonth, 4); if (Object.keys(a4).length) refs.push({ key: 'ann4', label: '4 mo annualized', period: '', ...refColumn(a4) }); }
-    // UW for the calendar year (Troy 2026-11-12, a new acquisition): the Year-1 plan's months plus the months
-    // after Year 1 carried on the UW Year-2 trend — the target the whole year is built to. The default reference
-    // while the acquisition plan runs the year; the T12 / T3 / CY budget stay selectable.
+    // UW for the calendar year (Troy 2026-11-12, a new acquisition): each category n1/12 of the Year-1 plan plus n2/12
+    // of it on the UW Year-2 trend, months shaped by the property's history (acqCalendarPlan.target). The default
+    // reference while the acquisition plan runs the year; the T12 / T3 / CY budget stay selectable.
     let uwCal: Record<string, Months> | null = null; let uwLabel = '';
     if (acqPlanOn(budget.inputs, y1Plan)) {
-      const ap = acqCalendarPlan({ plan: y1Plan!, calYear: Number(budget.year), coaList: coa, uw: y1Plan!.uw, fit: 0 });
+      const ap = acqCalendarPlan({ plan: y1Plan!, calYear: Number(budget.year), coaList: coa, uw: y1Plan!.uw, fit: 0, history: acqHistoryOf(y1Plan, actualCal, t12End, acquisition?.start).history });
       uwCal = Object.fromEntries(ap.target);
       const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
       const span = (ix: number[]) => (ix.length ? `${MON[ix[0]]}–${MON[ix[ix.length - 1]]}` : '');
       uwLabel = `UW ${budget.year}`;
       const c = refFromCalendar(coa, uwCal, units, uwLabel);
-      refs.push({ key: 'uw', label: uwLabel, period: `${span(ap.y1Idx)} Year-1 plan${ap.afterIdx.length ? ` · ${span(ap.afterIdx)} × UW Year-2 trend${ap.trendFrom === 'uw' ? '' : ' (no Year-2 column: held flat)'}` : ''}`, ...refColumn(uwCal), cat: { y1: c.y1, egi: c.egi, toe: c.toe, noi: c.noi } });
+      refs.push({ key: 'uw', label: uwLabel, period: `${ap.y1Idx.length}/12 of Year 1${ap.afterIdx.length ? ` + ${ap.afterIdx.length}/12 of Year 1 × UW Year-2 trend${ap.trendFrom === 'uw' ? '' : ' (no Year-2 column: held flat)'}` : ''}`, ...refColumn(uwCal), cat: { y1: c.y1, egi: c.egi, toe: c.toe, noi: c.noi } });
     }
     const src = budget.inputs?.refSource || (uwCal ? 'uw' : 'actual');
     refKey = src === 'uw' && !uwCal ? 'actual' : src;
@@ -1055,12 +1081,13 @@ function uwReturnsOf(u: any): any {
     closing vs the plan (shared/annual.ts uwCheck). Replaces the T12 guidance for a budget whose year runs off its plan. */
 function uwGuide(lb: LoadedBudget, lines: BudgetLine[]) {
   const plan = lb.y1Plan!; const year = Number(lb.budget.year);
-  const ap = acqCalendarPlan({ plan, calYear: year, coaList: lb.coa, uw: plan.uw, fit: 0 });
+  const h = acqHistoryOf(plan, lb.actualCal, lb.t12End, lb.acquisition?.start);
+  const ap = acqCalendarPlan({ plan, calYear: year, coaList: lb.coa, uw: plan.uw, fit: 0, history: h.history });
   const R = uwReturnsOf(plan.uw);
   const capital = Number(lb.budget.inputs?.capital) || R.capital || 0;
   const k = kpis(new Map(lines.map((l) => [l.gl_code, l.months])), capital);
   return uwCheck({ lines, startMonth: Number(lb.budget.inputs?.startMonth) || 1, target: Object.fromEntries(ap.target), y1Idx: ap.y1Idx, afterIdx: ap.afterIdx,
-    y1: y1Check(lines, plan, year, plan.uwNoi), capital, cashFlow: k.cashFlow, uw: R,
+    y1: y1Check(lines, plan, year, plan.uwNoi, h.actual), capital, cashFlow: k.cashFlow, uw: R,
     toDate: sinceClosing(plan, lb.actualCal, lb.t12End, lb.acquisition?.start || `${plan.year}-${String(plan.startMonth).padStart(2, '0')}`) });
 }
 
@@ -1279,11 +1306,12 @@ function budgetView(lb: LoadedBudget) {
       // how many posted months since closing reshape the rows, and the fit %
       acq: (() => {
         if (!acqPlanOn(lb.budget.inputs, lb.y1Plan)) return null;
-        const ap = acqCalendarPlan({ plan: lb.y1Plan!, calYear: Number(lb.budget.year), coaList: lb.coa, uw: lb.y1Plan!.uw, fit: 0 });
-        const posted = postedSinceClosing(lb.actualCal, lb.t12End, lb.acquisition?.start);
-        return { afterIdx: ap.afterIdx, trend: ap.trend, trendFrom: ap.trendFrom, postedMonths: posted?.months || 0, fit: lb.budget.inputs?.acqFit ?? ACQ_FIT_DEFAULT, start: lb.acquisition?.start || null };
+        const h = acqHistoryOf(lb.y1Plan, lb.actualCal, lb.t12End, lb.acquisition?.start);
+        const ap = acqCalendarPlan({ plan: lb.y1Plan!, calYear: Number(lb.budget.year), coaList: lb.coa, uw: lb.y1Plan!.uw, fit: 0, history: h.history });
+        const posted = h.posted;
+        return { afterIdx: ap.afterIdx, y1Idx: ap.y1Idx, trend: ap.trend, trendFrom: ap.trendFrom, shaped: ap.shaped, hasSeller: !!lb.y1Plan!.seller, postedMonths: posted?.months || 0, fit: lb.budget.inputs?.acqFit ?? ACQ_FIT_DEFAULT, start: lb.acquisition?.start || null };
       })(),
-      ...y1Check(lb.lines, lb.y1Plan, Number(lb.budget.year), lb.y1Plan.uwNoi) } : null,
+      ...y1Check(lb.lines, lb.y1Plan, Number(lb.budget.year), lb.y1Plan.uwNoi, acqHistoryOf(lb.y1Plan, lb.actualCal, lb.t12End, lb.acquisition?.start).actual) } : null,
     // where the wages come from: the Pay-rates link (cycle, draft / finalized by region) or null
     rosterLink: lb.rosterLink ? { label: lb.rosterLink.label, effective: lb.rosterLink.effective, draft: lb.rosterLink.draft, regions: lb.rosterLink.regions, wages: lb.rosterLink.wages } : null,
     leaseCount: lb.leases?.length || 0,
@@ -1475,12 +1503,13 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   // since closing within each category (acqCalendarPlan). Locked lines are never moved.
   let acq: AcqPlan | null = null;
   if (y1) {
-    const posted = postedSinceClosing(lb.actualCal, lb.t12End, lb.acquisition?.start);
+    const h = acqHistoryOf(y1, lb.actualCal, lb.t12End, lb.acquisition?.start);
+    const posted = h.posted;
     const exp = (inputs.expirations && inputs.expirations.some((v) => v)) ? inputs.expirations
       : lb.leases?.length ? expirationsFromLeases(lb.leases, Number(inputs.year), { asOf: lb.rollAsOf, startMonth: 1 })
       : lb.template?.leaseExpirations?.some((v: number) => v) ? lb.template.leaseExpirations : null;
     acq = acqCalendarPlan({ plan: y1, calYear: Number(inputs.year), coaList: lb.coa, uw: y1.uw, posted: posted?.byGl || null,
-      fit: inputs.acqFit ?? ACQ_FIT_DEFAULT, turns: exp ? lagMonths(exp as Months, 1) : null, turnGls: TURN_EXPENSE_GLS });
+      fit: inputs.acqFit ?? ACQ_FIT_DEFAULT, turns: exp ? lagMonths(exp as Months, 1) : null, turnGls: TURN_EXPENSE_GLS, history: h.history });
   }
   const ALL12 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
   const overlay = (ls: BudgetLine[]): BudgetLine[] => {
@@ -1488,7 +1517,7 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
     const a = acq;
     return applyPlanSlice(ls, lb.coa, a.cal, ALL12, (gl) => {
       const p = lb.coaMap.get(gl)?.pcode || '';
-      return { trend: a.trend[p] ?? 0, fit: a.fitted.includes(p) ? (inputs.acqFit ?? ACQ_FIT_DEFAULT) : 0, turns: a.turnGls.includes(gl), after: a.afterIdx };
+      return { trend: a.trend[p] ?? 0, fit: a.fitted.includes(p) ? (inputs.acqFit ?? ACQ_FIT_DEFAULT) : 0, turns: a.turnGls.includes(gl), after: a.afterIdx, hist: a.shaped[p] || null };
     });
   };
   if (lb.annual) lines = clearY1Plan(lines);

@@ -1256,7 +1256,7 @@ describe('Summary panel (Troy 2026-11-10): the budget-comps rows, labels and T12
 });
 
 /* Year-1 plan inside the annual budget — made-up figures. */
-import { applyY1Plan, clearY1Plan, y1Check, y1MonthsIn, feedsNoi, acqCalendarPlan, postedSinceClosing, applyPlanSlice, uwCheck, uwCocByYear } from '../shared/annual.js';
+import { applyY1Plan, clearY1Plan, y1Check, y1MonthsIn, feedsNoi, acqCalendarPlan, acqHistoryShape, postedSinceClosing, applyPlanSlice, uwCheck, uwCocByYear } from '../shared/annual.js';
 describe('Year-1 plan in the annual budget', () => {
   const flat = (v: number) => Array(12).fill(v) as Months;
   const coa = ['4994', '5031', '5140', '6305', '6410', '7300'].map((code) => ({ code, name: code, pcode: '1', curve: 'flat', active: true })) as unknown as CoaAccount[];
@@ -1302,6 +1302,19 @@ describe('Year-1 plan in the annual budget', () => {
     // not applied at all: the gap is the whole difference between the two budgets over Jan-Jul
     expect(y1Check(annual(), plan, 2027, planNoi).variance).toBe(7 * (125 - 6 - 33 - 4) - (110 * 6 + 120 + 7 * (-5 + 2 - 30)));
   });
+  it('the Year-1 months already completed count as posted, not as planned (Troy 2026-11-12: "part of Y1 was already completed")', () => {
+    const planNoi = (100 * 5 + 110 * 6 + 120) + 12 * (-5 + 2 - 30);
+    // T12 Nov-25..Oct-26: Aug-Oct 2026 owned and posted; rent came in at 90 (plan 100), vacancy −5, R&M 30
+    const cal = { '4994': [0, 0, 0, 0, 0, 0, 0, 90, 90, 90, 0, 0] as Months, '6305': [0, 0, 0, 0, 0, 0, 0, 30, 30, 30, 0, 0] as Months, '5031': [0, 0, 0, 0, 0, 0, 0, -5, -5, -5, 0, 0] as Months };
+    const owned = [8, 9, 10].map((month) => ({ month, year: 2026 }));
+    const chk = y1Check(applyY1Plan(annual(), coa, plan, 2027), plan, 2027, planNoi, { cal, owned });
+    expect(chk.actualMonths).toBe(3);
+    expect(chk.actualNoi).toBe(3 * (90 - 5 - 30));
+    expect(chk.planForActual).toBe(3 * (100 - 5 + 2 - 30));
+    expect(chk.variance).toBe(3 * (90 - 5 - 30) - 3 * (100 - 5 + 2 - 30));   // the shortfall shows; nothing is moved to cover it
+    // a month posted before ownership began is not Year 1
+    expect(y1Check(applyY1Plan(annual(), coa, plan, 2027), plan, 2027, planNoi, { cal, owned: [{ month: 7, year: 2026 }] }).actualMonths).toBe(0);
+  });
   describe('the whole year from the acquisition plan (Troy 2026-11-12)', () => {
     // categories: 1 = GPR, 13 = R&M (6702 a turn GL), 12 = utilities
     const coa2 = [
@@ -1318,21 +1331,55 @@ describe('Year-1 plan in the annual budget', () => {
     const uw = { y1: { '1': 1280, '13': 600, '12': 730 }, years: { y2: { '1': 1280 * 1.04, '13': 600 * 1.03, '12': 730 } } };
     const noi = (m: Map<string, Months>, idx: number[]) => [...m].reduce((a, [gl, v]) => a + (gl < '6000' ? 1 : -1) * idx.reduce((x, i) => x + v[i], 0), 0);
 
-    it('Jan-Aug come from the plan; Sep-Dec are the plan\'s Sep-Dec 2026 on the UW Year-2 trend; below-NOI lines are left out', () => {
+    const tot = (m: Months | undefined, idx: number[]) => idx.reduce((a, i) => a + (m ? m[i] : 0), 0);
+    it('weighted between Years 1 and 2 by months (Troy 2026-11-12): 8/12 of Year 1, then 4/12 of Year 1 on the UW Year-2 trend; the plan\'s months are not copied', () => {
       const ap = acqCalendarPlan({ plan: plan2, calYear: 2027, coaList: coa2, uw });
       expect(ap.y1Idx).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
       expect(ap.afterIdx).toEqual([8, 9, 10, 11]);
       expect(ap.trendFrom).toBe('uw');
       expect(ap.trend['1']).toBeCloseTo(0.04, 9);
-      expect(ap.target.get('4994')).toEqual([110, 110, 110, 110, 110, 110, 110, 110, 104, 104, 104, 104]);
-      expect(ap.target.get('6620')).toEqual([90, 80, 70, 60, 50, 40, 40, 40, 50, 60, 70, 80]);   // 0% trend: last fall again
+      // rent: Year 1 = 1,280 → Jan-Aug 853 (not the plan's 8 × 110 = 880), Sep-Dec 1,280 × 1.04 × 4/12 = 444
+      const g = ap.target.get('4994')!;
+      expect(tot(g, ap.y1Idx)).toBe(853);
+      expect(tot(g, ap.afterIdx)).toBe(444);
+      expect(Math.max(...g.slice(0, 8)) - Math.min(...g.slice(0, 8))).toBeLessThanOrEqual(1);   // the plan's own pattern (flat 110s)
+      // utilities: no history on file → the plan's pattern; 730 × 8/12 and 730 × 4/12 (0% trend)
+      const u = ap.target.get('6620')!;
+      expect(tot(u, ap.y1Idx)).toBe(487);
+      expect(tot(u, ap.afterIdx)).toBe(243);
+      expect(u[0]).toBeGreaterThan(u[7]);                                                // Jan above Aug, as planned
       expect(ap.target.has('7300')).toBe(false);
-      expect(ap.cal).toEqual(ap.target);                                                 // nothing posted: the plan as is
+      expect(ap.cal).toEqual(ap.target);                                                 // nothing posted: no fit
+      expect(ap.shaped).toEqual({});
     });
     it('no UW Year-2 column: carried flat, and says so', () => {
       const ap = acqCalendarPlan({ plan: plan2, calYear: 2027, coaList: coa2, uw: { y1: uw.y1 } });
       expect(ap.trendFrom).toBe('none');
-      expect(ap.target.get('4994')!.slice(8)).toEqual([100, 100, 100, 100]);
+      expect(tot(ap.target.get('4994'), ap.afterIdx)).toBe(427);                         // 1,280 × 4/12
+    });
+    it('the monthly pattern comes from the property\'s past financials: posted months since closing, the seller T12 for the rest (Troy 2026-11-12: "Everything is dead flat")', () => {
+      // a flat plan for utilities; the seller's utilities run heavy in winter; Sep-Oct 2026 posted at twice the seller's level
+      const flatPlan = { ...plan2, lines: plan2.lines.map((l) => (l.gl_code === '6620' ? { ...l, months: flat(60) } : l)) };
+      const seller = { '12': [200, 180, 150, 100, 80, 60, 60, 60, 70, 100, 150, 190] as Months };
+      const postedCal = { '6620': [0, 0, 0, 0, 0, 0, 0, 0, 140, 200, 0, 0] as Months };
+      const ap = acqCalendarPlan({ plan: flatPlan, calYear: 2027, coaList: coa2, uw, history: { seller, postedCal, ownedIdx: [8, 9] } });
+      const u = ap.target.get('6620')!;
+      expect(ap.shaped['12']).toBe('posted+seller');
+      expect(u[0]).toBeGreaterThan(2 * u[6]);                                            // January well above July
+      expect(tot(u, ap.y1Idx)).toBe(480);                                                // level unchanged: 720 × 8/12
+      expect(tot(u, ap.afterIdx)).toBe(240);
+      // only the seller on file: still shaped; rent is never shaped from history
+      const s2 = acqCalendarPlan({ plan: flatPlan, calYear: 2027, coaList: coa2, uw, history: { seller } });
+      expect(s2.shaped['12']).toBe('seller');
+      expect(s2.shaped['1']).toBeUndefined();
+      // nothing on file: the plan's flat pattern
+      expect(acqCalendarPlan({ plan: flatPlan, calYear: 2027, coaList: coa2, uw }).target.get('6620')!.slice(0, 8)).toEqual(flat(60).slice(0, 8));
+    });
+    it('the seller\'s missed / catch-up billing is smoothed before it shapes anything', () => {
+      const r = acqHistoryShape('12', ['6620'], 1, { seller: { '12': [100, 100, 0, 300, 100, 100, 100, 100, 100, 100, 100, 100] as Months } })!;
+      expect(r.shape[2]).toBeGreaterThan(0);
+      expect(r.shape.reduce((a, v) => a + v, 0)).toBeCloseTo(1, 9);
+      expect(acqHistoryShape('12', ['6620'], 1, { postedCal: { '6620': flat(10) }, ownedIdx: [9, 10] })).toBeNull();   // two months alone: not enough
     });
     it('posted actuals move the GL mix inside a category; category totals per segment, Year-1 NOI and calendar NOI hold', () => {
       // since closing R&M posted 90% on 6702, 10% on 6720 (plan: 40 / 60)
@@ -1355,8 +1402,8 @@ describe('Year-1 plan in the annual budget', () => {
       expect(t.slice(0, 4)).toEqual([0, 0, 0, 0]);
       expect(t[5]).toBeGreaterThan(t[4]);
       expect(t.slice(0, 8).reduce((a, v) => a + v, 0)).toBe(8 * 20);
-      expect(t.slice(8).reduce((a, v) => a + v, 0)).toBe(4 * Math.round(20 * 1.03));   // the trended months round month by month
-      expect(ap.cal.get('6720')).toEqual(ap.target.get('6720'));       // not a turn GL: its own shape
+      expect(t.slice(8).reduce((a, v) => a + v, 0)).toBe(82);                          // 240 × 1.03 × 4/12
+      expect(ap.cal.get('6720')).toEqual(ap.target.get('6720'));       // not a turn GL: its own pattern
       expect(ap.turnGls).toEqual(['6702']);
     });
     it('a GL posted but not planned joins its category; a fit of 0 keeps the plan\'s mix', () => {
