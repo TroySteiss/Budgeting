@@ -1788,9 +1788,8 @@ function trendSvg(bv) {
     // zero (Troy 2026-11-09), so month-to-month movement fills the chart. The labelled
     // gridlines carry the level; the reference months (dashed) sit on the same scale.
     // prior-year T12s (dropped in on the Data page): dotted NOI lines, one colour each (Troy 2026-11-11)
-    const PRIOR_COLORS = ['#8e44ad', '#e67e22', '#16a085'];
-    const prior = sel.has('NOI') ? ((bv.summary && bv.summary.priorT12) || []).filter((p) => (p.noi || []).length === 12).slice(0, 3).map((p, k) => ({ ...p, color: PRIOR_COLORS[k] })) : [];
-    const all = [...series.flatMap((s) => [...s.vals, ...((s.ref && s.ref.length === 12) ? s.ref : [])]), ...prior.flatMap((p) => p.noi)];
+    // …and now for every selected series, not just NOI (Troy 2026-11-12: "all years … whatever items are selected")
+    const all = series.flatMap((s) => [...s.vals, ...((s.ref && s.ref.length === 12) ? s.ref : []), ...trendPriorFor(bv, s).flatMap((p) => p.vals)]);
     const lo = Math.min(...all), hi = Math.max(...all);
     const rough = Math.max(hi - lo, Math.abs(hi) * 0.02, 1) / 4;       // a flat line still gets a sensible band
     const mag = Math.pow(10, Math.floor(Math.log10(rough)));
@@ -1808,8 +1807,8 @@ function trendSvg(bv) {
       (s.ref && s.ref.length === 12 ? poly(s.ref, s.color, true) + s.ref.map((v, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="1.6" fill="${s.color}" opacity=".6"><title>${s.name} ${ref.label} ${labels[i]}: ${money(v)}</title></circle>`).join('') : '') +
       poly(s.vals, s.color, false) +
       s.vals.map((v, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.4" fill="${s.color}"><title>${s.name} ${labels[i]}: ${money(v)}${s.ref && s.ref.length === 12 ? ` (${ref.label} ${money(s.ref[i])}, Δ ${money(v - s.ref[i])})` : ''}</title></circle>`).join('')
-    ).join('') + prior.map((p) => `<polyline fill="none" stroke="${p.color}" stroke-width="1.4" stroke-dasharray="1.5 3" stroke-linecap="round" points="${p.noi.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}"/>`
-      + p.noi.map((v, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="1.5" fill="${p.color}"><title>NOI ${p.label} ${labels[i]}: ${money(v)}</title></circle>`).join('')).join('');
+    ).join('') + series.flatMap((s) => trendPriorFor(bv, s).map((p) => `<polyline fill="none" stroke="${p.color}" stroke-width="1.4" stroke-dasharray="1.5 3" stroke-linecap="round" points="${p.vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}"/>`
+      + p.vals.map((v, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="1.5" fill="${p.color}"><title>${s.name} ${p.label} ${labels[i]}: ${money(v)}</title></circle>`).join(''))).join('');
     // labels carry just enough precision to tell neighbouring gridlines apart
     const top = Math.max(Math.abs(min), Math.abs(max));
     const fmtAxis = (v) => {
@@ -1829,8 +1828,31 @@ function trendSvg(bv) {
     <button class="trend-chip ${sel.has(s.name) ? 'on' : ''}" data-trend="${s.name}" style="--c:${s.color}">
       <span style="display:inline-block;width:10px;height:3px;background:${s.color};vertical-align:3px;margin-right:4px"></span>${s.name}</button>`).join('')
     + (ref ? `<span class="muted" style="font-size:10.5px">dashed = ${esc(ref.label)} by month</span>` : '')
-    + (((bv.summary && bv.summary.priorT12) || []).length && sel.has('NOI') ? ((bv.summary && bv.summary.priorT12) || []).slice(0, 3).map((p, k) => ` <span style="font-size:10.5px; color:${['#8e44ad', '#e67e22', '#16a085'][k]}">⋯ NOI ${esc(p.label)}</span>`).join('') : '');
-  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%; display:block">${body}</svg><div style="margin-top:5px">${legend}</div>`;
+    + (series.length ? trendPriors(bv).map((p) => ` <span style="font-size:10.5px; color:${p.color}">⋯ ${esc(p.label)}</span>`).join('') : '');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%; display:block">${body}</svg><div style="margin-top:5px">${legend}</div>${trendQuarterHtml(bv, series, labels)}`;
+}
+/* prior-year trailing-12s (Data page drops), one colour each; `trendPriorFor` = one series' months from each */
+const PRIOR_COLORS = ['#8e44ad', '#e67e22', '#16a085'];
+const trendPriors = (bv) => ((bv.summary && bv.summary.priorT12) || []).slice(0, 3).map((p, k) => ({ ...p, color: PRIOR_COLORS[k] }));
+const trendPriorFor = (bv, s) => trendPriors(bv).map((p) => ({ label: p.label, color: p.color, vals: p[s.name.toLowerCase()] || [] })).filter((p) => p.vals.length === 12);
+/* QUARTERLY BREAKDOWN under the chart (Troy 2026-11-12): every year on the chart — this budget, the reference
+   (T12 / CY budget) and the prior-year T12s — for each series picked in the legend. Each cell is the quarter's
+   dollars and its share of that year; quarters follow the budget's own months (Q1 = its first three). */
+function trendQuarterHtml(bv, series, labels) {
+  if (!series.length) return '';
+  const ref = bv.refMonthly || null;
+  const q = (m) => [0, 1, 2, 3].map((k) => (m[k * 3] || 0) + (m[k * 3 + 1] || 0) + (m[k * 3 + 2] || 0));
+  const k$ = (v) => (Math.abs(v) >= 1e6 ? `${(v / 1e6).toFixed(2)}M` : `${(v / 1e3).toFixed(1)}k`);
+  const yr = bv.annual ? `${bv.budget.year} budget` : 'Budget';
+  const row = (label, color, m, dashed) => {
+    const Q = q(m); const Y = Q.reduce((a, b) => a + b, 0);
+    return `<tr><td class="ql"><span class="qsw" style="border-top:2px ${dashed ? 'dashed' : 'solid'} ${color}"></span>${esc(label)}</td>${Q.map((v, i) => `<td title="${esc(label)} Q${i + 1}: ${money(v)}${Y ? ` · ${(v / Y * 100).toFixed(1)}% of the year` : ''}">${k$(v)}<div class="qp">${Y ? (v / Y * 100).toFixed(1) + '%' : '—'}</div></td>`).join('')}<td class="qy">${k$(Y)}</td></tr>`;
+  };
+  const qh = [0, 1, 2, 3].map((k) => `<th title="${esc(labels[k * 3] || '')}–${esc(labels[k * 3 + 2] || '')}">Q${k + 1}</th>`).join('');
+  return `<table class="qtrend"><tr><th></th>${qh}<th>Year</th></tr>${series.map((s) => `<tr class="qs"><td colspan="6" style="color:${s.color}">${s.name}</td></tr>`
+    + row(yr, s.color, s.vals, false)
+    + (s.ref && s.ref.length === 12 ? row(ref.label, s.color, s.ref, true) : '')
+    + trendPriorFor(bv, s).map((p) => row(p.label, p.color, p.vals, true)).join('')).join('')}</table>`;
 }
 
 /* ---- GPR increases in SPECIFIC months (Troy 2026-11-03: "not blanketed") ----

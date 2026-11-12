@@ -487,7 +487,7 @@ interface LoadedBudget {
   noiTrend: { back: number; label: string; noi: number | null }[]; t12End: { month: number; year: number } | null; t12Live: number;
   /** prior-year trailing-12s (windows ending 12 / 24 / 36 months before the current one) with every month on
       file: monthly NOI by calendar month, for the trend chart's dotted lines (Troy 2026-11-11) */
-  priorT12: { label: string; noi: Months }[];
+  priorT12: { label: string; noi: Months; income: Months; expense: Months }[];
   /** the tie-out reference (trailing-12 / CY budget / typed targets) — the annual budget's "UW" */
   ref: UwSnapshotData | null; refLabel: string;
   refs: RefCol[];
@@ -607,7 +607,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   let lastMonth = 10, ref: UwSnapshotData | null = null, refLabel = 'UW';
   let t12Missing: string[] = [], t12Dead: string[] = [], t12Live = 12, t12Startup: string[] = [], t12Early: string[] = [];
   const noiTrend: { back: number; label: string; noi: number | null }[] = [];
-  const priorT12: { label: string; noi: Months }[] = [];
+  const priorT12: { label: string; noi: Months; income: Months; expense: Months }[] = [];
   let t12End: { month: number; year: number } | null = null;
   let payrollTpl: LoadedBudget['payrollTpl'] = null;
   // the default wage source for an annual budget: the Pay-rates tab's roster + raise entries
@@ -679,8 +679,11 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
         if (!w || (w.missing || []).length || (w.dead || []).length) continue;
         const end = (t12.lastYear * 12 + (t12.lastMonth - 1)) - back;
         const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-        const noi = (rollup(new Map(Object.entries(w.cal))).get('7280') || zero12()).map(r2) as Months;
-        priorT12.push({ label: `T12 to ${MON[((end % 12) + 12) % 12]}-${String(Math.floor(end / 12)).slice(2)}`, noi });
+        // income and expense too, for the trend chart's quarterly table (Troy 2026-11-12: "all years showing,
+        // as well as whatever items are selected")
+        const t = rollup(new Map(Object.entries(w.cal)));
+        const of = (c: string) => (t.get(c) || zero12()).map(r2) as Months;
+        priorT12.push({ label: `T12 to ${MON[((end % 12) + 12) % 12]}-${String(Math.floor(end / 12)).slice(2)}`, noi: of('7280'), income: of('5500'), expense: of('7279') });
       }
     }
     t12Dead = t12?.dead || [];
@@ -784,7 +787,7 @@ function summaryOf(lb: LoadedBudget, lines: BudgetLine[]) {
     units: Number(lb.budget.inputs?.units) || 0,
     t12, t4, bud,
     noiTrend: lb.noiTrend,
-    priorT12: (lb.priorT12 || []).map((p) => ({ label: p.label, noi: rotate12(p.noi, Number(lb.budget.inputs?.startMonth) || 1) })),
+    priorT12: (lb.priorT12 || []).map((p) => { const st = Number(lb.budget.inputs?.startMonth) || 1; return { label: p.label, noi: rotate12(p.noi, st), income: rotate12(p.income, st), expense: rotate12(p.expense, st) }; }),
     cyBudgetNoi: cyb ? r2(cyb.totals['7280'] || 0) : null,
     cyBudgetLabel: cyb ? cyb.label : null,
   };

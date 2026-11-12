@@ -192,6 +192,15 @@ tr.badbills .warnflag { color: var(--bad); font-weight: 700; }
 /* ---------- trend chart ---------- */
 .trend-chip { background: none; border: 1px solid var(--line); border-radius: 12px; padding: 2px 9px; font-size: 11px; color: var(--dim); margin-right: 6px; opacity: .55; }
 .trend-chip.on { opacity: 1; color: var(--ink); border-color: var(--c, var(--accent)); }
+/* quarterly breakdown under the chart: every year shown × each picked series */
+.qtrend { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 11.5px; }
+.qtrend th { font-size: 10px; color: var(--dim); text-transform: uppercase; text-align: right; padding: 3px 4px; border-bottom: 1px solid var(--line); font-weight: 600; }
+.qtrend td { text-align: right; padding: 3px 4px; border-bottom: 1px solid var(--gridline); white-space: nowrap; vertical-align: top; font-variant-numeric: tabular-nums; }
+.qtrend td.ql { text-align: left; color: var(--ink); max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+.qtrend td.qy { font-weight: 700; }
+.qtrend .qp { font-size: 10px; color: var(--dim); }
+.qtrend .qsw { display: inline-block; width: 12px; vertical-align: 3px; margin-right: 5px; }
+.qtrend tr.qs td { text-align: left; font-weight: 700; font-size: 10.5px; text-transform: uppercase; letter-spacing: .3px; padding-top: 6px; border-bottom: 0; }
 
 /* ---------- tie-out ---------- */
 .tie table { border-collapse: collapse; width: 100%; font-size: 12.3px; }
