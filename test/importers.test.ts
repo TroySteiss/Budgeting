@@ -311,7 +311,12 @@ describe('parseRentRoll — Yardi Unit Availability Details (UAD, Troy 2026-11-0
     ['01-103', 't03', 'Resident C', 950, 1000, 500, 0, 'Current', null, null, D(2025, 6, 1), 'No', null, null, null, D(2025, 6, 1), D(2026, 6, 1), D(2027, 5, 31)],
     ['01-104', 't04', 'Resident D', 1000, 1050, 500, 0, 'Current', null, null, D(2024, 1, 1), 'No', null, null, null, D(2024, 1, 1), D(2025, 1, 1), D(2025, 12, 31)],
     ['Total', null, '2 Units', 1950, 2050],
-    ['Total for tsnd', null, '4 Units', 3830, 5050],
+    [],
+    // a pre-leased vacant unit listed ONLY by its applicant row (CLND 11/9: 8 such units, $12,325/mo, were dropped)
+    ['Test Place (tsnd) - Vacant Rented Ready'],
+    ['01-105', 't06', 'Applicant F', 1100, 1100, 500, 0, 'Applicant', 10, D(2026, 10, 1), D(2026, 11, 15), 'No', null, null, null, D(2026, 10, 15), D(2026, 11, 15), D(2027, 11, 14)],
+    ['Total', null, '1 Units', 1100, 1100],
+    ['Total for tsnd', null, '5 Units', 4930, 6150],
     [],
     ['Other Place (otnd) - Occupied No Notice'],
     ['A1', 't05', 'Resident E', 700, 750, 0, 0, 'Current', null, null, D(2026, 2, 1), 'No', null, null, null, D(2026, 2, 1), D(2026, 2, 1), D(2027, 1, 31)],
@@ -328,8 +333,8 @@ describe('parseRentRoll — Yardi Unit Availability Details (UAD, Troy 2026-11-0
     const out = parseRentRoll(buf);
     const t = out.find((p) => p.code === 'tsnd')!;
     expect(t.name).toBe('Test Place');
-    expect(t.units).toBe(4);
-    expect(t.marketMonthly).toBe(4050);               // 1000 + 1000 + 1000 + 1050 — the Future row is the same unit
+    expect(t.units).toBe(5);
+    expect(t.marketMonthly).toBe(5150);               // 1000 + 1000 + 1000 + 1050 + 1100 — the Future row is the same unit (once); the applicant-only unit counts
     expect(t.inPlaceMonthly).toBe(2850);              // 900 + 950 + 1000
     expect(t.occupiedUnits).toBe(3);
     expect(t.source).toBe('unit_level');

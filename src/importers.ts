@@ -312,10 +312,13 @@ export function parseUnitAvailability(g: Grid): RentParsedProperty[] {
     }
     if (!cur || low(a0) === 'total') continue;
     const status = low(row[cStatus]);
-    if (status === 'future' || status === 'applicant' || status === 'past') continue;   // the same unit again, or history
     const unit = a0;
     const mkt = num(row[cUnitRent]);
+    /* EVERY unit's market counts once, whatever its row's status (Troy 2026-11-11). A pre-leased unit is often
+       listed ONLY by its applicant / future row ("Vacant Rented Ready | Applicant"), so skipping those rows
+       before this line dropped the unit from GPR: CLND 11/9 lost 8 units, $12,325/mo ($477,985 vs $490,310). */
     if (!cur.units.has(unit)) { cur.units.add(unit); cur.market += mkt; cur.unitMarket.set(unit, mkt); }
+    if (status === 'future' || status === 'applicant' || status === 'past') continue;   // not the resident in place: no lease, not occupied
     const occupied = /^(current|notice|eviction)/.test(status);
     const rent = num(row[cResRent]);
     if (occupied) {
