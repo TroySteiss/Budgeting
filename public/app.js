@@ -3310,16 +3310,17 @@ function tieGrowthHtml(bv) {
     const gPt = !basisT3 && key != null && tgt == null && GT[key] != null && gIn === false ? GT[key] : null;
     const tieTo = !canTie ? null : tgt != null ? (off == null || off >= 0.0015 ? tgt : null) : gPt;
     const tieBtn = tieTo != null ? `<button class="rb" data-tie="${key}" data-pct="${tieTo}" title="Shift this subtotal's growth factors so it lands at ${esc(basisName)} ${fmtPct(tieTo)}${tgt == null ? (useU ? ' (on UW)' : ' (the guidance)') : ''}">tie</button>` : '';
-    return `<tr class="${cls || ''}"><td title="${esc(r.label)}">${esc(SHORT[r.pcode] || r.label)}</td>
+    const ub = uwBasisParts(bv, dk || key, r, { uwRef: useU, gpr: (byP['1'] || {}).budget || 0, egi: t.egi.budget || 0 });
+    return `<tr class="${cls || ''}"><td title="${esc(r.label)}">${esc(SHORT[r.pcode] || r.label)}${ub.label}</td>
       <td>${money(r.uw)}</td>${t3Cell(r)}<td>${money(r.budget)}</td>
-      <td class="var ${vcls}" title="Δ ${money(r.budget - r.uw)} vs ${esc(refLabel)}${dg ? ` · guidance: ${esc(dg.text)}` : ''}">${fmtPct(g)}</td>${t3DeltaCell(r, v3cls)}
+      <td class="var ${vcls}" title="Δ ${money(r.budget - r.uw)} vs ${esc(refLabel)}${dg ? ` · guidance: ${esc(dg.text)}` : ''}">${fmtPct(g)}</td>${t3DeltaCell(r, v3cls)}${ub.cell}
       <td class="tgt">${key != null ? `<input data-gt="${key}" value="${tgt != null ? (tgt * 100).toFixed(1) : ''}" placeholder="${esc(ph)}" class="${gBox ? 'gph' : ''}" style="width:${gr ? 58 : 48}px; font-size:11px; text-align:right" title="${esc(tip)}">` : ''}${tieBtn}</td></tr>`;
   };
   const cat = (p) => (byP[p] ? row(byP[p], p) : '');
   const nTargets = Object.keys(gt).filter((k) => gt[k] != null).length;
   const refShort = bv.refKey === 'budget' ? 'CY bud' : bv.refKey === 'uw' ? 'UW' : 'T12';
   return `<div class="tiewrap"><table${t3 ? ' class="t3"' : ''}>
-    <tr><th>Subtotal</th><th title="${esc(refLabel)}">${refShort}</th>${t3 ? `<th title="T3 annualized — ${esc(t3ref.period)}">T3 ann</th>` : ''}<th>Budget</th><th title="Budget vs ${esc(refLabel)}">Δ%${t3 ? ` ${refShort}` : ''}</th>${t3 ? `<th title="Budget vs T3 annualized — ${esc(t3ref.period)}">Δ% T3</th>` : ''}<th title="Growth target over the ${esc(basisName)}">Target${t3 ? ` vs ${basisT3 ? 'T3' : refShort}` : ''}</th></tr>
+    <tr><th>Subtotal</th><th title="${esc(refLabel)}">${refShort}</th>${t3 ? `<th title="T3 annualized — ${esc(t3ref.period)}">T3 ann</th>` : ''}<th>Budget</th><th title="Budget vs ${esc(refLabel)}">Δ%${t3 ? ` ${refShort}` : ''}</th>${t3 ? `<th title="Budget vs T3 annualized — ${esc(t3ref.period)}">Δ% T3</th>` : ''}${bv.uwBasis && bv.uwBasis.posted ? `<th title="${esc(bv.uwBasis.postedLabel)}, annualized — red where it runs worse than the UW target">Posted</th>` : ''}<th title="Growth target over the ${esc(basisName)}">Target${t3 ? ` vs ${basisT3 ? 'T3' : refShort}` : ''}</th></tr>
     ${cat('1')}${byP.loss ? row(byP.loss, null, '', 'loss') : ''}
     ${row(agg(['1', 'loss'], 'Net Gross Potential Rent'), null, 'sub', 'ngpr')}
     ${cat('2')}${cat('3')}
@@ -3341,6 +3342,42 @@ function tieGrowthHtml(bv) {
   <p class="muted" style="font-size:11px"><b>Nothing derives from an underwriting.</b> “tie” shifts the trailing-12 × factor lines of that subtotal by one uniform number of points (MROUNDs kept), so the subtotal grows by the target; GPR solves its monthly %; concessions &amp; rental loss scale their % of GPR; loss to lease is set under Assumptions; mgmt fee follows income; <b>Total Rental Income / Total Income</b> move the lever you pick — vacancy % or GPR (other income is held; a target the lever cannot reach is refused, nothing changes); a subtotal with no factor lines left (all overridden) rebalances proportionally. OpEx / NOI targets spread across every expense category but the fee.</p>`;
 }
 
+/* UW basis vs actuals on the compare card (Troy 2026-11-12, the 06.30.2026 UW books): under each category, how the
+   UW built it ("UW $1,900/u → +3%", "3.25% GPR", "3% EGI → 4% EGI", "Ryan est. → +5.4%"), and a "Posted" column =
+   what has posted since closing, annualized, coloured against the UW target on that row (expense above it / income
+   below it by more than 2% = red). The hover shows the same measure for UW, budget and posted ($/unit, % of GPR,
+   % of EGI). Only for a new acquisition's budgets with a UW basis on file (bv.uwBasis). */
+const UWB_SUM = { ngpr: ['1', 'loss'], rental: ['1', 'loss', '2', '3'], oth: ['4', '5'], income: ['1', 'loss', '2', '3', '4', '5'], opex: ['6', '7', '8', '9', '10', '11', '12', '13', '14'] };
+function uwBasisParts(bv, key, r, opts = {}) {
+  const U = bv.uwBasis;
+  if (!U || !key) return { label: '', cell: U && U.posted ? '<td class="muted">—</td>' : '' };
+  const B = (U.basis || {})[key];
+  const p1 = (v) => `${+(v * 100).toFixed(2)}%`;
+  const fmt = (b, y2) => !b ? '' : b.kind === 'estimate' ? 'Ryan est.' : b.kind === 'perUnit' ? `$${money(b.value)}/u` : b.kind === 'pctGpr' ? `${p1(b.value)} GPR` : b.kind === 'pctEgi' ? `${p1(b.value)} EGI` : `${b.value >= 0 ? '+' : ''}${p1(b.value)}${y2 ? '' : ' on T12'}`;
+  const y1t = B ? fmt(B.y1, false) : '', y2t = B && U.yearSplit && U.yearSplit.y1 < 12 ? fmt(B.y2, true) : '';
+  const label = y1t || y2t ? `<div class="uwb" title="How the UW built this category${y2t ? ': Year 1, then Year 2' : ''}${B && B.t12 ? ` · seller T12 ${money(B.t12)}` : ''}">UW ${esc(y1t)}${y2t ? ` → ${esc(y2t)}` : ''}</div>` : '';
+  if (!U.posted) return { label, cell: '' };
+  if (opts.noPosted) return { label, cell: '<td class="muted">—</td>' };
+  // posted, annualized, for a category or a subtotal; NOI = income less expenses
+  const P = U.posted;
+  const sumOf = (ps) => ps.reduce((a, p) => a + (P[p] || 0), 0);
+  const posted = key === 'noi' ? sumOf(UWB_SUM.income) - sumOf(UWB_SUM.opex) : UWB_SUM[key] ? sumOf(UWB_SUM[key]) : (P[key] ?? null);
+  if (posted == null || (!posted && !r.uw)) return { label, cell: '<td class="muted">—</td>' };
+  const expense = ['6', '7', '8', '9', '10', '11', '12', '13', '14', 'opex'].includes(key);
+  const ref = r.uw || 0, uwRef = !!opts.uwRef;
+  const off = ref ? (posted - ref) / Math.abs(ref) : null;
+  // signed like the rows: income above / expense below / a loss less negative = better
+  const worse = off == null || !uwRef ? null : expense ? off > 0.02 : off < -0.02;
+  // the UW's own measure for the hover: $/unit, % of GPR, % of EGI
+  const units = U.units || 0, gprB = opts.gpr || 0, egiB = opts.egi || 0, gprP = P['1'] || 0, egiP = sumOf(UWB_SUM.income);
+  const meas = (v, gpr, egi) => !B || !B.y1 ? '' : B.y1.kind === 'perUnit' && units ? `$${money(Math.abs(v) / units)}/u` : B.y1.kind === 'pctGpr' && gpr ? p1(Math.abs(v) / gpr) + ' GPR' : B.y1.kind === 'pctEgi' && egi ? p1(v / egi) + ' EGI' : '';
+  const tip = `Posted, annualized: ${U.postedLabel} × ${+(12 / (U.postedMonths || 12)).toFixed(2)} = ${money(posted)}${meas(posted, gprP, egiP) ? ` (${meas(posted, gprP, egiP)})` : ''}`
+    + `\nBudget: ${money(r.budget)}${meas(r.budget, gprB, egiB) ? ` (${meas(r.budget, gprB, egiB)})` : ''}`
+    + `\n${uwRef ? 'UW target' : 'Reference'}: ${money(ref)}${y1t ? ` — UW built it as ${y1t}${y2t ? `, then ${y2t}` : ''}` : ''}`
+    + (off != null ? `\nPosted run-rate is ${off >= 0 ? '+' : ''}${(off * 100).toFixed(1)}% vs ${uwRef ? 'UW' : 'the reference'}` : '')
+    + (U.postedMonths < 3 ? `\nOnly ${U.postedMonths} month${U.postedMonths === 1 ? '' : 's'} posted: read with care` : '');
+  return { label, cell: `<td class="posted ${worse == null ? '' : worse ? 'bad' : 'good'}" title="${esc(tip)}">${money(posted)}</td>` };
+}
 function tieHtml(bv) {
   if (!bv.uw) return bv.annual ? '<p class="muted">No statement linked — upload the Yardi budget template (or a 12 Month Statement) and point this budget at it under Data sources.</p>' : '<p class="muted">No UW snapshot linked — tie-out unavailable.</p>';
   if (bv.annual) return tieGrowthHtml(bv);
@@ -3365,9 +3402,13 @@ function tieHtml(bv) {
     const noiCtl = isNoi && Math.abs(r.variance) >= 1 ? `<button class="rb" data-noi="1" title="Scale the flex categories (admin, marketing, R&M, rehab) so NOI equals ${esc(refLabel)} exactly">tie NOI</button>` : '';
     const isEgi = r.label === 'Effective Gross Income';
     const egiCtl = isEgi && Math.abs(r.variance) >= 1 ? `<button class="rb" data-egi="1" title="Adjust loss-to-lease so Total Income equals ${esc(refLabel)} exactly (GPR stays on the rent roll)">tie income</button>` : '';
-    return `<tr class="${big ? 'big' : ''}"><td title="${esc(r.label)}">${esc(SHORT[big ? r.label : r.pcode] || r.label)}</td>
+    // UW basis vs actuals: the subtotal / category this row is (the Vacancy split shows category 3's basis only)
+    const KEYOF = { 'Effective Gross Income': 'income', 'Total Operating Expenses': 'opex', 'Net Operating Income': 'noi', 'Net Gross Potential Rent': 'ngpr', 'Total Rental Income': 'rental', 'Total Other + Utility Inc': 'oth' };
+    const bk = KEYOF[r.label] || (r.pcode === 'Vacancy' ? '3' : r.label === 'Delinquency & Other Loss' ? null : r.pcode);
+    const ub = uwBasisParts(bv, bk, r, { uwRef: true, noPosted: r.pcode === 'Vacancy', gpr: (byP['1'] || {}).budget || 0, egi: t.egi.budget || 0 });
+    return `<tr class="${big ? 'big' : ''}"><td title="${esc(r.label)}">${esc(SHORT[big ? r.label : r.pcode] || r.label)}${ub.label}</td>
       <td>${money(r.budget)}</td><td>${money(r.uw)}</td>
-      <td class="var ${cls}">${money(r.variance)}</td>
+      <td class="var ${cls}">${money(r.variance)}</td>${ub.cell}
       <td>${noiCtl}${egiCtl}${basisCtl}${!big && rebalanceable.has(r.pcode) && Math.abs(r.variance) >= 1 ? `<button class="rb" data-p="${r.pcode}">tie</button>` : ''}</td></tr>`;
   };
   const INCOME = new Set(['1', 'loss', '2', '3', '4', '5']);
@@ -3393,7 +3434,7 @@ function tieHtml(bv) {
   const expenseRows = t.rows.filter((r) => !INCOME.has(r.pcode));
   const subRow = (r) => row(r, false).replace('<tr class="">', '<tr class="sub">');
   return `<table>
-    <tr><th>Category</th><th>Budget</th><th>${esc(refLabel)}</th><th>Δ</th><th></th></tr>
+    <tr><th>Category</th><th>Budget</th><th>${esc(refLabel)}</th><th>Δ</th>${bv.uwBasis && bv.uwBasis.posted ? `<th title="${esc(bv.uwBasis.postedLabel)}, annualized — red where it runs worse than the UW">Posted</th>` : ''}<th></th></tr>
     ${gprRows.map((r) => row(r, false)).join('')}
     ${subRow(agg(['1', 'loss'], 'Net Gross Potential Rent'))}
     ${lossRows.map((r) => row(r, false)).join('')}

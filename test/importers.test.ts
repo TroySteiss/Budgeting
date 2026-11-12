@@ -20,6 +20,19 @@ describe('parseUwBook — Bismarck', () => {
     expect(p.data.toe).toBeCloseTo(4612425.47, 1);
     expect(p.data.noi).toBeCloseTo(7305832.67, 1);
   });
+  it('reads how each category was underwritten, Year 1 and Year 2 (Troy 2026-11-12)', () => {
+    const b = sheets.find((s) => /river ridge/i.test(s.sheetName))!.data.basis!;
+    expect(b['10']).toMatchObject({ y1: { kind: 'perUnit', value: 1900 }, y2: { kind: 'increase', value: 0.03 } });
+    expect(b['7']).toMatchObject({ y1: { kind: 'pctEgi', value: 0.03 }, y2: { kind: 'pctEgi', value: 0.04 } });
+    expect(b['loss']).toMatchObject({ y1: { kind: 'pctGpr', value: 0.0325 }, y2: { kind: 'pctGpr', value: 0.025 } });
+    expect(b['8'].y1).toMatchObject({ kind: 'estimate' });
+    expect((b['8'].y2 as any).value).toBeCloseTo(0.0539, 4);
+    expect(b['14']).toMatchObject({ y1: { kind: 'perUnit', value: 350 }, y2: { kind: 'perUnit', value: 350 } });
+    expect(b['12']).toMatchObject({ y1: { kind: 'increase', value: 0.03 } });
+    expect(b['10'].t12).toBeCloseTo(231418.06, 1);                       // the seller T12 the UW started from
+    const c = sheets.find((s) => /cottonwood/i.test(s.sheetName))!.data.basis!;   // the offset sheet reads too
+    expect(c['10']).toMatchObject({ y1: { kind: 'perUnit', value: 1875 } });
+  });
   it('handles the offset Cottonwood sheet', () => {
     const c = sheets.find((s) => /cottonwood/i.test(s.sheetName))!;
     expect(c.data.units).toBe(268);

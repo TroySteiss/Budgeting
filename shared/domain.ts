@@ -974,7 +974,11 @@ export interface UwSnapshotData {
   assumptions: Record<string, number | string>;
   unitMix?: { plan: string; units: number; sqft: number; street: number }[];
   t12?: { gl: string; name: string; total: number; pcode: string }[];
+  /** how each category was underwritten, by pcode: Year 1 and Year 2 basis (per unit, % of GPR / EGI, % increase,
+      an estimate) and the seller T12 the UW started from (Troy 2026-11-12). Older uploads lack it. */
+  basis?: Record<string, { y1?: UwBasis; y2?: UwBasis; t12?: number }>;
 }
+export type UwBasis = { kind: 'perUnit' | 'pctGpr' | 'pctEgi' | 'increase'; value: number } | { kind: 'estimate'; note: string };
 
 export interface TieoutRow { pcode: string; label: string; budget: number; uw: number; variance: number; pct: number | null; }
 export interface Tieout { rows: TieoutRow[]; egi: TieoutRow; toe: TieoutRow; noi: TieoutRow; }

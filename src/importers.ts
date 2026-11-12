@@ -1,7 +1,7 @@
 /* Parsers for the four upload formats. All label-driven (never fixed row
    numbers — the Cottonwood UW sheet is offset +20 rows vs its siblings). */
 import * as XLSX from 'xlsx';
-import { HAP_CHARGE, type UwSnapshotData, type Months } from '../shared/domain.js';
+import { HAP_CHARGE, type UwSnapshotData, type UwBasis, type Months } from '../shared/domain.js';
 import type { TemplateData } from '../shared/annual.js';
 import { POSITION_GL, isRmPosition, isSalariedPosition, isOpenSeat, OPEN_SEAT_PCT, type StaffingPerson, type DetailPerson } from '../shared/payroll.js';
 
@@ -136,6 +136,26 @@ export function parseUwBook(buf: Buffer): UwParsedSheet[] {
     const y1: Record<string, number> = {};
     for (const [k, v] of Object.entries(found)) if (!['egi', 'toe', 'noi'].includes(k)) y1[k] = v.y1;
 
+    // HOW each category was underwritten (Troy 2026-11-12: "You should be able to fully tell how these were budgeted
+    // for"): Year 1 = cols L (value) / M (basis words), Year 2 = O / P — "$1,900 per unit", "3.25% of GPR", "3% of
+    // EGI", "3% increase", "RYAN TAX MOST PROB EST." (payable-year note on the row below). Read as kinds.
+    const basisOf = (v: any, words: any): UwBasis | undefined => {
+      const w = low(words), vs = low(v);
+      if (vs.includes('ryan') || vs.includes('est.') || vs.includes('estimate')) return { kind: 'estimate', note: s(v) };
+      const n = num(v);
+      if (w.includes('per unit')) return { kind: 'perUnit', value: n };
+      if (w.includes('of gpr')) return { kind: 'pctGpr', value: Math.abs(n) };
+      if (w.includes('of egi')) return { kind: 'pctEgi', value: n };
+      if (w.includes('increase')) return { kind: 'increase', value: n };
+      return undefined;
+    };
+    const basis: NonNullable<UwSnapshotData['basis']> = {};
+    for (const [k, v] of Object.entries(found)) {
+      if (['egi', 'toe', 'noi'].includes(k)) continue;
+      const b1 = basisOf(g[v.row]?.[11], g[v.row]?.[12]), b2 = basisOf(g[v.row]?.[14], g[v.row]?.[15]);
+      if (b1 || b2) basis[k] = { ...(b1 ? { y1: b1 } : {}), ...(b2 ? { y2: b2 } : {}), t12: num(g[v.row]?.[3]) };
+    }
+
     // financing block (labels in the X..AB zone; row offsets vary by sheet)
     let loanAmount = 0, interestRate = 0, ltv = 0;
     for (let r = 0; r < g.length; r++) {
@@ -170,6 +190,7 @@ export function parseUwBook(buf: Buffer): UwParsedSheet[] {
       },
       unitMix,
       t12,
+      ...(Object.keys(basis).length ? { basis } : {}),
     };
     out.push({ sheetName: name, isPortfolio, propertyGuess: name.replace(/\s*-\s*(jt|bk)\s*$/i, '').trim(), data });
   }

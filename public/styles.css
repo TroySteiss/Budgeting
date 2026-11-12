@@ -218,6 +218,11 @@ tr.badbills .warnflag { color: var(--bad); font-weight: 700; }
 .tie td.tgt { white-space: nowrap; }
 .tie td.t3 { color: var(--dim); }
 .tie td.t3d { color: var(--dim); text-align: right; }
+/* UW basis vs actuals (new acquisitions): how the UW built the row, and the posted run-rate */
+.tie .uwb { font-size: 10px; color: var(--dim); font-weight: 400; line-height: 1.2; white-space: nowrap; }
+.tie td.posted { text-align: right; color: var(--dim); }
+.tie td.posted.good { color: var(--good); }
+.tie td.posted.bad { color: var(--bad); font-weight: 700; }
 .tie td.t3d.good { color: var(--good); }
 .tie td.t3d.bad { color: var(--bad); }
 .tie .tbasis { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--dim); white-space: nowrap; }

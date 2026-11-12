@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
-  acqCalendarPlan, applyPlanSlice, postedSinceClosing, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
+  acqCalendarPlan, applyPlanSlice, postedSinceClosing, y1MonthsIn, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
   refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
@@ -546,7 +546,9 @@ interface LoadedBudget {
   /** annual: when ownership began + the acquisition budget's first-year management fee % */
   acquisition: { start: string | null; firstYearPct: number | null } | null;
   /** annual: the property's acquisition (UW Year-1) budget, when its 12 ownership months reach into this budget's year */
-  y1Plan: (Y1Plan & { budgetId: number; uwNoi: number | null; uw: { y1: Record<string, number>; years?: Record<string, Record<string, number>> } | null }) | null;
+  y1Plan: (Y1Plan & { budgetId: number; uwNoi: number | null; uw: { y1: Record<string, number>; years?: Record<string, Record<string, number>>; basis?: UwSnapshotData['basis']; units?: number } | null }) | null;
+  /** the property's latest UW upload that carries the per-category basis (older uploads lack it) */
+  uwBasisLatest: { basis: NonNullable<UwSnapshotData['basis']>; label: string } | null;
   /** annual: which reference the compare card uses — inputs.refSource, else 'uw' when the acquisition plan runs the year */
   refKey: string;
   /** the latest Payroll Budget Workbook sheet for this property + year (stmt kind 'payroll_template') — a reference, never an input */
@@ -738,11 +740,15 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
         // the whole UW snapshot: its NOI is the Year-1 promise, its Year-2 column the trend after Year 1
         const ud = acqB.uw_snapshot_id ? (await query(`select data from uw_snapshots where id=$1`, [acqB.uw_snapshot_id])).rows[0]?.data : null;
         const uwNoi = ud && ud.noi != null && Number.isFinite(Number(ud.noi)) ? Number(ud.noi) : null;
-        if (pl.length) y1Plan = { ...plan, budgetId: Number(acqB.id), uwNoi, uw: ud ? { y1: ud.y1 || {}, years: ud.years || undefined } : null, lines: pl.map((r: any) => ({ gl_code: r.gl_code, months: (r.months as any[]).map(Number) as Months })) };
+        if (pl.length) y1Plan = { ...plan, budgetId: Number(acqB.id), uwNoi, uw: ud ? { y1: ud.y1 || {}, years: ud.years || undefined, basis: ud.basis || undefined, units: Number(ud.units) || undefined } : null, lines: pl.map((r: any) => ({ gl_code: r.gl_code, months: (r.months as any[]).map(Number) as Months })) };
       }
     }
   }
   const defaultRules: Record<string, AnnualRule> | null = annual ? await loadDefaultRules() : null;
+  // the per-category UW basis from the property's newest UW upload that has it (Troy re-uploads the books; the
+  // budgets stay linked to the snapshot they were built on)
+  const ub = (await query(`select label, data->'basis' as basis from uw_snapshots where property_code=$1 and data ? 'basis' order by created_at desc limit 1`, [budget.property_code])).rows[0];
+  const uwBasisLatest: LoadedBudget['uwBasisLatest'] = ub && ub.basis ? { basis: ub.basis, label: ub.label } : null;
   const refs: RefCol[] = [];
   if (annual) {
     const stmtRows = await query('select id, kind, period, data from stmt_snapshots where id = any($1)', [[budget.py_stmt_id, budget.cy_budget_stmt_id].filter(Boolean)]);
@@ -849,7 +855,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     if (stmtActual?.rows?.length || actualCal) sellerRows = ownT12Rows(stmtActual, actualCal, (gl) => coaMap.get(gl) || null);
   }
   const guidance = await loadGuidance();
-  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, rollMarket, sellerUtil, charges, sellerRows, defaultRules, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, burdenSrc, burdenGlSrc, guidance, refKey,
+  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, rollMarket, sellerUtil, charges, sellerRows, defaultRules, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, uwBasisLatest, burdenSrc, burdenGlSrc, guidance, refKey,
            annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs, priorT12 };
 }
 
@@ -874,6 +880,47 @@ export async function saveLines(budgetId: number, lines: BudgetLine[], fullBuild
 function effectiveLines(lb: LoadedBudget): BudgetLine[] {
   return applyActuals(lb.lines, lb.coa, lb.budget.inputs?.actuals, Number(lb.budget.year), lb.budget.inputs?.startMonth || 1);
 }
+
+/** UW basis vs actuals (Troy 2026-11-12, the 06.30.2026 UW books: "You should be able to fully tell how these were
+    budgeted for and how it was essentially done and adapt it based on where actual expenses have hit"). For a new
+    acquisition's annual budget (its year runs off the acquisition plan) and for the acquisition budget itself: how
+    the UW built each category (Year 1 / Year 2 basis), and what has posted since closing, annualized, by category.
+    The basis comes from the linked UW snapshot, else the property's latest UW upload that carries it (older
+    uploads were stored without it). Display only. */
+function uwBasisView(lb: LoadedBudget): any {
+  const acqAnnual = lb.annual && acqPlanOn(lb.budget.inputs, lb.y1Plan);
+  if (!acqAnnual && lb.annual) return null;
+  const own = acqAnnual ? lb.y1Plan?.uw : lb.uw;
+  const basis = (own as any)?.basis || lb.uwBasisLatest?.basis || null;
+  if (!basis) return null;
+  const units = Number(lb.budget.inputs?.units) || Number((own as any)?.units) || 0;
+  // what has posted since closing, by category, annualized
+  let byGl: Record<string, number> | null = null, months = 0, label = '';
+  if (acqAnnual) {
+    const p = postedSinceClosing(lb.actualCal, lb.t12End, lb.acquisition?.start);
+    if (p) { byGl = p.byGl; months = p.months; label = `${p.months} month${p.months === 1 ? '' : 's'} posted since closing (trailing-12 through ${lb.t12End ? `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][lb.t12End.month - 1]} ${lb.t12End.year}` : 'the last posted month'})`; }
+  } else {
+    const acts = Object.values((lb.budget.inputs?.actuals || {}) as Record<string, ActualizedMonth>);
+    if (acts.length) {
+      byGl = {};
+      for (const a of acts) for (const [gl, v] of Object.entries(a.glMonths || {})) byGl[gl] = r2((byGl[gl] || 0) + (Number(v) || 0));
+      months = acts.length; label = `${acts.length} actualized month${acts.length === 1 ? '' : 's'}: ${acts.map((a) => a.period).join(', ')}`;
+    }
+  }
+  let posted: Record<string, number> | null = null;
+  if (byGl && months) {
+    posted = {};
+    for (const [gl, v] of Object.entries(byGl)) {
+      const a = lb.coaMap.get(gl);
+      if (!a || a.kind !== 'detail' || !a.pcode || !feedsNoiGl(gl)) continue;
+      posted[a.pcode] = r2((posted[a.pcode] || 0) + (v * 12) / months);
+    }
+  }
+  return { basis, units, from: (own as any)?.basis ? 'linked' : (lb.uwBasisLatest?.label || 'latest UW upload'),
+    yearSplit: acqAnnual && lb.y1Plan ? { y1: y1MonthsIn(lb.y1Plan, Number(lb.budget.year)).length } : null,
+    posted, postedMonths: months, postedLabel: label };
+}
+const feedsNoiGl = (gl: string): boolean => { const n = parseInt(gl, 10); return Number.isFinite(n) && ((n >= 4994 && n <= 5189) || (n >= 6101 && n <= 7069)); };
 
 /** The Summary panel's data for one budget: the T12 column, the 4-months-annualized column and
     the budget itself, in the workbook's rows (shared/annual.ts summaryColumn). */
@@ -984,6 +1031,8 @@ function budgetView(lb: LoadedBudget) {
     refLabel: lb.annual ? lb.refLabel : 'UW Y1',
     // the reference in force: 'actual' (T12), 'budget' (CY budget), 'target', or 'uw' (UW for the calendar year)
     refKey: lb.annual ? lb.refKey : 'uw',
+    // new acquisitions: how the UW built each category, and the run-rate posted since closing (compare card)
+    uwBasis: uwBasisView(lb),
     annual: lb.annual,
     refs: lb.annual ? lb.refs : [],
     template: lb.template ? {
