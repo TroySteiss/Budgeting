@@ -220,7 +220,7 @@ export interface BudgetInputs {
   allocOut?: { to: string; pct: number; gls: string[] } | null;
   /** annual: NOI share by quarter (blank = absorbs the rest) carried by the picked expense lines and/or
       vacancy timing — year totals kept (shared/annual.ts quarterShiftSolve) */
-  qShift?: { targets: (number | null)[]; gls?: string[]; vacancy?: boolean; floor?: number } | null;
+  qShift?: { targets: (number | null)[]; gls?: string[]; vacancy?: boolean; floor?: number; increases?: boolean } | null;
   /** annual: the lever the Total Rental Income / Total Income ties move ('vacancy' | 'gpr'), last picked */
   tieLevers?: Partial<Record<'rental' | 'income', 'vacancy' | 'gpr'>>;
   /** legacy field from the (removed) stub-proration design — ignored. */

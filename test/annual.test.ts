@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, mgmtFeeRates, summaryColumn, sumSummaryCols, summaryLabels, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, contractMonths, flatFeeFromSchedule, guidanceCheck, fitToT12, noiQuarters, qShiftTargets, type TemplateData, type AnnualSources,
+  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, contractMonths, flatFeeFromSchedule, guidanceCheck, fitToT12, noiQuarters, qShiftTargets, normalizeGuidance, type TemplateData, type AnnualSources,
 } from '../shared/annual.js';
 import { sum, zero12, rollup, CURVES, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
 import { parseYardiBudgetTemplate, parseRentRoll, parseMonarchStatement, detectUploadKind } from '../src/importers.js';
@@ -1618,5 +1618,43 @@ describe('LTL typed first month (template burnoff, no leases)', () => {
     expect(base.months[0]).toBe(-500);
     expect(typed.months[11]).not.toBe(base.months[11]);         // the rest of the year runs off the new start
     expect((typed.driver as any).method).toBe('ltl');           // still a live formula, not a typed row
+  });
+});
+
+describe('guidance as single numbers', () => {
+  it('old range settings become one number each (low end; payroll the middle)', () => {
+    const g = normalizeGuidance({ incomeMin: 0.031, incomeMax: 0.04, payrollMin: 0.03, payrollMax: 0.04, noiMin: 0.02 });
+    expect(g.incomePct).toBe(0.031); expect(g.payrollPct).toBeCloseTo(0.035, 6); expect(g.noiPct).toBe(0.02);
+    expect(g.expensePct).toBe(0.03); expect(g.tolerance).toBe(0.0025);
+  });
+  it('income on target within the tolerance of its one number', () => {
+    const actual = synthetic();
+    const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
+    const lines = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10 });
+    const r = guidanceCheck({ lines, coaList, t12: actual, lastMonth: 10, units: 10, capital: 0, guidance: { incomePct: 0.5 } })!;
+    expect(r.items.find((i) => i.key === 'income')!.status).toBe('check');
+    expect(r.items.find((i) => i.key === 'income')!.target).toBe('+50.0%');
+  });
+});
+
+describe('quarter shift — phase in the expense increases', () => {
+  const actual = synthetic();
+  const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
+  const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
+  const base = generateAnnualLines(coaList, inputs, src);
+  const N0 = noiQuarters(base); const yr = N0.reduce((a, b) => a + b, 0);
+  it('a lighter Q1 increase lifts Q1 NOI; every line keeps its total and stays at or above its T12', () => {
+    const q1 = N0[0] / yr + 0.002;
+    const sh = generateAnnualLines(coaList, { ...inputs, qShift: { targets: [q1, null, null, null], increases: true } }, src);
+    const N1 = noiQuarters(sh);
+    expect(N1[0] / yr).toBeCloseTo(q1, 3);
+    expect(N1.reduce((a, b) => a + b, 0)).toBeCloseTo(yr, 0);
+    const moved = sh.filter((l) => (l.driver as any)?.qShift);
+    expect(moved.length).toBeGreaterThan(0);
+    for (const l of moved) {
+      const b = L(base, l.gl_code);
+      expect(sum(l.months)).toBeCloseTo(sum(b.months), 2);
+      l.months.forEach((v, i) => expect(v).toBeGreaterThanOrEqual(Math.min(b.months[i], Math.max(0, actual[l.gl_code]?.[i] || 0)) - 0.01));
+    }
   });
 });

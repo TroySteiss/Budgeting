@@ -39,7 +39,7 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-11f';
+export const ENGINE_VERSION = '2026-11-11g';
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -961,23 +961,35 @@ export function flatFeeFromSchedule(sch: FeeSchedule, opts: { lastIncome: number
    are the most important of all." A scorecard only: nothing here changes a budget. Ranges are
    per region (app_meta.guidance) and start at the exec team's numbers.
    ========================================================================== */
+/* ONE number per target (Troy 2026-11-11: "the targets are ranges right now, whereas they should just be
+   a number"). A line within `tolerance` of its number is on target. */
 export interface BudgetGuidance {
-  incomeMin: number; incomeMax: number;         // total income vs October T12
-  expenseMin: number; expenseMax: number;       // total expenses vs October T12
+  incomePct: number;                            // total income vs October T12
+  expensePct: number;                           // total expenses vs October T12
   spreadMax: number;                            // expense growth may exceed income growth by at most this
-  noiMin: number;                               // NOI vs October T12
-  noiVsCyBudget: boolean;                       // NOI must not be below the current (2026) budget
-  marchVsLastMin: number; marchVsLastMax: number; // March rental income vs the last actual month's (October)
+  noiPct: number;                               // NOI vs October T12 (at least)
+  noiVsCyBudget: boolean;                       // NOI must not be below the current budget
+  marchVsLastPct: number;                       // March rental income vs the last actual month's (October), at least
   insurancePerUnit: number;                     // 6108 $/unit/yr
   reTaxPct: number;                             // 6116 vs T12
-  payrollMin: number; payrollMax: number;       // payroll category vs T12 (raises 3-4% on performing sites)
+  payrollPct: number;                           // payroll category vs T12
   spPctCapital: number;                         // SP as a share of capital, a starting point
+  tolerance: number;                            // how close counts as on target (income / expenses / payroll / taxes)
 }
 export const DEFAULT_GUIDANCE: BudgetGuidance = {
-  incomeMin: 0.03, incomeMax: 0.0325, expenseMin: 0.03, expenseMax: 0.035, spreadMax: 0.005,
-  noiMin: 0.025, noiVsCyBudget: true, marchVsLastMin: 0.015, marchVsLastMax: 0.02,
-  insurancePerUnit: 275, reTaxPct: 0.03, payrollMin: 0.03, payrollMax: 0.04, spPctCapital: 0.02,
+  incomePct: 0.03, expensePct: 0.03, spreadMax: 0.005, noiPct: 0.025, noiVsCyBudget: true, marchVsLastPct: 0.015,
+  insurancePerUnit: 275, reTaxPct: 0.03, payrollPct: 0.035, spPctCapital: 0.02, tolerance: 0.0025,
 };
+/** Settings saved before single numbers (ranges): the low end of each range becomes the number. */
+export function normalizeGuidance(g: Record<string, any> | null | undefined): BudgetGuidance {
+  const v: Record<string, any> = { ...(g || {}) };
+  const take = (to: string, ...from: string[]) => { if (v[to] == null) for (const f of from) if (v[f] != null) { v[to] = v[f]; break; } };
+  take('incomePct', 'incomeMin'); take('expensePct', 'expenseMin'); take('noiPct', 'noiMin'); take('marchVsLastPct', 'marchVsLastMin');
+  if (v.payrollPct == null && v.payrollMin != null && v.payrollMax != null) v.payrollPct = (Number(v.payrollMin) + Number(v.payrollMax)) / 2;
+  const out: any = { ...DEFAULT_GUIDANCE };
+  for (const k of Object.keys(DEFAULT_GUIDANCE)) if (v[k] != null && (typeof DEFAULT_GUIDANCE[k as keyof BudgetGuidance] === 'boolean' || Number.isFinite(Number(v[k])))) out[k] = typeof DEFAULT_GUIDANCE[k as keyof BudgetGuidance] === 'boolean' ? !!v[k] : Number(v[k]);
+  return out;
+}
 export type GuideStatus = 'ok' | 'check' | 'bad' | 'info';
 export interface GuideItem { key: string; label: string; value: string; target: string; status: GuideStatus; must?: boolean }
 export interface GuideResult {
@@ -997,7 +1009,8 @@ export function guidanceCheck(a: {
   lastMonth: number; startMonth?: number; units: number; capital: number; guidance?: Partial<BudgetGuidance> | null;
 }): GuideResult | null {
   if (!a.t12 || !Object.keys(a.t12).length) return null;
-  const G: BudgetGuidance = { ...DEFAULT_GUIDANCE, ...(a.guidance || {}) };
+  const G: BudgetGuidance = normalizeGuidance(a.guidance as any);
+  const near = (v: number | null, t: number): GuideStatus => (v == null ? 'info' : Math.abs(v - t) <= G.tolerance + 1e-9 ? 'ok' : 'check');
   const start = a.startMonth || 1;
   const bud = rollup(new Map(a.lines.map((l) => [l.gl_code, l.months])));
   const ref = rollup(new Map(Object.entries(a.t12)));
@@ -1014,10 +1027,10 @@ export function guidanceCheck(a: {
   const inR = (v: number | null, lo: number, hi: number): GuideStatus => (v == null ? 'info' : v >= lo - 1e-9 && v <= hi + 1e-9 ? 'ok' : 'check');
 
   // NOI first: the most important of all
-  add('noi', 'NOI vs October T12', pctTxt(noi), `${pctTxt(G.noiMin)} or better`, noi == null ? 'info' : noi < 0 ? 'bad' : noi >= G.noiMin - 1e-9 ? 'ok' : 'check', true);
+  add('noi', 'NOI vs October T12', pctTxt(noi), `${pctTxt(G.noiPct)} or better`, noi == null ? 'info' : noi < 0 ? 'bad' : noi >= G.noiPct - 1e-9 ? 'ok' : 'check', true);
   if (G.noiVsCyBudget && cyNoi) add('noicy', 'NOI vs current (2026) budget', pctTxt(noiVsCy), 'not lower', noiVsCy != null && noiVsCy < -1e-9 ? 'bad' : 'ok', true);
-  add('income', 'Total income vs October T12', pctTxt(income), rng(G.incomeMin, G.incomeMax), inR(income, G.incomeMin, G.incomeMax), true);
-  add('expense', 'Total expenses vs October T12', pctTxt(expense), rng(G.expenseMin, G.expenseMax), inR(expense, G.expenseMin, G.expenseMax), true);
+  add('income', 'Total income vs October T12', pctTxt(income), pctTxt(G.incomePct), near(income, G.incomePct), true);
+  add('expense', 'Total expenses vs October T12', pctTxt(expense), pctTxt(G.expensePct), near(expense, G.expensePct), true);
   if (income != null && expense != null) {
     const spread = expense - income;
     add('spread', 'Expense growth over income growth', `${spread > 0 ? '+' : ''}${(spread * 10000).toFixed(0)} bps`, `at most +${Math.round(G.spreadMax * 10000)} bps`, spread > G.spreadMax + 1e-9 ? 'check' : 'ok', true);
@@ -1030,7 +1043,7 @@ export function guidanceCheck(a: {
   const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   if (lastRental) {
     const v = g2(marRental, lastRental);
-    add('march', `March rental income vs ${MON[a.lastMonth - 1]} actual`, pctTxt(v, 2), rng(G.marchVsLastMin, G.marchVsLastMax), inR(v, G.marchVsLastMin, G.marchVsLastMax), true);
+    add('march', `March rental income vs ${MON[a.lastMonth - 1]} actual`, pctTxt(v, 2), `${pctTxt(G.marchVsLastPct, 2)} or better`, v == null ? 'info' : v >= G.marchVsLastPct - 1e-9 ? 'ok' : 'check', true);
   }
   // specific changes called out
   const line = (gl: string) => a.lines.find((l) => l.gl_code === gl);
@@ -1053,7 +1066,7 @@ export function guidanceCheck(a: {
   const payT = pay(ref, Object.entries(a.t12).map(([gl, months]) => ({ gl, months })));
   if (payT) {
     const v = g2(payB, payT);
-    add('payroll', 'Payroll vs T12', pctTxt(v), `${rng(G.payrollMin, G.payrollMax)} on performing sites; lower where NOI growth is low`, v != null && v > G.payrollMax + 1e-9 ? 'check' : 'ok');
+    add('payroll', 'Payroll vs T12', pctTxt(v), `${pctTxt(G.payrollPct)} on performing sites; lower where NOI growth is low`, v != null && v > G.payrollPct + G.tolerance + 1e-9 ? 'check' : 'ok');
   }
   const sp = T(bud, '7500');
   if (a.capital > 0) add('sp', 'Special projects', `$${Math.round(sp).toLocaleString('en-US')} (${pctTxt(sp / a.capital).replace('+', '')} of capital)`, `about ${pctTxt(G.spPctCapital).replace('+', '')} of capital, with detail`, sp ? 'info' : 'check');
@@ -1072,7 +1085,11 @@ export function guidanceCheck(a: {
 }
 
 /* ---------------- quarter shift (see generateAnnualLines) ---------------- */
-export interface QShift { targets: (number | null)[]; gls?: string[]; vacancy?: boolean; floor?: number }
+export interface QShift { targets: (number | null)[]; gls?: string[]; vacancy?: boolean; floor?: number;
+  /** PHASE IN THE INCREASES (Troy 2026-11-11: "not applying expense increases as heavily in Q1 as Q2"):
+      the lever is only each history-based expense line's increase over its own T12 month; the T12 part
+      stays where it was. An increase may go to zero in a quarter, never below the T12. */
+  increases?: boolean }
 const qSums = (m: Months): number[] => [0, 1, 2, 3].map((q) => m[q * 3] + m[q * 3 + 1] + m[q * 3 + 2]);
 const noiOf = (lines: Map<string, BudgetLine>): Months => rollup(new Map([...lines].map(([g, l]) => [g, l.months]))).get('7280') || zero12();
 /** NOI by quarter (budget-month quarters: months 0-2, 3-5, 6-8, 9-11). */
@@ -1090,7 +1107,7 @@ export function qShiftTargets(targets: (number | null)[], now: number[]): number
   return t.map((v, q) => (v != null ? v : freeNow ? rest * (now[q] / tot) / (freeNow / tot) : rest / free.length));
 }
 /** Solve the shift on the built lines in place. Returns the lever GLs moved and λ (1 = all the way). */
-export function quarterShiftSolve(lines: Map<string, BudgetLine>, coaByCode: Map<string, CoaAccount>, qs: QShift, afterMove?: () => void): { moved: string[]; lam: number; targets: number[] } | null {
+export function quarterShiftSolve(lines: Map<string, BudgetLine>, coaByCode: Map<string, CoaAccount>, qs: QShift, afterMove?: () => void, ownT12?: (gl: string) => Months | null): { moved: string[]; lam: number; targets: number[] } | null {
   const N0 = qSums(noiOf(lines));
   const N = N0.reduce((a, b) => a + b, 0);
   if (!N) return null;
@@ -1100,7 +1117,8 @@ export function quarterShiftSolve(lines: Map<string, BudgetLine>, coaByCode: Map
   const floor = Math.min(0.95, Math.max(0, qs.floor ?? 0.5));
   const LEVER_SKIP = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest', 'mgmtPct']);
   // the levers, as positive quarter amounts: expense lines as posted, vacancy as its magnitude
-  type Lever = { gl: string; sign: 1 | -1; base: Months; Q: number[]; A: number };
+  // `fixed` = the part of the line that does not move (the T12 under an increase lever); `fl` = its own floor
+  type Lever = { gl: string; sign: 1 | -1; base: Months; Q: number[]; A: number; fixed?: Months; fl?: number };
   const levers: Lever[] = [];
   for (const gl of qs.gls || []) {
     const ln = lines.get(gl); const acc = coaByCode.get(gl); const n = parseInt(gl, 10);
@@ -1113,6 +1131,18 @@ export function quarterShiftSolve(lines: Map<string, BudgetLine>, coaByCode: Map
     if (ln && (ln.driver as any)?.method === 'vacancy') {
       const mag = ln.months.map((v) => -v) as Months; const Q = qSums(mag); const A = Q.reduce((a, b) => a + b, 0);
       if (A > 0 && Q.every((v) => v >= 0)) levers.push({ gl: '5031', sign: -1, base: ln.months.slice() as Months, Q, A });
+    }
+  }
+  if (qs.increases && ownT12) {
+    const picked = new Set(levers.map((l) => l.gl));
+    for (const [gl, ln] of lines) {
+      const n = parseInt(gl, 10); const d: any = ln.driver || {};
+      if (picked.has(gl) || !(n >= 6101 && n <= 7069) || gl === '6112' || d.method !== 'baseline' || d.src === 'budget' || ln.override) continue;
+      const own = ownT12(gl); if (!own) continue;
+      const inc = ln.months.map((v, i) => Math.max(0, r2(v - Math.max(0, own[i] || 0)))) as Months;
+      const Q = qSums(inc); const A = r2(Q.reduce((x, y) => x + y, 0));
+      if (A <= 0) continue;
+      levers.push({ gl, sign: 1, base: inc, Q, A, fixed: ln.months.map((v, i) => r2(v - inc[i])) as Months, fl: 0 });
     }
   }
   const Atot = levers.reduce((a, l) => a + l.A, 0);
@@ -1135,7 +1165,7 @@ export function quarterShiftSolve(lines: Map<string, BudgetLine>, coaByCode: Map
     return k;
   };
   const ratios = (k: number[]) => levers.map((l) => { const c = l.A / l.Q.reduce((a, v, q) => a + v * k[q], 0); return k.map((v) => v * c); });
-  const feasible = (k: number[]) => ratios(k).every((r, i) => r.every((v, q) => !levers[i].Q[q] || (v >= floor - 1e-9 && Number.isFinite(v))));
+  const feasible = (k: number[]) => ratios(k).every((r, i) => r.every((v, q) => !levers[i].Q[q] || (v >= (levers[i].fl ?? floor) - 1e-9 && Number.isFinite(v))));
   const kFor = (delta: number[], lam: number) => solveK(E.map((v, q) => Math.max(0, v - lam * delta[q])));
   const apply = (delta: number[]): number => {
     // the largest share of the move (lam) that keeps every lever's quarters at or above the floor
@@ -1151,7 +1181,8 @@ export function quarterShiftSolve(lines: Map<string, BudgetLine>, coaByCode: Map
       const mag = l.base.map((v) => v * l.sign) as Months;
       const w = mag.map((v, m) => Math.max(0, v * rs[i][Math.floor(m / 3)])) as Months;
       // penny-exact: the year total of the lever is unchanged
-      lines.get(l.gl)!.months = spreadMonthly(r2(l.A), w).map((v) => (v === 0 ? 0 : r2(v * l.sign))) as Months;
+      const moved = spreadMonthly(r2(l.A), w).map((v) => (v === 0 ? 0 : r2(v * l.sign))) as Months;
+      lines.get(l.gl)!.months = (l.fixed ? moved.map((v, m) => r2(v + l.fixed![m])) : moved) as Months;
     });
     afterMove?.();
     return lam;
@@ -1797,8 +1828,9 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
      `floor` (default half) of what its formula gave; past that the shift stops short (driver
      qShift.capped) rather than forcing it. The fee is rebuilt when vacancy moves (it follows income). ---- */
   const qs = inputs.qShift;
-  if (qs && Array.isArray(qs.targets) && qs.targets.some((v) => v != null && Number.isFinite(Number(v)))) {
-    const res = quarterShiftSolve(lines, coaByCode, qs, () => { if (feeEngine) { buildFee(); fitLine('6112'); allocLine('6112'); } });
+  if (qs && Array.isArray(qs.targets) && qs.targets.some((v) => v != null && Number.isFinite(Number(v))) && ((qs.gls || []).length || qs.vacancy || qs.increases)) {
+    const res = quarterShiftSolve(lines, coaByCode, qs, () => { if (feeEngine) { buildFee(); fitLine('6112'); allocLine('6112'); } },
+      (gl) => (src.actual && src.actual[gl] ? rotate12(src.actual[gl], startMonth) : null));
     if (res) for (const gl of res.moved) {
       const ln = lines.get(gl);
       if (ln) ln.driver = { ...(ln.driver as any), qShift: { lam: res.lam, capped: res.lam < 0.999, targets: res.targets } } as any;

@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, type BudgetGuidance, noiQuarters } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, type BudgetGuidance, noiQuarters } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
@@ -157,7 +157,7 @@ router.get('/state', h(async (_req, res) => {
 async function loadGuidance(): Promise<BudgetGuidance> {
   try {
     const v = (await query('select guidance from app_meta where id=1')).rows[0]?.guidance;
-    return { ...DEFAULT_GUIDANCE, ...(v && typeof v === 'object' ? v : {}) };
+    return normalizeGuidance(v && typeof v === 'object' ? v : {});
   } catch { return { ...DEFAULT_GUIDANCE }; }
 }
 router.put('/guidance', requireAdmin, h(async (req, res) => {
@@ -170,7 +170,7 @@ router.put('/guidance', requireAdmin, h(async (req, res) => {
   }
   await query('update app_meta set guidance=$1 where id=1', [JSON.stringify(clean)]);
   logChange(req.session.username || '', 'budget guidance', clean);
-  res.json({ guidance: { ...DEFAULT_GUIDANCE, ...clean } });
+  res.json({ guidance: normalizeGuidance(clean) });
 }));
 
 /* ---- required budget lines (per region): flagged in Defaults in use and before a Yardi export ---- */
@@ -434,8 +434,15 @@ router.post('/uploads/apply', h(async (req, res) => {
       created.push(ids);
       // opt-in: point this property's ANNUAL budgets at the new data and regenerate (overrides kept)
       if (req.body?.relink) {
-        const budgets = await query(`select id from budgets where property_code=$1 and budget_type='annual'`, [code]);
+        const budgets = await query(`select id, py_stmt_id from budgets where property_code=$1 and budget_type='annual'`, [code]);
+        // a prior-year T12 dropped in for the trend chart must not repoint a budget off its newer T12
+        const endOf = (d: StmtData | null | undefined): number => { const t = d ? trailing12([d]) : null; return t ? t.lastYear * 12 + t.lastMonth : -1; };
+        const newEnd = kind === 'statement' && f.statement.kind !== 'budget' ? endOf(f.statement) : null;
         for (const b of budgets.rows) {
+          if (newEnd != null && b.py_stmt_id) {
+            const curD = (await query('select data from stmt_snapshots where id=$1', [b.py_stmt_id])).rows[0]?.data as StmtData | undefined;
+            if (endOf(curD) > newEnd) continue;
+          }
           await query(
             `update budgets set py_stmt_id = coalesce($2, py_stmt_id), cy_budget_stmt_id = coalesce($3, cy_budget_stmt_id),
                                 template_id = coalesce($4, template_id), updated_at = now() where id=$1`,
@@ -476,6 +483,9 @@ interface LoadedBudget {
   actualCal: Record<string, Months> | null; budgetCal: Record<string, Months> | null; lastMonth: number; t12Missing: string[]; t12Dead: string[]; t12Startup: string[]; t12Early: string[];
   /** NOI of the T12 windows ending 2 / 1 / 0 months before the last posted month (null = not fully on file) */
   noiTrend: { back: number; label: string; noi: number | null }[]; t12End: { month: number; year: number } | null; t12Live: number;
+  /** prior-year trailing-12s (windows ending 12 / 24 / 36 months before the current one) with every month on
+      file: monthly NOI by calendar month, for the trend chart's dotted lines (Troy 2026-11-11) */
+  priorT12: { label: string; noi: Months }[];
   /** the tie-out reference (trailing-12 / CY budget / typed targets) — the annual budget's "UW" */
   ref: UwSnapshotData | null; refLabel: string;
   refs: RefCol[];
@@ -587,6 +597,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   let lastMonth = 10, ref: UwSnapshotData | null = null, refLabel = 'UW';
   let t12Missing: string[] = [], t12Dead: string[] = [], t12Live = 12, t12Startup: string[] = [], t12Early: string[] = [];
   const noiTrend: { back: number; label: string; noi: number | null }[] = [];
+  const priorT12: { label: string; noi: Months }[] = [];
   let t12End: { month: number; year: number } | null = null;
   let payrollTpl: LoadedBudget['payrollTpl'] = null;
   // the default wage source for an annual budget: the Pay-rates tab's roster + raise entries
@@ -651,6 +662,16 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
         noiTrend.push({ back, label, noi: w ? r2(refColumn(w.cal).totals['7280'] || 0) : null });
       }
       t12End = { month: t12.lastMonth, year: t12.lastYear };
+      // prior-year T12s dropped in on the Data page: the same window one, two, three years back,
+      // only where every month is on file (no gaps filled in)
+      for (const back of [12, 24, 36]) {
+        const w = await composeT12(budget.property_code, budget.py_stmt_id, stmtActual, 0, back);
+        if (!w || (w.missing || []).length || (w.dead || []).length) continue;
+        const end = (t12.lastYear * 12 + (t12.lastMonth - 1)) - back;
+        const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const noi = (rollup(new Map(Object.entries(w.cal))).get('7280') || zero12()).map(r2) as Months;
+        priorT12.push({ label: `T12 to ${MON[((end % 12) + 12) % 12]}-${String(Math.floor(end / 12)).slice(2)}`, noi });
+      }
     }
     t12Dead = t12?.dead || [];
     t12Startup = t12?.startup || [];
@@ -707,7 +728,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   }
   const guidance = await loadGuidance();
   return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, defaultRules, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, burdenSrc, guidance,
-           annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs };
+           annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs, priorT12 };
 }
 
 export async function saveLines(budgetId: number, lines: BudgetLine[], fullBuild = false): Promise<void> {
@@ -753,6 +774,7 @@ function summaryOf(lb: LoadedBudget, lines: BudgetLine[]) {
     units: Number(lb.budget.inputs?.units) || 0,
     t12, t4, bud,
     noiTrend: lb.noiTrend,
+    priorT12: (lb.priorT12 || []).map((p) => ({ label: p.label, noi: rotate12(p.noi, Number(lb.budget.inputs?.startMonth) || 1) })),
     cyBudgetNoi: cyb ? r2(cyb.totals['7280'] || 0) : null,
     cyBudgetLabel: cyb ? cyb.label : null,
   };
@@ -1855,8 +1877,8 @@ router.post('/budgets/:id/qshift', h(async (req, res) => {
     while (targets.length < 4) targets.push(null);
     const gls = (Array.isArray(body.gls) ? body.gls : []).map(String).filter((g: string) => /^\d{4}$/.test(g));
     if (!targets.some((v: any) => v != null)) return res.status(400).json({ error: 'Type the NOI share for at least one quarter' });
-    if (!gls.length && !body.vacancy) return res.status(400).json({ error: 'Pick the lines that carry the shift (expense lines and/or vacancy timing)' });
-    inputs.qShift = { targets, gls, vacancy: !!body.vacancy };
+    if (!gls.length && !body.vacancy && !body.increases) return res.status(400).json({ error: 'Pick what carries the shift: expense lines, vacancy timing, or phasing the expense increases' });
+    inputs.qShift = { targets, gls, vacancy: !!body.vacancy, increases: !!body.increases };
   }
   const built = buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lb.lines).lines;
   const after = effectiveLines({ ...lb, lines: built, budget: { ...lb.budget, inputs } });

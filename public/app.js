@@ -1511,6 +1511,14 @@ function renderEditor(el) {
     }
     tieGrowth(key, pct).catch((err) => alert(err.message));
   }));
+  { const fb = el.querySelector('#fill-targets'); if (fb) fb.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const fill = guidanceFill(S.bv);
+    if (!Object.keys(fill).length) return;
+    pushUndo();
+    S.bv = await PUT(`/budgets/${b.id}`, { inputs: { growthTargets: { ...((S.bv.budget.inputs || {}).growthTargets || {}), ...fill } } });
+    render();
+  }); }
   const tieAll = el.querySelector('#tie-all');
   if (tieAll) tieAll.addEventListener('click', async (e) => {
     e.stopPropagation();
@@ -1772,7 +1780,10 @@ function trendSvg(bv) {
     // the axis is fitted to the plotted values on round gridlines — it does NOT start at
     // zero (Troy 2026-11-09), so month-to-month movement fills the chart. The labelled
     // gridlines carry the level; the reference months (dashed) sit on the same scale.
-    const all = series.flatMap((s) => [...s.vals, ...((s.ref && s.ref.length === 12) ? s.ref : [])]);
+    // prior-year T12s (dropped in on the Data page): dotted NOI lines, one colour each (Troy 2026-11-11)
+    const PRIOR_COLORS = ['#8e44ad', '#e67e22', '#16a085'];
+    const prior = sel.has('NOI') ? ((bv.summary && bv.summary.priorT12) || []).filter((p) => (p.noi || []).length === 12).slice(0, 3).map((p, k) => ({ ...p, color: PRIOR_COLORS[k] })) : [];
+    const all = [...series.flatMap((s) => [...s.vals, ...((s.ref && s.ref.length === 12) ? s.ref : [])]), ...prior.flatMap((p) => p.noi)];
     const lo = Math.min(...all), hi = Math.max(...all);
     const rough = Math.max(hi - lo, Math.abs(hi) * 0.02, 1) / 4;       // a flat line still gets a sensible band
     const mag = Math.pow(10, Math.floor(Math.log10(rough)));
@@ -1790,7 +1801,8 @@ function trendSvg(bv) {
       (s.ref && s.ref.length === 12 ? poly(s.ref, s.color, true) + s.ref.map((v, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="1.6" fill="${s.color}" opacity=".6"><title>${s.name} ${ref.label} ${labels[i]}: ${money(v)}</title></circle>`).join('') : '') +
       poly(s.vals, s.color, false) +
       s.vals.map((v, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.4" fill="${s.color}"><title>${s.name} ${labels[i]}: ${money(v)}${s.ref && s.ref.length === 12 ? ` (${ref.label} ${money(s.ref[i])}, Δ ${money(v - s.ref[i])})` : ''}</title></circle>`).join('')
-    ).join('');
+    ).join('') + prior.map((p) => `<polyline fill="none" stroke="${p.color}" stroke-width="1.4" stroke-dasharray="1.5 3" stroke-linecap="round" points="${p.noi.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}"/>`
+      + p.noi.map((v, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="1.5" fill="${p.color}"><title>NOI ${p.label} ${labels[i]}: ${money(v)}</title></circle>`).join('')).join('');
     // labels carry just enough precision to tell neighbouring gridlines apart
     const top = Math.max(Math.abs(min), Math.abs(max));
     const fmtAxis = (v) => {
@@ -1809,7 +1821,8 @@ function trendSvg(bv) {
   const legend = ALL.map((s) => `
     <button class="trend-chip ${sel.has(s.name) ? 'on' : ''}" data-trend="${s.name}" style="--c:${s.color}">
       <span style="display:inline-block;width:10px;height:3px;background:${s.color};vertical-align:3px;margin-right:4px"></span>${s.name}</button>`).join('')
-    + (ref ? `<span class="muted" style="font-size:10.5px">dashed = ${esc(ref.label)} by month</span>` : '');
+    + (ref ? `<span class="muted" style="font-size:10.5px">dashed = ${esc(ref.label)} by month</span>` : '')
+    + (((bv.summary && bv.summary.priorT12) || []).length && sel.has('NOI') ? ((bv.summary && bv.summary.priorT12) || []).slice(0, 3).map((p, k) => ` <span style="font-size:10.5px; color:${['#8e44ad', '#e67e22', '#16a085'][k]}">⋯ NOI ${esc(p.label)}</span>`).join('') : '');
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%; display:block">${body}</svg><div style="margin-top:5px">${legend}</div>`;
 }
 
@@ -2808,6 +2821,40 @@ function openQShift(b, targets) {
   for (const c of cands) (bySec[c.section] = bySec[c.section] || []).push(c);
   const picked = new Set((cur && cur.gls) || []);
   let vac = !!(cur && cur.vacancy);
+  let inc = !!(cur && cur.increases);
+  const t12 = (S.bv.hist && S.bv.hist.t12 && S.bv.hist.t12.cal) || {};   // budget-month order
+  const qOf = (m) => [0, 1, 2, 3].map((q) => (m[q * 3] || 0) + (m[q * 3 + 1] || 0) + (m[q * 3 + 2] || 0));
+  // the NOI change each quarter needs (mirrors qShiftTargets in shared/annual.ts)
+  const needQ = () => {
+    const N = nowQ.reduce((a, b) => a + b, 0); if (!N) return [0, 0, 0, 0];
+    const free = [0, 1, 2, 3].filter((q) => t[q] == null);
+    const setSum = t.reduce((a, v) => a + (v ?? 0), 0);
+    const freeNow = free.reduce((a, q) => a + nowQ[q], 0);
+    const sh = t.map((v, q) => (v != null ? v : freeNow ? (1 - setSum) * nowQ[q] / freeNow : (1 - setSum) / (free.length || 1)));
+    return sh.map((v, q) => v * N - nowQ[q]);
+  };
+  /* RECOMMEND (Troy 2026-11-11: "look at expenses that are furthest dollar amounts below and above historical
+     data, and recommend shifting those items"): each line's quarters against its own T12 quarters (scaled to
+     the line's year); a quarter that needs MORE NOI favours lines budgeted ABOVE their history there, one that
+     needs less favours lines BELOW it. Ticks the best until they cover the move one and a half times. */
+  const recommend = () => {
+    const d = needQ(); const need = d.reduce((a, v) => a + Math.max(0, v), 0);
+    if (!need) return 0;
+    const scored = cands.map((c) => {
+      const l = lineBy.get(c.gl); const h = t12[c.gl]; if (!l || !h || !h.some((v) => v)) return null;
+      const B = qOf(l.months), H = qOf(h), A = B.reduce((a, b) => a + b, 0), Ht = H.reduce((a, b) => a + b, 0);
+      if (!A || !Ht) return null;
+      const dev = B.map((v, q) => v - H[q] * (A / Ht));
+      const score = dev.reduce((a, v, q) => a + (d[q] > 0 ? Math.max(0, v) : d[q] < 0 ? Math.max(0, -v) : 0), 0);
+      return score > 1 ? { gl: c.gl, score } : null;
+    }).filter(Boolean).sort((x, y) => y.score - x.score);
+    picked.clear();
+    let cov = 0;
+    for (const x of scored) { if (cov >= need * 1.5 || picked.size >= 25) break; picked.add(x.gl); cov += x.score; }
+    return picked.size;
+  };
+  // the increase over T12 sitting in Q1 across the history-based expense lines (the phase-in preset)
+  const q1Increase = () => cands.reduce((a, c) => { const l = lineBy.get(c.gl), h = t12[c.gl]; if (!l || !h || !l.driver || l.driver.method !== 'baseline') return a; return a + [0, 1, 2].reduce((x, i) => x + Math.max(0, (l.months[i] || 0) - Math.max(0, h[i] || 0)), 0); }, 0);
   let t = [0, 1, 2, 3].map((q) => (targets[q] != null ? targets[q] : null));
   let rep = null, err = '';
   // NOI by quarter as it stands (the editor's own monthly NOI) until a preview comes back
@@ -2820,7 +2867,12 @@ function openQShift(b, targets) {
     dlg.innerHTML = `<h2>Shift NOI between quarters</h2>
       <p class="muted" style="font-size:12px; margin:0 0 8px">Type the share of the year's NOI a quarter should carry (blank quarters absorb the rest). Pick the lines that carry it: their dollars move between quarters, their year totals stay, and the year's NOI does not change. No quarter of a picked line drops below half its formula amount. Kept as a rule, so Recalc keeps the shares.</p>
       <div class="row" style="gap:10px">${[0, 1, 2, 3].map((q) => `<div class="fld"><label>Q${q + 1} share of NOI (%)</label><input data-tq="${q}" value="${t[q] != null ? +(t[q] * 100).toFixed(2) : ''}" placeholder="${before ? ((before[q] / tot(before)) * 100).toFixed(1) : '—'}" style="width:70px; text-align:right"></div>`).join('')}</div>
-      <div style="margin:8px 0 4px"><label title="The same annual vacancy average, landing in other quarters: moves rental income (and the fee with it)"><input type="checkbox" id="qs-vac" ${vac ? 'checked' : ''}> <b>Vacancy timing</b> <span class="muted">— same annual vacancy, more of it in some quarters</span></label></div>
+      <div class="row" style="gap:8px; margin:6px 0">
+        <button class="btn sub sm" id="qs-rec" title="Tick the expense lines whose quarters sit furthest above / below their own T12, in the direction this shift needs, then preview">★ Recommend lines</button>
+        <button class="btn sub sm" id="qs-phase" title="One click: take half of the Q1 expense increase over T12 and spread it over Q2–Q4 (Q1 NOI up, the year unchanged), then preview">Phase in: half of Q1's increase</button>
+      </div>
+      <div style="margin:4px 0"><label title="The lever is only each history-based expense line's increase over its own T12 month: Q1 can carry less of the increase, later quarters more. The T12 part never moves; no month goes below its T12"><input type="checkbox" id="qs-inc" ${inc ? 'checked' : ''}> <b>Phase in the expense increases</b> <span class="muted">— move only the increase over T12 between quarters</span></label></div>
+      <div style="margin:4px 0 4px"><label title="The same annual vacancy average, landing in other quarters: moves rental income (and the fee with it)"><input type="checkbox" id="qs-vac" ${vac ? 'checked' : ''}> <b>Vacancy timing</b> <span class="muted">— same annual vacancy, more of it in some quarters</span></label></div>
       <div style="max-height:34vh; overflow:auto; border:1px solid var(--line); border-radius:8px; padding:6px 10px">
         ${Object.entries(bySec).map(([sec, list]) => `<div style="margin:6px 0 2px"><label style="font-weight:650; font-size:12px; color:var(--dim); text-transform:uppercase"><input type="checkbox" data-qsec="${esc(sec)}" ${list.every((c) => picked.has(c.gl)) ? 'checked' : ''}> ${esc(sec.replace(/_/g, ' '))}</label></div>
           ${list.map((c) => `<label style="display:flex; gap:6px; font-size:12px; padding-left:16px"><input type="checkbox" data-qgl="${c.gl}" ${picked.has(c.gl) ? 'checked' : ''}> <span style="width:44px">${c.gl}</span> <span style="flex:1">${esc(c.name)}</span> <span class="muted">${money(c.annual)}</span></label>`).join('')}`).join('') || '<p class="muted">No expense lines can carry a shift (typed, contract or empty).</p>'}
@@ -2838,23 +2890,38 @@ function openQShift(b, targets) {
       </div>`;
     dlg.querySelectorAll('[data-tq]').forEach((box) => box.addEventListener('change', () => { const v = parseFloat(String(box.value).replace(/[%\s]/g, '')); t[Number(box.dataset.tq)] = Number.isFinite(v) ? v / 100 : null; rep = null; draw(); }));
     dlg.querySelector('#qs-vac').addEventListener('change', (e) => { vac = e.target.checked; rep = null; draw(); });
+    dlg.querySelector('#qs-inc').addEventListener('change', (e) => { inc = e.target.checked; rep = null; draw(); });
+    dlg.querySelector('#qs-rec').addEventListener('click', async () => {
+      if (!t.some((v) => v != null)) { err = 'Type the share for at least one quarter first (or use the phase-in button).'; draw(); return; }
+      const n = recommend(); err = n ? '' : 'No expense line sits above / below its T12 in the direction this shift needs.';
+      rep = null; draw(); if (n) await preview();
+    });
+    dlg.querySelector('#qs-phase').addEventListener('click', async () => {
+      const N = nowQ.reduce((a, b) => a + b, 0), i1 = q1Increase();
+      if (!N || !i1) { err = 'No expense increase over T12 sits in Q1 to phase in.'; draw(); return; }
+      t = [Math.round(((nowQ[0] + i1 / 2) / N) * 1e6) / 1e6, null, null, null];
+      inc = true; picked.clear(); err = ''; rep = null; draw(); await preview();
+    });
     dlg.querySelectorAll('[data-qgl]').forEach((cb) => cb.addEventListener('change', () => { if (cb.checked) picked.add(cb.dataset.qgl); else picked.delete(cb.dataset.qgl); rep = null; draw(); }));
     dlg.querySelectorAll('[data-qsec]').forEach((cb) => cb.addEventListener('change', () => { for (const c of bySec[cb.dataset.qsec] || []) { if (cb.checked) picked.add(c.gl); else picked.delete(c.gl); } rep = null; draw(); }));
     dlg.querySelector('#qs-x').addEventListener('click', () => dlg.close());
-    const body = () => ({ targets: t, gls: [...picked], vacancy: vac });
-    dlg.querySelector('#qs-prev').addEventListener('click', async () => {
-      err = '';
-      try { rep = (await POST(`/budgets/${b.id}/qshift`, body())).report; } catch (e2) { err = e2.message; rep = null; }
-      draw();
-    });
+    dlg.querySelector('#qs-prev').addEventListener('click', preview);
     dlg.querySelector('#qs-apply').addEventListener('click', async () => {
       try { pushUndo(); const r = await POST(`/budgets/${b.id}/qshift`, { ...body(), apply: true }); S.bv = r.view; dlg.close(); render(); }
       catch (e2) { S.undo.stack.pop(); err = e2.message; draw(); }
     });
     { const c = dlg.querySelector('#qs-clear'); if (c) c.addEventListener('click', async () => { pushUndo(); const r = await POST(`/budgets/${b.id}/qshift`, { clear: true, apply: true }); S.bv = r.view; dlg.close(); render(); }); }
   };
+  const body = () => ({ targets: t, gls: [...picked], vacancy: vac, increases: inc });
+  async function preview() {
+    err = '';
+    try { rep = (await POST(`/budgets/${b.id}/qshift`, body())).report; } catch (e2) { err = e2.message; rep = null; }
+    draw();
+  }
   draw();
   if (!dlg.open) dlg.showModal();
+  // shares typed on the NOI row and nothing picked yet: recommend and preview straight away
+  if (t.some((v) => v != null) && !picked.size && !vac && !inc && recommend()) { draw(); preview(); }
 }
 
 /* Recurring journal split (TPND → TPNDC). Off / site default / custom. */
@@ -2922,6 +2989,20 @@ function guideNotesHtml(bv) {
     ${q.length === 4 ? `<div class="gn info" title="Rental income by quarter: Q1 should be aggressive; keep Q3 / Q4 achievable (no hockey stick)">${icon.info} Rental income Q1–Q4: ${q.map((v) => money(v)).join(' · ')}${g.q4VsQ1 != null ? ` <span class="muted">(Q4 ${g.q4VsQ1 > 0 ? '+' : ''}${(g.q4VsQ1 * 100).toFixed(1)}% vs Q1)</span>` : ''}</div>` : ''}
   </div>`;
 }
+/* the guidance numbers for the EMPTY target boxes (mirrors GT in tieGrowthHtml) */
+function guidanceFill(bv) {
+  const G = bv.guidance, inp = bv.budget.inputs || {};
+  if (!G || inp.refSource === 'budget') return {};
+  const gt = inp.growthTargets || {};
+  const byP = Object.fromEntries((bv.tieout.rows || []).map((r) => [r.pcode, r]));
+  const refByGl = ((bv.refs || []).find((r) => r.key === 'actual') || {}).byGl || {};
+  const r6 = (byP['6'] || {}).uw || 0, units = Number(inp.units) || 0;
+  const insT = r6 && units ? ((G.insurancePerUnit * units) + (r6 - (refByGl['6108'] || 0))) / r6 - 1 : null;
+  const GT = { rental: G.incomePct, income: G.incomePct, '4': G.incomePct, '5': G.incomePct, ...(insT != null ? { '6': insT } : {}), '8': G.reTaxPct, '10': G.payrollPct, '9': G.expensePct, '11': G.expensePct, '12': G.expensePct, '13': G.expensePct, '14': G.expensePct, opex: G.expensePct };
+  const out = {};
+  for (const [k, v] of Object.entries(GT)) if (gt[k] == null && (['rental', 'income', 'opex'].includes(k) || byP[k])) out[k] = Math.round(v * 100000) / 100000;
+  return out;
+}
 function tieGrowthHtml(bv) {
   const inp = bv.budget.inputs || {};
   const refLabel = bv.refLabel || 'T12';
@@ -2959,12 +3040,24 @@ function tieGrowthHtml(bv) {
   const G = bv.guidance || null;
   const useG = !!(G && bv.guide && inp.refSource !== 'budget');
   const p1 = (v) => +(v * 100).toFixed(2);
-  const GR = useG ? {
-    income: [G.incomeMin, G.incomeMax], opex: [G.expenseMin, G.expenseMax], noi: [G.noiMin, null],
-    '8': [null, G.reTaxPct + 0.0025], '10': [null, G.payrollMax],
+  // ONE number per row (Troy 2026-11-11): what an empty box would be filled with
+  const tol = G ? (G.tolerance ?? 0.0025) : 0.0025;
+  const insT = (() => {   // insurance: the $/unit rate as a % over the T12 category (other pcode-6 lines held)
+    const r6 = (byP['6'] || {}).uw || 0, g6108 = refByGl['6108'] || 0, units = Number(inp.units) || 0;
+    return useG && r6 && units ? ((G.insurancePerUnit * units) + (r6 - g6108)) / r6 - 1 : null;
+  })();
+  const GT = useG ? {
+    rental: G.incomePct, income: G.incomePct, '4': G.incomePct, '5': G.incomePct,
+    ...(insT != null ? { '6': insT } : {}), '8': G.reTaxPct, '10': G.payrollPct,
+    '9': G.expensePct, '11': G.expensePct, '12': G.expensePct, '13': G.expensePct, '14': G.expensePct,
+    opex: G.expensePct,
   } : {};
-  const gText = (k) => { const r = GR[k]; if (!r) return ''; return r[0] != null && r[1] != null ? `${p1(r[0])}–${p1(r[1])}` : r[0] != null ? `≥${p1(r[0])}` : `≤${p1(r[1])}`; };
-  const gWhy = { income: 'total income', opex: 'total expenses', noi: 'NOI (most important)', '8': 'RE taxes: +3% unless documented', '10': 'payroll 3–4% on performing sites, lower where NOI growth is low' };
+  const GR = useG ? Object.fromEntries(Object.entries(GT).map(([k, v]) => [k, [v - tol, v + tol]])) : {};
+  if (useG) GR.noi = [G.noiPct, null];
+  const gText = (k) => (k === 'noi' && useG ? `≥${p1(G.noiPct)}` : GT[k] != null ? `${p1(GT[k])}` : '');
+  const gWhy = { income: 'total income', rental: 'rental income, as total income', opex: 'total expenses', noi: 'NOI (most important) — at least', '4': 'as total income', '5': 'as total income', '6': `insurance at $${G ? G.insurancePerUnit : 275}/unit`, '8': 'RE taxes: over actuals unless documented', '10': 'payroll on performing sites, lower where NOI growth is low', '9': 'as total expenses', '11': 'as total expenses', '12': 'as total expenses', '13': 'as total expenses', '14': 'as total expenses' };
+  const fillable = Object.keys(GT).filter((k) => gt[k] == null && byKeyExists(k));
+  function byKeyExists(k) { return ['rental', 'income', 'opex'].includes(k) || !!byP[k]; }
   // key: a pcode, 'opex' or 'noi' → takes a target; null → display only
   const row = (r, key, cls) => {
     const g = pctOf(r);
@@ -2999,7 +3092,8 @@ function tieGrowthHtml(bv) {
   </table>
   ${useG ? guideNotesHtml(bv) : ''}
   <div class="row" style="margin-top:6px; justify-content:space-between; align-items:center">
-    <span class="muted" style="font-size:11px">Δ% = budget vs ${esc(refLabel)}.${useG ? ' Grey numbers in an empty box are the exec-team guidance; Δ% is green inside it, red outside.' : ''} Type a target, then <b>tie</b>.</span>
+    <span class="muted" style="font-size:11px">Δ% = budget vs ${esc(refLabel)}.${useG ? ` Grey number in an empty box = the guidance; Δ% is green within ±${p1(tol)} of it, red outside. <b>fill blank</b> puts those numbers in the empty boxes.` : ''} Type a target, then <b>tie</b>.</span>
+    ${fillable.length ? `<button class="rb" id="fill-targets" title="Put the guidance number in every EMPTY target box (${fillable.length}): income lines ${p1(G.incomePct)}%, expense categories ${p1(G.expensePct)}%, RE taxes ${p1(G.reTaxPct)}%, payroll ${p1(G.payrollPct)}%, insurance at $${G.insurancePerUnit}/unit. Typed boxes and NOI are left alone. Nothing ties until you press tie.">fill ${fillable.length} blank</button>` : ''}
     ${nTargets ? `<button class="rb" id="tie-all" title="Apply every target that is set — categories first, then rental income / total income (they move GPR), then OpEx, then NOI">tie all (${nTargets})</button>` : ''}
   </div>
   <p class="muted" style="font-size:11px"><b>Nothing derives from an underwriting.</b> “tie” shifts the trailing-12 × factor lines of that subtotal by one uniform number of points (MROUNDs kept), so the subtotal grows by the target; GPR solves its monthly %; concessions &amp; rental loss scale their % of GPR; loss to lease is set under Assumptions; mgmt fee follows income; <b>Total Rental Income / Total Income</b> move the lever you pick — vacancy % or GPR (other income is held; a target the lever cannot reach is refused, nothing changes); a subtotal with no factor lines left (all overridden) rebalances proportionally. OpEx / NOI targets spread across every expense category but the fee.</p>`;
@@ -5039,14 +5133,12 @@ function wirePayAdmin(el, st) {
 
 /* the region's budget guidance ranges (exec team 2027 guidance by default) */
 const GUIDANCE_FIELDS = [
-  ['incomeMin', 'Total income growth, low', true], ['incomeMax', 'Total income growth, high', true],
-  ['expenseMin', 'Total expense growth, low', true], ['expenseMax', 'Total expense growth, high', true],
-  ['spreadMax', 'Expense growth over income growth, at most', true],
-  ['noiMin', 'NOI growth, at least', true],
-  ['marchVsLastMin', 'March rental income vs October, low', true], ['marchVsLastMax', 'March rental income vs October, high', true],
+  ['incomePct', 'Total income growth', true], ['expensePct', 'Total expense growth', true],
+  ['noiPct', 'NOI growth, at least', true], ['spreadMax', 'Expense growth over income growth, at most', true],
+  ['marchVsLastPct', 'March rental income vs October, at least', true],
   ['insurancePerUnit', 'Insurance $/unit/yr', false], ['reTaxPct', 'RE taxes over actuals', true],
-  ['payrollMin', 'Payroll growth, low', true], ['payrollMax', 'Payroll growth, high', true],
-  ['spPctCapital', 'SP as a share of capital', true],
+  ['payrollPct', 'Payroll growth', true], ['spPctCapital', 'SP as a share of capital', true],
+  ['tolerance', 'Counts as on target within ±', true],
 ];
 function guidanceSettingsHtml(st) {
   const g = st.guidance || {};
