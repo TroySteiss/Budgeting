@@ -3,7 +3,7 @@
 import * as XLSX from 'xlsx';
 import { HAP_CHARGE, type UwSnapshotData, type Months } from '../shared/domain.js';
 import type { TemplateData } from '../shared/annual.js';
-import { POSITION_GL, isRmPosition, isSalariedPosition, type StaffingPerson, type DetailPerson } from '../shared/payroll.js';
+import { POSITION_GL, isRmPosition, isSalariedPosition, isOpenSeat, OPEN_SEAT_PCT, type StaffingPerson, type DetailPerson } from '../shared/payroll.js';
 
 type Grid = any[][];
 
@@ -695,6 +695,8 @@ export interface PayrollModelParsed {
   properties: Record<string, Record<string, number>>;
   unmappedPositions: string[];
   employeeRows: number;
+  /** open positions found (budgeted at OPEN_SEAT_PCT) */
+  openRows?: number;
 }
 
 /** North Dakota Payroll workbook ('Wages' sheet): roster rows with per-property
@@ -718,13 +720,16 @@ export function parsePayrollModel(buf: Buffer): PayrollModelParsed {
   if (h < 0) throw new Error('Payroll model: property-code header row not found on the Wages sheet');
   const agg: Record<string, Record<string, number>> = {};
   const unmapped = new Set<string>();
-  let employeeRows = 0;
+  let employeeRows = 0, openRows = 0;
   for (let r = h + 1; r < g.length; r++) {
     const position = s(g[r]?.[1]);
     if (!position || /count|check|total/i.test(position)) continue;
-    const values = cols.map(({ c }) => num(g[r]?.[c]));
+    // an OPEN position (name cell Open / Vacant / TBD / New hire) budgets at OPEN_SEAT_PCT (vacancy)
+    const open = isOpenSeat(s(g[r]?.[2])) || isOpenSeat(s(g[r]?.[0]));   // the name sits right of Position (column C)
+    const values = cols.map(({ c }) => num(g[r]?.[c]) * (open ? OPEN_SEAT_PCT : 1));
     if (!values.some((v) => v)) continue;
     employeeRows++;
+    if (open) openRows++;
     let gl = '';
     for (const [re, code] of POSITION_GL) if (re.test(position)) { gl = code; break; }
     if (!gl) { unmapped.add(position); gl = '6404'; }
@@ -736,7 +741,7 @@ export function parsePayrollModel(buf: Buffer): PayrollModelParsed {
     });
   }
   if (!employeeRows) throw new Error('Payroll model: no roster rows parsed');
-  return { label: s(g[0]?.[0]) || sheet.name, properties: agg, unmappedPositions: [...unmapped], employeeRows };
+  return { label: s(g[0]?.[0]) || sheet.name, properties: agg, unmappedPositions: [...unmapped], employeeRows, openRows };
 }
 
 /* ========================= STAFFING REPORT ========================= */

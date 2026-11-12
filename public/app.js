@@ -4838,13 +4838,14 @@ function wirePayHeader(el, st) {
       const pv = await PUT(`/payroll/cycles/${S.pay.cycleId}`, { staffingSnapshotId: snapId, dryRun: true });
       const lines = [`Point this cycle at "${st.snapshots[0].label}"?`, '', `${pv.carried} raise(s) carry over as-is (same person key).`];
       if (pv.rematched.length) lines.push('', `${pv.rematched.length} re-matched by name (their key changed in the new sheet):`, ...pv.rematched.map((n) => `  • ${n}`));
+      if ((pv.seatMatched || []).length) lines.push('', `${pv.seatMatched.length} follow their SEAT (same position and property split, different person on the new sheet):`, ...pv.seatMatched.map((m) => `  • ${m.from} → ${m.to}`));
       const cp = pv.moved.filter((m) => m.copied), nc = pv.moved.filter((m) => !m.copied);
       if (cp.length) lines.push('', `${cp.length} moved home region; their raise is copied into the new region's open iteration:`, ...cp.map((m) => `  • ${m.name} (${m.from} → ${m.to})`));
       if (nc.length) lines.push('', `${nc.length} moved home region but CANNOT be copied:`, ...nc.map((m) => `  • ${m.name}: ${m.why}`));
       if (pv.orphaned.length) lines.push('', `${pv.orphaned.length} raise(s) match no one on the new sheet. They are KEPT (not deleted) and come back if you re-point to the old sheet:`, ...pv.orphaned.map((o) => `  • ${o.name}: ${o.why}`));
       if (!confirm(lines.join('\n'))) return;
       const r = await PUT(`/payroll/cycles/${S.pay.cycleId}`, { staffingSnapshotId: snapId });
-      S.pay.msg = `Cycle now reads the latest staffing report · ${r.carried} raise(s) carried${r.rematched.length ? ` · ${r.rematched.length} re-matched by name` : ''}${cp.length ? ` · ${cp.length} copied to a new home region` : ''}${r.orphaned.length ? ` · ${r.orphaned.length} unmatched (kept): ${r.orphaned.map((o) => o.name).join(', ')}` : ''}`;
+      S.pay.msg = `Cycle now reads the latest staffing report · ${r.carried} raise(s) carried${r.rematched.length ? ` · ${r.rematched.length} re-matched by name` : ''}${(r.seatMatched || []).length ? ` · ${r.seatMatched.length} followed their seat` : ''}${cp.length ? ` · ${cp.length} copied to a new home region` : ''}${r.orphaned.length ? ` · ${r.orphaned.length} unmatched (kept): ${r.orphaned.map((o) => o.name).join(', ')}` : ''}`;
       S.pay.st = null; render();
     } catch (e) { S.pay.err = e.message; render(); }
   });

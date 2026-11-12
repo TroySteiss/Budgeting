@@ -86,7 +86,10 @@ export function applyStaffingDetail(people: StaffingPerson[], details: DetailPer
     // the TITLE decides the basis (all PMs are Salary — Troy 2026-11-02); a
     // salaried person's CURRENT pay is their latest check × 26, so promotions
     // beat the workbook's stale annual
-    const latestAnnual = d.lastGross && d.lastGross > 0 ? r2(d.lastGross * PAY_PERIODS_PER_YEAR) : null;
+    // …except a Regional Manager: the 30% of their check booked to MI is not in the property detail
+    // report, so their "latest check" is only the properties' share. Their rate stays the workbook's
+    // FULL pay, which the raise is figured on; the 70/30 split is applied to the allocations (Troy 2026-11-12)
+    const latestAnnual = !p.rm && d.lastGross && d.lastGross > 0 ? r2(d.lastGross * PAY_PERIODS_PER_YEAR) : null;
     if (isSalariedPosition(p.position)) {
       if (p.payMethod === 'Hourly') { p.payMethod = 'Salary'; p.payRate = latestAnnual ?? r2(p.payRate * 2080); flipped++; }
       else if (latestAnnual) p.payRate = latestAnnual;
@@ -164,6 +167,13 @@ export function adjustedPct(payMethod: string, rate: number, raisePct: number): 
 
 export type RaiseMap = Record<string, number>;   // person key -> raise %
 
+/* OPEN POSITIONS (Troy 2026-11-12): "Any open position should be budgeted lower than we have inputted.
+   This is to account for 'Vacancy'." A roster row named Open / Vacant / TBD / New hire is a seat with
+   nobody in it yet; its wages go to the budget at OPEN_SEAT_PCT of the full rate, every month (Troy
+   picked a flat 75% = about 3 months vacant over the year). The raise sheet still shows the full rate. */
+export const OPEN_SEAT_PCT = 0.75;
+export const isOpenSeat = (name: string | null | undefined): boolean => /^(vacant|open|tbd|new hire)\b/i.test(String(name || '').trim());
+
 /** Months (0-based index within calendar year `year`) the raise is live. */
 export function raisedMonthCount(effective: string, year: number): number {
   const m = /^(\d{4})-(\d{2})$/.exec(String(effective || ''));
@@ -201,8 +211,9 @@ export function annualWagesByGl(people: StaffingPerson[], code: string, raises: 
     const fromMap = positionGl(p.position);
     const gl = p.gl || fromMap.gl;   // the detail report's booked-to GL wins
     if (!p.gl && !fromMap.mapped) unmapped.add(p.position);
-    const cur = seatMonthly(p.payMethod, p.payRate, alloc.pct);
-    const next = seatMonthly(p.payMethod, newRate(p.payMethod, p.payRate, Number(raises[p.key]) || 0), alloc.pct);
+    const f = isOpenSeat(p.name) ? OPEN_SEAT_PCT : 1;   // an open seat budgets below full wages (vacancy)
+    const cur = r2(seatMonthly(p.payMethod, p.payRate, alloc.pct) * f);
+    const next = r2(seatMonthly(p.payMethod, newRate(p.payMethod, p.payRate, Number(raises[p.key]) || 0), alloc.pct) * f);
     wages[gl] = r2((wages[gl] || 0) + phase.reduce((a, f) => a + cur + f * (next - cur), 0));
   }
   for (const gl of Object.keys(wages)) wages[gl] = r2(wages[gl]);
@@ -219,8 +230,9 @@ export function monthlyWagesByGl(people: StaffingPerson[], code: string, raises:
     const alloc = (p.allocations || []).find((a) => a.code === code);
     if (!alloc || !alloc.pct) continue;
     const gl = p.gl || positionGl(p.position).gl;
-    const cur = seatMonthly(p.payMethod, p.payRate, alloc.pct);
-    const next = seatMonthly(p.payMethod, newRate(p.payMethod, p.payRate, Number(raises[p.key]) || 0), alloc.pct);
+    const f = isOpenSeat(p.name) ? OPEN_SEAT_PCT : 1;
+    const cur = r2(seatMonthly(p.payMethod, p.payRate, alloc.pct) * f);
+    const next = r2(seatMonthly(p.payMethod, newRate(p.payMethod, p.payRate, Number(raises[p.key]) || 0), alloc.pct) * f);
     const m = out[gl] || (out[gl] = Array(12).fill(0));
     for (let i = 0; i < 12; i++) m[i] += cur + phase[i] * (next - cur);
   }
@@ -316,7 +328,10 @@ export const personNameId = (name: string): string =>
 
 export interface RaiseKeyMatch {
   carried: string[];                                        // entry keys found on the new roster as-is
-  remap: { from: string; to: string; name: string }[];      // re-matched by name
+  /** re-matched: 'name' = the same person under a new key; 'seat' = a different person in the same
+      seat (same position title and the same property split), Troy 2026-11-12: "staffing in terms of
+      positions at each property and allocations will stay the same" */
+  remap: { from: string; to: string; name: string; how: 'name' | 'seat'; newName?: string }[];
   orphans: { key: string; name: string | null; why: string }[];
 }
 export function matchRaiseKeys(oldPeople: StaffingPerson[], newPeople: StaffingPerson[], entryKeys: string[]): RaiseKeyMatch {
@@ -334,7 +349,7 @@ export function matchRaiseKeys(oldPeople: StaffingPerson[], newPeople: StaffingP
     const op = oldBy.get(key) || null;
     const name = op?.name || null;
     if (!op) { out.orphans.push({ key, name, why: 'not on the previous or the new roster' }); continue; }
-    if (/^(vacant|open|tbd|new hire)\b/i.test(op.name.trim())) { out.orphans.push({ key, name, why: 'open seat: seats are not matched by name' }); continue; }
+    if (isOpenSeat(op.name)) { out.orphans.push({ key, name, why: 'open seat with no matching seat on the new sheet' }); continue; }
     const id = personNameId(op.name);
     if (!id || (oldIds.get(id) || 0) > 1) { out.orphans.push({ key, name, why: 'name shared with someone else on the previous roster' }); continue; }
     if ((newIds.get(id) || 0) > 1) { out.orphans.push({ key, name, why: 'name shared by more than one person on the new roster' }); continue; }
@@ -342,8 +357,36 @@ export function matchRaiseKeys(oldPeople: StaffingPerson[], newPeople: StaffingP
     if (!np) { out.orphans.push({ key, name, why: 'not on the new roster' }); continue; }
     if (held.has(np.key) || taken.has(np.key)) { out.orphans.push({ key, name, why: 'the new roster row already has a raise of its own' }); continue; }
     taken.add(np.key);
-    out.remap.push({ from: key, to: np.key, name: op.name });
+    out.remap.push({ from: key, to: np.key, name: op.name, how: 'name' });
   }
+  /* SEAT pass: a raise still unmatched whose old seat (position + allocation split) appears exactly once
+     among the old leftovers AND exactly once among new rows that are genuinely new (not anyone from the
+     old roster by key or name, holding no raise of their own, not already matched). */
+  const seatId = (p: StaffingPerson): string => {
+    const pos = String(p.position || '').toLowerCase().replace(/[^a-z]/g, '');
+    const al = (p.allocations || []).filter((a) => a.pct).map((a) => `${String(a.code).toLowerCase()}:${Math.round(a.pct * 100)}`).sort().join(',');
+    return pos && al ? `${pos}|${al}` : '';
+  };
+  const oldKeySet = new Set(oldPeople.map((p) => p.key));
+  const oldIdSet = new Set(oldPeople.map((p) => personNameId(p.name)).filter(Boolean));
+  const fresh = newPeople.filter((p) => !oldKeySet.has(p.key) && (isOpenSeat(p.name) || !(personNameId(p.name) && oldIdSet.has(personNameId(p.name)))) && !held.has(p.key) && !taken.has(p.key));
+  const freshBy = new Map<string, StaffingPerson[]>();
+  for (const p of fresh) { const sid = seatId(p); if (sid) freshBy.set(sid, [...(freshBy.get(sid) || []), p]); }
+  const leftBy = new Map<string, string[]>();
+  for (const o of out.orphans) { const op = oldBy.get(o.key); const sid = op ? seatId(op) : ''; if (sid) leftBy.set(sid, [...(leftBy.get(sid) || []), o.key]); }
+  const seatDone = new Set<string>();
+  for (const o of out.orphans) {
+    const op = oldBy.get(o.key); if (!op) continue;
+    const sid = seatId(op); if (!sid) continue;
+    const olds = leftBy.get(sid) || [], news = freshBy.get(sid) || [];
+    if (olds.length === 1 && news.length === 1) {
+      out.remap.push({ from: o.key, to: news[0].key, name: op.name, how: 'seat', newName: news[0].name });
+      taken.add(news[0].key); seatDone.add(o.key);
+    } else if (news.length && olds.length) {
+      o.why += ` (${olds.length} unmatched and ${news.length} new in the same seat: not matched by seat)`;
+    }
+  }
+  out.orphans = out.orphans.filter((o) => !seatDone.has(o.key));
   return out;
 }
 

@@ -233,7 +233,8 @@ payrollRouter.put('/cycles/:id', requireAdmin, h(async (req, res) => {
   }
   const report = {
     carried: match.carried.length,
-    rematched: match.remap.map((r) => r.name).sort(),
+    rematched: match.remap.filter((r) => r.how === 'name').map((r) => r.name).sort(),
+    seatMatched: match.remap.filter((r) => r.how === 'seat').map((r) => ({ from: r.name, to: r.newName || '' })),
     orphaned: match.orphans.map((o) => ({ name: o.name || '(not on the previous roster)', why: o.why })),
     moved,
   };
@@ -254,7 +255,7 @@ payrollRouter.put('/cycles/:id', requireAdmin, h(async (req, res) => {
       [m.dstIter, m.key, m.srcIter, user, m.srcKey]);
   }
   await query('update raise_cycles set staffing_snapshot_id=$2 where id=$1', [id, snapId]);
-  logChange(user, 'repoint raise cycle staffing', { cycleId: id, staffingSnapshotId: snapId, carried: report.carried, rematched: report.rematched.length, orphaned: report.orphaned.length, movedRegion: moveOps.length });
+  logChange(user, 'repoint raise cycle staffing', { cycleId: id, staffingSnapshotId: snapId, carried: report.carried, rematched: report.rematched.length, seatMatched: report.seatMatched.length, orphaned: report.orphaned.length, movedRegion: moveOps.length });
   res.json({ ok: true, ...report });
 }));
 
