@@ -1964,3 +1964,33 @@ describe('row picks travel with formula sets (Troy 2026-11-12)', () => {
     expect(bl.glMround).toEqual({ '6410': 50 });
   });
 });
+
+import { foldHapCal, foldHapLines } from '../shared/annual.js';
+describe('HAP is GPR (Troy 2026-11-12: "back out HAP, just combine all of the market rents")', () => {
+  const m = (v: number) => Array(12).fill(v) as Months;
+  const ln = (gl: string, months: Months, extra: Partial<BudgetLine> = {}): BudgetLine => ({ gl_code: gl, months, driver: { method: 'manual' } as any, override: false, note: '', ...extra });
+  it('the budget: 4994 carries every unit at market rent, the HAP lines budget nothing, income does not move', () => {
+    const out = new Map(foldHapLines([ln('4994', m(488149), { driver: { method: 'gpr', hap: 1101, gross: 5957233 } as any }), ln('4996', m(1101)), ln('4995', m(50)), ln('5003', m(-27000))]).map((l) => [l.gl_code, l]));
+    expect(out.get('4994')!.months[0]).toBe(489300);
+    expect((out.get('4994')!.driver as any)).toMatchObject({ method: 'gpr', hapIn: 1151 });
+    expect((out.get('4994')!.driver as any).hap).toBeUndefined();
+    expect(out.get('4996')!.months).toEqual(m(0));
+    expect((out.get('4996')!.driver as any).hapInGpr).toBe(true);
+    expect(out.get('5003')!.months[0]).toBe(-27000);                 // loss to lease untouched
+  });
+  it('locked lines never move; no HAP = nothing changes', () => {
+    const locked = foldHapLines([ln('4994', m(100)), ln('4996', m(10), { override: true })]);
+    expect(locked.find((l) => l.gl_code === '4996')!.months[0]).toBe(10);
+    const g = foldHapLines([ln('4994', m(100), { override: true }), ln('4996', m(10))]);
+    expect(g.find((l) => l.gl_code === '4996')!.months[0]).toBe(10);
+    const none = [ln('4994', m(100))];
+    expect(foldHapLines(none)).toBe(none);
+  });
+  it('the reference columns fold the same way (T12, CY budget, the acquisition plan)', () => {
+    const cal = foldHapCal({ '4994': m(1000), '4996': m(25), '5003': m(-5) })!;
+    expect(cal['4994'][0]).toBe(1025);
+    expect(cal['4996']).toBeUndefined();
+    expect(cal['5003'][0]).toBe(-5);
+    expect(foldHapCal(null)).toBeNull();
+  });
+});

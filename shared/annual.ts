@@ -40,7 +40,7 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-12b';   // b: new acquisitions weighted Y1/Y2 by months, shaped by history
+export const ENGINE_VERSION = '2026-11-12c';   // c: HAP inside GPR (4994); b: new acquisitions weighted Y1/Y2 by months, shaped by history
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -1966,6 +1966,44 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
    A locked (overridden) line is never moved: its difference shows in y1Check as variance.
    ========================================================================== */
 export interface Y1Plan { year: number; startMonth: number; lines: { gl_code: string; months: Months }[] }
+/* HAP IS GPR (Troy 2026-11-12: "HAP Rent is still causing issues. HAP rent should be treated as GPR. Really, you could
+   back out HAP, just combine all of the market rents, and just look at it from the perspective of GPR. Either way it
+   needs to be fixed"). Every budget carries HAP inside 4994 TENANT GROSS POTENTIAL: GPR = every unit's market rent,
+   the HAP lines (4995 HAP CONTRACT RENT, 4996 HAP VOUCHER RENT) budget nothing. The reference columns (T12, CY
+   budget, the acquisition plan) are folded the same way so 4994 compares like for like. Loss to lease is unchanged
+   (market − resident rent − subsidy: the subsidy is rent, never burned). Income totals do not move. A locked HAP
+   line, or a locked 4994, is left where it is. */
+export const HAP_GLS = ['4995', '4996'];
+/** A GL → months map with HAP moved into 4994 (and the HAP GLs dropped). */
+export function foldHapCal<T extends Record<string, Months>>(cal: T | null | undefined): T | null {
+  if (!cal) return null;
+  if (!HAP_GLS.some((gl) => cal[gl]?.some((v) => v))) return cal;
+  const out: Record<string, Months> = { ...cal };
+  const g = [...(cal['4994'] || zero12())] as Months;
+  for (const gl of HAP_GLS) { const m = cal[gl]; if (!m) continue; for (let i = 0; i < 12; i++) g[i] = r2(g[i] + (Number(m[i]) || 0)); delete out[gl]; }
+  out['4994'] = g;
+  return out as T;
+}
+/** The budget's HAP lines moved into 4994: 4994 carries them (`driver.hapIn` = $/mo moved), the HAP lines go to zero
+    (`driver.hapInGpr`). Locked lines never move. */
+export function foldHapLines(lines: BudgetLine[]): BudgetLine[] {
+  const g = lines.find((l) => l.gl_code === '4994');
+  if (g && g.override) return lines;
+  const hap = lines.filter((l) => HAP_GLS.includes(l.gl_code) && !l.override && l.months.some((v) => v));
+  if (!hap.length) return lines;
+  const add = zero12();
+  for (const l of hap) l.months.forEach((v, i) => { add[i] = r2(add[i] + (Number(v) || 0)); });
+  const ids = new Set(hap.map((l) => l.gl_code));
+  const hapIn = r2(sum(add) / 12);
+  const out = lines.map((l) => {
+    if (ids.has(l.gl_code)) return { ...l, months: zero12(), driver: { method: 'manual', hapInGpr: true } as unknown as Driver };
+    if (l.gl_code !== '4994') return l;
+    const { hap: _h, gross: _g, ...d } = l.driver as any;
+    return { ...l, months: l.months.map((v, i) => r2(v + add[i])) as Months, driver: { ...d, hapIn } as Driver };
+  });
+  if (!g) out.push({ gl_code: '4994', months: add, driver: { method: 'manual', hapIn } as unknown as Driver, override: false, note: '' });
+  return out;
+}
 /** A detail GL that feeds NOI: income 4994-5189, operating expense 6101-7069 (the rollup's ranges). */
 export const feedsNoi = (code: string): boolean => { const n = parseInt(code, 10); return Number.isFinite(n) && ((n >= 4994 && n <= 5189) || (n >= 6101 && n <= 7069)); };
 const noiSign = (code: string): number => (parseInt(code, 10) < 6000 ? 1 : -1);

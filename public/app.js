@@ -86,15 +86,17 @@ function drvMetaBase(l) {
   // an override with a named formula keeps its identity (T3, MINOT, …);
   // only free-typed cells show as MAN
   if (l.override && (!method || method === 'manual')) return { cls: 'drv-man', tag: 'MAN', label: 'Manual override' };
+  // HAP is GPR (Troy 2026-11-12): the HAP lines budget nothing, 4994 carries every unit at market rent
+  if ((l.driver || {}).hapInGpr) return { cls: 'drv-rr', tag: 'IN GPR', label: 'HAP is rent: budgeted inside 4994 TENANT GROSS POTENTIAL (every unit at market rent), so this line is zero. The T12 and CY budget columns carry it inside 4994 too.' };
   switch (method) {
     case 't3avg': return { cls: 'drv-comp', tag: 'T3', label: `T3 avg of ${l.driver.srcName || 'this GL'} × ${(((l.driver || {}).pct || 0)).toFixed(1)}% → MROUND $250` };
     case 'wavg': return { cls: l.driver.srcType === 'seller' ? 'drv-t12' : 'drv-comp', tag: 'WAVG', label: `1-2-1 weighted distribution of ${l.driver.basis === 'budget' ? 'the current-year budget for ' : ''}${l.driver.srcName || ''} × ${((l.driver.pct || 0)).toFixed(1)}%${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
-    case 'gpr': return { cls: 'drv-rr', tag: l.driver.hap ? 'ROLL−HAP' : 'ROLL', label: `GPR — steps: ${gprStepsSummary(((S.bv && S.bv.budget && S.bv.budget.inputs) || {}).gpr ? S.bv.budget.inputs.gpr.growthPct : null)}${l.driver.hap ? ` · the rent roll's GPR less HAP $${money(l.driver.hap)}/mo (4995 / 4996), so GPR + HAP = the rent roll GPR ($${money(l.driver.gross || 0)} for the year)` : ''}` };
+    case 'gpr': return { cls: 'drv-rr', tag: l.driver.hapIn ? 'ROLL+HAP' : l.driver.hap ? 'ROLL−HAP' : 'ROLL', label: `GPR — steps: ${gprStepsSummary(((S.bv && S.bv.budget && S.bv.budget.inputs) || {}).gpr ? S.bv.budget.inputs.gpr.growthPct : null)}${l.driver.hapIn ? ` · every unit at market rent, HAP included ($${money(l.driver.hapIn)}/mo of it is HAP; 4995 / 4996 budget nothing)` : l.driver.hap ? ` · the rent roll's GPR less HAP $${money(l.driver.hap)}/mo (4995 / 4996), so GPR + HAP = the rent roll GPR ($${money(l.driver.gross || 0)} for the year)` : ''}` };
     case 'ltl': {
       const lt = (S.bv && S.bv.budget && S.bv.budget.inputs && S.bv.budget.inputs.ltl) || {};
       const how = lt.mode === 'flat' ? 'held flat (no burnoff)' : lt.mode === 'ramp' ? 'ramp to a % of GPR' : (S.bv && S.bv.leaseCount) ? 'per-lease burnoff at each turnover' : 'burnoff on lease expirations';
       const d = l.driver || {};
-      const hapTxt = d.hap ? ` · HAP $${money(d.hap)}/mo is rent, not loss to lease: it sits in GPR + HAP (4995 / 4996) and never burns; this line is only market − resident rent − HAP${d.hapEst ? " — HAP placed from the roll's subsidy total on the lowest-rent leases; re-upload the rent roll for each unit's own HAP" : ''}${d.hapUnplaced ? `; $${money(d.hapUnplaced)}/mo could not be matched to a lease` : ''}` : '';
+      const hapTxt = d.hap ? ` · HAP $${money(d.hap)}/mo is rent, not loss to lease: it sits inside GPR (4994) and never burns; this line is only market − resident rent − HAP${d.hapEst ? " — HAP placed from the roll's subsidy total on the lowest-rent leases; re-upload the rent roll for each unit's own HAP" : ''}${d.hapUnplaced ? `; $${money(d.hapUnplaced)}/mo could not be matched to a lease` : ''}` : '';
       const m0Txt = lt.month0 != null ? ` · starts at the typed ${money(-Math.abs(lt.month0))} in the first month and runs on from there${d.k ? ` (every lease's gap scaled ×${d.k})` : ''} — clear it in the row's box (Month 1 $)` : '';
       return { cls: 'drv-rr', tag: `${d.hap ? 'LTL·HAP' : 'LTL'}${lt.month0 != null ? '·START' : ''}`, label: `Loss to lease — ${how}${m0Txt}${lt.followGpr !== false && lt.mode !== 'ramp' ? ', deepens with GPR growth' : ''} · renewal %, burnoff on renewal / move-in are the boxes to the right (method + "follows GPR" under Assumptions)${hapTxt}` };
     }
