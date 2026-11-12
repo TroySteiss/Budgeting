@@ -308,7 +308,7 @@ router.post('/uploads/apply', h(async (req, res) => {
       created.push({ id: row.id, propertyCode: m.propertyCode });
     }
     // opt-in: point existing budgets at the new snapshots and regenerate.
-    // Inputs are untouched (GPR base stays); overrides/MROUNDs are kept by
+    // GPR follows the new roll (loadBudget always takes the linked roll's market total); overrides/MROUNDs are kept by
     // buildLines — unit-level leases flip LTL to the per-lease burnoff.
     let relinked = 0;
     if (req.body?.relink) {
@@ -472,6 +472,8 @@ interface LoadedBudget {
   payrollWages: Record<string, number> | null; leases: Lease[] | null;
   /** the linked rent roll's as-of date (ISO) — leases ending between it and the budget start have already turned */
   rollAsOf: string | null;
+  /** the linked rent roll's market total ($/mo, all units) — always the GPR base; 0 = no roll linked */
+  rollMarket: number;
   sellerUtil: SellerUtilRow[] | null; charges: Record<string, number> | null;
   savePoints?: any[];
   sellerRows: any[] | null;
@@ -575,8 +577,16 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   let leases: Lease[] | null = null;
   let charges: Record<string, number> | null = null;
   let rollAsOf: string | null = null;
+  let rollMarket = 0;   // the linked roll's market total, all units — the GPR base
   if (budget.rent_snapshot_id) {
     const rs = (await query('select data, as_of from rent_snapshots where id=$1', [budget.rent_snapshot_id])).rows[0];
+    /* GPR COMES FROM THE RENT ROLL, ALWAYS (Troy 2026-11-11: "Everyone should be using rent rolls only — an
+       override should be a hard code in the sheet"). The base used to be saved into the inputs when the budget
+       was made and never followed a relink, while loss to lease, HAP and lease ends did: CLND's January GPR sat
+       ~$11K under its own roll. Every load now takes the linked roll's market total; a different number for a
+       month is a hard-coded cell on the 4994 row. */
+    rollMarket = Number(rs?.data?.marketMonthly) || 0;
+    if (rollMarket > 0) budget.inputs = { ...(budget.inputs || {}), gpr: { ...((budget.inputs || {}).gpr || { growthPct: zero12() }), baseMonthly: rollMarket } };
     if (Array.isArray(rs?.data?.leases) && rs.data.leases.length) leases = rs.data.leases;
     if (rs?.data?.charges && Object.keys(rs.data.charges).length) charges = rs.data.charges;
     if (rs?.as_of) {
@@ -727,7 +737,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     if (stmtActual?.rows?.length || actualCal) sellerRows = ownT12Rows(stmtActual, actualCal, (gl) => coaMap.get(gl) || null);
   }
   const guidance = await loadGuidance();
-  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, sellerUtil, charges, sellerRows, defaultRules, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, burdenSrc, guidance,
+  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, rollMarket, sellerUtil, charges, sellerRows, defaultRules, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, burdenSrc, guidance,
            annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs, priorT12 };
 }
 
@@ -861,6 +871,7 @@ function budgetView(lb: LoadedBudget) {
     rosterLink: lb.rosterLink ? { label: lb.rosterLink.label, effective: lb.rosterLink.effective, draft: lb.rosterLink.draft, regions: lb.rosterLink.regions, wages: lb.rosterLink.wages } : null,
     leaseCount: lb.leases?.length || 0,
     rollAsOf: lb.rollAsOf,
+    rollMarket: lb.rollMarket,
     hasSellerUtil: !!(lb.sellerUtil && lb.sellerUtil.length),
     charges: lb.charges,
     sellerT12: lb.sellerRows,

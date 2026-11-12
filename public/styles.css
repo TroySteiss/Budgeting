@@ -193,6 +193,9 @@ tr.badbills .warnflag { color: var(--bad); font-weight: 700; }
 .tie td { padding: 4px 6px; border-bottom: 1px solid var(--gridline); text-align: right; white-space: nowrap; }
 .tie td:first-child { text-align: left; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
 .tie td:last-child { text-align: right; min-width: 34px; }
+/* the target box and its tie button share a cell, and the table scrolls sideways rather than clip it */
+.tie .tiewrap { overflow-x: auto; }
+.tie td.tgt { white-space: nowrap; }
 .tie td.t3 { color: var(--dim); }
 /* with the T3-annualized column the card carries three $ columns — tighten so Δ% / target / tie stay in view */
 .tie table.t3 { font-size: 11.4px; }

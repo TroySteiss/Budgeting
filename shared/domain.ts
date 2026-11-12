@@ -542,16 +542,24 @@ function ltlModelCore(
     return { m: l.m || 0, r: l.r || 0, s: Math.max(0, l.s || 0), ltl: r2((l.m || 0) - (l.r || 0) - Math.max(0, l.s || 0)), expM };
   });
   const g = (m: number): number => { const v = Number(opts.growth?.[m]); return Number.isFinite(v) && v > 0 ? v : 1; };
-  // month-to-month / already-expired: one twelfth of them resets each month
+  // month-to-month / already-expired: spread over months 0..10 so each re-prices inside the year
   const mtm = items.filter((it) => it.expM < 0).sort((a, b) => b.ltl - a.ltl);
-  mtm.forEach((it, i) => { it.expM = i % 12; });
+  mtm.forEach((it, i) => { it.expM = i % 11; });
   const occupiedMarket = r2(items.reduce((a, it) => a + it.m, 0));
   const out = zero12();
   const open = zero12();
+  /* MONTH 0 IS THE RENT ROLL (Troy 2026-11-11: "it should come from the damn rent roll"). A lease is
+     re-priced the month AFTER it ends — it pays its current rent through its end month — so each month
+     is read BEFORE that month's resets. Before this, every lease ending between the roll date and the
+     start, every January expiration and the first MTM slot re-priced inside month 0, so CLND's January
+     opened about a fifth below the roll's own loss to lease. */
   for (let m = 0; m < 12; m++) {
     // every lease's gap this month, against the market as it stands NOW: rent is fixed
     // between resets, so market growth deepens the gap on every lease — reset or not
     for (const it of items) it.ltl = r2(it.m * g(m) - it.r - it.s);
+    // loss to lease is the burnable gap only: the HAP share is rent (4995/4996), carried out of GPR
+    out[m] = r2(-items.reduce((a, it) => a + it.ltl, 0)) || 0;   // normalize -0
+    open[m] = r2(items.reduce((a, it) => a + (it.expM >= m ? it.m : 0), 0));
     const expiring = items.filter((it) => it.expM === m);
     if (expiring.length) {
       // largest LTL renews first
@@ -559,11 +567,11 @@ function ltlModelCore(
       const nRenew = Math.round(renewalPct * expiring.length);
       // a reset burns its share of the WHOLE current gap (growth included) by re-pricing the
       // rent: 0% burnoff leaves the rent — and so the gap — exactly where it was
-      expiring.forEach((it, i) => { it.ltl = r2(it.ltl * (i < nRenew ? keepRenew : keepNew)); it.r = it.m * g(m) - it.s - it.ltl; });
+      // the new rent starts next month, so it is priced against next month's market (a January end
+      // renews into the February step)
+      const gn = g(Math.min(m + 1, 11));
+      expiring.forEach((it, i) => { const gap = r2(it.m * gn - it.r - it.s); const kept = r2(gap * (i < nRenew ? keepRenew : keepNew)); it.r = it.m * gn - it.s - kept; });
     }
-    // loss to lease is the burnable gap only: the HAP share is rent (4995/4996), carried out of GPR
-    out[m] = r2(-items.reduce((a, it) => a + it.ltl, 0)) || 0;   // normalize -0
-    open[m] = r2(items.reduce((a, it) => a + (it.expM > m ? it.m : 0), 0));
   }
   return { months: out, openMarket: open, occupiedMarket };
 }

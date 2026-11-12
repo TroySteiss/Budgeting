@@ -1495,7 +1495,8 @@ function renderEditor(el) {
     const key = btn.dataset.tie;
     const box = el.querySelector(`.tie [data-gt="${key}"]`);
     const v = box ? parseFloat(String(box.value).replace(/[%\s]/g, '')) : NaN;
-    const pct = Number.isFinite(v) ? v / 100 : null;
+    // a typed number wins; an empty box ties to the guidance number the button carries
+    const pct = Number.isFinite(v) ? v / 100 : btn.dataset.pct != null && btn.dataset.pct !== '' ? Number(btn.dataset.pct) : null;
     if (key === 'rental' || key === 'income') {
       // the income totals: Troy picks what moves (never chosen for him)
       const last = ((S.bv.budget.inputs || {}).tieLevers || {})[key];
@@ -3067,18 +3068,23 @@ function tieGrowthHtml(bv) {
     const gIn = gr && g != null ? (gr[0] == null || g >= gr[0] - 1e-9) && (gr[1] == null || g <= gr[1] + 1e-9) : null;
     const vcls = off != null ? (off < 0.0015 ? 'good' : off > 0.01 ? 'bad' : '') : gIn == null ? '' : gIn ? 'good' : 'bad';
     const ph = gr ? gText(key) : '%';
-    const tip = `Growth target vs ${refLabel} (%)${gr ? ` — exec-team guidance ${gText(key)}% (${gWhy[key]}); type a target to tie to` : ''}`;
+    const tip = `Growth target vs ${refLabel} (%)${gr ? ` — exec-team guidance ${gText(key)}% (${gWhy[key]}); type a number to use your own` : ''}`;
+    // tie works off the typed target, or — with the box empty — the guidance number already in it (Troy 2026-11-11:
+    // "why do I need to enter a target when we already have targets"). Offered only when the row is outside it.
+    // NOI guidance is a floor (≥), not a point, so NOI still ties only to a typed number.
+    const gPt = key != null && tgt == null && GT[key] != null && gIn === false ? GT[key] : null;
+    const tieTo = tgt != null ? (off == null || off >= 0.0015 ? tgt : null) : gPt;
+    const tieBtn = tieTo != null ? `<button class="rb" data-tie="${key}" data-pct="${tieTo}" title="Shift this subtotal's growth factors so it lands at ${esc(refLabel)} ${fmtPct(tieTo)}${tgt == null ? ' (the guidance)' : ''}">tie</button>` : '';
     return `<tr class="${cls || ''}"><td title="${esc(r.label)}">${esc(SHORT[r.pcode] || r.label)}</td>
       <td>${money(r.uw)}</td>${t3Cell(r)}<td>${money(r.budget)}</td>
       <td class="var ${vcls}" title="Δ ${money(r.budget - r.uw)} vs ${esc(refLabel)}">${fmtPct(g)}</td>
-      <td>${key != null ? `<input data-gt="${key}" value="${tgt != null ? (tgt * 100).toFixed(1) : ''}" placeholder="${esc(ph)}" class="${gr ? 'gph' : ''}" style="width:${gr ? 58 : 48}px; font-size:11px; text-align:right" title="${esc(tip)}">` : ''}</td>
-      <td>${key != null && tgt != null && (off == null || off >= 0.0015) ? `<button class="rb" data-tie="${key}" title="Shift this subtotal's growth factors so it lands at ${esc(refLabel)} ${fmtPct(tgt)}">tie</button>` : ''}</td></tr>`;
+      <td class="tgt">${key != null ? `<input data-gt="${key}" value="${tgt != null ? (tgt * 100).toFixed(1) : ''}" placeholder="${esc(ph)}" class="${gr ? 'gph' : ''}" style="width:${gr ? 58 : 48}px; font-size:11px; text-align:right" title="${esc(tip)}">` : ''}${tieBtn}</td></tr>`;
   };
   const cat = (p) => (byP[p] ? row(byP[p], p) : '');
   const nTargets = Object.keys(gt).filter((k) => gt[k] != null).length;
   const refShort = inp.refSource === 'budget' ? 'CY bud' : 'T12';
-  return `<table${t3 ? ' class="t3"' : ''}>
-    <tr><th>Subtotal</th><th title="${esc(refLabel)}">${refShort}</th>${t3 ? `<th title="T3 annualized — ${esc(t3ref.period)}">T3 ann</th>` : ''}<th>Budget</th><th>Δ%</th><th>Target</th><th></th></tr>
+  return `<div class="tiewrap"><table${t3 ? ' class="t3"' : ''}>
+    <tr><th>Subtotal</th><th title="${esc(refLabel)}">${refShort}</th>${t3 ? `<th title="T3 annualized — ${esc(t3ref.period)}">T3 ann</th>` : ''}<th>Budget</th><th>Δ%</th><th>Target</th></tr>
     ${cat('1')}${byP.loss ? row(byP.loss, null) : ''}
     ${row(agg(['1', 'loss'], 'Net Gross Potential Rent'), null, 'sub')}
     ${cat('2')}${cat('3')}
@@ -3089,10 +3095,10 @@ function tieGrowthHtml(bv) {
     ${['6', '7', '8', '9', '10', '11', '12', '13', '14'].map((p) => (p === '7' ? (byP[p] ? row(byP[p], null) : '') : cat(p))).join('')}
     ${row({ ...t.toe, label: 'Total OpEx', t3: t3 ? t3.toe : null }, 'opex', 'big')}
     ${row({ ...t.noi, label: 'NOI', t3: t3 ? t3.noi : null }, 'noi', 'big')}
-  </table>
+  </table></div>
   ${useG ? guideNotesHtml(bv) : ''}
   <div class="row" style="margin-top:6px; justify-content:space-between; align-items:center">
-    <span class="muted" style="font-size:11px">Δ% = budget vs ${esc(refLabel)}.${useG ? ` Grey number in an empty box = the guidance; Δ% is green within ±${p1(tol)} of it, red outside. <b>fill blank</b> puts those numbers in the empty boxes.` : ''} Type a target, then <b>tie</b>.</span>
+    <span class="muted" style="font-size:11px">Δ% = budget vs ${esc(refLabel)}.${useG ? ` Grey number in an empty box = the guidance; Δ% is green within ±${p1(tol)} of it, red outside. <b>fill blank</b> puts those numbers in the empty boxes.` : ''} <b>tie</b> lands a row on its target — the number you typed, or the guidance when the box is empty.</span>
     ${fillable.length ? `<button class="rb" id="fill-targets" title="Put the guidance number in every EMPTY target box (${fillable.length}): income lines ${p1(G.incomePct)}%, expense categories ${p1(G.expensePct)}%, RE taxes ${p1(G.reTaxPct)}%, payroll ${p1(G.payrollPct)}%, insurance at $${G.insurancePerUnit}/unit. Typed boxes and NOI are left alone. Nothing ties until you press tie.">fill ${fillable.length} blank</button>` : ''}
     ${nTargets ? `<button class="rb" id="tie-all" title="Apply every target that is set — categories first, then rental income / total income (they move GPR), then OpEx, then NOI">tie all (${nTargets})</button>` : ''}
   </div>
@@ -3175,7 +3181,7 @@ function inputsHtml(inp) {
     <h3>Income · Year 1 starts at the start month and runs 12 months</h3>
     <div class="row">
       <div class="fld"><label>Start month (GPR anchors here)</label><select id="in-start">${MONTHS.map((m, i) => `<option value="${i + 1}" ${inp.startMonth === i + 1 ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
-      <div class="fld"><label>GPR base $/mo</label><input id="in-gprbase" value="${g.baseMonthly ?? 0}" style="width:110px"></div>
+      <div class="fld"><label>GPR base $/mo${S.bv && S.bv.rollMarket > 0 ? ' · rent roll' : ''}</label><input id="in-gprbase" value="${g.baseMonthly ?? 0}" style="width:110px"${S.bv && S.bv.rollMarket > 0 ? ' readonly title="The linked rent roll&#39;s market total. To use a different number for a month, hard-code that cell on the GPR row."' : ''}></div>
       <div class="fld"><label>GPR growth %/mo (1 or 12 vals)</label><input id="in-gprgrow" value="${show12(g.growthPct || [])}" style="width:130px"></div>
     </div>
     <h3>Loss to lease ${S.bv && S.bv.leaseCount ? `<span class="badge">${S.bv.leaseCount} leases on file</span>` : '<span class="badge">no lease detail — upload a unit-level rent roll</span>'}</h3>
@@ -5416,7 +5422,7 @@ function annualInputsHtml(inp) {
   return `
     <h3>Gross potential rent · ${g.baseMonthly > 0 ? 'rent roll market rents' : 'last actual month'} × monthly % changes</h3>
     <div class="row">
-      <div class="fld"><label>GPR base $/mo (0 = last actual month's GPR)</label><input id="in-gprbase" value="${g.baseMonthly ?? 0}" style="width:120px"></div>
+      <div class="fld"><label>${S.bv && S.bv.rollMarket > 0 ? `GPR base $/mo — the rent roll${S.bv.rollAsOf ? ` as of ${esc(S.bv.rollAsOf)}` : ''} (hard-code a GPR cell to override a month)` : 'GPR base $/mo (0 = last actual month&#39;s GPR)'}</label><input id="in-gprbase" value="${g.baseMonthly ?? 0}" style="width:120px"${S.bv && S.bv.rollMarket > 0 ? ' readonly title="Always the linked rent roll&#39;s market total, all units"' : ''}></div>
       <div class="fld"><label>% increase applied IN each month (compounds; leave a month blank for no change — e.g. 3 in Mar, 2 in Sep)</label>${gprStepsGrid(g.growthPct || [], 'in-gprstep')}</div>
     </div>
     <h3>Loss to lease ${S.bv.leaseCount ? `<span class="badge">${S.bv.leaseCount} leases on file — per-lease burnoff${S.bv.rollAsOf ? ` · roll as of ${esc(S.bv.rollAsOf)} (leases ending before the budget start have already turned)` : ''}</span>` : '<span class="badge">template method: last actual month, burned off by lease expirations</span>'}</h3>

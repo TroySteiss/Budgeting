@@ -234,18 +234,21 @@ describe('generateAnnualLines — template rules on own history', () => {
     ];
     const noGrow = { ...inputs, ltl: { ...inputs.ltl, mode: 'leases' as const, renewalPct: 0, burnoffNew: 1, followGpr: false } };
     const l = L(generateAnnualLines(coaList, noGrow, { ...src, leases }), '5003');
-    // January: 2 leases reset (1 MTM + 1 expiring) → 22 × 100 left; December → 0
-    expect(l.months[0]).toBe(-2200);
-    expect(l.months[11]).toBe(0);
-    for (let i = 1; i < 12; i++) expect(l.months[i]).toBe(l.months[i - 1] + 200);
+    // January = the rent roll (24 × 100). MTM leases take months 0..10 (two in the first slot); a lease
+    // re-prices the month after it ends, so February has 3 fewer, then 2 a month; the Dec-1 lease is
+    // still on its rent in December
+    expect(l.months[0]).toBe(-2400);
+    expect(l.months[1]).toBe(-2100);
+    for (let i = 2; i < 12; i++) expect(l.months[i]).toBe(l.months[i - 1] + 200);
+    expect(l.months[11]).toBe(-100);
     // with 12% GPR growth in month 2 and "follows GPR": every lease's gap is measured against the
-    // grown market ($1,120). The 20 not-yet-reset leases carry 100 + 120; the 2 that signed at
-    // $1,000 in January are now $120 under market too; February's 2 resets go to market.
+    // grown market ($1,120). The 21 not-yet-reset leases carry 100 + 120; January's 3 re-prices start
+    // in February, so they sign into the grown market.
     const grow = { ...noGrow, ltl: { ...noGrow.ltl, followGpr: true }, gpr: { ...inputs.gpr, growthPct: [0, 0.12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] as Months } };
     const l2 = L(generateAnnualLines(coaList, grow, { ...src, leases }), '5003');
-    expect(l2.months[1]).toBeCloseTo(-(20 * 220) - (2 * 120), 0);
-    // December: every lease has reset; only those that signed before the February increase are under market
-    expect(l2.months[11]).toBeCloseTo(-(2 * 120), 0);
+    expect(l2.months[1]).toBeCloseTo(-(21 * 220), 0);
+    // December: every lease but the Dec-1 one has re-priced at the grown market
+    expect(l2.months[11]).toBeCloseTo(-220, 0);
   });
   it('loss to lease: 100% renewal with 0% burnoff burns NOTHING — the gap holds all year, market step included (Troy 2026-11-09)', () => {
     const leases = [
@@ -259,7 +262,7 @@ describe('generateAnnualLines — template rules on own history', () => {
     for (let i = 1; i < 12; i++) expect(l.months[i]).toBeCloseTo(-2400 - 24 * 30, 0);
     // same leases at 50% burnoff on renewal: each reset halves that lease's whole gap, growth included
     const half = L(generateAnnualLines(coaList, { ...hold, ltl: { ...hold.ltl, burnoffRenew: 0.5 } }, { ...src, leases }), '5003');
-    expect(half.months[11]).toBeCloseTo(-(2 * (50 + 30)) - (22 * 65), 0);   // January's 2 halved before the step, then +30; the other 22 halve 130
+    expect(half.months[11]).toBeCloseTo(-(23 * 65) - 130, 0);   // 23 re-price at the grown market, halving 130; the Dec-1 lease is still on its rent   // January's 2 halved before the step, then +30; the other 22 halve 130
   });
   it('loss to lease: flat mode holds the last actual month with no burnoff (deepens only with GPR when asked)', () => {
     const flatIn = { ...inputs, ltl: { ...inputs.ltl, mode: 'flat' as const, followGpr: false } };
@@ -302,18 +305,20 @@ describe('lease expirations and turnover-driven lines', () => {
     const withRoll = expirationsFromLeases(leases, 2026, { asOf: '11/15/2025' });
     expect(withRoll[2]).toBe(1); expect(withRoll[0]).toBe(1); expect(withRoll[11]).toBe(1); expect(sum(withRoll)).toBe(3);   // Dec-25 ends after the roll → turned before January, up again Dec-26
   });
-  it('a lease ending between the roll date and the budget start resets in month 0 with the renewal mix (not MTM all year)', () => {
+  it('a lease ending between the roll date and the budget start re-prices first thing (from month 1; January stays the roll) with the renewal mix, not MTM all year', () => {
     const actual = synthetic();
     const inputs = baseInputs(2026, 10, actual, null, coaList, null, 10);
     const noGrow = { ...inputs, ltl: { ...inputs.ltl, mode: 'leases' as const, renewalPct: 0, burnoffNew: 1, followGpr: false } };
     // 12 leases ending 15 Dec 2025 (gap $100 each), roll as of 30 Sep 2025, budget Jan 2026
     const leases = Array.from({ length: 12 }, () => ({ m: 1000, r: 900, e: '2025-12-15' }));
     const stale = L(generateAnnualLines(coaList, noGrow, { actual, budget: null, lastMonth: 10, leases }), '5003');
-    expect(stale.months[0]).toBe(-1100);                                   // no as-of: treated as MTM, 1 resets a month
+    expect(stale.months[0]).toBe(-1200);                                   // January = the rent roll
+    expect(stale.months[1]).toBe(-1000);                                   // no as-of: treated as MTM, 1 resets a month
     const fresh = L(generateAnnualLines(coaList, noGrow, { actual, budget: null, lastMonth: 10, leases, rollAsOf: '2025-09-30' }), '5003');
-    expect(fresh.months[0]).toBe(0);                                       // all 12 turned before January
+    expect(fresh.months[0]).toBe(-1200);                                   // January = the rent roll
+    expect(fresh.months[1]).toBe(0);                                       // all 12 turned before January
     const expired = L(generateAnnualLines(coaList, noGrow, { actual, budget: null, lastMonth: 10, leases: leases.map((l) => ({ ...l, e: '2025-06-01' })), rollAsOf: '2025-09-30' }), '5003');
-    expect(expired.months[0]).toBe(-1100);                                 // already expired at the roll → still MTM
+    expect(expired.months[1]).toBe(-1000);                                 // already expired at the roll → still MTM
   });
   it('application fees = last year $ ÷ this year move-ins × each month\'s move-ins', () => {
     const actual = synthetic();

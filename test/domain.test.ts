@@ -441,42 +441,47 @@ describe('ltlMonths — per-lease burnoff at turnover', () => {
 
   it('burns half on renewals, all on move-ins, at each lease\'s turnover month', () => {
     const out = ltlMonths(leases, 2026, 9, { renewalPct: 0.5, burnoffRenew: 0.5, burnoffNew: 1 });
-    // months 0-1: full gap = -(100+50-50+200) = -300
+    // months 0-2: full gap = -(100+50-50+200) = -300 — month 0 is the rent roll, and a lease
+    // pays its current rent through its end month
     expect(out[0]).toBe(-300);
-    expect(out[1]).toBe(-300);
-    // month 2: two leases expire; renewalPct .5 → 1 renews. LARGEST LTL (100) renews
+    expect(out[2]).toBe(-300);
+    // month 3 (after the two November ends): renewalPct .5 → 1 renews. LARGEST LTL (100) renews
     // and keeps half (50); the 50-LTL lease turns over and burns fully (0).
     // total = 50 + 0 - 50 + 200 = 200 → -200
-    expect(out[2]).toBe(-200);
-    expect(out[4]).toBe(-200);
-    // month 5: the GTL lease expires alone; round(.5*1)=1 → renews, keeps half (-25)
+    expect(out[3]).toBe(-200);
+    expect(out[5]).toBe(-200);
+    // month 6 (after the GTL lease's February end): round(.5*1)=1 → renews, keeps half (-25)
     // total = 50 + 0 - 25 + 200 = 225 → -225 through the rest of the year
-    expect(out[5]).toBe(-225);
+    expect(out[6]).toBe(-225);
     expect(out[11]).toBe(-225);
   });
 
   it('missing/expired lease ends are month-to-month: they reset one twelfth a month, not all in month 0', () => {
     const out = ltlMonths([{ m: 1000, r: 900, e: null }, { m: 1000, r: 900, e: '2026-01-01' }], 2026, 9,
       { renewalPct: 0, burnoffRenew: 0.5, burnoffNew: 1 });
-    expect(out[0]).toBe(-100);   // the first MTM lease resets in month 0, the second in month 1
-    expect(out[1]).toBe(0);
+    expect(out[0]).toBe(-200);   // month 0 = the roll; the first MTM lease re-prices from month 1, the second from month 2
+    expect(out[1]).toBe(-100);
+    expect(out[2]).toBe(0);
     expect(out[11]).toBe(0);
   });
 
   it('with the roll as-of date, a lease ending between the roll and the start has turned by month 0; one expired at the roll is MTM', () => {
     const out = ltlMonths([{ m: 1000, r: 900, e: '2026-08-15' }, { m: 1000, r: 800, e: '2026-06-01' }], 2026, 9,
       { renewalPct: 0, burnoffRenew: 0.5, burnoffNew: 1, asOf: '7/31/2026' });
-    expect(out[0]).toBe(0);      // Aug-15 lease (after the 7/31 roll) turned before September; the Jun-01 lease is MTM and resets in month 0 too
+    expect(out[0]).toBe(-300);   // month 0 = the roll as it stands
+    expect(out[1]).toBe(0);      // Aug-15 lease (after the 7/31 roll) re-prices first thing; the Jun-01 lease is MTM in the first slot too
     const out2 = ltlMonths([{ m: 1000, r: 900, e: '2026-08-15' }, { m: 1000, r: 800, e: '2026-06-01' }, { m: 1000, r: 700, e: '2026-05-01' }], 2026, 9,
       { renewalPct: 0, burnoffRenew: 0.5, burnoffNew: 1, asOf: '2026-07-31' });
-    expect(out2[0]).toBe(-200);  // two MTM leases: the larger (300) resets in month 0, the 200 one in month 1; the Aug-15 lease is gone at month 0
-    expect(out2[1]).toBe(0);
+    expect(out2[0]).toBe(-600);  // the roll: 100 + 200 + 300
+    expect(out2[1]).toBe(-200);  // the Aug-15 lease and the larger MTM (300) re-price from month 1, the 200 one from month 2
+    expect(out2[2]).toBe(0);
   });
 
   it('renewal rate 100% keeps half of everything at expiry', () => {
     const out = ltlMonths([{ m: 1000, r: 800, e: '2026-10-01' }], 2026, 9, { renewalPct: 1, burnoffRenew: 0.5 });
     expect(out[0]).toBe(-200);
-    expect(out[1]).toBe(-100);
+    expect(out[1]).toBe(-200);   // ends in October (month 1): the new rent starts in month 2
+    expect(out[2]).toBe(-100);
     expect(out[11]).toBe(-100);
   });
 });
@@ -653,7 +658,8 @@ describe('HAP share held out of the loss-to-lease burnoff', () => {
     const plain = [{ m: 1000, r: 200, e: '2027-03-31' }];
     const a = ltlModel(hap, 2027, 1, opts).months, b = ltlModel(plain, 2027, 1, opts).months;
     expect(a[0]).toBe(-50);                                           // the HAP 750 is not loss to lease
-    expect(Math.abs(a[2])).toBe(0);                                   // the real gap burned at renewal
+    expect(a[2]).toBe(-50);                                           // still on its rent through March
+    expect(Math.abs(a[3])).toBe(0);                                   // the real gap burned at renewal
     expect(b[0]).toBe(-800);                                          // a lease with no HAP: the whole gap
   });
   it('withHap: per-lease s is used as is; an older roll places the subsidy total on the lowest-rent leases', () => {
