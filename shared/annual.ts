@@ -666,18 +666,31 @@ export interface FormulaSet {
     ltl?: { mode?: any; renewalPct?: number; burnoffRenew?: number; burnoffNew?: number; followGpr?: boolean };
     vacancyExpWeight?: number; burdenBasis?: 't12' | 'budget' | 'mix'; burdenFrom?: string; wageSource?: 'payroll' | 'manual'; payrollRaisePct?: number;
   };
+  /** FIT to T12 (0..1) on lines the engine builds (% of GPR, corporate rate, …), which carry no per-GL
+      rule. History-based lines keep their fit on the rule (`rule.fit`). Troy 2026-11-12. */
+  fit?: Record<string, number>;
+  /** Row choices (shape, increase %, MROUND) on the GLs whose builders read only these, not the rules:
+      payroll (64xx: raises, burden shapes) and 6350. A set that dropped them reset those lines. */
+  row?: { glShape?: Record<string, BaselineShape>; glGrowth?: Record<string, number>; glMround?: Record<string, number> };
 }
+/** Methods whose months never take a T12 fit (mirrors the generator's FIT_SKIP). */
+const FIT_NEVER = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest']);
 const SHAPE_RULE: Partial<Record<BaselineShape, AnnualRule['method']>> = { actual: 'same', wavg: 'wavg', flat: 'flatT12', last: 'last' };
 /** The recipe of a budget as it stands: every non-overridden history-based line's shape /
     factor / MROUND, the deliberate zero-outs, and the formula settings. Pure. */
 export function formulaSetFromBudget(lines: BudgetLine[], inputs: BudgetInputs): FormulaSet {
   const rules: Record<string, AnnualRule> = {};
+  const fit: Record<string, number> = {};
   const bl = inputs.baseline || ({} as NonNullable<BudgetInputs['baseline']>);
   for (const l of lines) {
     if (l.override) continue;                                        // a hand-typed line is a hard code
     const d = (l.driver || {}) as any;
     if (d.method === 'zero') { rules[l.gl_code] = { method: 'zero' }; continue; }
-    if (d.method !== 'baseline') continue;                           // engine-driven lines (GPR, LTL, payroll, fee…) carry no per-GL rule
+    if (d.method !== 'baseline') {                                   // engine-driven lines (GPR, LTL, payroll, fee…) carry no per-GL rule…
+      const f = Number(bl.glFit?.[l.gl_code] ?? d.fitT12 ?? 0) || 0;  // …but a FIT picked on the row travels with the set
+      if (f > 0 && !FIT_NEVER.has(d.method)) fit[l.gl_code] = Math.round(Math.min(1, f) * 1000) / 1000;
+      continue;
+    }
     const sh = d.shape as BaselineShape;
     const method = SHAPE_RULE[sh];
     const r: AnnualRule = method ? { method } : { method: 'custom', shape: sh };
@@ -700,7 +713,17 @@ export function formulaSetFromBudget(lines: BudgetLine[], inputs: BudgetInputs):
   if (inputs.burdenFrom) settings.burdenFrom = inputs.burdenFrom;
   if (inputs.wageSource) settings.wageSource = inputs.wageSource;
   if (inputs.payrollRaisePct != null) settings.payrollRaisePct = inputs.payrollRaisePct;
-  return { rules, settings };
+  // row picks the rules cannot carry: payroll (64xx) and 6350 are built from the row settings alone
+  // (raise %, burden shape), so those travel as-is. Every other row pick is already folded into its rule.
+  const rowOnly = (gl: string) => /^64\d\d$/.test(gl) || gl === '6350';
+  const live = new Set(lines.filter((l) => !l.override && rowOnly(l.gl_code)).map((l) => l.gl_code));
+  const keep = <T>(o: Record<string, T> | undefined): Record<string, T> => Object.fromEntries(Object.entries(o || {}).filter(([gl, v]) => live.has(gl) && v != null));
+  const row: NonNullable<FormulaSet['row']> = {};
+  const rs = keep(bl.glShape as any), rg = keep(bl.glGrowth as any), rm = keep(bl.glMround as any);
+  if (Object.keys(rs).length) row.glShape = rs as any;
+  if (Object.keys(rg).length) row.glGrowth = rg as any;
+  if (Object.keys(rm).length) row.glMround = rm as any;
+  return { rules, settings, ...(Object.keys(fit).length ? { fit } : {}), ...(Object.keys(row).length ? { row } : {}) };
 }
 /** Give a budget a formula set: the set's rules and settings replace the budget's own per-GL
     shape / factor / MROUND choices. Dollars, GPR, vacancy average, expirations and every
@@ -712,7 +735,7 @@ export function applyFormulaSet(inputs: BudgetInputs, set: FormulaSet, from: { i
     ...inputs,
     rules: { ...(set.rules || {}) },
     rulesFrom: { id: from.id, name: from.name, at: new Date().toISOString() },
-    baseline: { ...DEFAULT_BASELINE, ...(inputs.baseline || {}), ...clean(st.baseline), glShape: {}, glGrowth: {}, glMround: {}, glFit: {}, secGrowth: {} } as any,
+    baseline: { ...DEFAULT_BASELINE, ...(inputs.baseline || {}), ...clean(st.baseline), glShape: { ...(set.row?.glShape || {}) }, glGrowth: { ...(set.row?.glGrowth || {}) }, glMround: { ...(set.row?.glMround || {}) }, glFit: { ...(set.fit || {}) }, secGrowth: {} } as any,
     ltl: { ...(inputs.ltl || ({} as any)), ...clean(st.ltl) },
     ...(st.vacancyExpWeight != null ? { vacancyExpWeight: st.vacancyExpWeight } : {}),
     ...(st.burdenBasis ? { burdenBasis: st.burdenBasis } : {}),
@@ -786,7 +809,7 @@ export function effectiveRules(inputs: BudgetInputs, fallback: Record<string, An
 
 export function copyFormulas(
   target: BudgetInputs, src: { rules: Record<string, AnnualRule>; secGrowth?: Record<string, number> | null },
-  gls: string[], sections: string[], opts: { pct?: boolean; fallbackRules?: Record<string, AnnualRule> | null; fill?: string[] } = {},
+  gls: string[], sections: string[], opts: { pct?: boolean; fallbackRules?: Record<string, AnnualRule> | null; fill?: string[]; fit?: Record<string, number> } = {},
 ): { inputs: BudgetInputs; changed: string[] } {
   // a budget from before formula sets runs on the fallback table: keep it for every other GL
   const rules: Record<string, AnnualRule> = { ...((target.rules as Record<string, AnnualRule> | undefined) ?? opts.fallbackRules ?? {}) };
@@ -805,6 +828,11 @@ export function copyFormulas(
     rules[gl] = next; delete glShape[gl]; delete glMround[gl]; delete glFit[gl]; if (opts.pct) delete glGrowth[gl];
   }
   if (opts.pct) for (const s of sections) { const v = src.secGrowth?.[s]; if (v != null) secGrowth[s] = v; else delete secGrowth[s]; }
+  // FIT picked on engine-built lines of the copied sections (no rule to carry it)
+  for (const [gl, f] of Object.entries(opts.fit || {})) {
+    if (!(f > 0) || glFit[gl] === f) continue;
+    glFit[gl] = f; if (!changed.includes(gl)) changed.push(gl);
+  }
   // these GLs now carry a formula given to this budget on purpose: the shared defaults stay off them
   const rulesOwn = [...new Set([...(target.rulesOwn || []), ...gls.filter((gl) => src.rules[gl] && rules[gl] && JSON.stringify(rules[gl]).length && !(fillSet.has(gl) && isEngineRule(rules[gl])))])].sort();
   return { inputs: { ...target, rules, rulesOwn, baseline: { ...bl, glShape, glMround, glGrowth, glFit, secGrowth } } as BudgetInputs, changed };

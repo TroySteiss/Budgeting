@@ -1555,7 +1555,8 @@ router.post('/budgets/:id/copy-formulas', h(async (req, res) => {
   const set = formulaSetFromBudget(lb.lines, lb.budget.inputs || {});
   const srcF = sectionFormulaSource(set.rules, lb.coa, sections);
   const gls = srcF.gls;
-  if (!gls.length) return res.status(400).json({ error: 'No formula-driven lines in those sections on this budget' });
+  const srcFit = Object.fromEntries(Object.entries(set.fit || {}).filter(([gl]) => sections.includes(lb.coaMap.get(gl)?.section || '')));
+  if (!gls.length && !Object.keys(srcFit).length) return res.status(400).json({ error: 'No formula-driven lines in those sections on this budget' });
   const srcSec = (lb.budget.inputs?.baseline as any)?.secGrowth || null;
   const from = `${String(lb.budget.property_code).toUpperCase()} ${lb.budget.year}`;
   const noiOf = (lines: BudgetLine[]) => r2(sum(rollup(new Map(lines.map((l) => [l.gl_code, l.months]))).get('7280') || zero12()));
@@ -1566,7 +1567,7 @@ router.post('/budgets/:id/copy-formulas', h(async (req, res) => {
     if (!t) continue;
     const row: any = { id: bid, code: String(t.budget.property_code).toUpperCase(), year: Number(t.budget.year), label: t.budget.label || '' };
     if (!t.annual) { budgets.push({ ...row, skipped: 'not an annual budget' }); continue; }
-    const { inputs, changed } = copyFormulas(t.budget.inputs || {}, { rules: srcF.rules, secGrowth: srcSec }, gls, sections, { pct, fallbackRules: loadAnnualRules() as any, fill: srcF.fill });
+    const { inputs, changed } = copyFormulas(t.budget.inputs || {}, { rules: srcF.rules, secGrowth: srcSec }, gls, sections, { pct, fallbackRules: loadAnnualRules() as any, fill: srcF.fill, fit: srcFit });
     const built = buildLines({ ...t, budget: { ...t.budget, inputs } }, inputs, t.lines);
     const before = new Map(t.lines.map((l) => [l.gl_code, l]));
     const moved = built.lines.filter((l) => { const o = before.get(l.gl_code); return !o ? l.months.some((v) => v) : o.months.some((v, i) => Math.abs(v - l.months[i]) >= 0.005); }).length;
@@ -1584,8 +1585,10 @@ router.post('/budgets/:id/copy-formulas', h(async (req, res) => {
     const s = (await query('select id, name, data from formula_sets where id=$1', [sid])).rows[0];
     if (!s) continue;
     const data = (s.data || { rules: {}, settings: {} }) as FormulaSet;
-    const out = copyFormulas({ rules: data.rules || {} } as BudgetInputs, { rules: srcF.rules, secGrowth: null }, gls, [], { pct, fill: srcF.fill });
-    if (!dryRun && out.changed.length) await query('update formula_sets set data=$2 where id=$1', [sid, JSON.stringify({ ...data, rules: out.inputs.rules })]);
+    const out = copyFormulas({ rules: data.rules || {}, baseline: { glFit: { ...(data.fit || {}) } } } as BudgetInputs, { rules: srcF.rules, secGrowth: null }, gls, [], { pct, fill: srcF.fill, fit: srcFit });
+    // the set keeps fit only on GLs it holds no rule for (a rule carries its own fit)
+    const setFit = Object.fromEntries(Object.entries(((out.inputs.baseline as any)?.glFit || {}) as Record<string, number>).filter(([gl, f]) => f > 0 && !out.inputs.rules?.[gl]));
+    if (!dryRun && out.changed.length) await query('update formula_sets set data=$2 where id=$1', [sid, JSON.stringify({ ...data, rules: out.inputs.rules, ...(Object.keys(setFit).length ? { fit: setFit } : {}) })]);
     sets.push({ id: sid, name: s.name, formulas: out.changed.length });
   }
   if (!dryRun) logChange(user, 'copy formulas', { from: id, sections, pct, budgets: budgets.filter((b) => !b.skipped).map((b) => b.id), sets: sets.map((x) => x.id), gls: gls.length });

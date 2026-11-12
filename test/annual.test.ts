@@ -1703,3 +1703,46 @@ describe('refollowMgmtFee (fee follows a hand-edited income line)', () => {
     expect(out[5]).toBe(2700); expect(out[6]).toBe(3000);
   });
 });
+
+describe('T12 fit travels with formula sets (Troy 2026-11-12)', () => {
+  const m = Array(12).fill(100) as any;
+  const lines: any[] = [
+    { gl_code: '5019', months: m, override: false, driver: { method: 'pctGpr', pct: 0.001, fitT12: 0.5 } },
+    { gl_code: '6920', months: m, override: false, driver: { method: 'baseline', shape: 'flat', pct: 0.03, fitT12: 0.25 } },
+    { gl_code: '6112', months: m, override: false, driver: { method: 'mgmtPct', pct: 0.04 } },
+    { gl_code: '6450', months: m, override: true, driver: { method: 'corpRate', fitT12: 0.4 } },
+    { gl_code: '6910', months: m, override: false, driver: { method: 'contract', fitT12: 0.4 } },
+  ];
+  const inputs: any = { baseline: { glFit: { '5019': 0.5, '6920': 0.25 } } };
+  it('a saved set keeps fit on engine lines and on the rule of history lines', () => {
+    const set = formulaSetFromBudget(lines, inputs);
+    expect(set.fit).toEqual({ '5019': 0.5 });            // overridden and contract lines never carry one
+    expect(set.rules['6920'].fit).toBe(0.25);
+  });
+  it('applying the set puts the engine-line fit back on the budget', () => {
+    const set = formulaSetFromBudget(lines, inputs);
+    const out = applyFormulaSet({ baseline: { glFit: { '9999': 1 } } } as any, set, { id: 1, name: 'x' });
+    expect((out.baseline as any).glFit).toEqual({ '5019': 0.5 });
+  });
+  it('a section copy hands engine-line fit to the target', () => {
+    const out = copyFormulas({ rules: {}, baseline: { glFit: {} } } as any, { rules: {} }, [], ['contra'], { fit: { '5019': 0.5 } });
+    expect((out.inputs.baseline as any).glFit['5019']).toBe(0.5);
+    expect(out.changed).toContain('5019');
+  });
+});
+
+describe('row picks travel with formula sets (Troy 2026-11-12)', () => {
+  const m = Array(12).fill(100) as any;
+  const lines: any[] = [
+    { gl_code: '6410', months: m, override: false, driver: { method: 'baseline', shape: 'flat', pct: 0.05 } },
+    { gl_code: '6420', months: m, override: true, driver: { method: 'manual' } },
+  ];
+  it('payroll raise / shape / MROUND picked on a row survive save → apply; hard-coded rows do not', () => {
+    const set = formulaSetFromBudget(lines, { baseline: { glGrowth: { '6410': 0.05, '6420': 0.09 }, glShape: { '6410': 'flat' }, glMround: { '6410': 50 } } } as any);
+    const out = applyFormulaSet({ baseline: { glGrowth: { '6410': 0.035 } } } as any, set, { id: 1, name: 'x' });
+    const bl = out.baseline as any;
+    expect(bl.glGrowth).toEqual({ '6410': 0.05 });
+    expect(bl.glShape).toEqual({ '6410': 'flat' });
+    expect(bl.glMround).toEqual({ '6410': 50 });
+  });
+});
