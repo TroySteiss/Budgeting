@@ -3159,6 +3159,14 @@ function tieGrowthHtml(bv) {
     const g = v ? (r.budget - v) / v : null;
     return `<td class="t3" title="T3 annualized (${esc(t3ref.period)}) — budget is ${g == null ? '—' : `${g > 0 ? '+' : ''}${(g * 100).toFixed(1)}%`} vs it (Δ ${money(r.budget - (v || 0))})">${money(v)}</td>`;
   };
+  // Δ% over the T3 annualized (Troy 2026-11-12: "Add column to comparison pane for delta over T3"): growth of the
+  // signed T3, like the Δ% beside it. Display only — guidance and ties stay on the T12.
+  const t3DeltaCell = (r) => {
+    if (!t3) return '';
+    const v = t3Of(r);
+    const g = v ? (r.budget - v) / v : null;
+    return `<td class="t3d" title="Budget vs T3 annualized (${esc(t3ref.period)}): Δ ${money(r.budget - (v || 0))}">${fmtPct(g)}</td>`;
+  };
   // growth of the SIGNED reference: a contra line shrinking 10% reads −10%, like its target
   const pctOf = (r) => (r.uw ? (r.budget - r.uw) / r.uw : null);
   const fmtPct = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%`);
@@ -3212,14 +3220,14 @@ function tieGrowthHtml(bv) {
     const tieBtn = tieTo != null ? `<button class="rb" data-tie="${key}" data-pct="${tieTo}" title="Shift this subtotal's growth factors so it lands at ${esc(refLabel)} ${fmtPct(tieTo)}${tgt == null ? ' (the guidance)' : ''}">tie</button>` : '';
     return `<tr class="${cls || ''}"><td title="${esc(r.label)}">${esc(SHORT[r.pcode] || r.label)}</td>
       <td>${money(r.uw)}</td>${t3Cell(r)}<td>${money(r.budget)}</td>
-      <td class="var ${vcls}" title="Δ ${money(r.budget - r.uw)} vs ${esc(refLabel)}${dg ? ` · guidance: ${esc(dg.text)}` : ''}">${fmtPct(g)}</td>
+      <td class="var ${vcls}" title="Δ ${money(r.budget - r.uw)} vs ${esc(refLabel)}${dg ? ` · guidance: ${esc(dg.text)}` : ''}">${fmtPct(g)}</td>${t3DeltaCell(r)}
       <td class="tgt">${key != null ? `<input data-gt="${key}" value="${tgt != null ? (tgt * 100).toFixed(1) : ''}" placeholder="${esc(ph)}" class="${gr ? 'gph' : ''}" style="width:${gr ? 58 : 48}px; font-size:11px; text-align:right" title="${esc(tip)}">` : ''}${tieBtn}</td></tr>`;
   };
   const cat = (p) => (byP[p] ? row(byP[p], p) : '');
   const nTargets = Object.keys(gt).filter((k) => gt[k] != null).length;
   const refShort = inp.refSource === 'budget' ? 'CY bud' : 'T12';
   return `<div class="tiewrap"><table${t3 ? ' class="t3"' : ''}>
-    <tr><th>Subtotal</th><th title="${esc(refLabel)}">${refShort}</th>${t3 ? `<th title="T3 annualized — ${esc(t3ref.period)}">T3 ann</th>` : ''}<th>Budget</th><th>Δ%</th><th>Target</th></tr>
+    <tr><th>Subtotal</th><th title="${esc(refLabel)}">${refShort}</th>${t3 ? `<th title="T3 annualized — ${esc(t3ref.period)}">T3 ann</th>` : ''}<th>Budget</th><th title="Budget vs ${esc(refLabel)}">Δ%${t3 ? ` ${refShort}` : ''}</th>${t3 ? `<th title="Budget vs T3 annualized — ${esc(t3ref.period)}">Δ% T3</th>` : ''}<th>Target</th></tr>
     ${cat('1')}${byP.loss ? row(byP.loss, null, '', 'loss') : ''}
     ${row(agg(['1', 'loss'], 'Net Gross Potential Rent'), null, 'sub', 'ngpr')}
     ${cat('2')}${cat('3')}

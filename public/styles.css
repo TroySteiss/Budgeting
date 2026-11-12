@@ -217,6 +217,7 @@ tr.badbills .warnflag { color: var(--bad); font-weight: 700; }
 .tie .tiewrap { overflow-x: auto; }
 .tie td.tgt { white-space: nowrap; }
 .tie td.t3 { color: var(--dim); }
+.tie td.t3d { color: var(--dim); text-align: right; }
 /* with the T3-annualized column the card carries three $ columns — tighten so Δ% / target / tie stay in view */
 .tie table.t3 { font-size: 11.4px; }
 .tie table.t3 th, .tie table.t3 td { padding-left: 3px; padding-right: 3px; }
