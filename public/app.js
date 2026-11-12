@@ -393,6 +393,11 @@ function guideDashCell(gd) {
   if (!gd) return '<td class="muted">—</td>';
   const p = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%`);
   const cls = gd.bad ? 'gbad' : gd.flags ? 'gchk' : 'gok';
+  // a new acquisition: against the UW for the year, not the annualized T12 (Troy 2026-11-12)
+  if (gd.kind === 'uw') {
+    const c = gd.coc || {};
+    return `<td class="gdash ${cls}" title="${esc(['UW scorecard: budget vs the UW for the calendar year (Year 1 and Year 2 weighted by months), Year-1 NOI, cash-on-cash vs the UW, NOI posted since closing vs plan', ...(gd.miss || [])].join(' · '))}"><b>NOI vs UW ${p(gd.growth.noi)}</b><div class="muted" style="font-size:10.5px">${c.uw != null ? `CoC ${c.budget != null ? (c.budget * 100).toFixed(1) + '%' : '—'} vs UW ${(c.uw * 100).toFixed(1)}% · ` : ''}inc ${p(gd.growth.income)} · exp ${p(gd.growth.expense)}${gd.bad || gd.flags ? ` · ${gd.bad + gd.flags} to look at` : ''}</div></td>`;
+  }
   return `<td class="gdash ${cls}" title="${esc((gd.miss || []).join(' · ') || 'on target')}"><b>NOI ${p(gd.growth.noi)}</b><div class="muted" style="font-size:10.5px">inc ${p(gd.growth.income)} · exp ${p(gd.growth.expense)}${gd.bad || gd.flags ? ` · ${gd.bad + gd.flags} to look at` : ''}</div></td>`;
 }
 /* ONE table (Troy 2026-11-12: "why is this two different tables?"): every property for the budget year picked, its
@@ -1736,9 +1741,12 @@ function gridHtml(bv, totals) {
   const showM = (i) => !hide.has('m' + i);
   const monthIdx = Array.from({ length: 12 }, (_, i) => i).filter(showM);
   // annual: reference columns (T12 actuals, CY budget) beside the year total
-  const refA = bv.annual ? (bv.refs || []).find((r) => r.key === 'actual') : null;
+  // a new acquisition (its year runs off the acquisition plan): the reference column is UW for the year, and no T3 —
+  // a couple of months annualized "means nothing" there (Troy 2026-11-12)
+  const acqOn = !!(bv.annual && bv.y1Plan && bv.y1Plan.on && (bv.refs || []).some((r) => r.key === 'uw'));
+  const refA = bv.annual ? (bv.refs || []).find((r) => r.key === (acqOn ? 'uw' : 'actual')) : null;
   const refB = bv.annual ? (bv.refs || []).find((r) => r.key === 'budget') : null;
-  const refT3 = bv.annual ? (bv.refs || []).find((r) => r.key === 'ann3') : null;   // last 3 actual months × 4, right after the T12
+  const refT3 = bv.annual && !acqOn ? (bv.refs || []).find((r) => r.key === 'ann3') : null;   // last 3 actual months × 4, right after the T12
   const cols = { fx: !hide.has('fx'), annual: !hide.has('annual'), refpct: !!refA && !hide.has('refpct'), ref1: !!refA && !hide.has('ref1'), ref3: !!refT3 && !hide.has('ref3'), ref2: !!refB && !hide.has('ref2'), punit: !hide.has('punit'), note: !hide.has('note') };
   const nRef = (cols.refpct ? 1 : 0) + (cols.ref1 ? 1 : 0) + (cols.ref3 ? 1 : 0) + (cols.ref2 ? 1 : 0);
   const refBlank = '<td></td>'.repeat(nRef);   // the reference columns on rows that have no reference figure
@@ -1778,7 +1786,7 @@ function gridHtml(bv, totals) {
   })();
   const histOpen = (code) => S.histAll || S.histOpenSet.has(code);
   const rows = [];
-  rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th${actIdx.has(i) ? ' class="actcol" title="Locked to posted actuals — an edit here corrects the posted figure"' : ''}>${labels[i]}${actIdx.has(i) ? ' ✓' : ''}</th>`).join('')}${cols.annual ? `<th>${bv.annual ? bv.budget.year : 'Year 1'}</th>` : ''}${cols.refpct ? `<th title="Blended increase: the ${bv.budget.year} total vs the trailing-12 actual (${esc(refA.period)})">Δ% T12</th>` : ''}${cols.ref1 ? `<th title="${esc(refA.period)}">T12</th>` : ''}${cols.ref3 ? `<th title="T3 annualized — ${esc(refT3.period)}">T3 ann</th>` : ''}${cols.ref2 ? `<th title="${esc(refB.period)}">${esc(refB.label.replace(/^budget /i, 'Bud ').replace(/ budget$/i, ' bud'))}</th>` : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
+  rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th${actIdx.has(i) ? ' class="actcol" title="Locked to posted actuals — an edit here corrects the posted figure"' : ''}>${labels[i]}${actIdx.has(i) ? ' ✓' : ''}</th>`).join('')}${cols.annual ? `<th>${bv.annual ? bv.budget.year : 'Year 1'}</th>` : ''}${cols.refpct ? `<th title="Blended increase: the ${bv.budget.year} total vs ${acqOn ? 'UW for the year (' + esc(refA.period) + ')' : 'the trailing-12 actual (' + esc(refA.period) + ')'}">Δ% ${acqOn ? 'UW' : 'T12'}</th>` : ''}${cols.ref1 ? `<th title="${esc(refA.period)}">${acqOn ? 'UW' : 'T12'}</th>` : ''}${cols.ref3 ? `<th title="T3 annualized — ${esc(refT3.period)}">T3 ann</th>` : ''}${cols.ref2 ? `<th title="${esc(refB.period)}">${esc(refB.label.replace(/^budget /i, 'Bud ').replace(/ budget$/i, ' bud'))}</th>` : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
   const units = Number(bv.budget.inputs?.units) || 1;
   const GRAND = new Set(['5500', '7279', '7280', '8200', '9000']);
   // condensed (collapsed) sections — locked via localStorage across renders
@@ -3361,7 +3369,7 @@ function tieGrowthHtml(bv) {
     '9': 'Admin & Acct', '10': 'Payroll', '11': 'Marketing', '12': 'Utilities', '13': 'R&M', '14': 'Rehab / Reserves',
   };
   const byP = Object.fromEntries(t.rows.map((r) => [r.pcode, r]));
-  const t3 = ((bv.refs || []).find((r) => r.key === 'ann3') || {}).cat || null;
+  const t3 = bv.y1Plan && bv.y1Plan.on ? null : ((bv.refs || []).find((r) => r.key === 'ann3') || {}).cat || null;   // not for a new acquisition
   // TIE BASIS (Troy 2026-11-12: "Need an option of which to tie to, T3 or T12. It can be a toggle"): on T3 the
   // Target column is growth over the T3 annualized, with its own saved targets (growthTargetsT3). Guidance is
   // growth over the October T12, so on T3 the boxes carry no guidance numbers (the Δ% T12 colours stay).
@@ -3479,7 +3487,7 @@ function tieGrowthHtml(bv) {
     ${row({ ...t.toe, label: 'Total OpEx', t3: t3 ? t3.toe : null }, 'opex', 'big')}
     ${row({ ...t.noi, label: 'NOI', t3: t3 ? t3.noi : null }, 'noi', 'big')}
   </table></div>
-  ${useG ? guideNotesHtml(bv) : ''}
+  ${useG || (useU && bv.guide && bv.guide.kind === 'uw') ? guideNotesHtml(bv) : ''}
   <div class="row" style="margin-top:6px; justify-content:space-between; align-items:center">
     ${t3 ? `<span class="tbasis" title="What the Target column ties to. ${esc(refShort)}: growth over the ${esc(refLabel)} (the guidance numbers sit in the empty boxes). T3: growth over the last three actual months × 4 (${esc(t3ref.period)}); its targets are kept separately, so switching never changes the other basis's numbers.">Tie to <button data-tbasis="t12" class="${basisT3 ? '' : 'on'}">${esc(refShort)}</button><button data-tbasis="t3" class="${basisT3 ? 'on' : ''}">T3</button></span>` : ''}
     <span class="muted" style="font-size:11px">Δ% = budget vs ${esc(refLabel)}.${basisT3 ? ' <b>Targets are growth over the T3 annualized</b>: a typed target colours the Δ% T3; Δ% T12 keeps the guidance colours.' : ''}${useU && !basisT3 ? ` Δ% is the budget against UW for ${esc(String(bv.budget.year))} (the Year-1 plan, then the UW Year-2 trend): green on or above it for income and NOI, on or under it for expenses and losses; an empty box ties to 0%, on the underwriting. The memo's guidance is growth over the T12 — pick Trailing-12 actuals to see it.` : ''}${useG && !basisT3 ? ` Grey number in an empty box = the guidance; Δ% is green at or above it on income rows, at or below it on expense rows (NOI at least ${p1(G.noiPct)}%), red the wrong side. <b>fill blank</b> puts those numbers in the empty boxes.` : ''} <b>tie</b> lands a row on its target — the number you typed${basisT3 ? '' : ', or the guidance when the box is empty'}.</span>
@@ -6491,7 +6499,7 @@ function renderSummary(el) {
       <td class="l stick"><b>${esc(p.code)}</b> · ${esc(p.name || '')}${p.stale ? ' <span class="sch-stale" title="Calculated on older formulas: recalc it">⚠</span>' : ''}<div class="muted" style="font-size:10.5px">${p.units ? `${xsNum(p.units)} units` : ''}</div></td>
       <td class="l"><b>${sm}</b> <span class="muted">${annual ? 'annual' : 'acquisition · UW Y1'}</span><div class="muted" style="font-size:10.5px">${ov ? `${ov} override${ov === 1 ? '' : 's'}` : 'no overrides'}${c.ltlMode === 'leases' ? ' · per-lease LTL' : ''}${c.savePoints ? ` · ${c.savePoints} save pt${c.savePoints === 1 ? '' : 's'}` : ''}</div></td>
       <td>${money(r.income)}</td><td>${money(r.expense)}</td><td><b>${money(r.noi)}</b></td>
-      ${varCell(r.noiVar, r.kind)}${varCell(r.egiVar, r.kind)}${annual ? guideCell(r) : '<td class="muted">—</td>'}
+      ${varCell(r.noiVar, r.kind)}${varCell(r.egiVar, r.kind)}${annual && c.guide && c.guide.kind === 'uw' ? guideDashCell(c.guide).replace('class="gdash', 'class="l gdash') : annual ? guideCell(r) : '<td class="muted">—</td>'}
       ${cmpCells(r, annual && r.kind === 'T12')}
       ${cyCell(r.overCy)}
       <td>${c.coc != null && c.capital ? `${(c.coc * 100).toFixed(1)}%<div class="muted" style="font-size:10.5px">on ${money(c.capital)}</div>` : '—'}</td>

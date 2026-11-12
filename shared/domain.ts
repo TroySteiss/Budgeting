@@ -977,6 +977,8 @@ export interface UwSnapshotData {
   /** how each category was underwritten, by pcode: Year 1 and Year 2 basis (per unit, % of GPR / EGI, % increase,
       an estimate) and the seller T12 the UW started from (Troy 2026-11-12). Older uploads lack it. */
   basis?: Record<string, { y1?: UwBasis; y2?: UwBasis; t12?: number }>;
+  /** the pro forma's returns by year (y1..y6): debt service, cash flow, cash-on-cash (Troy 2026-11-12). Older uploads lack it. */
+  returns?: { debt?: Record<string, number>; cashFlow?: Record<string, number>; coc?: Record<string, number> };
 }
 export type UwBasis = { kind: 'perUnit' | 'pctGpr' | 'pctEgi' | 'increase'; value: number } | { kind: 'estimate'; note: string };
 

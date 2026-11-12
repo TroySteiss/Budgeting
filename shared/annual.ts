@@ -1060,6 +1060,9 @@ export interface GuideResult {
   /** rental income (5070) by calendar quarter of the budget, and Q4 vs Q1 */
   quarters: number[]; q4VsQ1: number | null;
   flags: number; bad: number;
+  /** 'uw' = the UW scorecard of a new acquisition (uwCheck), with its cash-on-cash against the UW's */
+  kind?: 'uw';
+  coc?: { budget: number | null; uw: number | null };
 }
 const g2 = (a: number, b: number | null | undefined): number | null => (b ? (a - b) / Math.abs(b) : null);
 const pctTxt = (v: number | null, d = 1): string => { if (v == null) return '—'; const t = (v * 100).toFixed(d); return Number(t) === 0 ? `${(0).toFixed(d)}%` : `${v > 0 ? '+' : ''}${t}%`; };
@@ -2093,7 +2096,7 @@ export function acqCalendarPlan(o: {
 export const ACQ_FIT_DEFAULT = 0.5;
 /** GL -> $ posted over the months owned: the calendar months of the trailing-12 that fall on or after the
     ownership start. `t12End` = the trailing-12's last month; `start` = 'YYYY-MM' (or a date). */
-export function postedSinceClosing(actualCal: Record<string, Months> | null | undefined, t12End: { month: number; year: number } | null | undefined, start: string | null | undefined): { byGl: Record<string, number>; months: number } | null {
+export function postedSinceClosing(actualCal: Record<string, Months> | null | undefined, t12End: { month: number; year: number } | null | undefined, start: string | null | undefined): { byGl: Record<string, number>; months: number; owned: { month: number; year: number }[] } | null {
   if (!actualCal || !t12End || !start) return null;
   const mm = String(start).match(/^(\d{4})-(\d{1,2})/); if (!mm) return null;
   const sKey = Number(mm[1]) * 12 + Number(mm[2]) - 1;
@@ -2102,7 +2105,88 @@ export function postedSinceClosing(actualCal: Record<string, Months> | null | un
   if (!owned.length) return null;
   const byGl: Record<string, number> = {};
   for (const [gl, m] of Object.entries(actualCal)) { const v = owned.reduce((a, i) => a + (m[i] || 0), 0); if (v) byGl[gl] = r2(v); }
-  return { byGl, months: owned.length };
+  return { byGl, months: owned.length, owned: owned.map((i) => ({ month: i + 1, year: i + 1 <= t12End.month ? t12End.year : t12End.year - 1 })) };
+}
+
+/* ============================================================================
+   THE UW SCORECARD for a new acquisition (Troy 2026-11-12: "For new acquisitions, an annualized T12 means nothing,
+   and makes everything look awful. I gave you the UW model w all financial metrics specifically so that you could
+   try to wire in actual financials or at least proper targets" / "It needs to be weighted properly between years 1
+   and 2"). In place of the T12 guidance, for a budget whose year runs off the acquisition plan:
+     noi / income / expense  the budget against the UW target for the calendar year — month by month: the Year-1
+                             plan's months, then the plan's months on the UW Year-2 trend (acqCalendarPlan.target)
+     y1                      Year-1 NOI (the plan's months before this year + this budget's Year-1 months) vs UW Y1
+     coc                     cash-on-cash vs the UW's, WEIGHTED by the months of each UW year in the calendar year:
+                             (n1 × Y1 CoC + n2 × Y2 CoC) / 12 — the book's own CoC rows, else rebuilt from its NOI,
+                             interest-only debt service (loan × rate × 365/360) and capital
+     todate                  the actual financials: NOI posted since closing vs the plan for those same months
+   Same shape as guidanceCheck (GuideResult), so the dashboard, Summary, compare card notes and export check read it.
+   ========================================================================== */
+export interface UwReturnsIn { coc?: Record<string, number>; debt?: Record<string, number>; noi?: Record<string, number>; capital?: number; loan?: number; rate?: number }
+/** UW cash-on-cash by year: the book's rows, else NOI less I/O debt service (actual/360) over capital. */
+export function uwCocByYear(r: UwReturnsIn): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const y of ['y1', 'y2', 'y3']) {
+    if (r.coc?.[y]) { out[y] = r.coc[y]; continue; }
+    const noi = r.noi?.[y], ds = r.debt?.[y] ?? (r.loan && r.rate ? (r.loan * r.rate * 365) / 360 : null);
+    if (noi != null && ds != null && r.capital) out[y] = (noi - ds) / r.capital;
+  }
+  return out;
+}
+export function uwCheck(a: {
+  lines: BudgetLine[]; startMonth?: number;
+  /** the UW target by GL, calendar months (acqCalendarPlan.target) */
+  target: Record<string, Months>;
+  y1Idx: number[]; afterIdx: number[];
+  y1: { y1Noi: number; uwNoi: number | null; variance: number } | null;
+  capital: number; cashFlow: number;
+  uw: UwReturnsIn;
+  /** actual NOI posted since closing vs the plan's NOI for the same months */
+  toDate?: { label: string; actualNoi: number; planNoi: number } | null;
+}): GuideResult {
+  const sm = a.startMonth || 1;
+  const cal = (m: Months) => Array.from({ length: 12 }, (_, c) => m[(c - (sm - 1) + 12) % 12] || 0);
+  const bud = rollup(new Map(a.lines.map((l) => [l.gl_code, cal(l.months) as Months])));
+  const tgt = rollup(new Map(Object.entries(a.target)));
+  const T = (m: Map<string, Months>, c: string) => sum(m.get(c) || zero12());
+  const g = (b: number, t: number) => (t ? (b - t) / Math.abs(t) : null);
+  const income = g(T(bud, '5500'), T(tgt, '5500')), expense = g(T(bud, '7279'), T(tgt, '7279')), noi = g(T(bud, '7280'), T(tgt, '7280'));
+  const rental = g(T(bud, '5070'), T(tgt, '5070'));
+  const items: GuideItem[] = [];
+  const add = (key: string, label: string, value: string, target: string, status: GuideStatus, must = false) => items.push({ key, label, value, target, status, must });
+  const n1 = a.y1Idx.length, n2 = a.afterIdx.length;
+  const split = n2 ? `${n1} mo Year 1 + ${n2} mo Year 2` : `${n1} mo Year 1`;
+  add('noi', 'NOI vs UW', pctTxt(noi), `UW ${Math.round(T(tgt, '7280')).toLocaleString('en-US')} (${split}) or better`, noi == null ? 'info' : noi >= -GUIDE_EPS ? 'ok' : 'bad', true);
+  add('income', 'Total income vs UW', pctTxt(income), `UW ${Math.round(T(tgt, '5500')).toLocaleString('en-US')} or better`, income == null ? 'info' : income >= -GUIDE_EPS ? 'ok' : 'check', true);
+  add('expense', 'Total expenses vs UW', pctTxt(expense), `UW ${Math.round(T(tgt, '7279')).toLocaleString('en-US')} or less`, expense == null ? 'info' : expense <= GUIDE_EPS ? 'ok' : 'check', true);
+  if (a.y1 && a.y1.uwNoi != null) add('y1', 'Year-1 NOI vs UW', `${Math.round(a.y1.y1Noi).toLocaleString('en-US')} (${a.y1.variance >= 0 ? '+' : '−'}${Math.abs(Math.round(a.y1.variance)).toLocaleString('en-US')})`, `UW ${Math.round(a.y1.uwNoi).toLocaleString('en-US')}`, a.y1.variance >= -1 ? 'ok' : 'bad', true);
+  // cash-on-cash, the UW's weighted by the months of each UW year in this calendar year
+  const coc = uwCocByYear(a.uw);
+  const uwCoc = coc.y1 != null ? ((n1 * coc.y1) + (n2 * (coc.y2 ?? coc.y1))) / ((n1 + n2) || 12) : null;
+  const myCoc = a.capital ? a.cashFlow / a.capital : null;
+  if (uwCoc != null) add('coc', 'Cash-on-cash vs UW', myCoc == null ? 'no capital on file' : `${(myCoc * 100).toFixed(2)}%`, `UW ${(uwCoc * 100).toFixed(2)}% = ${n1}/12 × ${(coc.y1 * 100).toFixed(2)}%${n2 ? ` + ${n2}/12 × ${((coc.y2 ?? coc.y1) * 100).toFixed(2)}%` : ''}`, myCoc == null ? 'info' : myCoc >= uwCoc - GUIDE_EPS ? 'ok' : 'check', true);
+  if (a.toDate) {
+    const v = g(a.toDate.actualNoi, a.toDate.planNoi);
+    add('todate', `Actual NOI since closing (${a.toDate.label})`, `${Math.round(a.toDate.actualNoi).toLocaleString('en-US')}${v != null ? ` (${pctTxt(v)})` : ''}`, `plan ${Math.round(a.toDate.planNoi).toLocaleString('en-US')} for the same months`, v == null ? 'info' : v >= -0.02 ? 'ok' : 'check');
+  }
+  const flags = items.filter((i) => i.status === 'check').length, bad = items.filter((i) => i.status === 'bad').length;
+  return { growth: { rental, income, expense, noi, noiVsCy: null }, items, quarters: [], q4VsQ1: null, flags, bad, kind: 'uw', coc: { budget: myCoc, uw: uwCoc } };
+}
+/** NOI posted since closing (the trailing-12's owned months, as posted — not annualized) vs the acquisition plan's NOI
+    for the same calendar months. */
+export function sinceClosing(plan: Y1Plan, actualCal: Record<string, Months> | null | undefined, t12End: { month: number; year: number } | null | undefined, start: string | null | undefined): { label: string; actualNoi: number; planNoi: number } | null {
+  const p = postedSinceClosing(actualCal, t12End, start);
+  if (!p || !p.owned.length) return null;
+  const noiOf = (byGl: (gl: string) => number, gls: string[]) => gls.reduce((s, gl) => s + (feedsNoi(gl) ? noiSign(gl) * byGl(gl) : 0), 0);
+  const actualNoi = noiOf((gl) => p.byGl[gl] || 0, Object.keys(p.byGl));
+  const planNoi = noiOf((gl) => {
+    const l = plan.lines.find((x) => x.gl_code === gl);
+    if (!l) return 0;
+    return p.owned.reduce((s, o) => s + (calendarSlice(l.months, plan.year, plan.startMonth, o.year)[o.month - 1] || 0), 0);
+  }, plan.lines.map((l) => l.gl_code));
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const f = p.owned[0], l = p.owned[p.owned.length - 1];
+  return { label: `${MON[f.month - 1]}${f === l ? '' : `–${MON[l.month - 1]}`} ${l.year}`, actualNoi: r2(actualNoi), planNoi: r2(planNoi) };
 }
 /** The overlay itself: these GLs take `slice` in the `idx` months; a GL the slice lacks is zero there, a GL only
     the slice has is added. Locked (overridden) lines are never moved. Marks the months on `driver.y1`. */

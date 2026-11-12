@@ -170,6 +170,19 @@ export function parseUwBook(buf: Buffer): UwParsedSheet[] {
       }
     }
 
+    // RETURNS by year (Troy 2026-11-12: "I gave you the UW model w all financial metrics ... proper targets"): the
+    // pro forma's DEBT SERVICE / CashFlow / Cash on Cash Return rows (col B labels, below NOI), years in H N Q S U W
+    const returns: NonNullable<UwSnapshotData['returns']> = {};
+    const yc: [string, number][] = [['y1', 7], ['y2', 13], ['y3', 16], ['y4', 18], ['y5', 20], ['y6', 22]];
+    for (let r = found['noi'].row + 1; r < Math.min(g.length, found['noi'].row + 12); r++) {
+      const lbl = low(g[r]?.[1]);
+      const key = lbl.startsWith('debt service') ? 'debt' : lbl.startsWith('cashflow') || lbl.startsWith('cash flow') ? 'cashFlow' : lbl.startsWith('cash on cash') ? 'coc' : null;
+      if (!key || (returns as any)[key]) continue;
+      const vals: Record<string, number> = {};
+      for (const [yk, c] of yc) { const v = num(g[r]?.[c]); if (v) vals[yk] = v; }
+      if (Object.keys(vals).length) (returns as any)[key] = vals;
+    }
+
     const isPortfolio = g.slice(0, 12).some((row) => (row || []).some((c) => low(c).includes('portfolio')));
     const gpr1 = y1['1'] || 1;
     const data: UwSnapshotData = {
@@ -192,6 +205,7 @@ export function parseUwBook(buf: Buffer): UwParsedSheet[] {
       unitMix,
       t12,
       ...(Object.keys(basis).length ? { basis } : {}),
+      ...(Object.keys(returns).length ? { returns } : {}),
     };
     out.push({ sheetName: name, isPortfolio, propertyGuess: name.replace(/\s*-\s*(jt|bk)\s*$/i, '').trim(), data });
   }

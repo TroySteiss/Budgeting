@@ -1256,7 +1256,7 @@ describe('Summary panel (Troy 2026-11-10): the budget-comps rows, labels and T12
 });
 
 /* Year-1 plan inside the annual budget — made-up figures. */
-import { applyY1Plan, clearY1Plan, y1Check, y1MonthsIn, feedsNoi, acqCalendarPlan, postedSinceClosing, applyPlanSlice } from '../shared/annual.js';
+import { applyY1Plan, clearY1Plan, y1Check, y1MonthsIn, feedsNoi, acqCalendarPlan, postedSinceClosing, applyPlanSlice, uwCheck, uwCocByYear } from '../shared/annual.js';
 describe('Year-1 plan in the annual budget', () => {
   const flat = (v: number) => Array(12).fill(v) as Months;
   const coa = ['4994', '5031', '5140', '6305', '6410', '7300'].map((code) => ({ code, name: code, pcode: '1', curve: 'flat', active: true })) as unknown as CoaAccount[];
@@ -1365,10 +1365,35 @@ describe('Year-1 plan in the annual budget', () => {
       const none = acqCalendarPlan({ plan: plan2, calYear: 2027, coaList: coa2, uw, posted: { '6702': 90, '6720': 10 }, fit: 0 });
       expect(none.cal).toEqual(none.target);
     });
+    it('the UW scorecard: targets for the calendar year, CoC weighted between UW Years 1 and 2 by months (Troy 2026-11-12)', () => {
+      const ap = acqCalendarPlan({ plan: plan2, calYear: 2027, coaList: coa2, uw });
+      const target = Object.fromEntries(ap.target);
+      const asLines = (m: Map<string, Months>) => [...m].map(([gl, months]) => line(gl, months));
+      const on = uwCheck({ lines: asLines(ap.target), target, y1Idx: ap.y1Idx, afterIdx: ap.afterIdx, y1: { y1Noi: 1000, uwNoi: 1000, variance: 0 }, capital: 1000, cashFlow: 85,
+        uw: { coc: { y1: 0.08, y2: 0.09 } }, toDate: { label: 'Sep–Oct 2026', actualNoi: 96, planNoi: 100 } });
+      expect(on.kind).toBe('uw');
+      expect(on.growth.noi).toBeCloseTo(0, 9);
+      const coc = on.items.find((i) => i.key === 'coc')!;
+      expect(on.coc!.uw).toBeCloseTo((8 * 0.08 + 4 * 0.09) / 12, 9);      // 8 months of Year 1 + 4 of Year 2
+      expect(coc.target).toBe('UW 8.33% = 8/12 × 8.00% + 4/12 × 9.00%');
+      expect(coc.status).toBe('ok');                                        // 8.50% ≥ 8.33%
+      expect(on.items.find((i) => i.key === 'todate')!.status).toBe('check');   // −4% vs plan
+      expect(on.items.find((i) => i.key === 'noi')!.target).toMatch(/\(8 mo Year 1 \+ 4 mo Year 2\)/);
+      // NOI short of UW is a must-hold miss
+      const short = asLines(ap.target).map((l) => (l.gl_code === '4994' ? { ...l, months: l.months.map((v) => v - 10) as Months } : l));
+      expect(uwCheck({ lines: short, target, y1Idx: ap.y1Idx, afterIdx: ap.afterIdx, y1: null, capital: 0, cashFlow: 0, uw: {} }).items.find((i) => i.key === 'noi')!.status).toBe('bad');
+    });
+    it('UW cash-on-cash: the book\'s rows, else NOI less interest-only debt service (actual/360) over capital', () => {
+      expect(uwCocByYear({ coc: { y1: 0.0801, y2: 0.0868 } })).toEqual({ y1: 0.0801, y2: 0.0868 });
+      // River Ridge: NOI 1,910,039 / 1,959,762; loan 22.4M at 5.79%; capital 7,425,000 → the book's 8.01% / 8.68%
+      const r = uwCocByYear({ noi: { y1: 1910039.22, y2: 1959762.39 }, loan: 22400000, rate: 0.0579, capital: 7425000 });
+      expect(r.y1).toBeCloseTo(0.0801, 4);
+      expect(r.y2).toBeCloseTo(0.0868, 4);
+    });
     it('posted since closing: only the trailing-12 months on or after the ownership start', () => {
       const cal = { '6702': [1, 1, 1, 1, 1, 1, 1, 1, 5, 7, 1, 1] as Months };   // T12 Nov-25..Oct-26
-      expect(postedSinceClosing(cal, { month: 10, year: 2026 }, '2026-09')).toEqual({ byGl: { '6702': 12 }, months: 2 });
-      expect(postedSinceClosing(cal, { month: 10, year: 2026 }, '2026-09-15')).toEqual({ byGl: { '6702': 12 }, months: 2 });
+      expect(postedSinceClosing(cal, { month: 10, year: 2026 }, '2026-09')).toMatchObject({ byGl: { '6702': 12 }, months: 2 });
+      expect(postedSinceClosing(cal, { month: 10, year: 2026 }, '2026-09-15')).toMatchObject({ byGl: { '6702': 12 }, months: 2, owned: [{ month: 9, year: 2026 }, { month: 10, year: 2026 }] });
       expect(postedSinceClosing(cal, { month: 10, year: 2026 }, '2027-01')).toBeNull();
       expect(postedSinceClosing(cal, { month: 10, year: 2026 }, null)).toBeNull();
     });
