@@ -262,6 +262,46 @@ async function switchRegion(r) {
 }
 
 /* ---------------- render root ---------------- */
+// Right-hand pane width: drag the grip on its left edge; remembered per browser.
+const SIDE_W_DEFAULT = 400;
+function sideWidthMax() { return Math.max(320, Math.round(window.innerWidth * 0.7)); }
+function sideWidth() {
+  let w = SIDE_W_DEFAULT;
+  try { w = Number(localStorage.getItem('bt-side-w')) || SIDE_W_DEFAULT; } catch { /* storage blocked */ }
+  return Math.min(Math.max(w, 300), sideWidthMax());
+}
+document.addEventListener('pointerdown', (e) => {
+  const grip = e.target.closest && e.target.closest('.editor .sidegrip');
+  if (!grip || e.button !== 0) return;
+  const ed = grip.closest('.editor');
+  const side = ed.querySelector('.side');
+  const startX = e.clientX, startW = side.getBoundingClientRect().width;
+  let w = startW;
+  e.preventDefault();
+  grip.setPointerCapture(e.pointerId);
+  ed.classList.add('resizing');
+  const move = (ev) => {
+    w = Math.min(Math.max(startW + (startX - ev.clientX), 300), sideWidthMax());
+    ed.style.setProperty('--side-w', `${Math.round(w)}px`);
+  };
+  const up = () => {
+    grip.removeEventListener('pointermove', move);
+    grip.removeEventListener('pointerup', up);
+    grip.removeEventListener('pointercancel', up);
+    ed.classList.remove('resizing');
+    try { localStorage.setItem('bt-side-w', String(Math.round(w))); } catch { /* storage blocked */ }
+  };
+  grip.addEventListener('pointermove', move);
+  grip.addEventListener('pointerup', up);
+  grip.addEventListener('pointercancel', up);
+});
+document.addEventListener('dblclick', (e) => {
+  const grip = e.target.closest && e.target.closest('.editor .sidegrip');
+  if (!grip) return;
+  try { localStorage.removeItem('bt-side-w'); } catch { /* storage blocked */ }
+  grip.closest('.editor').style.setProperty('--side-w', `${SIDE_W_DEFAULT}px`);
+});
+
 function render() {
   const gw = document.querySelector('.gridwrap');
   if (gw) S.gridScroll = { top: gw.scrollTop, left: gw.scrollLeft };
@@ -1067,7 +1107,7 @@ function renderEditor(el) {
       ${kpiCard(k.sp ? 'Cash flow before SP' : 'Cash flow · no SP budgeted', k.cashFlow, prop.units)}
       <div class="kpi" title="(NOI − interest − principal) ÷ capital. Special projects are NOT deducted${k.sp ? '' : ' and none are budgeted yet'}${k.principal ? '' : '; no principal is budgeted'}."><div class="lbl">Cash on cash${k.sp ? ' before SP' : ''}</div><div class="val">${k.coc != null ? pctf(k.coc) : '—'}</div><div class="sub">${inp.capital ? 'on ' + money(inp.capital) : 'set capital'}</div></div>
     </div>
-    <div class="editor${localStorage.getItem('bt-side') === '0' ? ' noside' : ''}">
+    <div class="editor${localStorage.getItem('bt-side') === '0' ? ' noside' : ''}" style="--side-w:${sideWidth()}px">
       <div>
         <div class="legend">
           ${(() => {
@@ -1092,6 +1132,7 @@ function renderEditor(el) {
         </div>
         <div class="gridwrap">${gridHtml(bv, totals)}</div>
       </div>
+      <div class="sidegrip" title="Drag to widen or narrow this pane · double-click to reset"></div>
       <div class="side">
         <div class="card">
           <h2>Monthly trend</h2>

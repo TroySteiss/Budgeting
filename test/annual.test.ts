@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, mgmtFeeRates, summaryColumn, sumSummaryCols, summaryLabels, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
   refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, contractMonths, flatFeeFromSchedule, guidanceCheck, fitToT12, noiQuarters, qShiftTargets, normalizeGuidance, type TemplateData, type AnnualSources,
+  refollowMgmtFee,
 } from '../shared/annual.js';
 import { sum, zero12, rollup, CURVES, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
 import { parseYardiBudgetTemplate, parseRentRoll, parseMonarchStatement, detectUploadKind } from '../src/importers.js';
@@ -1676,5 +1677,29 @@ describe('quarter shift — phase in the expense increases', () => {
       expect(sum(l.months)).toBeCloseTo(sum(b.months), 2);
       l.months.forEach((v, i) => expect(v).toBeGreaterThanOrEqual(Math.min(b.months[i], Math.max(0, actual[l.gl_code]?.[i] || 0)) - 0.01));
     }
+  });
+});
+
+describe('refollowMgmtFee (fee follows a hand-edited income line)', () => {
+  const inc = Array(12).fill(100000) as any;
+  it('prior-month fee: each month re-applies its own rate to the new prior-month income', () => {
+    const fee = [3000, 3000, 3000, 4000, 4000, 4000, 4000, 4000, 4000, 4000, 4000, 4000] as any; // Jan fixed by CY budget; first-year 3% then 4%
+    const next = inc.slice(); next[2] = 110000;                    // March income up 10%
+    const out = refollowMgmtFee(fee, inc, next as any, { priorMonth: true, month0Fixed: true });
+    expect(out[3]).toBe(4400);                                     // April runs on March
+    expect(out[2]).toBe(3000);                                     // March runs on February — unchanged
+    expect(out.reduce((a: number, v: number) => a + v, 0)).toBe(fee.reduce((a: number, v: number) => a + v, 0) + 400);
+  });
+  it('January follows its own income only when there is no current-year budget', () => {
+    const fee = Array(12).fill(4000) as any;
+    const next = inc.slice(); next[0] = 120000;
+    expect(refollowMgmtFee(fee, inc, next as any, { priorMonth: true, month0Fixed: true })[0]).toBe(4000);
+    expect(refollowMgmtFee(fee, inc, next as any, { priorMonth: true, month0Fixed: false })[0]).toBe(4800);
+  });
+  it('same-month fee (acquisition budgets) follows that month', () => {
+    const fee = Array(12).fill(3000) as any;
+    const next = inc.slice(); next[5] = 90000;
+    const out = refollowMgmtFee(fee, inc, next as any, { priorMonth: false, month0Fixed: false });
+    expect(out[5]).toBe(2700); expect(out[6]).toBe(3000);
   });
 });

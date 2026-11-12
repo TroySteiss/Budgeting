@@ -94,12 +94,16 @@ table.list tr.click:hover { background: var(--hover); }
 .kpi .sub { font-size: 11.5px; color: var(--dim); }
 
 /* ---------- editor layout ---------- */
-.editor { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 14px; align-items: start; }
+.editor { display: grid; grid-template-columns: minmax(0, 1fr) 10px var(--side-w, 400px); gap: 2px; align-items: start; }
 .editor.noside { grid-template-columns: minmax(0, 1fr); }
-.editor.noside .side { display: none; }
+.editor.noside .side, .editor.noside .sidegrip { display: none; }
+.editor .sidegrip { position: sticky; top: 60px; align-self: start; height: calc(100vh - 76px); cursor: col-resize; display: flex; justify-content: center; touch-action: none; }
+.editor .sidegrip::before { content: ''; width: 3px; height: 100%; border-radius: 2px; background: var(--line, #dde3ea); transition: background .12s; }
+.editor .sidegrip:hover::before, .editor.resizing .sidegrip::before { background: var(--accent, #2f5d8a); }
+.editor.resizing { user-select: none; cursor: col-resize; }
 .editor .side { position: sticky; top: 60px; max-height: calc(100vh - 76px); overflow-y: auto; overflow-x: hidden; min-width: 0; }
 .editor .side .card { min-width: 0; overflow: hidden; }
-@media (max-width: 1250px) { .editor { grid-template-columns: minmax(0, 1fr); } .editor .side { position: static; max-height: none; } }
+@media (max-width: 1250px) { .editor { grid-template-columns: minmax(0, 1fr); } .editor .sidegrip { display: none; } .editor .side { position: static; max-height: none; } }
 .editor > div { min-width: 0; }
 
 /* ---------- driver legend ---------- */

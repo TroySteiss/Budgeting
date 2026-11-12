@@ -1111,6 +1111,21 @@ export function qShiftTargets(targets: (number | null)[], now: number[]): number
     a fixed schedule, the management fee (7) follows income, payroll (10) follows pay periods and the roster,
     and corporate rates / suggestions are set by corporate. Contracts, debt and typed lines were already out. */
 export const QSHIFT_FIXED_PCODES = new Set(['6', '7', '8', '10']);
+/* MANAGEMENT FEE RE-FOLLOW (Troy 2026-11-12: NOI was not moving after an income edit). A hand edit to
+   an income line saves without a regenerate, so a live % of income fee line kept the old income's
+   dollars. This re-applies each month's own fee rate (old fee ÷ old basis) to the new basis: prior-month
+   income on annual budgets (January keeps its fee when it runs on the current-year budget's December),
+   same-month income otherwise. Months with no old basis keep their fee. Pure. */
+export function refollowMgmtFee(fee: Months, oldIncome: Months, newIncome: Months, opts: { priorMonth: boolean; month0Fixed: boolean }): Months {
+  const basis = (inc: Months, i: number): number | null => (opts.priorMonth ? (i === 0 ? (opts.month0Fixed ? null : inc[0]) : inc[i - 1]) : inc[i]);
+  return fee.map((v, i) => {
+    const ob = basis(oldIncome, i), nb = basis(newIncome, i);
+    if (ob == null || nb == null || !ob) return v;
+    const out = (v / ob) * nb;
+    return opts.priorMonth ? Math.round(out) : Math.round(out * 100) / 100;
+  }) as Months;
+}
+
 export const QSHIFT_SKIP_METHODS = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest', 'mgmtPct', 'corpRate', 'suggested']);
 export function qShiftLeverOk(gl: string, acc: CoaAccount | undefined, method: string | undefined): boolean {
   const n = parseInt(gl, 10);

@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, type BudgetGuidance, noiQuarters } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
@@ -1231,6 +1231,8 @@ router.put('/budgets/:id/lines/:gl', h(async (req, res) => {
   const { months, note, override, driver } = req.body || {};
   const existing = lb.lines.find((l) => l.gl_code === gl);
   if (!existing) return res.status(404).json({ error: `No line for GL ${gl}` });
+  const incomeOf = (ls: BudgetLine[]): Months => rollup(new Map(ls.map((l) => [l.gl_code, l.months]))).get('5500') || zero12();
+  const income0 = incomeOf(lb.lines);
   if (months) {
     if (!Array.isArray(months) || months.length !== 12) return res.status(400).json({ error: 'months must be an array of 12 numbers' });
     const next = months.map((v: any) => r2(Number(v) || 0)) as Months;
@@ -1296,8 +1298,9 @@ router.put('/budgets/:id/lines/:gl', h(async (req, res) => {
       .filter((l) => { const m2 = (l.driver as any)?.method; return m2 === 'recovery' || m2 === 'linkLine' || m2 === 'burdenRatio'; })
       .map((l) => [l.gl_code, JSON.stringify(l.months) + '|' + JSON.stringify(l.driver)])
   );
+  let passed: BudgetLine[] = lb.lines;
   if (before.size) {
-    const passed = applyDependentPasses(lb, lb.lines, lb.budget.inputs);
+    passed = applyDependentPasses(lb, lb.lines, lb.budget.inputs);
     for (const l of passed) {
       const b4 = before.get(l.gl_code);
       if (b4 === undefined) continue;
@@ -1307,6 +1310,21 @@ router.put('/budgets/:id/lines/:gl', h(async (req, res) => {
         'update budget_lines set months=$3, driver=$4 where budget_id=$1 and gl_code=$2',
         [id, l.gl_code, JSON.stringify(l.months), JSON.stringify(l.driver)]
       );
+    }
+  }
+  // a live % of income management fee follows the edited income now, not at the next recalc
+  // (Troy 2026-11-12: NOI on the KPIs and the Compare card lagged an income edit)
+  const fee = passed.find((l) => l.gl_code === '6112');
+  const feeD = fee?.driver as any;
+  if (fee && fee !== existing && !fee.override && feeD?.method === 'mgmtPct') {
+    const income1 = incomeOf(passed);   // recovery (REIM) lines are income too
+    if (income1.some((v, i) => Math.abs(v - income0[i]) >= 0.005)) {
+      const month0Fixed = !!(lb.annual && lb.budgetCal && Object.keys(lb.budgetCal).length);
+      const nf = refollowMgmtFee(fee.months, income0, income1, { priorMonth: !!feeD.priorMonth, month0Fixed });
+      if (nf.some((v, i) => v !== fee.months[i])) {
+        fee.months = nf;
+        await query('update budget_lines set months=$3 where budget_id=$1 and gl_code=$2', [id, '6112', JSON.stringify(fee.months)]);
+      }
     }
   }
   await query('update budgets set updated_at=now() where id=$1', [id]);
