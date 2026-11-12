@@ -1530,12 +1530,24 @@ function renderEditor(el) {
     });
   });
   // annual growth targets: typing saves the target; "tie" applies it
-  const tieGrowth = async (key, pct) => { pushUndo(); S.bv = await POST(`/budgets/${b.id}/tie-growth`, { pcode: key, pct }); render(); };
+  // tie basis (Troy 2026-11-12): T12 targets in growthTargets, T3 targets in growthTargetsT3; the server turns a
+  // T3 target into the same dollar subtotal. Only offered when the budget has a T3 annualized.
+  const hasT3 = () => (S.bv.refs || []).some((r) => r.key === 'ann3');
+  const tieBasis = () => ((S.bv.budget.inputs || {}).tieBasis === 't3' && hasT3() ? 't3' : 't12');
+  const tmapKey = () => (tieBasis() === 't3' ? 'growthTargetsT3' : 'growthTargets');
+  const tieGrowth = async (key, pct) => { pushUndo(); S.bv = await POST(`/budgets/${b.id}/tie-growth`, { pcode: key, pct, basis: tieBasis() }); render(); };
+  el.querySelectorAll('.tie [data-tbasis]').forEach((btn) => btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (btn.dataset.tbasis === tieBasis()) return;
+    try { S.bv = await POST(`/budgets/${b.id}/tie-basis`, { basis: btn.dataset.tbasis }); render(); } catch (err) { alert(err.message); }
+  }));
   el.querySelectorAll('.tie [data-gt]').forEach((box) => box.addEventListener('change', async () => {
-    const gtNew = { ...((S.bv.budget.inputs || {}).growthTargets || {}) };
+    const mk = tmapKey();
+    const gtNew = { ...((S.bv.budget.inputs || {})[mk] || {}) };
     const v = parseFloat(String(box.value).replace(/[%\s]/g, ''));
     if (Number.isFinite(v)) gtNew[box.dataset.gt] = v / 100; else delete gtNew[box.dataset.gt];
-    S.bv = await PUT(`/budgets/${b.id}`, { inputs: { growthTargets: gtNew } }); render();
+    // saved without recalculating: a target moves nothing until "tie"
+    S.bv = await POST(`/budgets/${b.id}/targets`, { [mk]: gtNew }); render();
   }));
   el.querySelectorAll('.tie [data-tie]').forEach((btn) => btn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1552,7 +1564,7 @@ function renderEditor(el) {
         <button data-lv="gpr" title="Solve the market-rent steps. Loss to lease follows GPR, so most of a market-rent change lands there and the target may be out of reach">GPR (market rent)${last === 'gpr' ? ' (last used)' : ''}</button>`, (menu) => {
         menu.querySelectorAll('[data-lv]').forEach((b2) => b2.addEventListener('click', async () => {
           pushUndo();
-          try { S.bv = await POST(`/budgets/${b.id}/tie-growth`, { pcode: key, pct, lever: b2.dataset.lv }); render(); } catch (err) { S.undo.stack.pop(); alert(err.message); }
+          try { S.bv = await POST(`/budgets/${b.id}/tie-growth`, { pcode: key, pct, lever: b2.dataset.lv, basis: tieBasis() }); render(); } catch (err) { S.undo.stack.pop(); alert(err.message); }
         }));
       });
       return;
@@ -1564,20 +1576,21 @@ function renderEditor(el) {
     const fill = guidanceFill(S.bv);
     if (!Object.keys(fill).length) return;
     pushUndo();
-    S.bv = await PUT(`/budgets/${b.id}`, { inputs: { growthTargets: { ...((S.bv.budget.inputs || {}).growthTargets || {}), ...fill } } });
+    S.bv = await POST(`/budgets/${b.id}/targets`, { growthTargets: { ...((S.bv.budget.inputs || {}).growthTargets || {}), ...fill } });
     render();
   }); }
   const tieAll = el.querySelector('#tie-all');
   if (tieAll) tieAll.addEventListener('click', async (e) => {
     e.stopPropagation();
-    const gtAll = (S.bv.budget.inputs || {}).growthTargets || {};
+    const basis = tieBasis();
+    const gtAll = (S.bv.budget.inputs || {})[tmapKey()] || {};
     // categories, then the income totals (they move GPR), then OpEx, then NOI last
     const late = ['rental', 'income', 'opex', 'noi'];
     const order = [...Object.keys(gtAll).filter((k) => !late.includes(k)), ...late.filter((k) => gtAll[k] != null)];
     pushUndo();
     const lv = (S.bv.budget.inputs || {}).tieLevers || {};
     const skipped = order.filter((k) => (k === 'rental' || k === 'income') && !lv[k]);
-    try { for (const k of order) if (gtAll[k] != null && !skipped.includes(k)) S.bv = await POST(`/budgets/${b.id}/tie-growth`, { pcode: k, pct: gtAll[k], ...(lv[k] ? { lever: lv[k] } : {}) }); }
+    try { for (const k of order) if (gtAll[k] != null && !skipped.includes(k)) S.bv = await POST(`/budgets/${b.id}/tie-growth`, { pcode: k, pct: gtAll[k], basis, ...(lv[k] ? { lever: lv[k] } : {}) }); }
     catch (err) { alert(err.message); }
     if (skipped.length) alert(`Skipped ${skipped.map((k) => (k === 'rental' ? 'Total Rental Income' : 'Total Income')).join(' and ')}: tie it on its own once to pick the lever (vacancy % or GPR).`);
     render();
@@ -3134,7 +3147,6 @@ function guidanceFill(bv) {
 function tieGrowthHtml(bv) {
   const inp = bv.budget.inputs || {};
   const refLabel = bv.refLabel || 'T12';
-  const gt = inp.growthTargets || {};
   const t = bv.tieout;
   const refKey = inp.refSource === 'budget' ? 'budget' : 'actual';
   const refByGl = ((bv.refs || []).find((r) => r.key === refKey) || {}).byGl || {};
@@ -3145,6 +3157,11 @@ function tieGrowthHtml(bv) {
   };
   const byP = Object.fromEntries(t.rows.map((r) => [r.pcode, r]));
   const t3 = ((bv.refs || []).find((r) => r.key === 'ann3') || {}).cat || null;
+  // TIE BASIS (Troy 2026-11-12: "Need an option of which to tie to, T3 or T12. It can be a toggle"): on T3 the
+  // Target column is growth over the T3 annualized, with its own saved targets (growthTargetsT3). Guidance is
+  // growth over the October T12, so on T3 the boxes carry no guidance numbers (the Δ% T12 colours stay).
+  const basisT3 = inp.tieBasis === 't3' && !!t3;
+  const gt = (basisT3 ? inp.growthTargetsT3 : inp.growthTargets) || {};
   const agg =(ps, label) => {
     const budget = ps.reduce((a, p) => a + ((byP[p] || {}).budget || 0), 0);
     const uw = ps.reduce((a, p) => a + ((byP[p] || {}).uw || 0), 0);
@@ -3161,11 +3178,11 @@ function tieGrowthHtml(bv) {
   };
   // Δ% over the T3 annualized (Troy 2026-11-12: "Add column to comparison pane for delta over T3"): growth of the
   // signed T3, like the Δ% beside it. Display only — guidance and ties stay on the T12.
-  const t3DeltaCell = (r) => {
+  const t3DeltaCell = (r, cls = '') => {
     if (!t3) return '';
     const v = t3Of(r);
     const g = v ? (r.budget - v) / v : null;
-    return `<td class="t3d" title="Budget vs T3 annualized (${esc(t3ref.period)}): Δ ${money(r.budget - (v || 0))}">${fmtPct(g)}</td>`;
+    return `<td class="t3d ${cls}" title="Budget vs T3 annualized (${esc(t3ref.period)}): Δ ${money(r.budget - (v || 0))}">${fmtPct(g)}</td>`;
   };
   // growth of the SIGNED reference: a contra line shrinking 10% reads −10%, like its target
   const pctOf = (r) => (r.uw ? (r.budget - r.uw) / r.uw : null);
@@ -3195,7 +3212,8 @@ function tieGrowthHtml(bv) {
   if (useG) GR.noi = [G.noiPct, null];
   const gText = (k) => (k === 'noi' && useG ? `≥${p1(G.noiPct)}` : GT[k] != null ? `${p1(GT[k])}` : '');
   const gWhy = { income: 'total income', rental: 'rental income, as total income', opex: 'total expenses', noi: 'NOI (most important) — at least', '4': 'as total income', '5': 'as total income', '6': `insurance at $${G ? G.insurancePerUnit : 275}/unit`, '8': 'RE taxes: over actuals unless documented', '10': 'payroll on performing sites, lower where NOI growth is low', '9': 'as total expenses', '11': 'as total expenses', '12': 'as total expenses', '13': 'as total expenses', '14': 'as total expenses' };
-  const fillable = Object.keys(GT).filter((k) => gt[k] == null && byKeyExists(k));
+  const fillable = basisT3 ? [] : Object.keys(GT).filter((k) => gt[k] == null && byKeyExists(k));
+  const basisName = basisT3 ? 'T3 annualized' : refLabel;
   function byKeyExists(k) { return ['rental', 'income', 'opex'].includes(k) || !!byP[k]; }
   // key: a pcode, 'opex' or 'noi' → takes a target; null → display only
   // rows with no number of their own get the DERIVED guidance the Summary tab uses (sumGuide): GPR / net GPR /
@@ -3204,30 +3222,37 @@ function tieGrowthHtml(bv) {
   const cardR = { cat: { '1': byP['1'] ? { ref: byP['1'].uw, bud: byP['1'].budget } : null, egi: { ref: t.egi.uw, bud: t.egi.budget } } };
   const row = (r, key, cls, dk) => {
     const g = pctOf(r);
+    const v3 = t3 ? t3Of(r) : null;
+    const g3 = v3 ? (r.budget - v3) / v3 : null;
+    const gB = basisT3 ? g3 : g;   // growth on the basis the target is typed on
     const tgt = key != null && gt[key] != null ? gt[key] : null;
-    const off = tgt != null && g != null ? Math.abs(g - tgt) : null;
+    const off = tgt != null && gB != null ? Math.abs(gB - tgt) : null;
+    const offCls = off != null ? (off < 0.0015 ? 'good' : off > 0.01 ? 'bad' : '') : null;
     const gr = key != null ? GR[key] : null;
     const dg = useG && !gr ? sumGuide(G, dk || key, { ref: r.uw, bud: r.budget }, cardR) : null;
     const gIn = gr && g != null ? (gr[0] == null || g >= gr[0] - 1e-9) && (gr[1] == null || g <= gr[1] + 1e-9) : dg ? dg.ok : null;
-    const vcls = off != null ? (off < 0.0015 ? 'good' : off > 0.01 ? 'bad' : '') : gIn == null ? '' : gIn ? 'good' : 'bad';
-    const ph = gr ? gText(key) : '%';
-    const tip = `Growth target vs ${refLabel} (%)${gr ? ` — exec-team guidance ${gText(key)}% (${gWhy[key]}); type a number to use your own` : ''}`;
+    // a typed target colours the Δ% of its own basis; the Δ% T12 otherwise shows the guidance
+    const vcls = !basisT3 && offCls != null ? offCls : gIn == null ? '' : gIn ? 'good' : 'bad';
+    const v3cls = basisT3 && offCls != null ? offCls : '';
+    const gBox = gr && !basisT3;   // the guidance number sits in an empty box only on the T12 basis
+    const ph = gBox ? gText(key) : '%';
+    const tip = `Growth target vs ${basisName} (%)${gBox ? ` — exec-team guidance ${gText(key)}% (${gWhy[key]}); type a number to use your own` : ''}`;
     // tie works off the typed target, or — with the box empty — the guidance number already in it (Troy 2026-11-11:
     // "why do I need to enter a target when we already have targets"). Offered only when the row is outside it.
     // NOI guidance is a floor (≥), not a point, so NOI still ties only to a typed number.
-    const gPt = key != null && tgt == null && GT[key] != null && gIn === false ? GT[key] : null;
+    const gPt = !basisT3 && key != null && tgt == null && GT[key] != null && gIn === false ? GT[key] : null;
     const tieTo = tgt != null ? (off == null || off >= 0.0015 ? tgt : null) : gPt;
-    const tieBtn = tieTo != null ? `<button class="rb" data-tie="${key}" data-pct="${tieTo}" title="Shift this subtotal's growth factors so it lands at ${esc(refLabel)} ${fmtPct(tieTo)}${tgt == null ? ' (the guidance)' : ''}">tie</button>` : '';
+    const tieBtn = tieTo != null ? `<button class="rb" data-tie="${key}" data-pct="${tieTo}" title="Shift this subtotal's growth factors so it lands at ${esc(basisName)} ${fmtPct(tieTo)}${tgt == null ? ' (the guidance)' : ''}">tie</button>` : '';
     return `<tr class="${cls || ''}"><td title="${esc(r.label)}">${esc(SHORT[r.pcode] || r.label)}</td>
       <td>${money(r.uw)}</td>${t3Cell(r)}<td>${money(r.budget)}</td>
-      <td class="var ${vcls}" title="Δ ${money(r.budget - r.uw)} vs ${esc(refLabel)}${dg ? ` · guidance: ${esc(dg.text)}` : ''}">${fmtPct(g)}</td>${t3DeltaCell(r)}
-      <td class="tgt">${key != null ? `<input data-gt="${key}" value="${tgt != null ? (tgt * 100).toFixed(1) : ''}" placeholder="${esc(ph)}" class="${gr ? 'gph' : ''}" style="width:${gr ? 58 : 48}px; font-size:11px; text-align:right" title="${esc(tip)}">` : ''}${tieBtn}</td></tr>`;
+      <td class="var ${vcls}" title="Δ ${money(r.budget - r.uw)} vs ${esc(refLabel)}${dg ? ` · guidance: ${esc(dg.text)}` : ''}">${fmtPct(g)}</td>${t3DeltaCell(r, v3cls)}
+      <td class="tgt">${key != null ? `<input data-gt="${key}" value="${tgt != null ? (tgt * 100).toFixed(1) : ''}" placeholder="${esc(ph)}" class="${gBox ? 'gph' : ''}" style="width:${gr ? 58 : 48}px; font-size:11px; text-align:right" title="${esc(tip)}">` : ''}${tieBtn}</td></tr>`;
   };
   const cat = (p) => (byP[p] ? row(byP[p], p) : '');
   const nTargets = Object.keys(gt).filter((k) => gt[k] != null).length;
   const refShort = inp.refSource === 'budget' ? 'CY bud' : 'T12';
   return `<div class="tiewrap"><table${t3 ? ' class="t3"' : ''}>
-    <tr><th>Subtotal</th><th title="${esc(refLabel)}">${refShort}</th>${t3 ? `<th title="T3 annualized — ${esc(t3ref.period)}">T3 ann</th>` : ''}<th>Budget</th><th title="Budget vs ${esc(refLabel)}">Δ%${t3 ? ` ${refShort}` : ''}</th>${t3 ? `<th title="Budget vs T3 annualized — ${esc(t3ref.period)}">Δ% T3</th>` : ''}<th>Target</th></tr>
+    <tr><th>Subtotal</th><th title="${esc(refLabel)}">${refShort}</th>${t3 ? `<th title="T3 annualized — ${esc(t3ref.period)}">T3 ann</th>` : ''}<th>Budget</th><th title="Budget vs ${esc(refLabel)}">Δ%${t3 ? ` ${refShort}` : ''}</th>${t3 ? `<th title="Budget vs T3 annualized — ${esc(t3ref.period)}">Δ% T3</th>` : ''}<th title="Growth target over the ${esc(basisName)}">Target${t3 ? ` vs ${basisT3 ? 'T3' : refShort}` : ''}</th></tr>
     ${cat('1')}${byP.loss ? row(byP.loss, null, '', 'loss') : ''}
     ${row(agg(['1', 'loss'], 'Net Gross Potential Rent'), null, 'sub', 'ngpr')}
     ${cat('2')}${cat('3')}
@@ -3241,7 +3266,8 @@ function tieGrowthHtml(bv) {
   </table></div>
   ${useG ? guideNotesHtml(bv) : ''}
   <div class="row" style="margin-top:6px; justify-content:space-between; align-items:center">
-    <span class="muted" style="font-size:11px">Δ% = budget vs ${esc(refLabel)}.${useG ? ` Grey number in an empty box = the guidance; Δ% is green at or above it on income rows, at or below it on expense rows (NOI at least ${p1(G.noiPct)}%), red the wrong side. <b>fill blank</b> puts those numbers in the empty boxes.` : ''} <b>tie</b> lands a row on its target — the number you typed, or the guidance when the box is empty.</span>
+    ${t3 ? `<span class="tbasis" title="What the Target column ties to. ${esc(refShort)}: growth over the ${esc(refLabel)} (the guidance numbers sit in the empty boxes). T3: growth over the last three actual months × 4 (${esc(t3ref.period)}); its targets are kept separately, so switching never changes the other basis's numbers.">Tie to <button data-tbasis="t12" class="${basisT3 ? '' : 'on'}">${esc(refShort)}</button><button data-tbasis="t3" class="${basisT3 ? 'on' : ''}">T3</button></span>` : ''}
+    <span class="muted" style="font-size:11px">Δ% = budget vs ${esc(refLabel)}.${basisT3 ? ' <b>Targets are growth over the T3 annualized</b>: a typed target colours the Δ% T3; Δ% T12 keeps the guidance colours.' : ''}${useG && !basisT3 ? ` Grey number in an empty box = the guidance; Δ% is green at or above it on income rows, at or below it on expense rows (NOI at least ${p1(G.noiPct)}%), red the wrong side. <b>fill blank</b> puts those numbers in the empty boxes.` : ''} <b>tie</b> lands a row on its target — the number you typed${basisT3 ? '' : ', or the guidance when the box is empty'}.</span>
     ${fillable.length ? `<button class="rb" id="fill-targets" title="Put the guidance number in every EMPTY target box (${fillable.length}): income lines ${p1(G.incomePct)}%, expense categories ${p1(G.expensePct)}%, RE taxes ${p1(G.reTaxPct)}%, payroll ${p1(G.payrollPct)}%, insurance at $${G.insurancePerUnit}/unit. Typed boxes and NOI are left alone. Nothing ties until you press tie.">fill ${fillable.length} blank</button>` : ''}
     ${nTargets ? `<button class="rb" id="tie-all" title="Apply every target that is set — categories first, then rental income / total income (they move GPR), then OpEx, then NOI">tie all (${nTargets})</button>` : ''}
   </div>

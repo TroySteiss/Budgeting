@@ -265,6 +265,10 @@ export interface BudgetInputs {
   /** annual: growth targets vs the reference per subtotal (pcode, plus 'opex'
       and 'noi'); "tie" shifts the T12-based lines' growth factors to land there */
   growthTargets?: Record<string, number>;
+  /** annual: what the Target column ties to (Troy 2026-11-12) — the T12 (default) or the T3 annualized.
+      T3 targets are growth over the T3 and live apart from the T12 ones. */
+  tieBasis?: 't12' | 't3';
+  growthTargetsT3?: Record<string, number>;
   /** lease expirations per budget month (Yardi template LeaseExpirations;
       derived from the unit-level rent roll when no template is linked) */
   expirations?: Months | null;

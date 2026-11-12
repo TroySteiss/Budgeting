@@ -1666,6 +1666,33 @@ router.post('/budgets/:id/summary-labels', h(async (req, res) => {
   res.json(budgetView((await loadBudget(id))!));
 }));
 
+/* What the compare card's Target column ties to: the T12 (default) or the T3 annualized (Troy 2026-11-12).
+   A view choice only — nothing is recalculated. */
+router.post('/budgets/:id/tie-basis', h(async (req, res) => {
+  const id = Number(req.params.id);
+  const lb = await loadBudget(id);
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  const basis = req.body?.basis === 't3' ? 't3' : 't12';
+  if (basis === 't3' && !lb.refs.some((r) => r.key === 'ann3')) return res.status(400).json({ error: 'No T3 annualized on file for this budget' });
+  const inputs = { ...(lb.budget.inputs || {}), tieBasis: basis === 't3' ? 't3' : undefined };
+  await query('update budgets set inputs=$2 where id=$1', [id, JSON.stringify(inputs)]);
+  res.json(budgetView((await loadBudget(id))!));
+}));
+/* Save the compare card's typed growth targets (T12 and / or T3) WITHOUT recalculating: a target feeds no line
+   until "tie" is pressed. Saving through PUT /budgets/:id rebuilt every line, so typing a target on a budget built
+   on older formulas quietly moved numbers nobody picked (Troy's rule: never auto-adjust). Body: { growthTargets?,
+   growthTargetsT3? } — each a full map of subtotal -> growth (fraction); null clears it. */
+router.post('/budgets/:id/targets', h(async (req, res) => {
+  const id = Number(req.params.id);
+  const lb = await loadBudget(id);
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  const clean = (o: any): Record<string, number> => Object.fromEntries(Object.entries(o || {}).filter(([k, v]) => /^[\w]{1,12}$/.test(k) && Number.isFinite(Number(v))).map(([k, v]) => [k, Number(v)]));
+  const inputs: any = { ...(lb.budget.inputs || {}) };
+  for (const k of ['growthTargets', 'growthTargetsT3'] as const) if (req.body?.[k] !== undefined) inputs[k] = clean(req.body[k]);
+  await query('update budgets set inputs=$2 where id=$1', [id, JSON.stringify(inputs)]);
+  res.json(budgetView((await loadBudget(id))!));
+}));
+
 /* Sign-off on the defaults a budget is running on (Troy 2026-11-09, devil's advocate #4):
    records who reviewed them and a fingerprint of what they were, WITHOUT regenerating —
    the editor shows "changed since reviewed" when the fingerprint no longer matches. */
@@ -1769,12 +1796,32 @@ router.post('/budgets/:id/tie-growth', h(async (req, res) => {
   const ref = refOf(lb);
   if (!ref) return res.status(400).json({ error: 'No statement linked to compare to' });
   const inputs: BudgetInputs = JSON.parse(JSON.stringify(lb.budget.inputs));
-  const targets = { ...(inputs.growthTargets || {}) };
-  const pct = req.body?.pct != null && req.body.pct !== '' ? Number(req.body.pct) : targets[key];
-  if (!Number.isFinite(pct)) return res.status(400).json({ error: `No growth target set for ${key}` });
+  // TIE BASIS (Troy 2026-11-12: "Need an option of which to tie to, T3 or T12. It can be a toggle"): with
+  // basis 't3' the % is growth over the T3 annualized (last three actual months x 4). Its targets are kept
+  // apart (growthTargetsT3) so flipping the toggle never rewrites the T12 ones. The tie itself is unchanged:
+  // the T3 target is turned into the same dollar subtotal, expressed as growth over the reference.
+  const basis: 't12' | 't3' = req.body?.basis === 't3' ? 't3' : 't12';
+  const tmap: 'growthTargets' | 'growthTargetsT3' = basis === 't3' ? 'growthTargetsT3' : 'growthTargets';
+  const targets = { ...((inputs as any)[tmap] || {}) };
+  const pctIn = req.body?.pct != null && req.body.pct !== '' ? Number(req.body.pct) : targets[key];
+  if (!Number.isFinite(pctIn)) return res.status(400).json({ error: `No growth target set for ${key}` });
   if (key === '7') return res.status(400).json({ error: 'Management fee follows income — set its % under Assumptions' });
-  targets[key] = pct;
-  inputs.growthTargets = targets;
+  targets[key] = pctIn;
+  (inputs as any)[tmap] = targets;
+  // the subtotal of `key` in a reference column (UwSnapshotData shape: y1 by pcode + egi / toe / noi)
+  const subOf = (c: { y1: Record<string, number>; egi: number; toe: number; noi: number }): number =>
+    key === 'rental' ? ['1', 'loss', '2', '3'].reduce((a, p) => a + (c.y1[p] || 0), 0)
+      : key === 'income' ? c.egi : key === 'opex' ? c.toe : key === 'noi' ? c.noi : (c.y1[key] || 0);
+  let pct = pctIn;
+  let t3Sub: number | null = null;
+  if (basis === 't3') {
+    const t3 = lb.refs.find((r) => r.key === 'ann3')?.cat;
+    if (!t3) return res.status(400).json({ error: 'No T3 annualized on file for this budget (it needs at least three months of actuals) — tie to the T12' });
+    t3Sub = subOf(t3 as any);
+    const refSub = subOf(ref as any);
+    if (!t3Sub || !refSub) return res.status(400).json({ error: `Nothing in this subtotal on the ${t3Sub ? 'reference' : 'T3 annualized'} to grow from` });
+    pct = (t3Sub * (1 + pctIn)) / refSub - 1;
+  }
   const user = req.session.username || '';
 
   // which detail lines move, and what their total must become
@@ -1829,14 +1876,15 @@ router.post('/budgets/:id/tie-growth', h(async (req, res) => {
       if (lever === 'vacancy' && x === 0 && f < want) break;              // vacancy is already zero
     }
     if (Math.abs(want - f) > Math.max(tol, Math.abs(want) * 0.001)) {
-      const reach = (f - refTot) / Math.abs(refTot);
-      return res.status(400).json({ error: `${lever === 'gpr' ? 'GPR' : 'Vacancy'} alone does not get ${key === 'rental' ? 'Total Rental Income' : 'Total Income'} to ${(pct * 100).toFixed(2)}% — it reaches ${(reach * 100).toFixed(2)}%.${lever === 'gpr' ? ' Loss to lease follows GPR, so most of a market-rent change lands there; try vacancy, or the loss-to-lease renewal / burnoff boxes.' : ''} Nothing was changed.` });
+      // say it on the basis the target was typed on
+      const reach = t3Sub ? (f - t3Sub) / Math.abs(t3Sub) : (f - refTot) / Math.abs(refTot);
+      return res.status(400).json({ error: `${lever === 'gpr' ? 'GPR' : 'Vacancy'} alone does not get ${key === 'rental' ? 'Total Rental Income' : 'Total Income'} to ${(pctIn * 100).toFixed(2)}% over the ${t3Sub ? 'T3 annualized' : 'reference'} — it reaches ${(reach * 100).toFixed(2)}%.${lever === 'gpr' ? ' Loss to lease follows GPR, so most of a market-rent change lands there; try vacancy, or the loss-to-lease renewal / burnoff boxes.' : ''} Nothing was changed.` });
     }
     inputs.tieLevers = { ...(inputs.tieLevers || {}), [key]: lever };
     const how = lever === 'gpr' ? `GPR to ${Math.round(x)}${solved ? ` — ${gprStepsSummary((solved as any).growthPct)}` : ''}` : `vacancy % scaled ×${x.toFixed(4)}`;
     await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(inputs)]);
     await saveLines(id, lines, true);
-    logChange(user, 'tie growth target', { id, pcode: key, pct, target: want, lever, how });
+    logChange(user, 'tie growth target', { id, pcode: key, pct: pctIn, basis, target: want, lever, how });
     return res.json(budgetView((await loadBudget(id))!));
   }
   if (key === 'opex') { members = GROWTH_EXPENSE_PCODES; target = r2(ref.toe * (1 + pct) - catOf(lb.lines, ['7'])); }
@@ -1926,7 +1974,7 @@ router.post('/budgets/:id/tie-growth', h(async (req, res) => {
   }
   await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(inputs)]);
   await saveLines(id, lines, true);
-  logChange(user, 'tie growth target', { id, pcode: key, pct, target, how });
+  logChange(user, 'tie growth target', { id, pcode: key, pct: pctIn, basis, target, how });
   res.json(budgetView((await loadBudget(id))!));
 }));
 
