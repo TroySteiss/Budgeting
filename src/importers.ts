@@ -2,6 +2,7 @@
    numbers — the Cottonwood UW sheet is offset +20 rows vs its siblings). */
 import * as XLSX from 'xlsx';
 import { HAP_CHARGE, type UwSnapshotData, type UwBasis, type Months } from '../shared/domain.js';
+import type { ApplyRow } from '../shared/reviewApply.js';
 import type { TemplateData } from '../shared/annual.js';
 import { POSITION_GL, isRmPosition, isSalariedPosition, isOpenSeat, OPEN_SEAT_PCT, type StaffingPerson, type DetailPerson } from '../shared/payroll.js';
 
@@ -1686,4 +1687,43 @@ export function detectUploadKind(buf: Buffer): UploadKind | null {
   }
   if (monthHeader) return 'seller_t12';
   return null;
+}
+
+/* ---- ND 2027 Budget Review workbook -> its Apply tab (Troy 2026-11-12) ----
+   Header row 1: row_id, site, gl, gl_name, item, action, compare_pool, Jan_2027..Dec_2027, total_2027, push,
+   firmness, basis, source, contracts_row, t12_pool, budget_draft_pool, history_note, target_gl. Columns are found
+   by header name, so a reordered sheet still reads. Values only (cached formula results). */
+export function parseReviewApply(buf: Buffer): ApplyRow[] {
+  const sheet = grids(buf).find((x) => /^apply$/i.test(x.name.trim()));
+  if (!sheet) throw new Error('No "Apply" tab in this workbook — it should be the ND 2027 Budget Review workbook');
+  const g = sheet.g;
+  const hdr = (g[0] || []).map((h) => low(h));
+  const col = (name: string) => hdr.indexOf(name);
+  const need = ['row_id', 'site', 'gl', 'action', 'push'];
+  const missing = need.filter((n) => col(n) < 0);
+  if (missing.length) throw new Error(`Apply tab is missing column(s): ${missing.join(', ')}`);
+  const MON = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+  const monthCols = MON.map((m) => hdr.findIndex((h) => h.startsWith(`${m}_`)));
+  if (monthCols.some((c) => c < 0)) throw new Error('Apply tab is missing a month column (Jan_2027 … Dec_2027)');
+  const actions = new Set(['set', 'at_least', 'add', 'rate', 'reclass', 'check']);
+  const out: ApplyRow[] = [];
+  for (let r = 1; r < g.length; r++) {
+    const row = g[r] || [];
+    const id = s(row[col('row_id')]);
+    if (!id) continue;
+    const action = low(row[col('action')]);
+    if (!actions.has(action)) continue;
+    const gl = s(row[col('gl')]).replace(/\.0+$/, '');
+    const get = (n: string) => (col(n) >= 0 ? s(row[col(n)]) : '');
+    const months = monthCols.map((c) => num(row[c]));
+    out.push({
+      rowId: id, site: s(row[col('site')]).toLowerCase(), gl, glName: get('gl_name'), item: get('item'), action: action as ApplyRow['action'],
+      pool: get('compare_pool').split(/[+,\s]+/).map((x) => x.replace(/\.0+$/, '')).filter((x) => /^\d{4}$/.test(x)),
+      months, total: col('total_2027') >= 0 ? num(row[col('total_2027')]) : months.reduce((a, v) => a + v, 0),
+      push: low(row[col('push')]) === 'y', firmness: get('firmness'), basis: get('basis'), source: get('source'),
+      contractsRow: get('contracts_row'), historyNote: get('history_note'), targetGl: get('target_gl').replace(/\.0+$/, ''),
+    });
+  }
+  if (!out.length) throw new Error('The Apply tab has no rows');
+  return out;
 }

@@ -86,6 +86,14 @@ const HARD_FONT = { size: 8, bold: true, color: { argb: 'FFC2185B' } };
 /** Is month i of this line hard-coded? Typed cells when the line recorded them, else every non-zero month of a hand-fixed line.
     A smoothed line is not hard-coded: a formula still drives it. */
 const isHardCell = (ln: BudgetLine | undefined, i: number): boolean => { if (!ln?.override) return false; const d = (ln.driver as any) || {}; const h = d.hard; return Array.isArray(h) ? h.includes(i) : d.smooth || d.method === 'smooth' ? false : !!ln.months[i]; };
+/** Cells set by the ND 2027 Budget Review workbook (driver method 'review'): bold deep teal, as in the app, with an
+    Excel note naming the review row(s) each one is tied to (Troy 2026-11-12). A cell typed over later is hard-coded. */
+const REVIEW_FONT = { size: 8, bold: true, color: { argb: 'FF00796B' } };
+const reviewRowsAt = (ln: BudgetLine | undefined, i: number): string[] | null => { const d = (ln?.driver as any) || {}; return d.method === 'review' && d.rev?.cells?.[i] ? d.rev.cells[i] : null; };
+const reviewNote = (ln: BudgetLine | undefined, i: number): string => {
+  const d = (ln?.driver as any) || {}; const ids = reviewRowsAt(ln, i) || [];
+  return ids.map((id) => { const r = d.rev?.rows?.[id] || {}; return `${id} · ${r.action || ''} · ${r.item || ''}\n${r.firmness || ''}${r.basis ? ` — ${r.basis}` : ''}${r.source ? `\nSource: ${r.source}${r.contractsRow ? ` (Contracts row ${r.contractsRow})` : ''}` : ''}`; }).join('\n\n') + (d.rev?.file ? `\n\nFrom ${d.rev.file}` : '');
+};
 const MON3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 /** A line whose Year-1 months come from the property's Y1 budget says so ahead of its formula. */
 function driverLabel(d: any): string {
@@ -119,6 +127,7 @@ function driverLabelBase(d: any): string {
     case 'wavg': return `1-2-1 wtd avg of ${d.basis === 'budget' ? 'CY budget ' : ''}${d.srcName || 'source'} × ${(d.pct || 0).toFixed(1)}%`;
     case 't12curve': return `${d.basis === 'budget' ? 'CY budget' : 'seller'} ${d.name || ''} ${d.basis === 'budget' ? '' : 'T12 '}total × ${(d.pct || 0).toFixed(1)}% on ${d.shape || 'flat'} curve`;
     case 'smooth': return `missed-bill smoothing ×${d.passes || 0}`;
+    case 'review': return `ND 2027 Budget Review: ${Object.entries(d.rev?.rows || {}).map(([id, r]: any) => `${id} ${r.item} (${r.action}, ${r.firmness})`).join('; ')}`;
     case 'linkLine': return `= ${d.src || ''} × ${d.weight ?? 1}`;
     case 'setTotal': return `total set to ${Math.round(d.total || 0).toLocaleString()}`;
     case 'zero': return 'zeroed out';
@@ -547,7 +556,8 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
         else if (v) cell.value = v;
         cell.numFmt = CUR;
         // hard-coded (typed / fixed by hand): bold in the one colour nothing else uses
-        cell.font = !payRow && isHardCell(ln, i) ? HARD_FONT : f8;
+        cell.font = !payRow && isHardCell(ln, i) ? HARD_FONT : !payRow && reviewRowsAt(ln, i) ? REVIEW_FONT : f8;
+        if (!payRow && !isHardCell(ln, i) && reviewRowsAt(ln, i)) (cell as any).note = reviewNote(ln, i);
         if (payRow) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DRIVER_FILLS.pay.fill } };
         else if (hasVals) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: dFill } };
       });

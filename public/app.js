@@ -111,6 +111,10 @@ function drvMetaBase(l) {
     case 'flatFee': if (l.driver.schedule) return { cls: 'drv-rr', tag: 'FEE SCHED', label: `Flat-fee package schedule: $${money(l.driver.F, 2)} per occupied unit on the fee, $${money(l.driver.R, 2)} on RUBS until each lease switches at expiration (${Math.round((l.driver.share[0] || 0) * 100)}% on the fee in the first month, ${Math.round((l.driver.share[11] || 0) * 100)}% by the last) × budgeted occupancy; this GL takes ${Math.round((l.driver.weight || 0) * 1000) / 10}% of it (last actual month's mix)` };
       return { cls: 'drv-rr', tag: 'FLAT FEE', label: `Flat utility fee per occupied unit — ${MONTHS[(l.driver.lastMonth || 1) - 1]} actual $${money(l.driver.base || 0)} × budgeted occupancy ÷ ${((l.driver.occLast || 1) * 100).toFixed(1)}% occupied that month (ties to the vacancy assumption)${l.driver.pct ? ` × ${(l.driver.pct * 100).toFixed(1)}% fee increase` : ''}` };
     case 'catShare': return { cls: 'drv-uw', tag: 'UW', label: `UW category ${l.driver.pcode} share` };
+    // set by the ND 2027 Budget Review workbook (Troy 2026-11-12): its own chip and colour; the months it set are
+    // bold teal in the grid and their hover names the review row(s) each is tied to
+    case 'review': { const rv = l.driver.rev || {}; const ids = Object.keys(rv.rows || {});
+      return { cls: 'drv-rev', tag: 'REVIEW', label: `From the ND 2027 Budget Review (${rv.file || 'workbook'}${rv.at ? `, ${new Date(rv.at).toLocaleDateString()}` : ''}${rv.by ? ` by ${rv.by}` : ''}): ${ids.map((id) => `${id} ${(rv.rows[id] || {}).item || ''} (${(rv.rows[id] || {}).action || ''}, ${(rv.rows[id] || {}).firmness || ''})`).join('; ')}${l.driver.from ? ` — was on ${l.driver.from}` : ''}. Locked: 🔓 puts the line back on its formula.` }; }
     case 'perUnitComp': return { cls: 'drv-comp', tag: 'MINOT', label: `Minot $${l.driver.perUnit}/unit × units` };
     case 'payrollModel': return { cls: 'drv-pay', tag: 'PAY', label: l.driver.live ? `Payroll tab wages — roster rates with each person's raise from "${l.driver.cycle || 'the raise cycle'}" — January at the current rate, half the increase in February, all of it from March${l.driver.draft ? ' · PRELIMINARY: raise entries are not finalized for every region feeding this property — Recalc picks up changes' : ' · finalized'}` : l.driver.roster ? 'Pay-rates roster wages (raises prorated — no March step)' : 'Payroll model wages', tag: l.driver.live && l.driver.draft ? 'PAY·prelim' : 'PAY' };
     case 'burdenRatio': { const bs = l.driver.basis === 'budget' ? 'CY budget ratio' : l.driver.basis === 'mix' ? 'avg of T12 actual & CY budget ratios' : 'T12 actual ratio';
@@ -459,7 +463,9 @@ function renderDash(el) {
       <button data-x="pf" title="One workbook: each site's Budget / Summary / Raw Data tabs plus a live Portfolio rollup tab — tick the 4 Bismarck sites for a Bismarck WB, the 2 Jamestown for a JT WB">⬇ Portfolio workbook</button>
       <button data-x="zip" title="ZIP of every export, sorted by report type: Yardi Uploads per year + Budget Drafts — each budget saved as an iteration">⬇ All exports (zip)</button>
       <button data-x="recalc" title="Re-run every formula on the ticked budgets (all of them when none is ticked), so a changed default or formula reaches each one. Shows NOI before and after per budget first; hand-typed lines stay; each budget gets a save point.">↻ Recalculate…</button>
-      <button data-x="act" title="Partial-month rule off the budget as it sits in Yardi: upload the month-end Property Comparison (Cash) + each property's budget CSV — every CSV comes back with the closed month set 1:1 to what posted">✓ Actualize from Yardi CSVs…</button>`, (menu) => {
+      <button data-x="act" title="Partial-month rule off the budget as it sits in Yardi: upload the month-end Property Comparison (Cash) + each property's budget CSV — every CSV comes back with the closed month set 1:1 to what posted">✓ Actualize from Yardi CSVs…</button>
+      <button data-x="revapply" title="Upload the ND 2027 Budget Review workbook: preview its Apply tab (contracts, floors, insurance, reclasses, fee) on each site's budget, tick what goes in, apply with a save point. Applied months show bold teal with a REVIEW chip.">✓ Apply ND review workbook…</button>`, (menu) => {
+      menu.querySelector('[data-x="revapply"]').addEventListener('click', () => openReviewApply());
       menu.querySelector('[data-x="recalc"]').addEventListener('click', () => { const ids = selectedIds(); openRecalcMany(ids.length ? ids.map(Number) : st.budgets.map((x) => x.id)); });
       menu.querySelector('[data-x="pf"]').addEventListener('click', () => { const ids = selectedIds(); window.open(rUrl(`/api/export/portfolio.xlsx${ids.length ? `?ids=${ids.join(',')}` : ''}`), '_blank'); });
       menu.querySelector('[data-x="zip"]').addEventListener('click', () => { const ids = selectedIds(); const all = ids.length ? ids : st.budgets.map((b) => b.id); if (all.length) window.open(rUrl(`/api/export/bundle.zip?ids=${all.join(',')}`), '_blank'); });
@@ -1790,6 +1796,11 @@ function gridHtml(bv, totals) {
     const hardSet = l && l.override ? (Array.isArray((l.driver || {}).hard) ? new Set(l.driver.hard) : (l.driver || {}).smooth || (l.driver || {}).method === 'smooth' ? new Set() : 'all') : null;
     const isHard = (i) => !!hardSet && (hardSet === 'all' ? !!m[i] : hardSet.has(i));
     const hard = hardSet === 'all';
+    // cells set by the ND 2027 Budget Review: bold teal, hover = the review row(s) behind the number. A cell typed
+    // over later is hand-typed (magenta) instead.
+    const rev = l && l.driver && l.driver.method === 'review' ? (l.driver.rev || {}) : null;
+    const revAt = (i) => (rev && rev.cells && rev.cells[i] && !isHard(i) ? rev.cells[i] : null);
+    const revTip = (i) => revAt(i).map((id) => { const r = (rev.rows || {})[id] || {}; return `${id} · ${r.action || ''} · ${r.item || ''}\n${r.firmness || ''}${r.basis ? ` — ${r.basis}` : ''}${r.source ? `\nSource: ${r.source}${r.contractsRow ? ` (Contracts row ${r.contractsRow})` : ''}` : ''}`; }).join('\n\n') + `\n\nND 2027 Budget Review${rev.file ? ` · ${rev.file}` : ''}`;
     const prm = cols.fx && l && !l.override ? paramFor(a.code, l, bv.budget.inputs || {}) : null;
     // seller-derived lines get a non-accrual flag when the billing looks bad
     const smell = sellerDerived(l) ? billingSmell(m) : null;
@@ -1798,7 +1809,7 @@ function gridHtml(bv, totals) {
       <td class="code">${a.code}</td>
       <td class="name${histFor(a.code).length ? ' hashist' : ''}" ${histFor(a.code).length ? `data-hist="${a.code}"` : ''} title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}${histFor(a.code).length ? ' — click for the prior T12 / CY budget by month' : ''}">${histFor(a.code).length ? `<span class="hx">${histOpen(a.code) ? '▾' : '▸'}</span>` : ''}${esc(a.name)}${smell ? ` <span class="warnflag" title="Seller billing looks NON-ACCRUAL: ${esc(smell.join('; '))}. Likely bad bills — review, or smooth via WAVG / flat / Minot seasonal.">⚠</span>` : ''}${a.active === false ? ' <span class="badge" title="Deactivated GL still carrying dollars — Recalc zeroes it">inactive — recalc to zero</span>' : ''}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
       ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${drvExtraHtml({ extra: (dm.extra || []).filter((x) => !x.fit) })}${fitChipHtml(a.code, l)}${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? (prm.steps ? `<button class="fxp fxp-steps" data-steps="${a.code}" title="${esc(prm.label)} — click to place increases in specific months">${esc(prm.value)}</button>` : prm.multi ? `<button class="fxp fxp-steps" data-multi="${a.code}" title="${esc(prm.title || '')} — click to edit every input">${esc(prm.summary)}</button>` : `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">${/%/.test(prm.label) ? '<span class="fxu" title="percent">%</span>' : ''}`) : ''}</td>` : ''}
-      ${monthIdx.map((i) => `<td class="m ${actIdx.has(i) ? 'drv-act' : sp ? '' : dm.cls}${isHard(i) && !actIdx.has(i) ? ' hard' : ''}"${isHard(i) && !actIdx.has(i) ? ' title="Hard-coded: this cell was typed or fixed by hand. 🔓 in the row tools puts the line back on its formula."' : ''}><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money(Math.round(m[i]) || 0) : ''}"></td>`).join('')}
+      ${monthIdx.map((i) => `<td class="m ${actIdx.has(i) ? 'drv-act' : sp ? '' : dm.cls}${isHard(i) && !actIdx.has(i) ? ' hard' : ''}${revAt(i) && !actIdx.has(i) ? ' rev' : ''}"${isHard(i) && !actIdx.has(i) ? ' title="Hard-coded: this cell was typed or fixed by hand. 🔓 in the row tools puts the line back on its formula."' : revAt(i) && !actIdx.has(i) ? ` title="${esc(revTip(i))}"` : ''}><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money(Math.round(m[i]) || 0) : ''}"></td>`).join('')}
       ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}${hard && ann ? ' hard' : ''}"><input data-ann="${a.code}" value="${ann ? money(Math.round(ann) || 0) : ''}" title="${bv.annual ? bv.budget.year : 'Year 1'} total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
       ${refCells(a.code, 'detail', ann, !!(l && l.override))}
       ${cols.punit ? `<td>${ann ? money(ann / units) : ''}</td>` : ''}
@@ -2187,6 +2198,7 @@ function openTagKey() {
   dlg.innerHTML = `<h2>Chip key</h2>
     <table class="list" style="font-size:12.5px">${TAG_KEY.map(([t, d]) => `<tr><td style="white-space:nowrap"><span class="drv" style="background:var(--soft)">${esc(t)}</span></td><td>${esc(d)}</td></tr>`).join('')}</table>
     <p style="font-size:12.5px; margin:10px 0 0"><span class="hardkey">1,234</span> — a cell in bold in this colour is <b>hard-coded</b>: typed by hand. When a whole line was fixed at once (a typed total, an import) every month of it is marked. A smoothed line is not marked: its formula still drives it.</p>
+    <p style="font-size:12.5px; margin:6px 0 0"><span class="revkey">1,234</span> — bold in this colour, on a <b>REVIEW</b> line: set by the ND 2027 Budget Review workbook (a contract, a KB rule, a floor). Hover the number for the review row behind it — item, action, firmness, basis and source.</p>
     <div class="row" style="justify-content:flex-end; margin-top:10px"><button class="btn" id="tagkey-x">Close</button></div>`;
   dlg.querySelector('#tagkey-x').addEventListener('click', () => dlg.close());
   dlg.showModal();
@@ -2792,6 +2804,76 @@ function glDatalist() {
   return `<datalist id="gl-dl">${((S.state && S.state.coa) || []).filter((a) => a.kind === 'detail').map((a) => `<option value="${a.code}">${esc(a.name)}</option>`).join('')}</datalist>`;
 }
 const glName = (gl) => (((S.state && S.state.coa) || []).find((a) => a.code === gl) || {}).name || '';
+/* ---- ND 2027 Budget Review -> Apply (Troy 2026-11-12: "Upload + preview + apply"). Pick the review workbook; the
+   server plans its Apply tab on each site's latest annual budget (POST /review-apply/preview). Per site: each GL
+   that would change, old -> new, the review rows, and flags (> 25% vs the T12, nothing in the T12, replaces a
+   hand-typed line, history notes); rows not pushed (push = N, check, payroll, income) are listed with why. Tick
+   what goes in (a change that replaces a hand-typed line starts unticked); Apply takes a save point per budget and
+   writes the lines as REVIEW (locked, months marked). ---- */
+function openReviewApply() {
+  const dlg = ensureDlg('revapply-dlg');
+  let P = null, busy = '', err = '', done = null;
+  const year = Number(S.dashYear) || new Date().getFullYear() + 1;
+  const pick = {};   // budgetId -> Set(gl)
+  const tot = (m) => m.reduce((a, v) => a + (v || 0), 0);
+  const draw = () => {
+    const sites = P ? P.sites : [];
+    const ready = sites.filter((x) => x.budgetId && x.plan.changes.length);
+    dlg.innerHTML = `<h2>Apply the ND 2027 Budget Review</h2>
+      <p class="muted" style="font-size:12px; margin:0 0 8px">The review workbook's <b>Apply</b> tab, under its Apply Rules: set, floor (at least, by compare pool), add, reclass (into 5170), rate (the fee). Only push = Y rows; never payroll or income lines (reclass excepted). Each site's latest ${year} annual budget. Nothing changes until you press Apply; each budget gets a save point first, and the lines it writes carry the <span class="drv drv-rev" style="font-size:10px">REVIEW</span> chip with the months bold in <span class="revkey">teal</span> — hover one for the row behind it.</p>
+      ${P ? '' : `<div class="row" style="gap:8px; align-items:center"><input type="file" id="ra-file" accept=".xlsx,.xlsm"><button class="btn" id="ra-go">Preview</button></div>`}
+      ${busy ? `<p class="muted">${esc(busy)}</p>` : ''}${err ? `<p class="err">${esc(err)}</p>` : ''}
+      ${done ? `<div class="card" style="margin:8px 0"><b>Applied.</b> ${done.map((d) => `<div style="font-size:12px; margin-top:4px"><b>${esc(String(d.site).toUpperCase())}</b>: ${d.changes.map((c) => `${c.gl} ${money(c.old)} → ${money(c.new)} [${c.rows.join(', ')}]`).join(' · ')}</div>`).join('')}<p class="muted" style="font-size:11.5px">Each budget has a save point "Before ND review apply" to go back to.</p></div>` : ''}
+      ${P && !done ? `<p class="muted" style="font-size:12px">${esc(P.filename)}: ${P.rows.length} rows, ${P.rows.filter((r) => r.push).length} to push. ${sites.filter((x) => !x.budgetId).length ? `No ${year} budget: ${sites.filter((x) => !x.budgetId).map((x) => x.site.toUpperCase()).join(', ')}.` : ''}</p>
+        <div style="max-height:58vh; overflow:auto">${sites.filter((x) => x.budgetId).map((x) => {
+          const sel = pick[x.budgetId];
+          const ch = x.plan.changes;
+          const after = x.noiBefore + ch.filter((c) => sel.has(c.gl)).reduce((a, c) => a + (c.gl < '6000' ? 1 : -1) * (tot(c.newMonths) - tot(c.oldMonths)), 0);
+          return `<div class="card" style="margin:8px 0; padding:8px 10px">
+            <div class="row" style="justify-content:space-between; align-items:center"><label style="font-weight:700"><input type="checkbox" data-rasite="${x.budgetId}" ${ch.length && ch.every((c) => sel.has(c.gl)) ? 'checked' : ''} ${ch.length ? '' : 'disabled'}> ${esc(x.label)}</label>
+              <span class="muted" style="font-size:12px">NOI ${money(x.noiBefore)} → <b>${money(after)}</b> (${after - x.noiBefore >= 0 ? '+' : ''}${money(after - x.noiBefore)})</span></div>
+            ${x.startMonth !== 1 ? '<p class="err" style="font-size:12px">This budget does not start in January: the workbook months are laid on its calendar months.</p>' : ''}
+            ${ch.length ? `<table class="list" style="font-size:12px; margin-top:4px"><tr><th></th><th>GL</th><th>Was</th><th>Becomes</th><th>Δ</th><th>Rows</th><th>Flags</th></tr>
+              ${ch.map((c) => `<tr title="${esc(c.notes.join('\n'))}"><td><input type="checkbox" data-ragl="${x.budgetId}|${c.gl}" ${sel.has(c.gl) ? 'checked' : ''}></td><td><b>${c.gl}</b></td><td>${money(tot(c.oldMonths))}</td><td><b>${money(tot(c.newMonths))}</b></td><td class="${tot(c.newMonths) - tot(c.oldMonths) < 0 ? 'neg' : ''}">${money(tot(c.newMonths) - tot(c.oldMonths))}</td><td>${esc(c.rowIds.join(', '))} <span class="muted">${esc(c.kinds.join(' / '))}</span></td><td class="${c.flags.length ? 'err' : 'muted'}" style="font-size:11px">${esc(c.flags.join('; ')) || '—'}</td></tr>`).join('')}</table>` : '<p class="muted" style="font-size:12px">Nothing to change.</p>'}
+            ${x.plan.floorsMet.length ? `<p class="muted" style="font-size:11.5px; margin:4px 0 0">Floors already met: ${x.plan.floorsMet.map((f) => `${f.pool} ${money(f.budget)} ≥ ${money(f.floor)}`).join(' · ')}</p>` : ''}
+            ${x.plan.skipped.length ? `<details style="margin-top:4px"><summary class="muted" style="font-size:11.5px">${x.plan.skipped.length} row${x.plan.skipped.length === 1 ? '' : 's'} not pushed</summary><div style="font-size:11.5px">${x.plan.skipped.map((k) => `<div title="${esc(k.basis)}"><b>${esc(k.rowId)}</b> ${esc(k.gl)} ${esc(k.item)}${k.total ? ` (${money(k.total)})` : ''} — <span class="muted">${esc(k.why)}</span></div>`).join('')}</div></details>` : ''}
+          </div>`; }).join('')}</div>
+        <div class="row" style="justify-content:flex-end; gap:8px; margin-top:8px"><button class="btn sub" id="ra-x">Cancel</button><button class="btn" id="ra-apply" ${ready.some((x) => pick[x.budgetId].size) ? '' : 'disabled'}>Apply ${ready.reduce((a, x) => a + pick[x.budgetId].size, 0)} change${ready.reduce((a, x) => a + pick[x.budgetId].size, 0) === 1 ? '' : 's'}</button></div>` : ''}
+      ${!P || done ? '<div class="row" style="justify-content:flex-end; margin-top:8px"><button class="btn sub" id="ra-x">Close</button></div>' : ''}`;
+    dlg.querySelectorAll('#ra-x').forEach((b) => b.addEventListener('click', () => { dlg.close(); if (done) { refreshState().then(render); } }));
+    const go = dlg.querySelector('#ra-go');
+    if (go) go.addEventListener('click', async () => {
+      const f = dlg.querySelector('#ra-file').files[0];
+      if (!f) { err = 'Pick the review workbook first.'; draw(); return; }
+      const fd = new FormData(); fd.append('file', f); fd.append('year', String(year));
+      busy = 'Reading the Apply tab and planning each site…'; err = ''; draw();
+      try {
+        P = await api('/review-apply/preview', { method: 'POST', body: fd });
+        for (const x of P.sites) if (x.budgetId) pick[x.budgetId] = new Set(x.plan.changes.filter((c) => !c.locked).map((c) => c.gl));
+      } catch (e) { err = e.message; }
+      busy = ''; draw();
+    });
+    dlg.querySelectorAll('[data-rasite]').forEach((cb) => cb.addEventListener('change', () => {
+      const x = P.sites.find((y) => String(y.budgetId) === cb.dataset.rasite);
+      pick[x.budgetId] = cb.checked ? new Set(x.plan.changes.map((c) => c.gl)) : new Set(); draw();
+    }));
+    dlg.querySelectorAll('[data-ragl]').forEach((cb) => cb.addEventListener('change', () => {
+      const [id, gl] = cb.dataset.ragl.split('|');
+      if (cb.checked) pick[id].add(gl); else pick[id].delete(gl); draw();
+    }));
+    const ap = dlg.querySelector('#ra-apply');
+    if (ap) ap.addEventListener('click', async () => {
+      const picks = Object.entries(pick).filter(([, s]) => s.size).map(([budgetId, s]) => ({ budgetId: Number(budgetId), gls: [...s] }));
+      const n = picks.reduce((a, p) => a + p.gls.length, 0);
+      if (!confirm(`Write ${n} change${n === 1 ? '' : 's'} into ${picks.length} budget${picks.length === 1 ? '' : 's'}? Each gets a save point first.`)) return;
+      busy = 'Applying…'; draw();
+      try { const r = await POST('/review-apply/apply', { year, filename: P.filename, rows: P.rows, picks }); done = r.log; } catch (e) { err = e.message; }
+      busy = ''; draw();
+    });
+  };
+  draw();
+  if (!dlg.open) dlg.showModal();
+}
 /* wage GLs (mirrors WAGE_GLS in shared/domain.ts): a payroll line that is not one of these is a % of wages */
 const BUDGET_WAGE_GLS = ['6402', '6404', '6405', '6407'];
 /* One payroll line's % of wages from other properties (Troy 2026-11-12: "take the ratio from Minot or BCND/ECND to

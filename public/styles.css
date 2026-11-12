@@ -610,3 +610,13 @@ table.rvtbl td.rvrule { white-space: normal; min-width: 240px; max-width: 320px;
 table.rvtbl th.rvgrp { border-left: 2px solid var(--line); }
 table.rvtbl .rvp { cursor: pointer; color: var(--accent); }
 table.rvtbl tr.sub td.rv-y, table.rvtbl tr.sub td.rv-n { font-weight: 700; }
+
+/* ND 2027 Budget Review values (2026-11-12): their own chip, colour and bold cells; hover names the review row */
+:root { --rev: #00796b; --rev-bg: #d9f0ec; }
+[data-theme="dark"] { --rev: #4dd0bf; --rev-bg: #133b37; }
+.drv.drv-rev { background: var(--rev); color: #fff; font-weight: 700; }
+.dot.drv-rev { background: var(--rev); }
+td.m.drv-rev { background: var(--rev-bg); }
+td.m.rev input, td.ann.rev input { color: var(--rev) !important; font-weight: 800 !important; }
+td.m.rev { box-shadow: inset 0 -2px 0 var(--rev); cursor: help; }
+.revkey { color: var(--rev); font-weight: 800; }

@@ -3,13 +3,14 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import multer from 'multer';
 import { query, tx, inRegion, regionOfRequest, currentRegion } from './db.js';
 import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
-import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, type BudgetCsvParsed } from './importers.js';
+import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, parseReviewApply, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
   acqCalendarPlan, applyPlanSlice, postedSinceClosing, y1MonthsIn, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
   refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
+import { planApply, type ApplyRow, type ApplyPlan } from '../shared/reviewApply.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
 import {
@@ -197,6 +198,96 @@ router.put('/review-rules', requireAdmin, h(async (req, res) => {
   await query('update app_meta set review_rules=$1 where id=1', [rules ? JSON.stringify(rules) : null]);
   logChange(req.session.username || '', 'budget review rules', { n: rules ? rules.length : 'defaults' });
   res.json({ ...(await loadReviewRules()), kinds: REVIEW_KINDS });
+}));
+
+/* ---- ND 2027 Budget Review -> Apply (Troy 2026-11-12: upload + preview + apply). The workbook's Apply tab, planned
+   on each site's latest annual budget for the year (shared/reviewApply.ts), shown first; only what Troy ticks is
+   written, after a save point, as locked lines that say which review rows set which months. ---- */
+async function applyTargets(rows: ApplyRow[], year: number) {
+  const sites = [...new Set(rows.map((r) => r.site))].sort();
+  const out: { site: string; budgetId: number | null; why?: string; lb?: LoadedBudget }[] = [];
+  for (const site of sites) {
+    const b = (await query(`select id from budgets where lower(property_code)=$1 and year=$2 and budget_type='annual' order by updated_at desc limit 1`, [site, year])).rows[0];
+    if (!b) { out.push({ site, budgetId: null, why: `no ${year} annual budget for ${site.toUpperCase()} in this region` }); continue; }
+    const lb = await loadBudget(Number(b.id));
+    if (!lb) { out.push({ site, budgetId: null, why: 'budget not found' }); continue; }
+    out.push({ site, budgetId: Number(b.id), lb });
+  }
+  return out;
+}
+/** The budget's lines by GL laid out Jan..Dec (the workbook's months), and back. */
+const calOfLine = (m: Months, sm: number): number[] => Array.from({ length: 12 }, (_, c) => Number(m[(c - (sm - 1) + 12) % 12]) || 0);
+const budOfCal = (c: number[], sm: number): Months => Array.from({ length: 12 }, (_, i) => r2(c[(sm - 1 + i) % 12] || 0)) as Months;
+function planFor(rows: ApplyRow[], lb: LoadedBudget): ApplyPlan {
+  const sm = Number(lb.budget.inputs?.startMonth) || 1;
+  const lines = new Map(lb.lines.map((l) => [l.gl_code, { months: calOfLine(l.months, sm), override: l.override, driver: l.driver }]));
+  return planApply(rows, { site: String(lb.budget.property_code), lines, t12: lb.actualCal || null });
+}
+function noiWith(lb: LoadedBudget, changes: ApplyPlan['changes']): number {
+  const sm = Number(lb.budget.inputs?.startMonth) || 1;
+  const m = new Map(lb.lines.map((l) => [l.gl_code, l.months]));
+  for (const c of changes) m.set(c.gl, budOfCal(c.newMonths, sm));
+  return kpis(m, 0).noi;
+}
+router.post('/review-apply/preview', upload.single('file'), h(async (req, res) => {
+  const f = (req as any).file as Express.Multer.File | undefined;
+  if (!f) return res.status(400).json({ error: 'No file' });
+  let rows: ApplyRow[];
+  try { rows = parseReviewApply(f.buffer); } catch (e: any) { return res.status(400).json({ error: e?.message || String(e) }); }
+  const year = Number(req.body?.year) || new Date().getFullYear() + 1;
+  const sites = [];
+  for (const t of await applyTargets(rows, year)) {
+    if (!t.lb) { sites.push({ site: t.site, budgetId: null, why: t.why, rows: rows.filter((r) => r.site === t.site).length }); continue; }
+    const plan = planFor(rows, t.lb);
+    const noiBefore = kpis(new Map(t.lb.lines.map((l) => [l.gl_code, l.months])), 0).noi;
+    sites.push({ site: t.site, budgetId: t.budgetId, label: `${String(t.lb.budget.property_code).toUpperCase()} ${t.lb.budget.year} ${t.lb.budget.label || ''}`.trim(), plan, noiBefore, noiAfter: noiWith(t.lb, plan.changes),
+      startMonth: Number(t.lb.budget.inputs?.startMonth) || 1 });
+  }
+  res.json({ filename: f.originalname, year, rows, sites });
+}));
+router.post('/review-apply/apply', h(async (req, res) => {
+  // { year, filename, rows (from the preview), picks: [{ budgetId, gls: [...] }] } — re-planned here on the budget as it is now
+  const rows: ApplyRow[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  const picks: { budgetId: number; gls: string[] }[] = Array.isArray(req.body?.picks) ? req.body.picks : [];
+  if (!rows.length || !picks.length) return res.status(400).json({ error: 'Nothing picked' });
+  const user = req.session.username || '';
+  const filename = String(req.body?.filename || 'ND 2027 Budget Review').slice(0, 160);
+  const log: any[] = [];
+  for (const pk of picks) {
+    const lb = await loadBudget(Number(pk.budgetId));
+    if (!lb) continue;
+    const plan = planFor(rows, lb);
+    const want = new Set((pk.gls || []).map(String));
+    const changes = plan.changes.filter((c) => want.has(c.gl));
+    if (!changes.length) continue;
+    await captureSnapshot(lb, `Before ND review apply (${filename})`, user);
+    const sm = Number(lb.budget.inputs?.startMonth) || 1;
+    const at = new Date().toISOString();
+    const lines = lb.lines.map((l) => ({ ...l }));
+    const entries: any[] = [];
+    for (const c of changes) {
+      let ln = lines.find((l) => l.gl_code === c.gl);
+      if (!ln) { ln = { gl_code: c.gl, months: zero12(), driver: { method: 'manual' } as any, override: false, note: '' }; lines.push(ln); }
+      const old = sum(ln.months);
+      const prev: any = ln.driver || {};
+      // cells: budget-month index -> review rows (the workbook's months are calendar)
+      const cells: Record<number, string[]> = {};
+      for (const [ci, ids] of Object.entries(c.cells)) cells[(Number(ci) - (sm - 1) + 12) % 12] = ids;
+      const rowInfo = Object.fromEntries(c.rowIds.map((id) => [id, plan.rows[id]]));
+      ln.months = budOfCal(c.newMonths, sm);
+      ln.override = true;
+      // the REVIEW chip: the line keeps what it was (`from`) and which rows set which months; no cell is "typed"
+      ln.driver = { method: 'review', from: prev.method === 'review' ? prev.from : (prev.method || null), rev: { cells, rows: rowInfo, kinds: c.kinds, file: filename, at, by: user }, hard: [] } as any;
+      const tagNote = `ND review: ${c.rowIds.join(', ')}`;
+      ln.note = ln.note && !ln.note.includes(tagNote) ? `${ln.note} · ${tagNote}` : (ln.note || tagNote);
+      entries.push({ gl: c.gl, old: r2(old), new: r2(sum(ln.months)), rows: c.rowIds, kinds: c.kinds, flags: c.flags });
+    }
+    await saveLines(lb.budget.id, lines);
+    await query('update budgets set updated_at=now() where id=$1', [lb.budget.id]);
+    logChange(user, 'ND review apply', { id: lb.budget.id, site: lb.budget.property_code, file: filename, changes: entries });
+    log.push({ budgetId: lb.budget.id, site: lb.budget.property_code, changes: entries });
+  }
+  res.json({ ok: true, log });
 }));
 
 /* ---- budget guidance ranges (per region; exec team 2027 guidance by default) ---- */
