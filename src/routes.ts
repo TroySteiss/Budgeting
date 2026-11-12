@@ -1720,7 +1720,8 @@ router.post('/budgets/:id/tie-growth', h(async (req, res) => {
       return buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lb.lines).lines;
     };
     const tol = Math.max(1, Math.abs(want) * 0.0002);
-    let x = lever === 'gpr' ? sum(lineOf(lb.lines, '4994')?.months || zero12()) : 1;
+    // the GPR solver works on the rent roll GPR (4994 + HAP)
+    let x = lever === 'gpr' ? ['4994', '4995', '4996'].reduce((a, g) => a + sum(lineOf(lb.lines, g)?.months || zero12()), 0) : 1;
     let f = totOf(lb.lines);
     const vacDollars = -sum(lineOf(lb.lines, '5031')?.months || zero12());
     let slope = lever === 'gpr' ? (x ? f / x : 1) : -(vacDollars || 1);

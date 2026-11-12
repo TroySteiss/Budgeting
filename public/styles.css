@@ -536,3 +536,6 @@ td.gdash.gok b { color: #1f6b3a; }
 tr.qdist.qshift input.qs-in { width: 46px; font-size: 11px; text-align: right; padding: 0 3px; border: 1px solid var(--line, #d9d4c7); border-radius: 4px; }
 tr.qdist.qshift input.qs-in::placeholder { color: #9aa5a0; font-style: italic; }
 #qshift-dlg { width: min(760px, 96vw); }
+
+/* the chip a formula choice produces, beside the choice (menus and pickers) */
+.rowmenu .optchip { display: inline-block; min-width: 44px; text-align: center; margin-right: 6px; font-size: 10px; }

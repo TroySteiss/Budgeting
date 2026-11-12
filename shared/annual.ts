@@ -39,7 +39,7 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-11d';
+export const ENGINE_VERSION = '2026-11-11f';
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -1293,6 +1293,22 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   /* ---- GPR: rent roll market rents (Troy) or the last actual month (template) × monthly % changes ---- */
   const gprBase = inputs.gpr?.baseMonthly > 0 ? inputs.gpr.baseMonthly : lastOf('4994');
   const gpr = zero12();
+  /* HAP IS RENT (Troy 2026-11-11: "HAP + GPR should equal rent roll GPR… It should not be offset by
+     LTL"). With the GPR base on the RENT ROLL (all units at market, HAP units included), 4994 carries
+     the rent roll GPR less the HAP lines 4995 / 4996, so GPR + HAP = the rent roll's GPR every month.
+     A base off the last actual month is already net (the books post 4994 net of HAP). HAP is held
+     flat (the charge on the roll, else its last actual month); 4994 is squared to the final HAP lines
+     once they are built (gprGross / squareGpr below). */
+  const isRowShaped = (gl: string) => userShaped.has(gl);
+  const hapFromRoll = inputs.gpr?.baseMonthly > 0 && !userShaped.has('4994');
+  const chargeHap = src.charges ? chargeGlMonthly(src.charges) : {};
+  const hapEarly = zero12();
+  if (hapFromRoll) for (const gl of ['4995', '4996']) {
+    if (!coaByCode.has(gl)) continue;
+    const m = userShaped.has(gl) ? lines.get(gl)!.months : (Array(12).fill(gl === '4996' && chargeHap['4996'] ? chargeHap['4996'] : lastOf(gl)) as Months);
+    for (let i = 0; i < 12; i++) hapEarly[i] = r2(hapEarly[i] + (m[i] || 0));
+  }
+  const gprGross = zero12();
   if (userShaped.has('4994')) {
     // GPR itself on a chosen shape: everything that reads GPR below reads these months
     lines.get('4994')!.months.forEach((v, i) => { gpr[i] = v; });
@@ -1300,10 +1316,20 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     let cum = gprBase;
     for (let i = 0; i < 12; i++) {
       cum = i === 0 ? gprBase * (1 + (inputs.gpr?.growthPct?.[0] || 0)) : cum * (1 + (inputs.gpr?.growthPct?.[i] || 0));
-      gpr[i] = r2(cum);
+      gprGross[i] = r2(cum);
+      gpr[i] = r2(cum - hapEarly[i]);
     }
-    mk('4994', gpr, { method: 'gpr' });
+    mk('4994', gpr.slice() as Months, { method: 'gpr', ...(hapFromRoll && sum(hapEarly) ? { hap: r2(sum(hapEarly) / 12), gross: r2(sum(gprGross)) } : {}) } as any);
   }
+  const squareGpr = (): void => {
+    // 4994 = rent roll GPR − the HAP lines as finally built (a contract or a fit on 4996 included)
+    if (!hapFromRoll || !(gprBase > 0) || isRowShaped('4994')) return;
+    const ln = lines.get('4994'); if (!ln || (ln.driver as any)?.method !== 'gpr') return;
+    const hap = zero12();
+    for (const gl of ['4995', '4996']) { const l = lines.get(gl); if (l) for (let i = 0; i < 12; i++) hap[i] = r2(hap[i] + l.months[i]); }
+    ln.months = gprGross.map((v, i) => r2(v - hap[i])) as Months;
+    ln.driver = { ...(ln.driver as any), ...(sum(hap) ? { hap: r2(sum(hap) / 12), gross: r2(sum(gprGross)) } : {}) } as any;
+  };
   const gprAnnual = sum(gpr);
   const baseGpr = baseTotal('4994');
   const lastGpr = lastOf('4994');
@@ -1316,6 +1342,8 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   /* ---- loss to lease ---- */
   const ltl = inputs.ltl || ({} as BudgetInputs['ltl']);
   const followGpr = ltl.followGpr !== false;
+  // a first month TYPED on the grid: the formula starts there and runs on from it
+  const typed0 = ltl.month0 != null && Number.isFinite(Number(ltl.month0)) ? -Math.abs(Number(ltl.month0)) : null;
   // the HAP / subsidy share of each lease is held out of the burnable loss to lease (withHap, domain.ts)
   const hapL = src.leases && src.leases.length ? withHap(src.leases, src.charges) : null;
   const hapInfo = hapL && hapL.hap ? { hap: hapL.hap, ...(hapL.estimated ? { hapEst: true } : {}), ...(hapL.unplaced ? { hapUnplaced: hapL.unplaced } : {}) } : {};
@@ -1326,7 +1354,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     // rent roll's current gap, else the last actual month; market growth
     // still deepens it when "follows GPR" is on
     const model = hapL ? ltlModel(hapL.leases, inputs.year, startMonth, { ...ltl, renewalPct: 1, burnoffRenew: 0, burnoffNew: 0, asOf: src.rollAsOf }) : null;
-    const L0 = ltl.startMonthly ? -Math.abs(ltl.startMonthly) : (model && model.months[0]) || lastOf('5003');
+    const L0 = typed0 != null ? typed0 : ltl.startMonthly ? -Math.abs(ltl.startMonthly) : (model && model.months[0]) || lastOf('5003');
     // market growth deepens the gap on the occupied units' market (all units when the roll is summary-only)
     const deepen = (i: number) => (!followGpr || !gpr[0] ? 0 : model ? (gpr[i] / gpr[0] - 1) * model.occupiedMarket : gpr[i] - gpr[0]);
     mk('5003', gpr.map((v, i) => r2(Math.min(0, L0 - deepen(i)))) as Months, { method: 'ltl', ...hapInfo } as any);
@@ -1334,7 +1362,8 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const out = zero12();
     for (let i = 0; i < 12; i++) {
       const t = (ltl.rampMonths || 12) > 1 ? Math.min(1, i / ((ltl.rampMonths || 12) - 1)) : 1;
-      out[i] = r2((ltl.startMonthly || 0) + (-(ltl.targetPct || 0) * gpr[i] - (ltl.startMonthly || 0)) * t);
+      const st = typed0 != null ? typed0 : (ltl.startMonthly || 0);
+      out[i] = r2(st + (-(ltl.targetPct || 0) * gpr[i] - st) * t);
     }
     mk('5003', out, { method: 'ltl' });
   } else if (src.leases && src.leases.length) {
@@ -1342,15 +1371,15 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     // rent is fixed until it resets); a reset burns only the burnoff share of that gap. Before
     // 2026-11-09 a reset wiped the growth part entirely whatever the burnoff % — so at 100%
     // renewal / 0% burnoff the February step still "burned off" through the year.
-    const model = ltlModel(hapL!.leases, inputs.year, startMonth, { ...ltl, asOf: src.rollAsOf, growth: followGpr && gpr[0] ? gpr.map((v) => v / gpr[0]) : null });
-    mk('5003', model.months.map((v) => r2(Math.min(0, v))) as Months, { method: 'ltl', ...hapInfo } as any);
-  } else if (lastGpr || ltl.startMonthly) {
+    const model = ltlModel(hapL!.leases, inputs.year, startMonth, { ...ltl, asOf: src.rollAsOf, growth: followGpr && gpr[0] ? gpr.map((v) => v / gpr[0]) : null, month0: typed0 });
+    mk('5003', model.months.map((v) => r2(Math.min(0, v))) as Months, { method: 'ltl', ...hapInfo, ...(typed0 != null ? { month0: typed0, k: model.k } : {}) } as any);
+  } else if (lastGpr || ltl.startMonthly || typed0 != null) {
     // template: last actual month's LTL, deepened by the market-rent change,
     // burned off by that month's expirations × renewal % × burnoff shares
     const bR = ltl.burnoffRenew ?? tpl?.burnoffRenew ?? 0.75;
     const bN = ltl.burnoffNew ?? tpl?.burnoffNew ?? 1;
     const expTot = exp.reduce((a, b) => a + b, 0);
-    const L0 = ltl.startMonthly ? -Math.abs(ltl.startMonthly) : lastOf('5003');
+    const L0 = typed0 != null ? typed0 : ltl.startMonthly ? -Math.abs(ltl.startMonthly) : lastOf('5003');
     const out = zero12();
     out[0] = r2(L0);
     let cumDelta = 0;
@@ -1689,6 +1718,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
      total; its months lean toward its own trailing-12 months. Curve / turnover baselines already
      blended inside annualBaseline. Not on contracts (known billing), debt, zero / dropped / empty
      lines. Before the fee so a fitted income line is in the fee's basis; the fee itself after. ---- */
+  squareGpr();
   const FIT_SKIP = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest']);
   const fitOf = (gl: string): number => Math.min(1, Math.max(0, Number(bl.glFit?.[gl] ?? (rules[gl] as any)?.fit ?? 0) || 0));
   const fitLine = (gl: string): void => {

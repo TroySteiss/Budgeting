@@ -102,7 +102,7 @@ function driverLabel(d: any): string {
 }
 function driverLabelBase(d: any): string {
   switch (d?.method) {
-    case 'gpr': return 'rent roll GPR';
+    case 'gpr': return d.hap ? `rent roll GPR less HAP $${Math.round(d.hap).toLocaleString('en-US')}/mo (GPR + HAP = rent roll GPR)` : 'rent roll GPR';
     case 'ltl': return 'LTL burnoff';
     case 'vacancy': return 'vacancy % of GPR';
     case 'catShare': return `UW cat ${d.pcode} share`;

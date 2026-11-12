@@ -648,13 +648,13 @@ describe('foldCredits: no month against the line\'s sign', () => {
    renewal or turnover — 4996 already budgets it — and it no longer makes HAP units renew first. */
 describe('HAP share held out of the loss-to-lease burnoff', () => {
   const opts = { renewalPct: 1, burnoffRenew: 1, burnoffNew: 1 };
-  it('a HAP lease keeps its subsidy gap through a full-burn renewal; a market lease burns', () => {
+  it('HAP is rent, not loss to lease: only market − resident rent − HAP is LTL, and it alone burns', () => {
     const hap = [{ m: 1000, r: 200, e: '2027-03-31', s: 750 }];      // resident 200 + HAP 750; true gap 50
     const plain = [{ m: 1000, r: 200, e: '2027-03-31' }];
     const a = ltlModel(hap, 2027, 1, opts).months, b = ltlModel(plain, 2027, 1, opts).months;
-    expect(a[0]).toBe(-800); expect(b[0]).toBe(-800);                 // month 0: the same posted loss to lease
-    expect(a[2]).toBe(-750);                                          // after renewal only the 50 burned
-    expect(Math.abs(b[2])).toBe(0);                                   // the old way burned the subsidy too
+    expect(a[0]).toBe(-50);                                           // the HAP 750 is not loss to lease
+    expect(Math.abs(a[2])).toBe(0);                                   // the real gap burned at renewal
+    expect(b[0]).toBe(-800);                                          // a lease with no HAP: the whole gap
   });
   it('withHap: per-lease s is used as is; an older roll places the subsidy total on the lowest-rent leases', () => {
     expect(withHap([{ m: 1000, r: 900, s: 0 }, { m: 1000, r: 100, s: 800 }]).hap).toBe(800);
@@ -666,5 +666,26 @@ describe('HAP share held out of the loss-to-lease burnoff', () => {
     expect(est.unplaced).toBe(0);
     expect(subsidyTotal({ SUBSIDY: 10, hapvouch: 5, rent: 99 })).toBe(15);
     expect(withHap([{ m: 1000, r: 990 }], { subsidy: 500 }).unplaced).toBe(500);   // nowhere to put it
+  });
+});
+
+/* A typed first LTL month (Troy 2026-11-11): the model starts there and runs on from it. */
+describe('loss to lease from a typed first month', () => {
+  const leases = [
+    { m: 1000, r: 900, e: '2027-02-28' }, { m: 1000, r: 950, e: '2027-05-31' },
+    { m: 1100, r: 1000, e: '2027-08-31' }, { m: 1200, r: 300, e: '2027-11-30', s: 800 },
+  ];
+  const opts = { renewalPct: 0.5, burnoffRenew: 0.5, burnoffNew: 1 };
+  it('lands month 0 on the typed value and burns off from it, in proportion', () => {
+    const base = ltlModel(leases, 2027, 1, opts);
+    const typed = ltlModel(leases, 2027, 1, { ...opts, month0: -500 });
+    expect(Math.abs(typed.months[0] - -500)).toBeLessThanOrEqual(0.5);
+    // the later months follow the same burnoff pattern, scaled
+    const k = -500 / base.months[0];
+    expect(typed.months[6]).toBeCloseTo(base.months[6] * k, 0);
+    expect(typed.k).toBeCloseTo(k, 2);
+  });
+  it('no typed month: unchanged', () => {
+    expect(ltlModel(leases, 2027, 1, { ...opts, month0: null }).months).toEqual(ltlModel(leases, 2027, 1, opts).months);
   });
 });

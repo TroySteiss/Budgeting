@@ -178,6 +178,9 @@ export interface BudgetInputs {
     /** ANNUAL: market rent growth deepens the loss to lease 1:1 (the Yardi
         template's "change in market rent" row). Default true. */
     followGpr?: boolean;
+    /** the first month TYPED on the grid (negative $): every mode starts there and runs on from it
+        (per-lease: each lease's gap is scaled to land on it). null / absent = the formula's own start. */
+    month0?: number | null;
   };
   vacancyPct: Months;         // positive fractions, e.g. 0.05
   concessionPct: number;      // of GPR (positive fraction) — UW-derived
@@ -416,8 +419,10 @@ export interface Lease { m: number; r: number; e?: string | null; s?: number }
    separate 'subsidy' charge that budgets on 4996 HAP VOUCHER RENT. So the unit's market − rent gap is
    mostly subsidy, not loss to lease. The per-lease model used to treat that whole gap as burnable:
    HAP units had the largest gaps, so they renewed FIRST and 75-100% of the subsidy "burned off" into
-   rent — while 4996 still budgeted the same subsidy. Income was counted twice. Now the subsidy part
-   of a lease's gap is held (it never burns and is not re-priced); only market − rent − subsidy burns. */
+   rent — while 4996 still budgeted the same subsidy. Income was counted twice.
+   Second pass, Troy 2026-11-11: "HAP + GPR should equal rent roll GPR. HAP should basically be treated
+   as GPR/Rent. It should not be offset by LTL." So HAP is part of GPR: 4994 GPR = the rent roll's GPR
+   less the HAP lines (4995/4996), and loss to lease is only market − resident rent − subsidy. */
 export const HAP_CHARGE = /^(subsidy|hap|hud|voucher)/i;
 /** The property's monthly HAP / subsidy charge total off the roll's charges. */
 export function subsidyTotal(charges: Record<string, number> | null | undefined): number {
@@ -492,6 +497,28 @@ export function ltlMonths(
     leases as MTM, burning them off through the whole year). */
 export function ltlModel(
   leases: Lease[], year: number, startMonth: number,
+  opts: { renewalPct?: number; burnoffRenew?: number; burnoffNew?: number; asOf?: string | null; growth?: number[] | null;
+    /** a TYPED first month (negative): the model starts there (Troy 2026-11-11: "if I manually adjust the
+        first month of LTL, it flows through the rest of the months off of the new LTL") */
+    month0?: number | null } = {}
+): { months: Months; openMarket: Months; occupiedMarket: number; k?: number } {
+  const want = opts.month0;
+  if (want == null || !Number.isFinite(Number(want)) || !leases.length) return ltlModelCore(leases, year, startMonth, opts);
+  // scale every lease's burnable gap by k (the HAP share is rent, never scaled), solving k on month 0
+  const scaled = (k: number): Lease[] => leases.map((l) => { const s = Math.max(0, l.s || 0); return { ...l, r: (l.m || 0) - s - k * ((l.m || 0) - (l.r || 0) - s) }; });
+  let k0 = 1, f0 = ltlModelCore(leases, year, startMonth, opts).months[0];
+  if (!f0) return ltlModelCore(leases, year, startMonth, opts);
+  let k1 = Number(want) / f0, res = ltlModelCore(scaled(k1), year, startMonth, opts);
+  for (let pass = 0; pass < 6 && Math.abs(res.months[0] - Number(want)) > 0.5; pass++) {
+    const f1 = res.months[0];
+    const k2 = f1 !== f0 ? k1 + (Number(want) - f1) * (k1 - k0) / (f1 - f0) : k1 * (Number(want) / (f1 || 1));
+    k0 = k1; f0 = f1; k1 = k2;
+    res = ltlModelCore(scaled(k1), year, startMonth, opts);
+  }
+  return { ...res, k: Math.round(k1 * 10000) / 10000 };
+}
+function ltlModelCore(
+  leases: Lease[], year: number, startMonth: number,
   opts: { renewalPct?: number; burnoffRenew?: number; burnoffNew?: number; asOf?: string | null;
     /** market-rent growth by month as a factor of month 0 (GPR[m] / GPR[0]); omitted = no growth.
         Each lease's gap is measured against the GROWN market, and a reset burns its share of
@@ -534,8 +561,8 @@ export function ltlModel(
       // rent: 0% burnoff leaves the rent — and so the gap — exactly where it was
       expiring.forEach((it, i) => { it.ltl = r2(it.ltl * (i < nRenew ? keepRenew : keepNew)); it.r = it.m * g(m) - it.s - it.ltl; });
     }
-    // the posted loss to lease = the burnable gap + the HAP share (4996 carries the HAP income)
-    out[m] = r2(-items.reduce((a, it) => a + it.ltl + it.s, 0)) || 0;   // normalize -0
+    // loss to lease is the burnable gap only: the HAP share is rent (4995/4996), carried out of GPR
+    out[m] = r2(-items.reduce((a, it) => a + it.ltl, 0)) || 0;   // normalize -0
     open[m] = r2(items.reduce((a, it) => a + (it.expM > m ? it.m : 0), 0));
   }
   return { months: out, openMarket: open, occupiedMarket };
@@ -1046,7 +1073,11 @@ export function generateLines(coaList: CoaAccount[], inputs: BudgetInputs, uw: U
     cum = i === 0 ? inputs.gpr.baseMonthly * (1 + (inputs.gpr.growthPct[0] || 0)) : cum * (1 + (inputs.gpr.growthPct[i] || 0));
     gpr[i] = r2(cum);
   }
-  mk('4994', gpr, { method: 'gpr' });
+  // HAP is part of the rent roll's GPR: 4994 carries the rest, 4996 the HAP charge (below), so
+  // 4994 + 4996 = the rent roll GPR (Troy 2026-11-11)
+  const hapMo = r2((charges ? chargeGlMonthly(charges) : {})['4996'] || 0);
+  if (hapMo) for (let i = 0; i < 12; i++) gpr[i] = r2(gpr[i] - hapMo);
+  mk('4994', gpr, { method: 'gpr', ...(hapMo ? { hap: hapMo } : {}) } as any);
 
   const gprAnnual = sum(gpr);
 

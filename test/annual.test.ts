@@ -1584,3 +1584,39 @@ describe('quarter shift', () => {
     for (let q = 0; q < 4; q++) expect(Q[q]).toBeGreaterThanOrEqual(Qb[q] * 0.5 - 0.05);
   });
 });
+
+/* HAP is rent (Troy 2026-11-11: "HAP + GPR should equal rent roll GPR… It should not be offset by LTL"). */
+describe('HAP inside GPR', () => {
+  const actual = { ...synthetic(), '4996': cal(Array(12).fill(700)) };
+  const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
+  const roll = { ...inputs, gpr: { baseMonthly: 12000, growthPct: [0, 0, 0.01, 0, 0, 0, 0, 0, 0, 0, 0, 0] as Months } };
+  const leases = [{ m: 1200, r: 300, e: '2027-06-30', s: 800 }, { m: 1200, r: 1150, e: '2027-03-31' }];
+  it('GPR off the rent roll: 4994 + 4996 = the rent roll GPR every month; LTL excludes HAP', () => {
+    const ls = generateAnnualLines(coaList, roll, { actual, budget: null, lastMonth: 10, leases, charges: { subsidy: 800 } });
+    const g = L(ls, '4994').months, h = L(ls, '4996').months;
+    expect(h[0]).toBe(800);                                         // the roll's HAP charge
+    expect(r2n(g[0] + h[0])).toBe(12000);
+    expect(r2n(g[5] + h[5])).toBeCloseTo(12120, 2);                  // the market step, on the rent roll GPR
+    expect((L(ls, '4994').driver as any).hap).toBe(800);
+    expect(L(ls, '5003').months[0]).toBe(-(100 + 50));               // (1200−300−800) + (1200−1150)
+  });
+  it('GPR off the last actual month is already net of HAP: nothing comes out', () => {
+    const ls = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10 });
+    expect(L(ls, '4994').months[0]).toBe(10000);
+    expect((L(ls, '4994').driver as any).hap).toBeUndefined();
+  });
+});
+const r2n = (v: number) => Math.round(v * 100) / 100;
+
+describe('LTL typed first month (template burnoff, no leases)', () => {
+  const actual = synthetic();
+  const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
+  it('starts at the typed month and runs on from it', () => {
+    const base = L(generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10 }), '5003');
+    const typed = L(generateAnnualLines(coaList, { ...inputs, ltl: { ...inputs.ltl, month0: -800 } }, { actual, budget: null, lastMonth: 10 }), '5003');
+    expect(typed.months[0]).toBe(-800);
+    expect(base.months[0]).toBe(-500);
+    expect(typed.months[11]).not.toBe(base.months[11]);         // the rest of the year runs off the new start
+    expect((typed.driver as any).method).toBe('ltl');           // still a live formula, not a typed row
+  });
+});

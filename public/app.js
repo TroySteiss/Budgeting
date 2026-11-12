@@ -46,6 +46,23 @@ function drvMeta(l) {
   if (l && l.driver && l.driver.allocOut) { const a = l.driver.allocOut; extra.push({ cls: 'drv-corp', tag: `−${Math.round(a.pct * 10000) / 100}%`, label: `${Math.round(a.pct * 10000) / 100}% of this line moves to ${String(a.to).toUpperCase()} by recurring journal: $${money(a.gross)} gross, $${money(a.out)} to ${String(a.to).toUpperCase()} (Assumptions → journal split)` }); }
   return extra.length ? { ...m, extra } : m;
 }
+/* The chip a formula choice produces, shown BESIDE the choice wherever formulas are picked (Troy
+   2026-11-11: "colored chips … next to different formula options when picking out, so that the
+   code/color for each is more clear"). Same tag + colour as the grid's Fx chip. */
+const SHAPE_CHIP = { actual: ['drv-base', 'SAME MO'], wavg: ['drv-base', 'WAVG'], flat: ['drv-base', 'T12/12'], curve: ['drv-base', 'CURVE'], avgnz: ['drv-base', 'AVG≠0'], last: ['drv-base', 'LAST'], turns: ['drv-base', 'TURNS'] };
+const chipHtml = (cls, tag) => `<span class="drv ${cls} optchip">${esc(tag)}</span>`;
+const shapeChip = (k) => (SHAPE_CHIP[k] ? chipHtml(SHAPE_CHIP[k][0], SHAPE_CHIP[k][1]) : '');
+/* <select> options cannot hold a chip: they carry the tag and the chip's colours instead */
+const _chipStyleCache = {};
+function chipStyle(cls) {
+  if (_chipStyleCache[cls] != null) return _chipStyleCache[cls];
+  const el = document.createElement('span'); el.className = `drv ${cls}`; el.style.position = 'absolute'; el.style.visibility = 'hidden';
+  document.body.appendChild(el);
+  const cs = getComputedStyle(el); const st = `background-color:${cs.backgroundColor}; color:${cs.color}`;
+  el.remove();
+  return (_chipStyleCache[cls] = st);
+}
+const shapeOpt = (k, text, extra = '') => { const c = SHAPE_CHIP[k]; return `<option value="${k}" ${extra} ${c ? `style="${chipStyle(c[0])}"` : ''}>${c ? `${c[1]} · ` : ''}${text}</option>`; };
 const drvExtraHtml = (dm) => (dm.extra || []).map((x) => `<span class="drv ${x.cls}" style="margin-left:3px" title="${esc(x.label)}">${x.tag}</span>`).join('');
 function drvMetaCore(l) {
   const m = drvMetaBase(l);
@@ -70,13 +87,14 @@ function drvMetaBase(l) {
   switch (method) {
     case 't3avg': return { cls: 'drv-comp', tag: 'T3', label: `T3 avg of ${l.driver.srcName || 'this GL'} × ${(((l.driver || {}).pct || 0)).toFixed(1)}% → MROUND $250` };
     case 'wavg': return { cls: l.driver.srcType === 'seller' ? 'drv-t12' : 'drv-comp', tag: 'WAVG', label: `1-2-1 weighted distribution of ${l.driver.basis === 'budget' ? 'the current-year budget for ' : ''}${l.driver.srcName || ''} × ${((l.driver.pct || 0)).toFixed(1)}%${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
-    case 'gpr': return { cls: 'drv-rr', tag: 'ROLL', label: `GPR — steps: ${gprStepsSummary(((S.bv && S.bv.budget && S.bv.budget.inputs) || {}).gpr ? S.bv.budget.inputs.gpr.growthPct : null)}` };
+    case 'gpr': return { cls: 'drv-rr', tag: l.driver.hap ? 'ROLL−HAP' : 'ROLL', label: `GPR — steps: ${gprStepsSummary(((S.bv && S.bv.budget && S.bv.budget.inputs) || {}).gpr ? S.bv.budget.inputs.gpr.growthPct : null)}${l.driver.hap ? ` · the rent roll's GPR less HAP $${money(l.driver.hap)}/mo (4995 / 4996), so GPR + HAP = the rent roll GPR ($${money(l.driver.gross || 0)} for the year)` : ''}` };
     case 'ltl': {
       const lt = (S.bv && S.bv.budget && S.bv.budget.inputs && S.bv.budget.inputs.ltl) || {};
       const how = lt.mode === 'flat' ? 'held flat (no burnoff)' : lt.mode === 'ramp' ? 'ramp to a % of GPR' : (S.bv && S.bv.leaseCount) ? 'per-lease burnoff at each turnover' : 'burnoff on lease expirations';
       const d = l.driver || {};
-      const hapTxt = d.hap ? ` · HAP $${money(d.hap)}/mo held: the housing authority's share of HAP units' rent is not loss to lease and never burns (4996 budgets it)${d.hapEst ? " — placed from the roll's subsidy total on the lowest-rent leases; re-upload the rent roll for each unit's own HAP" : ''}${d.hapUnplaced ? `; $${money(d.hapUnplaced)}/mo could not be matched to a lease` : ''}` : '';
-      return { cls: 'drv-rr', tag: d.hap ? 'LTL·HAP' : 'LTL', label: `Loss to lease — ${how}${lt.followGpr !== false && lt.mode !== 'ramp' ? ', deepens with GPR growth' : ''} · renewal %, burnoff on renewal / move-in are the boxes to the right (method + "follows GPR" under Assumptions)${hapTxt}` };
+      const hapTxt = d.hap ? ` · HAP $${money(d.hap)}/mo is rent, not loss to lease: it sits in GPR + HAP (4995 / 4996) and never burns; this line is only market − resident rent − HAP${d.hapEst ? " — HAP placed from the roll's subsidy total on the lowest-rent leases; re-upload the rent roll for each unit's own HAP" : ''}${d.hapUnplaced ? `; $${money(d.hapUnplaced)}/mo could not be matched to a lease` : ''}` : '';
+      const m0Txt = lt.month0 != null ? ` · starts at the typed ${money(-Math.abs(lt.month0))} in the first month and runs on from there${d.k ? ` (every lease's gap scaled ×${d.k})` : ''} — clear it in the row's box (Month 1 $)` : '';
+      return { cls: 'drv-rr', tag: `${d.hap ? 'LTL·HAP' : 'LTL'}${lt.month0 != null ? '·START' : ''}`, label: `Loss to lease — ${how}${m0Txt}${lt.followGpr !== false && lt.mode !== 'ramp' ? ', deepens with GPR growth' : ''} · renewal %, burnoff on renewal / move-in are the boxes to the right (method + "follows GPR" under Assumptions)${hapTxt}` };
     }
     case 'vacancy': {
       const d = l.driver;
@@ -117,7 +135,7 @@ function drvMetaBase(l) {
       const d = l.driver;
       const shape = { actual: 'same calendar month', wavg: '1-2-1 weighted distribution', flat: 'T12 ÷ 12 flat', curve: `T12 total on the GL curve${d.fit ? `, fit ${Math.round(d.fit * 100)}% to its own T12 months` : ''}`, last: 'last actual month, flat', avgnz: 'average of active months, flat', turns: `turnover curve: T12 total on lease expirations + 1 mo lag${d.turns ? ` (${Math.round(d.turns)} expirations)` : ''}${d.fit ? `, fit ${Math.round(d.fit * 100)}% to its own T12 months` : ''}` }[d.shape] || d.shape;
       const factor = d.pcts ? `+ Conservice forecast ${(Math.min(...d.pcts) * 100).toFixed(0)}–${(Math.max(...d.pcts) * 100).toFixed(0)}% by month` : `× ${(1 + (d.pct || 0)).toFixed(3)}`;
-      const tag = d.src === 'budget' ? 'CYB' : d.shape === 'turns' ? 'TURNS' : d.shape === 'last' ? 'LAST' : d.pcts ? 'UTIL' : d.shape === 'wavg' ? 'WAVG' : d.shape === 'flat' ? 'T12/12' : 'SAME MO';
+      const tag = d.src === 'budget' ? 'CYB' : d.pcts ? 'UTIL' : (SHAPE_CHIP[d.shape] || SHAPE_CHIP.actual)[1];
       const foldTxt = d.folded ? ` · ${d.folded} credit month${d.folded === 1 ? '' : 's'} in the history folded into the other months (no negative budget months; total kept)` : '';
       const lastWarn = d.lastDev != null ? ` · ⚠ last actual month is ${d.lastDev > 0 ? '+' : ''}${Math.round(d.lastDev * 100)}% vs the T12 average — one month is setting the year (shape menu: T12 ÷ 12 flat)` : '';
       return { cls: 'drv-base', tag: d.lastDev != null ? '⚠LAST' : tag, label: `${d.src === 'budget' ? 'CY budget' : 'Own trailing-12 actual'} — ${shape} ${factor}${d.mult ? ` → MROUND $${d.mult}` : ''} · T12 ${Math.round(d.base || 0).toLocaleString()}${foldTxt}${d.drift ? ` · tilted ${(d.drift * 100).toFixed(1)}% January to December (costs drift up through the year; year total unchanged)` : ''}${d.rule ? ' · default shape and factor from the 2026 GRKS draft (not set for this property)' : ''}${lastWarn}` };
@@ -1323,6 +1341,16 @@ function renderEditor(el) {
     if (!p || !p.dirty) { S.pendingRow = null; return; }
     S.pendingRow = null;
     pushUndo();
+    // 5003 on its formula, only the FIRST month typed: that is where loss to lease starts, and every
+    // later month runs on from it (Troy 2026-11-11) — saved as ltl.month0, the row stays live
+    const ln = (S.bv.lines || []).find((l) => l.gl_code === p.gl);
+    const changed = ln ? p.months.map((v, i) => Math.abs((Number(v) || 0) - (Number(ln.months[i]) || 0)) >= 0.5).reduce((a, c, i) => (c ? [...a, i] : a), []) : [];
+    if (p.gl === '5003' && ln && !ln.override && ln.driver && ln.driver.method === 'ltl' && changed.length === 1 && changed[0] === 0) {
+      const lt = (S.bv.budget.inputs || {}).ltl || {};
+      S.bv = await PUT(`/budgets/${b.id}`, { inputs: { ltl: { ...lt, month0: -Math.abs(Number(p.months[0]) || 0) } } });
+      render();
+      return;
+    }
     S.bv = await PUT(`/budgets/${b.id}/lines/${p.gl}`, { months: p.months });
     render();
   };
@@ -1926,23 +1954,27 @@ function paramFor(gl, line, inp) {
     // every LTL input on the row (Troy 2026-11-09: no trip to Assumptions when a formula has several)
     const lt = inp.ltl || {};
     const ltlPatch = (k, scale) => (v) => ({ ltl: { ...lt, [k]: scale ? v / scale : v } });
+    const m0Box = { k: 'month0', short: 'Month 1 $', unit: '$', label: 'Loss to lease in the first month (negative). The formula runs on from it. 0 = the formula\'s own start', value: lt.month0 ?? 0, patch: (v) => ({ ltl: { ...lt, month0: v ? -Math.abs(v) : null } }) };
     if (lt.mode === 'flat') return { title: '5003 Loss to lease — held flat all year.', summary: `flat ${money(lt.startMonthly ?? 0)}/mo`, multi: [
       { k: 'startMonthly', short: 'Start $/mo', unit: '$', label: 'Monthly loss to lease, negative (0 = rent roll gap / last actual month)', value: lt.startMonthly ?? 0, patch: ltlPatch('startMonthly') },
+      m0Box,
     ] };
     if (lt.mode === 'ramp') return { title: '5003 Loss to lease — ramps from a start $ toward a target % of GPR.', summary: `ramp ${money(lt.startMonthly ?? 0)} → ${pct(lt.targetPct ?? 0)}% over ${lt.rampMonths ?? 12} mo`, multi: [
       { k: 'startMonthly', short: 'Start $/mo', unit: '$', label: 'Ramp start, negative', value: lt.startMonthly ?? 0, patch: ltlPatch('startMonthly') },
       { k: 'targetPct', short: 'Target % of GPR', unit: '%', label: 'Where the ramp ends', value: pct(lt.targetPct ?? 0), patch: ltlPatch('targetPct', 100) },
       { k: 'rampMonths', short: 'Ramp months', unit: 'mo', label: 'Months from start to target', value: lt.rampMonths ?? 12, patch: ltlPatch('rampMonths') },
+      m0Box,
     ] };
     const annual = S.bv && S.bv.annual;
     const rp = lt.renewalPct ?? (annual ? 0.65 : 0.7), br = lt.burnoffRenew ?? (annual ? 0.75 : 0.5), bn = lt.burnoffNew ?? 1;
     return {
       title: '5003 Loss to lease — each expiring lease either renews (renewal %) or turns; the gap to market burns off by the matching % and deepens with GPR growth.',
-      summary: `renew ${pct(rp)}% · burnoff ${pct(br)}% / ${pct(bn)}%`,
+      summary: `renew ${pct(rp)}% · burnoff ${pct(br)}% / ${pct(bn)}%${lt.month0 != null ? ` · starts ${money(lt.month0)}` : ''}`,
       multi: [
         { k: 'renewalPct', short: 'Renewal %', unit: '%', label: 'Share of expiring leases that renew (the rest turn over)', value: pct(rp), patch: ltlPatch('renewalPct', 100) },
         { k: 'burnoffRenew', short: 'LTL burnoff — renewal', unit: '%', label: '% of that lease\'s gap to market closed at renewal', value: pct(br), patch: ltlPatch('burnoffRenew', 100) },
         { k: 'burnoffNew', short: 'LTL burnoff — move-in', unit: '%', label: '% of the gap closed when the unit turns to a new resident', value: pct(bn), patch: ltlPatch('burnoffNew', 100) },
+        m0Box,
       ] };
   }
   if (m === 'flatFee') {
@@ -2147,8 +2179,8 @@ function secShapeHtml(hdr, shapesNow) {
   if (!now.length) return '';
   const one = now.length === 1 ? now[0] : null;
   return `<select class="secshape-in" data-secshape="${esc(hdr.section)}" title="How every history-based line in ${esc(hdr.name)} is built. Picking one sets it on all of them and recalculates; hand-typed lines and lines with their own formula keep theirs. Then More → Copy section formulas to other budgets… to give the same change to other properties.">
-    <option value="" selected>${one ? 'formula: ' + esc((SEC_SHAPES.find((x) => x[0] === one) || [one, one])[1]) : 'formula: mixed'}</option>
-    ${SEC_SHAPES.filter((x) => x[0] !== one).map(([k, t]) => `<option value="${k}">set all to: ${t}</option>`).join('')}
+    <option value="" selected>${one ? `formula: ${SHAPE_CHIP[one] ? SHAPE_CHIP[one][1] + ' · ' : ''}` + esc((SEC_SHAPES.find((x) => x[0] === one) || [one, one])[1]) : 'formula: mixed'}</option>
+    ${SEC_SHAPES.filter((x) => x[0] !== one).map(([k, t]) => shapeOpt(k, `set all to: ${t}`)).join('')}
     <option value="__clear">clear row choices (back to the default)</option>
     <option value="__defaults">change the DEFAULT for every budget…</option></select>`;
 }
@@ -2233,9 +2265,9 @@ async function openDefaultFormulas(focusSection) {
     <div id="df-body" style="max-height:56vh; overflow:auto; border:1px solid var(--line); border-radius:8px; padding:4px 10px">
       ${secs.map((s) => `<div class="df-sec" data-sec="${esc(s.key)}">
         <div style="display:flex; align-items:center; gap:8px; margin:10px 0 4px; position:sticky; top:0; background:var(--card, #fff); padding:3px 0"><b style="text-transform:uppercase; font-size:12px; color:var(--dim)">${esc(s.name)}</b> <span class="muted" style="font-size:11.5px">${s.rows.length} lines</span>
-          <select data-secset="${esc(s.key)}" ${dis} style="margin-left:auto"><option value="">set the whole section to…</option>${SEC_SHAPES.map(([k, t]) => `<option value="${k}">${t}</option>`).join('')}<option value="__none">not set (built-in)</option></select></div>
+          <select data-secset="${esc(s.key)}" ${dis} style="margin-left:auto"><option value="">set the whole section to…</option>${SEC_SHAPES.map(([k, t]) => shapeOpt(k, t)).join('')}<option value="__none">not set (built-in)</option></select></div>
         <table class="list" style="margin:0">${s.rows.map((r) => `<tr data-row="${r.gl}" data-find="${esc((r.gl + ' ' + r.name + ' ' + s.name).toLowerCase())}"><td style="width:46%">${r.gl} ${esc(r.name)}</td>
-          <td><select data-df="${r.gl}" data-was="${r.shape || ''}" ${dis}><option value="" ${r.shape ? '' : 'selected'}>not set — built-in: ${label(r.builtin)}${r.grks && r.grks !== r.builtin ? ` (old GRKS budgets: ${label(r.grks)})` : ''}</option>${SEC_SHAPES.map(([k, t]) => `<option value="${k}" ${r.shape === k ? 'selected' : ''}>${t}</option>`).join('')}</select></td>
+          <td><select data-df="${r.gl}" data-was="${r.shape || ''}" ${dis}><option value="" ${r.shape ? '' : 'selected'}>not set — built-in: ${label(r.builtin)}${r.grks && r.grks !== r.builtin ? ` (old GRKS budgets: ${label(r.grks)})` : ''}</option>${SEC_SHAPES.map(([k, t]) => shapeOpt(k, t, r.shape === k ? 'selected' : '')).join('')}</select></td>
           <td style="width:130px"><select data-cv="${r.gl}" data-was="${esc(r.curve)}" ${dis} title="The seasonal curve of this GL">${d.curves.map((c) => `<option value="${c}" ${r.curve === c ? 'selected' : ''}>${c} curve</option>`).join('')}</select></td></tr>`).join('')}</table></div>`).join('')}
     </div>
     <div class="err" id="df-err"></div>
@@ -2320,7 +2352,7 @@ function openBulkFormula(b) {
     <h2>Formula for lines</h2>
     <p class="muted" style="margin:0 0 8px; font-size:12px">Sets how the ticked lines are built from their own history, then recalculates. Each line keeps its increase %. Hand-typed lines are not listed. One Undo reverses it.</p>
     <div class="row">
-      <div class="fld"><label>Formula</label><select id="bs-shape">${SEC_SHAPES.map(([k, t]) => `<option value="${k}" ${k === 'turns' ? 'selected' : ''}>${t}</option>`).join('')}<option value="__clear">clear row choices (back to the formula set)</option></select></div>
+      <div class="fld"><label>Formula</label><select id="bs-shape">${SEC_SHAPES.map(([k, t]) => shapeOpt(k, t, k === 'turns' ? 'selected' : '')).join('')}<option value="__clear">clear row choices (back to the formula set)</option></select></div>
       <div class="fld"><label title="How far the ticked lines lean toward their own trailing-12 months, with any formula. 0 = the formula's own months, 100 = the T12 months. Year totals do not change.">Fit to T12 %</label><input id="bs-fit" value="" placeholder="0" style="width:70px"></div>
       <span class="spacer" style="flex:1"></span>
       <button class="btn sub" id="bs-turn" title="The turn-cost lines: cleaning, painting, carpet, make-ready, appliance and flooring replacement">Turn lines</button>
@@ -3442,31 +3474,33 @@ function openRowTools(b, gl, anchorBtn) {
   const dm = drvMeta(line && (sumM(line.months) || line.override || (line.driver || {}).method === 'dropped') ? line : null);
   const menu = document.createElement('div');
   menu.className = 'rowmenu';
-  const dot = (cls) => `<span class="dot ${cls}" style="margin-right:6px"></span>`;
+  // the chip each tool leaves on the row — same tag and colour as the grid (Troy 2026-11-11)
+  const TOOL_CHIP = { undrop: ['drv-base', 'T12/12'], flatGrow: ['drv-base', 'T12/12'], ownFormula: ['drv-uw', 'OWN'], zero: ['drv-int', 'ZERO'], flatAnnual: ['drv-man', 'MAN'], flatMonthly: ['drv-man', 'MAN'], grow: ['drv-man', 'MAN'], minot: ['drv-comp', 'MINOT'], t3avg: ['drv-comp', 'T3'], shape: ['drv-base', 'SHAPE'], pctgpr: ['drv-base', '%GPR'], suggest: ['drv-corp', 'CORP'], seller: ['drv-t12', 'SLR'], ownBudget: ['drv-t12', 'CY BUD'], t12curve: ['drv-t12', 'T12C'], link: ['drv-fee', 'LINK'], smooth: ['drv-t12', 'SMOOTH'], recmap: ['drv-t12', 'REC'], wavg: ['drv-comp', 'WAVG'], reset: ['drv-uw', 'ENGINE'] };
+  const dot = (cls, act) => { const c = act && TOOL_CHIP[act]; return c ? `${chipHtml(c[0], c[1])} ` : `<span class="dot ${cls}" style="margin-right:6px"></span>`; };
   menu.innerHTML = `
     <div class="rm-head">${gl} ${esc(acc.name || '')}<br>
       <span class="drv ${dm.cls}" style="margin-top:3px; display:inline-block">${dm.tag}</span>${drvExtraHtml(dm)}
       <span style="margin-left:5px">${esc(dm.label)}</span></div>
-    ${line && (line.driver || {}).method === 'dropped' ? `<button data-act="undrop" title="The template dropped this line because its trailing-12 is at or under $1,000. This budgets it at T12 ÷ 12 with the line's usual increase factor."><b>${dot('drv-base')}Budget this line — T12 ÷ 12 ($${money(line.driver.t12 || 0)} a year before the factor)</b></button>` : ''}
-    ${S.bv.annual && rowT12(gl) ? `<button data-act="flatGrow" title="This line = its trailing-12 total ÷ 12, the same every month, × (1 + the growth % you type). Works on ANY line with history — rent, loss to lease, vacancy, payroll, the fee, corporate lines included. It replaces the line's own formula until you put it back."><b>${dot('drv-base')}Flat + growth over T12… (T12 ${money(rowT12(gl))})</b></button>` : ''}
-    ${S.bv.annual && ((inp.baseline || {}).glShape || {})[gl] ? `<button data-act="ownFormula" title="Drop the shape chosen on this row; the line goes back to its usual formula">${dot('drv-uw')}Back to this line's own formula</button>` : ''}
-    <button data-act="zero">${dot('drv-int')}Zero out row</button>
-    <button data-act="flatAnnual">${dot('drv-man')}Flat — annual $ over the year…</button>
-    <button data-act="flatMonthly">${dot('drv-man')}Flat — $ per month…</button>
-    <button data-act="grow">${dot('drv-man')}Start $ /mo + growth %/mo…</button>
-    ${hasComp ? `<button data-act="minot">${dot('drv-comp')}Minot $/unit × units (${money((S.bv.compWeights[gl] / S.bv.compUnits) * inp.units)}/yr, seasonal)</button>` : ''}
-    ${hasComp && S.bv.compShapes && S.bv.compShapes[gl] ? `<button data-act="t3avg" title="Weighted average of the comp's last 3 months (1-2-1), per-unit scaled, × (1+growth), rounded to $250 — your MROUND formula">${dot('drv-comp')}T3 actuals avg × growth → MROUND $250…</button>` : ''}
-    ${S.bv.annual ? `<button data-act="shape" title="Pick how this GL's own trailing-12 history becomes the budget: same month × factor (template), 1-2-1 weighted distribution, flat T12/12, last actual month flat, average of active months, or the T12 total on the GL's seasonal curve">${dot('drv-base')}Own T12 → shape × factor…</button>` : ''}
-    ${S.bv.annual && acc.pcode && ['1', 'loss', '2', '3'].includes(acc.pcode) && gl !== '4994' ? `<button data-act="pctgpr" title="This line as a % of budget GPR">${dot('drv-base')}% of GPR…</button>` : ''}
-    ${S.bv.annual && S.bv.template && S.bv.template.suggestions && S.bv.template.suggestions[gl] && S.bv.template.suggestions[gl].some((v) => v) ? `<button data-act="suggest" title="${esc((S.bv.template.suggestionNotes[gl] || []).join('; '))}">${dot('drv-corp')}Corporate suggestion (${money(S.bv.template.suggestions[gl].reduce((a, v) => a + v, 0))}/yr)…</button>` : ''}
-    ${(S.bv.sellerT12 || []).length ? `<button data-act="seller" title="${S.bv.annual ? 'This GL\'s own trailing-12 months × growth. No GL to pick: the row is the GL. Shift-click to take another statement line instead. A GL with no T12 offers its own current-year budget.' : 'Match this GL to a seller T12 line and take its monthly actuals × growth'}">${dot('drv-t12')}${S.bv.annual ? 'Own T12 actuals × growth (this GL)' : 'Seller actuals — match a seller line…'}</button>` : ''}
-    ${S.bv.annual && fcBudgetRow(S.bv, gl) ? `<button data-act="ownBudget" title="This GL's own current-year budget, month by month, × growth. It is read from the Yardi template along with the T12: no GL to pick.">${dot('drv-t12')}CY budget × growth (this GL · ${money(fcBudgetRow(S.bv, gl).total)})</button>` : ''}
-    ${(S.bv.sellerT12 || []).length ? `<button data-act="t12curve" title="${S.bv.annual ? 'Take a statement line\'s T12 total × growth and spread it on a clean seasonal curve' : 'For non-accrual seller billing (credits/gaps/spikes): the ANNUAL total is still right even when the months are garbage. Takes the seller line\'s T12 total × growth and spreads it on a clean seasonal curve.'}">${dot('drv-t12')}${S.bv.annual ? 'T12 TOTAL → seasonal curve… (this GL)' : 'Seller T12 TOTAL → seasonal curve… (bad bills)'}</button>` : ''}
-    <button data-act="link" title="Set this GL equal to another budget line × a weight (e.g. sewer = water × 0.8). LIVE: re-follows the source on every regeneration.">${dot('drv-fee')}= another line × weight… (moves in conjunction)</button>
-    ${line && line.months.some((v) => v) ? `<button data-act="smooth" title="Gentle: only the months that are wrong move. A spike gives its excess to the low months next to it and a credit month is netted against the nearest high month; ordinary months are not touched. A line with nothing wrong is left alone unless you ask for a light pass. No negative months; every month rounded to $5, so the total can move by a few dollars. The line keeps its formula chip and gains a SMOOTH chip.">${dot('drv-t12')}Smooth missed bills — spikes into surrounding months</button>` : ''}
-    ${line && (line.driver || {}).method === 'recovery' ? `<button data-act="recmap" title="Pick exactly which utility expense lines this reimbursement recovers (recovery % × their prior month). Claims are exclusive — a line you take here is released by whichever reim had it.">${dot('drv-t12')}Edit what this reim recovers…</button>` : ''}
-    ${((S.bv.sellerT12 || []).length || hasComp) ? `<button data-act="wavg" title="Troy's distribution formula: each month = (2×that month + prior + next)/4 of the source actuals, × (1+growth), MROUND to a multiple">${dot('drv-comp')}Weighted avg distribution (1-2-1) × growth → MROUND…</button>` : ''}
-    <button data-act="reset">${dot('drv-uw')}Reset to engine formula (clear override)</button>`;
+    ${line && (line.driver || {}).method === 'dropped' ? `<button data-act="undrop" title="The template dropped this line because its trailing-12 is at or under $1,000. This budgets it at T12 ÷ 12 with the line's usual increase factor."><b>${dot('drv-base', 'undrop')}Budget this line — T12 ÷ 12 ($${money(line.driver.t12 || 0)} a year before the factor)</b></button>` : ''}
+    ${S.bv.annual && rowT12(gl) ? `<button data-act="flatGrow" title="This line = its trailing-12 total ÷ 12, the same every month, × (1 + the growth % you type). Works on ANY line with history — rent, loss to lease, vacancy, payroll, the fee, corporate lines included. It replaces the line's own formula until you put it back."><b>${dot('drv-base', 'flatGrow')}Flat + growth over T12… (T12 ${money(rowT12(gl))})</b></button>` : ''}
+    ${S.bv.annual && ((inp.baseline || {}).glShape || {})[gl] ? `<button data-act="ownFormula" title="Drop the shape chosen on this row; the line goes back to its usual formula">${dot('drv-uw', 'ownFormula')}Back to this line's own formula</button>` : ''}
+    <button data-act="zero">${dot('drv-int', 'zero')}Zero out row</button>
+    <button data-act="flatAnnual">${dot('drv-man', 'flatAnnual')}Flat — annual $ over the year…</button>
+    <button data-act="flatMonthly">${dot('drv-man', 'flatMonthly')}Flat — $ per month…</button>
+    <button data-act="grow">${dot('drv-man', 'grow')}Start $ /mo + growth %/mo…</button>
+    ${hasComp ? `<button data-act="minot">${dot('drv-comp', 'minot')}Minot $/unit × units (${money((S.bv.compWeights[gl] / S.bv.compUnits) * inp.units)}/yr, seasonal)</button>` : ''}
+    ${hasComp && S.bv.compShapes && S.bv.compShapes[gl] ? `<button data-act="t3avg" title="Weighted average of the comp's last 3 months (1-2-1), per-unit scaled, × (1+growth), rounded to $250 — your MROUND formula">${dot('drv-comp', 't3avg')}T3 actuals avg × growth → MROUND $250…</button>` : ''}
+    ${S.bv.annual ? `<button data-act="shape" title="Pick how this GL's own trailing-12 history becomes the budget: same month × factor (template), 1-2-1 weighted distribution, flat T12/12, last actual month flat, average of active months, or the T12 total on the GL's seasonal curve">${dot('drv-base', 'shape')}Own T12 → shape × factor…</button>` : ''}
+    ${S.bv.annual && acc.pcode && ['1', 'loss', '2', '3'].includes(acc.pcode) && gl !== '4994' ? `<button data-act="pctgpr" title="This line as a % of budget GPR">${dot('drv-base', 'pctgpr')}% of GPR…</button>` : ''}
+    ${S.bv.annual && S.bv.template && S.bv.template.suggestions && S.bv.template.suggestions[gl] && S.bv.template.suggestions[gl].some((v) => v) ? `<button data-act="suggest" title="${esc((S.bv.template.suggestionNotes[gl] || []).join('; '))}">${dot('drv-corp', 'suggest')}Corporate suggestion (${money(S.bv.template.suggestions[gl].reduce((a, v) => a + v, 0))}/yr)…</button>` : ''}
+    ${(S.bv.sellerT12 || []).length ? `<button data-act="seller" title="${S.bv.annual ? 'This GL\'s own trailing-12 months × growth. No GL to pick: the row is the GL. Shift-click to take another statement line instead. A GL with no T12 offers its own current-year budget.' : 'Match this GL to a seller T12 line and take its monthly actuals × growth'}">${dot('drv-t12', 'seller')}${S.bv.annual ? 'Own T12 actuals × growth (this GL)' : 'Seller actuals — match a seller line…'}</button>` : ''}
+    ${S.bv.annual && fcBudgetRow(S.bv, gl) ? `<button data-act="ownBudget" title="This GL's own current-year budget, month by month, × growth. It is read from the Yardi template along with the T12: no GL to pick.">${dot('drv-t12', 'ownBudget')}CY budget × growth (this GL · ${money(fcBudgetRow(S.bv, gl).total)})</button>` : ''}
+    ${(S.bv.sellerT12 || []).length ? `<button data-act="t12curve" title="${S.bv.annual ? 'Take a statement line\'s T12 total × growth and spread it on a clean seasonal curve' : 'For non-accrual seller billing (credits/gaps/spikes): the ANNUAL total is still right even when the months are garbage. Takes the seller line\'s T12 total × growth and spreads it on a clean seasonal curve.'}">${dot('drv-t12', 't12curve')}${S.bv.annual ? 'T12 TOTAL → seasonal curve… (this GL)' : 'Seller T12 TOTAL → seasonal curve… (bad bills)'}</button>` : ''}
+    <button data-act="link" title="Set this GL equal to another budget line × a weight (e.g. sewer = water × 0.8). LIVE: re-follows the source on every regeneration.">${dot('drv-fee', 'link')}= another line × weight… (moves in conjunction)</button>
+    ${line && line.months.some((v) => v) ? `<button data-act="smooth" title="Gentle: only the months that are wrong move. A spike gives its excess to the low months next to it and a credit month is netted against the nearest high month; ordinary months are not touched. A line with nothing wrong is left alone unless you ask for a light pass. No negative months; every month rounded to $5, so the total can move by a few dollars. The line keeps its formula chip and gains a SMOOTH chip.">${dot('drv-t12', 'smooth')}Smooth missed bills — spikes into surrounding months</button>` : ''}
+    ${line && (line.driver || {}).method === 'recovery' ? `<button data-act="recmap" title="Pick exactly which utility expense lines this reimbursement recovers (recovery % × their prior month). Claims are exclusive — a line you take here is released by whichever reim had it.">${dot('drv-t12', 'recmap')}Edit what this reim recovers…</button>` : ''}
+    ${((S.bv.sellerT12 || []).length || hasComp) ? `<button data-act="wavg" title="Troy's distribution formula: each month = (2×that month + prior + next)/4 of the source actuals, × (1+growth), MROUND to a multiple">${dot('drv-comp', 'wavg')}Weighted avg distribution (1-2-1) × growth → MROUND…</button>` : ''}
+    <button data-act="reset">${dot('drv-uw', 'reset')}Reset to engine formula (clear override)</button>`;
   const r = anchorBtn.getBoundingClientRect();
   menu.style.left = `${r.left + window.scrollX}px`;
   menu.style.top = `${r.bottom + window.scrollY + 2}px`;
@@ -5460,7 +5494,7 @@ function openShapeMenu(b, gl, acc, anchorBtn, inp) {
   menu.className = 'rowmenu';
   menu.innerHTML = `
     <div class="rm-head">${gl} ${esc(acc.name || '')} — own history → budget</div>
-    ${Object.entries(SHAPE_LABELS).map(([k, label]) => `<button data-sh="${k}">${curShape === k ? '✓ ' : ''}${label}</button>`).join('')}
+    ${Object.entries(SHAPE_LABELS).map(([k, label]) => `<button data-sh="${k}">${shapeChip(k)} ${curShape === k ? '✓ ' : ''}${label}</button>`).join('')}
     <button data-sh="" style="color:var(--dim)">Template default for this GL</button>
     ${hasT12(gl) && !(line && line.driver && FIT_SKIP.has(line.driver.method) && !line.override) ? `<div class="rm-head" style="margin-top:4px">Monthly spread</div><button data-fit="1" title="Lean this line's months toward its own trailing-12 months; the year total does not change">Fit to T12 %… <span class="muted">(now ${Math.round(((bl.glFit || {})[gl] ?? fitOfLine(line)) * 100)}%)</span></button>` : ''}`;
   const r = anchorBtn.getBoundingClientRect();
