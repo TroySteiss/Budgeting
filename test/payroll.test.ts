@@ -351,7 +351,7 @@ describe('raise import: zeros are "not filled in"; a typed New rate is read as a
     const f = book({ Combined: sheet([{ key: 'k1', type: 'Hourly', cur: 20, pctFormula: 3 }]), Gail: sheet([{ key: 'k1', type: 'Hourly', cur: 20, pct: 4.5 }]) });
     expect(parseRaiseImportDetailed(f).pairs).toEqual([{ key: 'k1', pct: 4.5 }]);
     const empty = book({ Gail: sheet([{ key: 'k1', type: 'Hourly', cur: 20, pct: 0 }]) });
-    expect(parseRaiseImportDetailed(empty)).toEqual({ pairs: [], zeroSkipped: 1, fromNewRate: 0 });
+    expect(parseRaiseImportDetailed(empty)).toMatchObject({ pairs: [], zeroSkipped: 1, fromNewRate: 0 });
   });
 });
 

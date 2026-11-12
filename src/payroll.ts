@@ -13,7 +13,7 @@ import { query, inRegion, regionOfRequest } from './db.js';
 import { requireAuth, requireAdmin, isAdminUser, canSeeRmPay, normUser } from './auth.js';
 import { parseStaffingReport, parsePayrollModel, parsePayrollDetail } from './importers.js';
 import { loadBudget, buildLines, saveLines } from './routes.js';
-import { maskPeople, hiddenAggregates, annualWagesByGl, seatMonthly, homeRegionsOf, applyStaffingDetail, normalizePayBasis, normalizeRmCorporateShare, type StaffingPerson, type RaiseMap, type DetailPerson } from '../shared/payroll.js';
+import { maskPeople, hiddenAggregates, annualWagesByGl, seatMonthly, homeRegionsOf, applyStaffingDetail, normalizePayBasis, normalizeRmCorporateShare, matchRaiseKeys, resolveRaiseKeys, type StaffingPerson, type RaiseMap, type DetailPerson } from '../shared/payroll.js';
 import { loadSnapshotPeople, regionOf, marketOfCode, latestIterByRegion } from './payroll-data.js';
 import { buildRaiseWorkbook, parseRaiseImportDetailed, type RaiseExportRow, type RaiseSheetSpec } from './payroll-xlsx.js';
 
@@ -195,9 +195,67 @@ payrollRouter.put('/cycles/:id', requireAdmin, h(async (req, res) => {
   const snapId = Number(req.body?.staffingSnapshotId);
   const people = await loadSnapshotPeople(snapId);
   if (!people.length) return res.status(400).json({ error: 'No such staffing snapshot' });
+  const cycle = (await query('select id, staffing_snapshot_id from raise_cycles where id=$1', [id])).rows[0];
+  if (!cycle) return res.status(404).json({ error: 'No such cycle' });
+  const user = req.session.username || '';
+  const dryRun = req.body?.dryRun === true;
+  /* Carry every raise onto the new roster (Troy 2026-11-12: "I do not want to redo those").
+     dryRun = the preview; nothing changes until it is applied. Raises that cannot be matched are
+     KEPT (re-pointing back to the old roster brings them back) and listed. */
+  const oldPeople = cycle.staffing_snapshot_id ? await loadSnapshotPeople(Number(cycle.staffing_snapshot_id)) : [];
+  const iters = (await query('select id from raise_iterations where cycle_id=$1', [id])).rows as any[];
+  const iterIds = iters.map((i) => Number(i.id));
+  const entryKeys = iterIds.length ? (await query('select distinct person_key from raise_entries where iteration_id = any($1)', [iterIds])).rows.map((r: any) => String(r.person_key)) : [];
+  const match = matchRaiseKeys(oldPeople, people, entryKeys);
+  // a person whose HOME region changes reads their raise from the new home's latest iteration:
+  // copy it there (an open iteration only; a finalized one is reported, not written into)
+  const latest = await latestIterByRegion(id);
+  const homesNew = homeRegionsOf(people, await marketOfCode());
+  const fwd = new Map(match.remap.map((r) => [r.from, r.to]));
+  const storedKey = (region: string, newKey: string): string | null => {   // the stored key (old or new) holding newKey's raise there
+    const it = latest.get(region); if (!it) return null;
+    if (newKey in it.entries) return newKey;
+    for (const [from, to] of fwd) if (to === newKey && from in it.entries) return from;
+    return null;
+  };
+  const moved: { name: string; from: string; to: string; copied: boolean; why?: string }[] = [];
+  const moveOps: { key: string; srcIter: number; srcKey: string; dstIter: number }[] = [];
+  for (const p of people) {
+    const home = homesNew.get(p.key);
+    if (!home || storedKey(home, p.key)) continue;
+    const src = [...latest.keys()].sort().find((r) => r !== home && storedKey(r, p.key));
+    if (!src) continue;
+    const dst = latest.get(home);
+    if (!dst) { moved.push({ name: p.name, from: src, to: home, copied: false, why: `${home} has no iteration in this cycle` }); continue; }
+    if (dst.finalized) { moved.push({ name: p.name, from: src, to: home, copied: false, why: `${home} iteration ${dst.num} is finalized: start the next one, then re-point again` }); continue; }
+    moved.push({ name: p.name, from: src, to: home, copied: true });
+    moveOps.push({ key: p.key, srcIter: latest.get(src)!.id, srcKey: storedKey(src, p.key)!, dstIter: dst.id });
+  }
+  const report = {
+    carried: match.carried.length,
+    rematched: match.remap.map((r) => r.name).sort(),
+    orphaned: match.orphans.map((o) => ({ name: o.name || '(not on the previous roster)', why: o.why })),
+    moved,
+  };
+  if (dryRun) return res.json({ ok: true, dryRun: true, ...report });
+  for (const r of match.remap) {
+    await query(
+      `update raise_entries e set person_key=$3 where e.iteration_id = any($1) and e.person_key=$2
+         and not exists (select 1 from raise_entries x where x.iteration_id=e.iteration_id and x.person_key=$3)`,
+      [iterIds, r.from, r.to]);
+  }
+  for (const m of moveOps) {
+    // after the re-key above the source row sits under the new key
+    await query(
+      `insert into raise_entries(iteration_id, person_key, raise_pct, updated_by, updated_at)
+       select $1, $2, raise_pct, $4, now() from raise_entries where iteration_id=$3 and person_key in ($2, $5)
+       order by (person_key=$2) desc limit 1
+       on conflict (iteration_id, person_key) do nothing`,
+      [m.dstIter, m.key, m.srcIter, user, m.srcKey]);
+  }
   await query('update raise_cycles set staffing_snapshot_id=$2 where id=$1', [id, snapId]);
-  logChange(req.session.username || '', 'repoint raise cycle staffing', { cycleId: id, staffingSnapshotId: snapId });
-  res.json({ ok: true });
+  logChange(user, 'repoint raise cycle staffing', { cycleId: id, staffingSnapshotId: snapId, carried: report.carried, rematched: report.rematched.length, orphaned: report.orphaned.length, movedRegion: moveOps.length });
+  res.json({ ok: true, ...report });
 }));
 
 payrollRouter.delete('/cycles/:id', requireAdmin, h(async (req, res) => {
@@ -505,12 +563,15 @@ payrollRouter.post('/iterations/:id/import', upload.single('file'), h(async (req
   const people = await loadSnapshotPeople(it.staffing_snapshot_id);
   const byKey = new Map(people.map((p) => [p.key, p]));
   const homes = homeRegionsOf(people, await marketOfCode());
-  const { pairs, zeroSkipped, fromNewRate } = parseRaiseImportDetailed(req.file.buffer);
+  const parsedImp = parseRaiseImportDetailed(req.file.buffer);
+  const { zeroSkipped, fromNewRate, names } = parsedImp;
+  // keys from a workbook exported before the roster was re-dropped are matched by Employee name
+  const { pairs, rekeyed } = resolveRaiseKeys(parsedImp.pairs, names, people);
   let applied = 0, unchanged = 0;
   const skipped: { name: string; reason: string }[] = [];
   for (const { key, pct } of pairs) {
     const person = byKey.get(key);
-    if (!person) { skipped.push({ name: key, reason: 'unknown key' }); continue; }
+    if (!person) { skipped.push({ name: names[key] || key, reason: 'not on the current roster (key and name both unmatched)' }); continue; }
     if (pct < -50 || pct > 100) { skipped.push({ name: person.name, reason: 'raise % out of range' }); continue; }
     if (person.rm) { skipped.push({ name: person.name, reason: 'RM raises are entered in the app only' }); continue; }
     if (homes.get(key) && homes.get(key) !== it.region) { skipped.push({ name: person.name, reason: `belongs to ${homes.get(key)}` }); continue; }
@@ -526,7 +587,7 @@ payrollRouter.post('/iterations/:id/import', upload.single('file'), h(async (req
     applied++;
   }
   logChange(user, 'import raise workbook', { iterationId: it.id, region: it.region, applied, unchanged, skipped: skipped.length });
-  res.json({ ok: true, applied, unchanged, skipped, zeroSkipped, fromNewRate });
+  res.json({ ok: true, applied, unchanged, skipped, zeroSkipped, fromNewRate, rekeyed });
 }));
 
 /* ---- whole-cycle round trip (the "All regions" view): each person once, in
@@ -560,12 +621,15 @@ payrollRouter.post('/cycles/:id/import', upload.single('file'), h(async (req, re
   const byKey = new Map(people.map((p) => [p.key, p]));
   const homes = homeRegionsOf(people, await marketOfCode());
   const latest = await latestIterByRegion(cycle.id);
-  const { pairs, zeroSkipped, fromNewRate } = parseRaiseImportDetailed(req.file.buffer);
+  const parsedImp = parseRaiseImportDetailed(req.file.buffer);
+  const { zeroSkipped, fromNewRate, names } = parsedImp;
+  // keys from a workbook exported before the roster was re-dropped are matched by Employee name
+  const { pairs, rekeyed } = resolveRaiseKeys(parsedImp.pairs, names, people);
   let applied = 0, unchanged = 0;
   const skipped: { name: string; reason: string }[] = [];
   for (const { key, pct } of pairs) {
     const person = byKey.get(key);
-    if (!person) { skipped.push({ name: key, reason: 'unknown key' }); continue; }
+    if (!person) { skipped.push({ name: names[key] || key, reason: 'not on the current roster (key and name both unmatched)' }); continue; }
     if (pct < -50 || pct > 100) { skipped.push({ name: person.name, reason: 'raise % out of range' }); continue; }
     if (person.rm) { skipped.push({ name: person.name, reason: 'RM raises are entered in the app only' }); continue; }
     const home = homes.get(key);
@@ -583,7 +647,7 @@ payrollRouter.post('/cycles/:id/import', upload.single('file'), h(async (req, re
     applied++;
   }
   logChange(user, 'import raise workbook (all regions)', { cycleId: cycle.id, applied, unchanged, skipped: skipped.length });
-  res.json({ ok: true, applied, unchanged, skipped, zeroSkipped, fromNewRate });
+  res.json({ ok: true, applied, unchanged, skipped, zeroSkipped, fromNewRate, rekeyed });
 }));
 
 /* ---------------- iteration lifecycle (admin) ---------------- */

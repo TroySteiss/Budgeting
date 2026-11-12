@@ -301,3 +301,72 @@ export function hiddenAggregates(people: StaffingPerson[], raises: RaiseMap, cod
   }
   return out;
 }
+
+/* ---------------- carrying raises onto a new roster (Troy 2026-11-12) ----------------
+   "I am about to update payroll sheet ... I do not want to redo those [raises]."
+   Raise entries are keyed by person (Prism ID, else employee number, else the normalized name). A
+   re-dropped workbook can key the same person differently: a Prism ID added or dropped, the
+   name-keyed grid format instead of the roster, a name typed "Last, First" or with a middle
+   initial. Same key = carried as-is. Otherwise the person is re-matched by NAME (word order,
+   punctuation and single-letter initials ignored) only when exactly one person on each side has
+   that name and the new key holds no raise of its own. Anything else is reported, never guessed,
+   and the entry is kept. Pure. */
+export const personNameId = (name: string): string =>
+  String(name || '').toLowerCase().replace(/[^a-z\s,]/g, '').split(/[\s,]+/).filter((t) => t.length > 1).sort().join(' ');
+
+export interface RaiseKeyMatch {
+  carried: string[];                                        // entry keys found on the new roster as-is
+  remap: { from: string; to: string; name: string }[];      // re-matched by name
+  orphans: { key: string; name: string | null; why: string }[];
+}
+export function matchRaiseKeys(oldPeople: StaffingPerson[], newPeople: StaffingPerson[], entryKeys: string[]): RaiseKeyMatch {
+  const newKeys = new Set(newPeople.map((p) => p.key));
+  const held = new Set(entryKeys);
+  const oldBy = new Map(oldPeople.map((p) => [p.key, p]));
+  const countIds = (ps: StaffingPerson[]) => { const m = new Map<string, number>(); for (const p of ps) { const id = personNameId(p.name); if (id) m.set(id, (m.get(id) || 0) + 1); } return m; };
+  const oldIds = countIds(oldPeople), newIds = countIds(newPeople);
+  const newById = new Map<string, StaffingPerson>();
+  for (const p of newPeople) { const id = personNameId(p.name); if (id && newIds.get(id) === 1) newById.set(id, p); }
+  const taken = new Set<string>();
+  const out: RaiseKeyMatch = { carried: [], remap: [], orphans: [] };
+  for (const key of [...new Set(entryKeys)].sort()) {
+    if (newKeys.has(key)) { out.carried.push(key); continue; }
+    const op = oldBy.get(key) || null;
+    const name = op?.name || null;
+    if (!op) { out.orphans.push({ key, name, why: 'not on the previous or the new roster' }); continue; }
+    if (/^(vacant|open|tbd|new hire)\b/i.test(op.name.trim())) { out.orphans.push({ key, name, why: 'open seat: seats are not matched by name' }); continue; }
+    const id = personNameId(op.name);
+    if (!id || (oldIds.get(id) || 0) > 1) { out.orphans.push({ key, name, why: 'name shared with someone else on the previous roster' }); continue; }
+    if ((newIds.get(id) || 0) > 1) { out.orphans.push({ key, name, why: 'name shared by more than one person on the new roster' }); continue; }
+    const np = newById.get(id);
+    if (!np) { out.orphans.push({ key, name, why: 'not on the new roster' }); continue; }
+    if (held.has(np.key) || taken.has(np.key)) { out.orphans.push({ key, name, why: 'the new roster row already has a raise of its own' }); continue; }
+    taken.add(np.key);
+    out.remap.push({ from: key, to: np.key, name: op.name });
+  }
+  return out;
+}
+
+/** A raise WORKBOOK exported before the roster was re-dropped carries the old keys. A key the
+    roster no longer has is matched by the row's Employee name, on the same terms as a re-point
+    (exactly one person on the roster with that name, and no other row of the file already aimed
+    at them). Unmatched keys pass through unchanged and are skipped as unknown. Pure. */
+export function resolveRaiseKeys(pairs: { key: string; pct: number }[], names: Record<string, string>, people: StaffingPerson[]): { pairs: { key: string; pct: number; from?: string }[]; rekeyed: string[] } {
+  const keys = new Set(people.map((p) => p.key));
+  const count = new Map<string, number>();
+  for (const p of people) { const id = personNameId(p.name); if (id) count.set(id, (count.get(id) || 0) + 1); }
+  const byId = new Map<string, StaffingPerson>();
+  for (const p of people) { const id = personNameId(p.name); if (id && count.get(id) === 1) byId.set(id, p); }
+  const direct = new Set(pairs.map((x) => x.key).filter((k) => keys.has(k)));
+  const taken = new Set<string>();
+  const rekeyed: string[] = [];
+  const out = pairs.map((x) => {
+    if (keys.has(x.key)) return x;
+    const nm = names[x.key];
+    const p = nm ? byId.get(personNameId(nm)) : undefined;
+    if (!p || direct.has(p.key) || taken.has(p.key)) return x;
+    taken.add(p.key); rekeyed.push(p.name);
+    return { key: p.key, pct: x.pct, from: x.key };
+  });
+  return { pairs: out, rekeyed: rekeyed.sort() };
+}

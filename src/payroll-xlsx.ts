@@ -254,21 +254,22 @@ const normHdr = (v: any): string => (v == null ? '' : String(v)).toLowerCase().r
       New rate cell holds a typed number, raise % = New rate ÷ Current rate − 1 (4 decimals).
       The 25-cent rounding on hourly rates still applies when the raise is used, so an hourly
       rate typed off the quarter lands on the nearest one. Counted in `fromNewRate`. */
-export function parseRaiseImportDetailed(buf: Buffer): { pairs: { key: string; pct: number }[]; zeroSkipped: number; fromNewRate: number } {
+export function parseRaiseImportDetailed(buf: Buffer): { pairs: { key: string; pct: number }[]; zeroSkipped: number; fromNewRate: number; names: Record<string, string> } {
   const wb = XLSX.read(buf, { type: 'buffer', cellFormula: true });
   const typed = new Map<string, number>();     // Raise % typed, non-zero
   const derived = new Map<string, number>();   // from a typed New rate
   const cached = new Map<string, number>();    // Raise % formula result, non-zero
   const seen = new Set<string>();
+  const names: Record<string, string> = {};   // key -> Employee, so a key the roster no longer uses can be matched by name
   let found = false;
   for (const name of wb.SheetNames) {
     const ws = wb.Sheets[name];
     if (!ws['!ref']) continue;
     const range = XLSX.utils.decode_range(ws['!ref']);
     // locate the header row
-    let hdrRow = -1, keyCol = -1, pctCol = -1, newCol = -1, curCol = -1;
+    let hdrRow = -1, keyCol = -1, pctCol = -1, newCol = -1, curCol = -1, empCol = -1;
     for (let r = range.s.r; r <= Math.min(range.e.r, range.s.r + 11); r++) {
-      let k = -1, p = -1, n = -1, cu = -1;
+      let k = -1, p = -1, n = -1, cu = -1, em = -1;
       for (let c = range.s.c; c <= range.e.c; c++) {
         const cell = ws[XLSX.utils.encode_cell({ r, c })];
         const h = normHdr(cell ? cell.v : null);
@@ -276,8 +277,9 @@ export function parseRaiseImportDetailed(buf: Buffer): { pairs: { key: string; p
         if (h === 'raise%' || h === 'raisepct' || h === 'raisepercent') p = c;
         if (h === 'newrate') n = c;
         if (h === 'currentrate') cu = c;
+        if (h === 'employee' || h === 'employeename' || h === 'name') em = c;
       }
-      if (k >= 0 && p >= 0) { hdrRow = r; keyCol = k; pctCol = p; newCol = n; curCol = cu; break; }
+      if (k >= 0 && p >= 0) { hdrRow = r; keyCol = k; pctCol = p; newCol = n; curCol = cu; empCol = em; break; }
     }
     if (hdrRow < 0) continue;
     found = true;
@@ -287,6 +289,7 @@ export function parseRaiseImportDetailed(buf: Buffer): { pairs: { key: string; p
       const key = kc && kc.v != null ? String(kc.v).trim() : '';
       if (!key) continue;
       seen.add(key);
+      if (empCol >= 0 && !names[key]) { const ec = ws[XLSX.utils.encode_cell({ r, c: empCol })]; if (ec && ec.v != null && String(ec.v).trim()) names[key] = String(ec.v).trim(); }
       const pct = pc && typeof pc.v === 'number' ? pc.v : parseFloat(String(pc && pc.v != null ? pc.v : ''));
       if (Number.isFinite(pct) && pct !== 0) {
         if (pc && pc.f) { if (!cached.has(key)) cached.set(key, pct); }
@@ -310,7 +313,7 @@ export function parseRaiseImportDetailed(buf: Buffer): { pairs: { key: string; p
   for (const [k, v] of typed) out.set(k, v);
   let fromNewRate = 0;
   for (const k of derived.keys()) if (!typed.has(k)) fromNewRate++;
-  return { pairs: [...out.entries()].map(([key, pct]) => ({ key, pct })), zeroSkipped: [...seen].filter((k) => !out.has(k)).length, fromNewRate };
+  return { pairs: [...out.entries()].map(([key, pct]) => ({ key, pct })), zeroSkipped: [...seen].filter((k) => !out.has(k)).length, fromNewRate, names };
 }
 /** The {key, pct} pairs alone (see parseRaiseImportDetailed). */
 export function parseRaiseImport(buf: Buffer): { key: string; pct: number }[] {

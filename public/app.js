@@ -4833,8 +4833,19 @@ function wirePayHeader(el, st) {
   const rl = el.querySelector('#pay-relink-snap');
   if (rl) rl.addEventListener('click', async () => {
     try {
-      await PUT(`/payroll/cycles/${S.pay.cycleId}`, { staffingSnapshotId: st.snapshots[0].id });
-      S.pay.msg = 'Cycle now reads the latest staffing report'; S.pay.st = null; render();
+      // preview first: how every raise carries onto the new roster; nothing moves until confirmed
+      const snapId = st.snapshots[0].id;
+      const pv = await PUT(`/payroll/cycles/${S.pay.cycleId}`, { staffingSnapshotId: snapId, dryRun: true });
+      const lines = [`Point this cycle at "${st.snapshots[0].label}"?`, '', `${pv.carried} raise(s) carry over as-is (same person key).`];
+      if (pv.rematched.length) lines.push('', `${pv.rematched.length} re-matched by name (their key changed in the new sheet):`, ...pv.rematched.map((n) => `  • ${n}`));
+      const cp = pv.moved.filter((m) => m.copied), nc = pv.moved.filter((m) => !m.copied);
+      if (cp.length) lines.push('', `${cp.length} moved home region; their raise is copied into the new region's open iteration:`, ...cp.map((m) => `  • ${m.name} (${m.from} → ${m.to})`));
+      if (nc.length) lines.push('', `${nc.length} moved home region but CANNOT be copied:`, ...nc.map((m) => `  • ${m.name}: ${m.why}`));
+      if (pv.orphaned.length) lines.push('', `${pv.orphaned.length} raise(s) match no one on the new sheet. They are KEPT (not deleted) and come back if you re-point to the old sheet:`, ...pv.orphaned.map((o) => `  • ${o.name}: ${o.why}`));
+      if (!confirm(lines.join('\n'))) return;
+      const r = await PUT(`/payroll/cycles/${S.pay.cycleId}`, { staffingSnapshotId: snapId });
+      S.pay.msg = `Cycle now reads the latest staffing report · ${r.carried} raise(s) carried${r.rematched.length ? ` · ${r.rematched.length} re-matched by name` : ''}${cp.length ? ` · ${cp.length} copied to a new home region` : ''}${r.orphaned.length ? ` · ${r.orphaned.length} unmatched (kept): ${r.orphaned.map((o) => o.name).join(', ')}` : ''}`;
+      S.pay.st = null; render();
     } catch (e) { S.pay.err = e.message; render(); }
   });
   const go = el.querySelector('#nc-go');
@@ -5169,7 +5180,8 @@ function wirePayCycle(el, c) {
       try {
         const r = await api(all ? `/payroll/cycles/${c.cycle.id}/import` : `/payroll/iterations/${iter.id}/import`, { method: 'POST', body: fd });
         P.msg = `Imported ${r.applied} raise(s)${r.unchanged ? ` · ${r.unchanged} unchanged` : ''}${r.fromNewRate ? ` · ${r.fromNewRate} worked back from a typed New rate` : ''}${r.zeroSkipped ? ` · ${r.zeroSkipped} left as they were (0 or blank in the file)` : ''}`
-          + (r.skipped.length ? ` · skipped ${r.skipped.length}: ${r.skipped.slice(0, 4).map((s) => `${s.name} (${s.reason})`).join(', ')}${r.skipped.length > 4 ? '…' : ''}` : '');
+          + (r.rekeyed && r.rekeyed.length ? ` · ${r.rekeyed.length} matched by name to the current roster: ${r.rekeyed.slice(0, 6).join(', ')}${r.rekeyed.length > 6 ? '…' : ''}` : '')
+          + (r.skipped.length ? ` · skipped ${r.skipped.length}: ${r.skipped.map((s) => `${s.name} (${s.reason})`).join(', ')}` : '');
         await loadPayCycle(c.cycle.id); render();
       } catch (e) { P.err = e.message; render(); }
     });
