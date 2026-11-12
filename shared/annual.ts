@@ -39,7 +39,7 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-11g';
+export const ENGINE_VERSION = '2026-11-12a';
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -1958,18 +1958,154 @@ export function applyY1Plan(lines: BudgetLine[], coaList: CoaAccount[], plan: Y1
   const idx = y1MonthsIn(plan, calYear); if (!idx.length) return lines;
   const slice = new Map<string, Months>();
   for (const l of plan.lines) if (feedsNoi(l.gl_code)) slice.set(l.gl_code, calendarSlice(l.months, plan.year, plan.startMonth, calYear));
+  return applyPlanSlice(lines, coaList, slice, idx);
+}
+
+/* ============================================================================
+   THE WHOLE YEAR FROM THE ACQUISITION PLAN (Troy 2026-11-12: "The new acquisition properties who already have
+   budgets on record for 26 into most of 27 are NOT being incorporated into new budget runs at all. It is just
+   annualizing an extremely small sample size... We basically want to adjust the rows we budgeted for to better
+   fit actual financial postings. We want turn curves and other ratios. The main thing is making sure targets
+   align to UW" / "Y1 formulas should carry through the trend to the rest of the year as well").
+   Troy's picks: (1) months after Year 1 = the plan's same month a year earlier x the UW book's Year-2 over
+   Year-1 change for the line's category; (2) posted actuals reshape rows WITHIN each category only; (3) the
+   compare card's default reference is this UW calendar year.
+     base   every NOI line, all 12 calendar months: Year-1 months = the plan; later months = the plan's same
+            month in the year before (still Year 1) x (1 + trend[pcode]). This is the UW target (`target`).
+     fit    per category and per SEGMENT (the Year-1 months, the months after): the segment total stays on the
+            base, so Year-1 NOI and the calendar NOI both stay on UW. Inside it each GL's share blends the
+            plan's share with its share of the POSTED months since closing (`posted`), by `fit` (0..1). A GL
+            posted but not planned joins the category. Turn GLs follow the turn curve (lease expirations + 1
+            month) inside the segment; every other GL keeps its own planned monthly shape. A category whose
+            plan or posted mix has a line on the other side of zero keeps the plan's mix.
+   Whole dollars; a segment's rounding goes on its largest month. Pure. */
+export interface AcqPlan {
+  /** the reshaped plan, calendar months of the budget year, by GL (NOI lines only) */
+  cal: Map<string, Months>;
+  /** the UW target before the fit (Y1 plan + trended months), by GL */
+  target: Map<string, Months>;
+  y1Idx: number[]; afterIdx: number[];
+  /** UW Year-2 over Year-1 change used per category (pcode); `trendFrom` says where it came from */
+  trend: Record<string, number>; trendFrom: 'uw' | 'none';
+  /** categories whose GL mix moved toward the posted actuals; GLs shaped on the turn curve */
+  fitted: string[]; turnGls: string[];
+}
+export function acqCalendarPlan(o: {
+  plan: Y1Plan; calYear: number; coaList: CoaAccount[];
+  uw?: { y1: Record<string, number>; years?: Record<string, Record<string, number>> } | null;
+  /** GL -> $ posted over the months owned (actuals since closing); null = nothing posted yet */
+  posted?: Record<string, number> | null;
+  fit?: number; turns?: Months | null; turnGls?: Set<string>;
+}): AcqPlan {
+  const { plan, calYear } = o;
+  const fit = Math.min(1, Math.max(0, o.fit ?? ACQ_FIT_DEFAULT));
+  const coa = new Map(o.coaList.map((a) => [a.code, a]));
+  const y1Idx = y1MonthsIn(plan, calYear);
+  const afterIdx = [...Array(12).keys()].filter((i) => !y1Idx.includes(i));
+  // the UW trend by category; no Year-2 column = carried flat (said so in trendFrom)
+  const trend: Record<string, number> = {};
+  const y2 = o.uw?.years?.y2 || null;
+  let trendFrom: 'uw' | 'none' = 'none';
+  if (y2) for (const [p, v1] of Object.entries(o.uw!.y1 || {})) if (v1 && y2[p] != null && Number.isFinite(Number(y2[p]))) { trend[p] = Number(y2[p]) / v1 - 1; trendFrom = 'uw'; }
+  const pOf = (gl: string): string => String(coa.get(gl)?.pcode || '');
+  const target = new Map<string, Months>();
+  for (const l of plan.lines) {
+    if (!feedsNoi(l.gl_code)) continue;
+    const now = calendarSlice(l.months, plan.year, plan.startMonth, calYear);
+    const prev = calendarSlice(l.months, plan.year, plan.startMonth, calYear - 1);
+    const g = trend[pOf(l.gl_code)] ?? 0;
+    const m = zero12();
+    for (const i of y1Idx) m[i] = now[i];
+    for (const i of afterIdx) m[i] = Math.round(prev[i] * (1 + g));   // whole dollars, like the plan
+    if (m.some((v) => v)) target.set(l.gl_code, m);
+  }
+  const cal = new Map<string, Months>([...target].map(([gl, m]) => [gl, [...m] as Months]));
+  const fitted = new Set<string>(); const turnGls = new Set<string>();
+  const turns = o.turns && o.turns.some((v) => v > 0) ? o.turns : null;
+  const isTurn = (gl: string) => !!turns && !!o.turnGls?.has(gl);
+  // categories: every pcode with planned or posted NOI lines
+  const cats = new Map<string, Set<string>>();
+  const addCat = (gl: string) => { const p = pOf(gl); if (!p || !feedsNoi(gl)) return; if (!cats.has(p)) cats.set(p, new Set()); cats.get(p)!.add(gl); };
+  for (const gl of target.keys()) addCat(gl);
+  if (o.posted) for (const [gl, v] of Object.entries(o.posted)) if (v && coa.has(gl)) addCat(gl);
+  for (const [p, glSet] of cats) {
+    const gls = [...glSet];
+    const postedTot = o.posted ? gls.reduce((a, gl) => a + (o.posted![gl] || 0), 0) : 0;
+    for (const seg of [y1Idx, afterIdx]) {
+      if (!seg.length) continue;
+      const segOf = (gl: string) => seg.reduce((a, i) => a + ((target.get(gl) || zero12())[i] || 0), 0);
+      const segTot = gls.reduce((a, gl) => a + segOf(gl), 0);
+      if (!segTot) continue;
+      const sgn = Math.sign(segTot);
+      const planOk = gls.every((gl) => segOf(gl) * sgn >= 0);
+      const postOk = fit > 0 && !!postedTot && Math.sign(postedTot) === sgn && gls.every((gl) => (o.posted![gl] || 0) * sgn >= 0);
+      const useFit = planOk && postOk;
+      const anyTurn = gls.some(isTurn);
+      if (!useFit && !anyTurn) continue;
+      // the category's own monthly shape in this segment (for a GL with no plan of its own)
+      const catShape = seg.map((i) => gls.reduce((a, gl) => a + ((target.get(gl) || zero12())[i] || 0), 0) / segTot);
+      const turnSeg = turns ? seg.reduce((a, i) => a + turns[i], 0) : 0;
+      const out = new Map<string, Months>();
+      for (const gl of gls) {
+        const own = segOf(gl);
+        const amt = useFit ? ((1 - fit) * (own / segTot) + fit * ((o.posted![gl] || 0) / postedTot)) * segTot : own;
+        const m = [...(cal.get(gl) || zero12())] as Months;
+        const shape = isTurn(gl) && turnSeg > 0 ? seg.map((i) => turns![i] / turnSeg)
+          : own ? seg.map((i) => ((target.get(gl) || zero12())[i] || 0) / own) : catShape;
+        seg.forEach((i, k) => { m[i] = amt * shape[k]; });
+        if (isTurn(gl) && turnSeg > 0 && amt) turnGls.add(gl);
+        out.set(gl, m);
+      }
+      if (useFit) fitted.add(p);
+      // whole dollars on a running total per GL (each GL's segment total rounds once, no month drifts more than
+      // a dollar); the category's last dollar or two of rounding goes on its largest month
+      let big: { gl: string; i: number } | null = null, rounded = 0;
+      for (const [gl, m] of out) {
+        let cum = 0, prev = 0;
+        for (const i of seg) { cum += m[i]; const r = Math.round(cum); m[i] = r - prev; prev = r; rounded += m[i]; if (!big || Math.abs(m[i]) > Math.abs(out.get(big.gl)![big.i])) big = { gl, i }; }
+      }
+      const drift = Math.round(segTot - rounded);
+      if (big && drift) out.get(big.gl)![big.i] += drift;
+      for (const [gl, m] of out) cal.set(gl, m);
+    }
+  }
+  for (const [gl, m] of cal) if (!m.some((v) => v)) cal.delete(gl);
+  return { cal, target, y1Idx, afterIdx, trend, trendFrom, fitted: [...fitted], turnGls: [...turnGls] };
+}
+/** How far posted actuals move a category's GL mix by default (0 = the plan's mix, 1 = the posted mix). */
+export const ACQ_FIT_DEFAULT = 0.5;
+/** GL -> $ posted over the months owned: the calendar months of the trailing-12 that fall on or after the
+    ownership start. `t12End` = the trailing-12's last month; `start` = 'YYYY-MM' (or a date). */
+export function postedSinceClosing(actualCal: Record<string, Months> | null | undefined, t12End: { month: number; year: number } | null | undefined, start: string | null | undefined): { byGl: Record<string, number>; months: number } | null {
+  if (!actualCal || !t12End || !start) return null;
+  const mm = String(start).match(/^(\d{4})-(\d{1,2})/); if (!mm) return null;
+  const sKey = Number(mm[1]) * 12 + Number(mm[2]) - 1;
+  const owned: number[] = [];
+  for (let i = 0; i < 12; i++) { const yr = i + 1 <= t12End.month ? t12End.year : t12End.year - 1; if (yr * 12 + i >= sKey) owned.push(i); }
+  if (!owned.length) return null;
+  const byGl: Record<string, number> = {};
+  for (const [gl, m] of Object.entries(actualCal)) { const v = owned.reduce((a, i) => a + (m[i] || 0), 0); if (v) byGl[gl] = r2(v); }
+  return { byGl, months: owned.length };
+}
+/** The overlay itself: these GLs take `slice` in the `idx` months; a GL the slice lacks is zero there, a GL only
+    the slice has is added. Locked (overridden) lines are never moved. Marks the months on `driver.y1`. */
+export function applyPlanSlice(lines: BudgetLine[], coaList: CoaAccount[], slice: Map<string, Months>, idx: number[], meta?: (gl: string) => Record<string, any> | null): BudgetLine[] {
+  if (!idx.length) return lines;
   const coa = new Set(coaList.map((a) => a.code)); const seen = new Set<string>();
+  const mark = (gl: string) => { const x = meta ? meta(gl) : null; return x ? { y1: idx, acq: x } : { y1: idx }; };
   const out = lines.map((l) => {
     seen.add(l.gl_code);
     if (!feedsNoi(l.gl_code) || l.override) return l;
     const s = slice.get(l.gl_code); const m = [...l.months] as Months; let touched = false;
     for (const i of idx) { const v = s ? s[i] : 0; if (v || m[i]) touched = true; m[i] = v; }
-    return touched ? { ...l, months: m, driver: { ...(l.driver as any), y1: idx } as Driver } : l;
+    if (!touched) return l;
+    const { acq: _old, ...d0 } = l.driver as any;
+    return { ...l, months: m, driver: { ...d0, ...mark(l.gl_code) } as Driver };
   });
   for (const [gl, s] of slice) {
     if (seen.has(gl) || !coa.has(gl) || !idx.some((i) => s[i])) continue;
     const m = zero12(); for (const i of idx) m[i] = s[i];
-    out.push({ gl_code: gl, months: m, driver: { method: 'manual', y1: idx } as Driver, override: false, note: '' });
+    out.push({ gl_code: gl, months: m, driver: { method: 'manual', ...mark(gl) } as Driver, override: false, note: '' });
   }
   return out;
 }

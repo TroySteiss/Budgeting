@@ -1236,7 +1236,7 @@ describe('Summary panel (Troy 2026-11-10): the budget-comps rows, labels and T12
 });
 
 /* Year-1 plan inside the annual budget — made-up figures. */
-import { applyY1Plan, clearY1Plan, y1Check, y1MonthsIn, feedsNoi } from '../shared/annual.js';
+import { applyY1Plan, clearY1Plan, y1Check, y1MonthsIn, feedsNoi, acqCalendarPlan, postedSinceClosing, applyPlanSlice } from '../shared/annual.js';
 describe('Year-1 plan in the annual budget', () => {
   const flat = (v: number) => Array(12).fill(v) as Months;
   const coa = ['4994', '5031', '5140', '6305', '6410', '7300'].map((code) => ({ code, name: code, pcode: '1', curve: 'flat', active: true })) as unknown as CoaAccount[];
@@ -1281,6 +1281,87 @@ describe('Year-1 plan in the annual budget', () => {
     expect(chk.variance).toBe(-21);
     // not applied at all: the gap is the whole difference between the two budgets over Jan-Jul
     expect(y1Check(annual(), plan, 2027, planNoi).variance).toBe(7 * (125 - 6 - 33 - 4) - (110 * 6 + 120 + 7 * (-5 + 2 - 30)));
+  });
+  describe('the whole year from the acquisition plan (Troy 2026-11-12)', () => {
+    // categories: 1 = GPR, 13 = R&M (6702 a turn GL), 12 = utilities
+    const coa2 = [
+      { code: '4994', pcode: '1' }, { code: '6702', pcode: '13' }, { code: '6720', pcode: '13' }, { code: '6620', pcode: '12' }, { code: '7300', pcode: '' },
+    ].map((a) => ({ ...a, name: a.code, kind: 'detail', curve: 'flat', active: true })) as unknown as CoaAccount[];
+    // Sep-26..Aug-27: index 0 = Sep-26, 4 = Jan-27, 11 = Aug-27
+    const plan2 = { year: 2026, startMonth: 9, lines: [
+      { gl_code: '4994', months: [100, 100, 100, 100, 110, 110, 110, 110, 110, 110, 110, 110] as Months },
+      { gl_code: '6702', months: flat(20) },
+      { gl_code: '6720', months: flat(30) },
+      { gl_code: '6620', months: [50, 60, 70, 80, 90, 80, 70, 60, 50, 40, 40, 40] as Months },
+      { gl_code: '7300', months: flat(40) },
+    ] };
+    const uw = { y1: { '1': 1280, '13': 600, '12': 730 }, years: { y2: { '1': 1280 * 1.04, '13': 600 * 1.03, '12': 730 } } };
+    const noi = (m: Map<string, Months>, idx: number[]) => [...m].reduce((a, [gl, v]) => a + (gl < '6000' ? 1 : -1) * idx.reduce((x, i) => x + v[i], 0), 0);
+
+    it('Jan-Aug come from the plan; Sep-Dec are the plan\'s Sep-Dec 2026 on the UW Year-2 trend; below-NOI lines are left out', () => {
+      const ap = acqCalendarPlan({ plan: plan2, calYear: 2027, coaList: coa2, uw });
+      expect(ap.y1Idx).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+      expect(ap.afterIdx).toEqual([8, 9, 10, 11]);
+      expect(ap.trendFrom).toBe('uw');
+      expect(ap.trend['1']).toBeCloseTo(0.04, 9);
+      expect(ap.target.get('4994')).toEqual([110, 110, 110, 110, 110, 110, 110, 110, 104, 104, 104, 104]);
+      expect(ap.target.get('6620')).toEqual([90, 80, 70, 60, 50, 40, 40, 40, 50, 60, 70, 80]);   // 0% trend: last fall again
+      expect(ap.target.has('7300')).toBe(false);
+      expect(ap.cal).toEqual(ap.target);                                                 // nothing posted: the plan as is
+    });
+    it('no UW Year-2 column: carried flat, and says so', () => {
+      const ap = acqCalendarPlan({ plan: plan2, calYear: 2027, coaList: coa2, uw: { y1: uw.y1 } });
+      expect(ap.trendFrom).toBe('none');
+      expect(ap.target.get('4994')!.slice(8)).toEqual([100, 100, 100, 100]);
+    });
+    it('posted actuals move the GL mix inside a category; category totals per segment, Year-1 NOI and calendar NOI hold', () => {
+      // since closing R&M posted 90% on 6702, 10% on 6720 (plan: 40 / 60)
+      const posted = { '6702': 90, '6720': 10, '6620': 120, '4994': 200 };
+      const base = acqCalendarPlan({ plan: plan2, calYear: 2027, coaList: coa2, uw });
+      const ap = acqCalendarPlan({ plan: plan2, calYear: 2027, coaList: coa2, uw, posted, fit: 0.5 });
+      const segSum = (m: Map<string, Months>, gls: string[], idx: number[]) => gls.reduce((a, gl) => a + idx.reduce((x, i) => x + (m.get(gl) || zero12())[i], 0), 0);
+      for (const idx of [ap.y1Idx, ap.afterIdx]) expect(segSum(ap.cal, ['6702', '6720'], idx)).toBe(segSum(base.target, ['6702', '6720'], idx));
+      // share of 6702 in Year-1 months: halfway between 40% planned and 90% posted = 65%
+      expect(segSum(ap.cal, ['6702'], ap.y1Idx) / segSum(ap.cal, ['6702', '6720'], ap.y1Idx)).toBeCloseTo(0.65, 2);
+      expect(noi(ap.cal, ap.y1Idx)).toBe(noi(base.target, ap.y1Idx));
+      expect(noi(ap.cal, [...Array(12).keys()])).toBe(noi(base.target, [...Array(12).keys()]));
+      expect(ap.fitted).toContain('13');
+      for (const m of ap.cal.values()) for (const v of m) expect(Number.isInteger(v)).toBe(true);
+    });
+    it('turn lines follow the turn curve inside each segment; their segment totals do not move', () => {
+      const turns = [0, 0, 0, 0, 10, 30, 30, 10, 0, 5, 5, 0] as Months;   // expirations + 1 month
+      const ap = acqCalendarPlan({ plan: plan2, calYear: 2027, coaList: coa2, uw, turns, turnGls: new Set(['6702']) });
+      const t = ap.cal.get('6702')!;
+      expect(t.slice(0, 4)).toEqual([0, 0, 0, 0]);
+      expect(t[5]).toBeGreaterThan(t[4]);
+      expect(t.slice(0, 8).reduce((a, v) => a + v, 0)).toBe(8 * 20);
+      expect(t.slice(8).reduce((a, v) => a + v, 0)).toBe(4 * Math.round(20 * 1.03));   // the trended months round month by month
+      expect(ap.cal.get('6720')).toEqual(ap.target.get('6720'));       // not a turn GL: its own shape
+      expect(ap.turnGls).toEqual(['6702']);
+    });
+    it('a GL posted but not planned joins its category; a fit of 0 keeps the plan\'s mix', () => {
+      const ap = acqCalendarPlan({ plan: plan2, calYear: 2027, coaList: [...coa2, { code: '6730', pcode: '13', name: '6730', kind: 'detail', curve: 'flat', active: true } as any], uw, posted: { '6702': 40, '6720': 40, '6730': 20 }, fit: 1 });
+      expect(ap.cal.get('6730')!.reduce((a, v) => a + v, 0)).toBeGreaterThan(0);
+      const none = acqCalendarPlan({ plan: plan2, calYear: 2027, coaList: coa2, uw, posted: { '6702': 90, '6720': 10 }, fit: 0 });
+      expect(none.cal).toEqual(none.target);
+    });
+    it('posted since closing: only the trailing-12 months on or after the ownership start', () => {
+      const cal = { '6702': [1, 1, 1, 1, 1, 1, 1, 1, 5, 7, 1, 1] as Months };   // T12 Nov-25..Oct-26
+      expect(postedSinceClosing(cal, { month: 10, year: 2026 }, '2026-09')).toEqual({ byGl: { '6702': 12 }, months: 2 });
+      expect(postedSinceClosing(cal, { month: 10, year: 2026 }, '2026-09-15')).toEqual({ byGl: { '6702': 12 }, months: 2 });
+      expect(postedSinceClosing(cal, { month: 10, year: 2026 }, '2027-01')).toBeNull();
+      expect(postedSinceClosing(cal, { month: 10, year: 2026 }, null)).toBeNull();
+    });
+    it('the overlay takes every month, marks the lines, and never moves a locked one', () => {
+      const ap = acqCalendarPlan({ plan: plan2, calYear: 2027, coaList: coa2, uw });
+      const ls = [line('4994', flat(125)), line('6702', flat(7), { override: true }), line('7300', flat(41))];
+      const out = new Map(applyPlanSlice(ls, coa2, ap.cal, [...Array(12).keys()], () => ({ after: ap.afterIdx })).map((l) => [l.gl_code, l]));
+      expect(out.get('4994')!.months).toEqual(ap.cal.get('4994'));
+      expect((out.get('4994')!.driver as any).acq).toEqual({ after: [8, 9, 10, 11] });
+      expect(out.get('6702')!.months).toEqual(flat(7));
+      expect(out.get('7300')!.months).toEqual(flat(41));
+      expect(out.get('6720')!.months).toEqual(ap.cal.get('6720'));     // only the plan has it: added
+    });
   });
   it('turning it off removes what only the plan had put there', () => {
     const on = applyY1Plan(annual(), coa, plan, 2027);

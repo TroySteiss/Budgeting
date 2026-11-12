@@ -44,7 +44,7 @@ export function applyRounding(lines: BudgetLine[]): BudgetLine[] {
 
 /* `revised` marks a formula line whose cells were hand-edited afterwards —
    the formula identity is kept (chip shows a *), never demoted to manual. */
-export type Driver = { revised?: boolean; /** month indexes (0-11) typed by hand on this line; absent on a hand-fixed line = every month (a tool rewrote the line, or it predates the record) */ hard?: number[]; /** calendar-month indexes (0-11) taken from the property's Year-1 plan (annual budgets, shared/annual.ts applyY1Plan) */ y1?: number[] } & (
+export type Driver = { revised?: boolean; /** month indexes (0-11) typed by hand on this line; absent on a hand-fixed line = every month (a tool rewrote the line, or it predates the record) */ hard?: number[]; /** calendar-month indexes (0-11) taken from the property's Year-1 plan (annual budgets, shared/annual.ts applyY1Plan) */ y1?: number[]; /** the whole year came from the acquisition plan (acqCalendarPlan): trend applied after Year 1, posted-mix fit, turn curve */ acq?: { trend?: number; fit?: number; turns?: boolean; after?: number[] } } & (
   | { method: 'manual' }
   | { method: 'gpr' }
   | { method: 'ltl' }
@@ -138,6 +138,9 @@ export interface BudgetInputs {
   mgmtFirstYear?: { pct?: number | null; start?: string | null };
   /** annual: false = do NOT take the months still inside ownership Year 1 from the property's Y1 budget (default: take them) */
   y1Plan?: boolean;
+  /** annual, new acquisition (Troy 2026-11-12): how far the posted months since closing move each category's GL mix
+      away from the acquisition plan's (0 = the plan's mix, 1 = the posted mix; unset = ACQ_FIT_DEFAULT 50%) */
+  acqFit?: number;
   /** annual: share of the previous month's delinquency (5035) collected as prior-period collections (5036); unset = the trailing-12 rate, capped at 100% */
   collectPct?: number;
   /** annual budgets: the per-GL formula rules this budget runs on — a COPY of the saved formula

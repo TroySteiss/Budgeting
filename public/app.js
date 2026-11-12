@@ -1140,8 +1140,9 @@ function renderEditor(el) {
         </div>
         <div class="card tie">
           <h2>${bv.annual ? `Compare to <select data-refsrc style="font-size:12px; margin-left:4px">
-              <option value="actual" ${(inp.refSource || 'actual') === 'actual' ? 'selected' : ''}>Trailing-12 actuals</option>
-              <option value="budget" ${inp.refSource === 'budget' ? 'selected' : ''} ${(bv.refs || []).some((r) => r.key === 'budget') ? '' : 'disabled'}>${esc((((bv.refs || []).find((r) => r.key === 'budget') || {}).label || 'Current-year budget').replace(/^budget /i, 'Budget '))}</option>
+              ${(() => { const u = (bv.refs || []).find((r) => r.key === 'uw'); return u ? `<option value="uw" ${bv.refKey === 'uw' ? 'selected' : ''} title="${esc(u.period)}">${esc(u.label)} (Year-1 plan + UW trend)</option>` : ''; })()}
+              <option value="actual" ${bv.refKey === 'actual' || bv.refKey === 'target' ? 'selected' : ''}>Trailing-12 actuals</option>
+              <option value="budget" ${bv.refKey === 'budget' ? 'selected' : ''} ${(bv.refs || []).some((r) => r.key === 'budget') ? '' : 'disabled'}>${esc((((bv.refs || []).find((r) => r.key === 'budget') || {}).label || 'Current-year budget').replace(/^budget /i, 'Budget '))}</option>
             </select>` : 'Tie-out vs UW'}</h2>
           ${acts.some((a) => a.index >= 0) ? `<p class="muted" style="margin:0 0 6px; font-size:11.5px">✓ ${acts.filter((a) => a.index >= 0).map((a) => esc(a.period)).join(', ')} locked to posted actuals — that month's actual-vs-plan gap shows here as variance.</p>` : ''}
           ${tieHtml(bv)}
@@ -2664,8 +2665,9 @@ function defaultsInUse(bv) {
   if ((bv.t12Dead || []).length || (bv.t12Startup || []).length) add('startup', 'New-acquisition history', `${bv.t12Live} month${bv.t12Live === 1 ? '' : 's'} of operations annualized${(bv.t12Startup || []).length ? `; ${bv.t12Startup.join(', ')} left out as start-up` : '; no start-up month left out'}`, inp.startupExclude == null, (bv.t12Early || []).length ? `${bv.t12Early.join(' and ')} (month 2-3 of operations) are in the history — review` : '');
   if (bv.y1Plan) {
     const y = bv.y1Plan, span = y.months.length ? `${MONTHS[y.months[0]]}–${MONTHS[y.months[y.months.length - 1]]}` : '';
-    add('y1plan', 'Year-1 months', y.on
-      ? `${span} taken from the Year-1 budget on every line through NOI. Year 1 NOI ${money(y.y1Noi)} vs ${y.uwNoi != null ? 'UW ' + money(y.uwNoi) : 'plan ' + money(y.planNoi)} (${Math.abs(y.variance) < 1 ? 'ties' : (y.variance > 0 ? '+' : '−') + money(Math.abs(y.variance))})${y.locked.length ? `; ${y.locked.length} locked line${y.locked.length === 1 ? '' : 's'} differ from the plan` : ''}`
+    const a = y.acq, after = a && a.afterIdx.length ? `${MONTHS[a.afterIdx[0]]}–${MONTHS[a.afterIdx[a.afterIdx.length - 1]]}` : '';
+    add('y1plan', 'Year-1 plan', y.on
+      ? `the whole year from the Year-1 budget: ${span} its amounts${after ? `, ${after} its same months a year earlier × the UW Year-2 trend${a.trendFrom === 'uw' ? '' : ' (no Year-2 column in the UW book: held flat)'}` : ''}; rows fitted ${Math.round((a ? a.fit : 0) * 100)}% to ${a ? a.postedMonths : 0} posted month${a && a.postedMonths === 1 ? '' : 's'} within each category, turn lines on the turn curve. Year 1 NOI ${money(y.y1Noi)} vs ${y.uwNoi != null ? 'UW ' + money(y.uwNoi) : 'plan ' + money(y.planNoi)} (${Math.abs(y.variance) < 1 ? 'ties' : (y.variance > 0 ? '+' : '−') + money(Math.abs(y.variance))})${y.locked.length ? `; ${y.locked.length} locked line${y.locked.length === 1 ? '' : 's'} differ from the plan` : ''}`
       : `off — ${span} run on this budget's own formulas. Year 1 NOI would be ${money(y.y1Noi)} vs ${y.uwNoi != null ? 'UW ' + money(y.uwNoi) : 'plan ' + money(y.planNoi)} (${(y.variance > 0 ? '+' : '−') + money(Math.abs(y.variance))})`,
       inp.y1Plan == null, !y.on || Math.abs(y.variance) >= 1 ? 'Year 1 does not land on the underwriting NOI' : '');
   }
@@ -3133,7 +3135,7 @@ function guideNotesHtml(bv) {
 /* the guidance numbers for the EMPTY target boxes (mirrors GT in tieGrowthHtml) */
 function guidanceFill(bv) {
   const G = bv.guidance, inp = bv.budget.inputs || {};
-  if (!G || inp.refSource === 'budget') return {};
+  if (!G || bv.refKey === 'budget' || bv.refKey === 'uw') return {};
   const gt = inp.growthTargets || {};
   const byP = Object.fromEntries((bv.tieout.rows || []).map((r) => [r.pcode, r]));
   const refByGl = ((bv.refs || []).find((r) => r.key === 'actual') || {}).byGl || {};
@@ -3148,7 +3150,7 @@ function tieGrowthHtml(bv) {
   const inp = bv.budget.inputs || {};
   const refLabel = bv.refLabel || 'T12';
   const t = bv.tieout;
-  const refKey = inp.refSource === 'budget' ? 'budget' : 'actual';
+  const refKey = bv.refKey === 'budget' || bv.refKey === 'uw' ? bv.refKey : 'actual';
   const refByGl = ((bv.refs || []).find((r) => r.key === refKey) || {}).byGl || {};
   const SHORT = {
     '1': 'Gross Potential Rent', loss: 'Loss to Lease', '2': 'Concessions', '3': 'Vacancy, Delinq & Other Loss',
@@ -3191,7 +3193,13 @@ function tieGrowthHtml(bv) {
   // shows the guidance range, and Δ% is coloured against it until a target is typed. Guidance is
   // growth over the October T12, so it only applies while the card compares to the T12.
   const G = bv.guidance || null;
-  const useG = !!(G && bv.guide && inp.refSource !== 'budget');
+  const useG = !!(G && bv.guide && bv.refKey !== 'budget' && bv.refKey !== 'uw');
+  // UW for the calendar year (a new acquisition, Troy 2026-11-12: "making sure targets align to UW"): every row's
+  // number is 0% over UW. Income rows green at or above it, expense and loss rows at or below; an empty box ties to it.
+  const useU = bv.refKey === 'uw';
+  // the Year-1 plan is laid over every unlocked NOI line last, so a tie here could not move anything (the server
+  // refuses too): no tie buttons while the plan runs the year
+  const canTie = !(bv.y1Plan && bv.y1Plan.on);
   const p1 = (v) => +(v * 100).toFixed(2);
   // ONE number per row (Troy 2026-11-11): what an empty box would be filled with
   const tol = G ? (G.tolerance ?? 0.0025) : 0.0025;
@@ -3204,15 +3212,16 @@ function tieGrowthHtml(bv) {
     ...(insT != null ? { '6': insT } : {}), '8': G.reTaxPct, '10': G.payrollPct,
     '9': G.expensePct, '11': G.expensePct, '12': G.expensePct, '13': G.expensePct, '14': G.expensePct,
     opex: G.expensePct,
-  } : {};
+  } : useU ? Object.fromEntries(['rental', 'income', '1', '2', '3', '4', '5', '6', '8', '9', '10', '11', '12', '13', '14', 'opex'].map((k) => [k, 0])) : {};
   // DIRECTION (Troy 2026-11-12, the 2027 memo): an income number is a floor (above it = green), an expense
   // number a ceiling (below it = green). GUIDE_EPS only absorbs rounding.
-  const ceilOf = (k, v) => (k === '10' ? payrollCeil(G) : ['9', '11', '12', '13', '14', 'opex'].includes(k) ? expenseCeil(G) : v);
-  const GR = useG ? Object.fromEntries(Object.entries(GT).map(([k, v]) => [k, GUIDE_INCOME_KEYS.has(k) ? [v - GUIDE_EPS, null] : [null, ceilOf(k, v) + GUIDE_EPS]])) : {};
+  const ceilOf = (k, v) => (!useG ? v : k === '10' ? payrollCeil(G) : ['9', '11', '12', '13', '14', 'opex'].includes(k) ? expenseCeil(G) : v);
+  const GR = useG || useU ? Object.fromEntries(Object.entries(GT).map(([k, v]) => [k, GUIDE_INCOME_KEYS.has(k) ? [v - GUIDE_EPS, null] : [null, ceilOf(k, v) + GUIDE_EPS]])) : {};
   if (useG) GR.noi = [G.noiPct, null];
-  const gText = (k) => (k === 'noi' && useG ? `≥${p1(G.noiPct)}` : GT[k] != null ? `${p1(GT[k])}` : '');
+  if (useU) GR.noi = [-GUIDE_EPS, null];
+  const gText = (k) => (k === 'noi' && useG ? `≥${p1(G.noiPct)}` : k === 'noi' && useU ? '≥0' : GT[k] != null ? `${p1(GT[k])}` : '');
   const gWhy = { income: 'total income', rental: 'rental income, as total income', opex: 'total expenses', noi: 'NOI (most important) — at least', '4': 'as total income', '5': 'as total income', '6': `insurance at $${G ? G.insurancePerUnit : 275}/unit`, '8': 'RE taxes: over actuals unless documented', '10': 'payroll on performing sites, lower where NOI growth is low', '9': 'as total expenses', '11': 'as total expenses', '12': 'as total expenses', '13': 'as total expenses', '14': 'as total expenses' };
-  const fillable = basisT3 ? [] : Object.keys(GT).filter((k) => gt[k] == null && byKeyExists(k));
+  const fillable = basisT3 || !useG ? [] : Object.keys(GT).filter((k) => gt[k] == null && byKeyExists(k));
   const basisName = basisT3 ? 'T3 annualized' : refLabel;
   function byKeyExists(k) { return ['rental', 'income', 'opex'].includes(k) || !!byP[k]; }
   // key: a pcode, 'opex' or 'noi' → takes a target; null → display only
@@ -3236,13 +3245,13 @@ function tieGrowthHtml(bv) {
     const v3cls = basisT3 && offCls != null ? offCls : '';
     const gBox = gr && !basisT3;   // the guidance number sits in an empty box only on the T12 basis
     const ph = gBox ? gText(key) : '%';
-    const tip = `Growth target vs ${basisName} (%)${gBox ? ` — exec-team guidance ${gText(key)}% (${gWhy[key]}); type a number to use your own` : ''}`;
+    const tip = `Growth target vs ${basisName} (%)${gBox ? (useU ? ` — empty = 0%, on the underwriting; type a number to use your own` : ` — exec-team guidance ${gText(key)}% (${gWhy[key]}); type a number to use your own`) : ''}`;
     // tie works off the typed target, or — with the box empty — the guidance number already in it (Troy 2026-11-11:
     // "why do I need to enter a target when we already have targets"). Offered only when the row is outside it.
     // NOI guidance is a floor (≥), not a point, so NOI still ties only to a typed number.
     const gPt = !basisT3 && key != null && tgt == null && GT[key] != null && gIn === false ? GT[key] : null;
-    const tieTo = tgt != null ? (off == null || off >= 0.0015 ? tgt : null) : gPt;
-    const tieBtn = tieTo != null ? `<button class="rb" data-tie="${key}" data-pct="${tieTo}" title="Shift this subtotal's growth factors so it lands at ${esc(basisName)} ${fmtPct(tieTo)}${tgt == null ? ' (the guidance)' : ''}">tie</button>` : '';
+    const tieTo = !canTie ? null : tgt != null ? (off == null || off >= 0.0015 ? tgt : null) : gPt;
+    const tieBtn = tieTo != null ? `<button class="rb" data-tie="${key}" data-pct="${tieTo}" title="Shift this subtotal's growth factors so it lands at ${esc(basisName)} ${fmtPct(tieTo)}${tgt == null ? (useU ? ' (on UW)' : ' (the guidance)') : ''}">tie</button>` : '';
     return `<tr class="${cls || ''}"><td title="${esc(r.label)}">${esc(SHORT[r.pcode] || r.label)}</td>
       <td>${money(r.uw)}</td>${t3Cell(r)}<td>${money(r.budget)}</td>
       <td class="var ${vcls}" title="Δ ${money(r.budget - r.uw)} vs ${esc(refLabel)}${dg ? ` · guidance: ${esc(dg.text)}` : ''}">${fmtPct(g)}</td>${t3DeltaCell(r, v3cls)}
@@ -3250,7 +3259,7 @@ function tieGrowthHtml(bv) {
   };
   const cat = (p) => (byP[p] ? row(byP[p], p) : '');
   const nTargets = Object.keys(gt).filter((k) => gt[k] != null).length;
-  const refShort = inp.refSource === 'budget' ? 'CY bud' : 'T12';
+  const refShort = bv.refKey === 'budget' ? 'CY bud' : bv.refKey === 'uw' ? 'UW' : 'T12';
   return `<div class="tiewrap"><table${t3 ? ' class="t3"' : ''}>
     <tr><th>Subtotal</th><th title="${esc(refLabel)}">${refShort}</th>${t3 ? `<th title="T3 annualized — ${esc(t3ref.period)}">T3 ann</th>` : ''}<th>Budget</th><th title="Budget vs ${esc(refLabel)}">Δ%${t3 ? ` ${refShort}` : ''}</th>${t3 ? `<th title="Budget vs T3 annualized — ${esc(t3ref.period)}">Δ% T3</th>` : ''}<th title="Growth target over the ${esc(basisName)}">Target${t3 ? ` vs ${basisT3 ? 'T3' : refShort}` : ''}</th></tr>
     ${cat('1')}${byP.loss ? row(byP.loss, null, '', 'loss') : ''}
@@ -3267,9 +3276,9 @@ function tieGrowthHtml(bv) {
   ${useG ? guideNotesHtml(bv) : ''}
   <div class="row" style="margin-top:6px; justify-content:space-between; align-items:center">
     ${t3 ? `<span class="tbasis" title="What the Target column ties to. ${esc(refShort)}: growth over the ${esc(refLabel)} (the guidance numbers sit in the empty boxes). T3: growth over the last three actual months × 4 (${esc(t3ref.period)}); its targets are kept separately, so switching never changes the other basis's numbers.">Tie to <button data-tbasis="t12" class="${basisT3 ? '' : 'on'}">${esc(refShort)}</button><button data-tbasis="t3" class="${basisT3 ? 'on' : ''}">T3</button></span>` : ''}
-    <span class="muted" style="font-size:11px">Δ% = budget vs ${esc(refLabel)}.${basisT3 ? ' <b>Targets are growth over the T3 annualized</b>: a typed target colours the Δ% T3; Δ% T12 keeps the guidance colours.' : ''}${useG && !basisT3 ? ` Grey number in an empty box = the guidance; Δ% is green at or above it on income rows, at or below it on expense rows (NOI at least ${p1(G.noiPct)}%), red the wrong side. <b>fill blank</b> puts those numbers in the empty boxes.` : ''} <b>tie</b> lands a row on its target — the number you typed${basisT3 ? '' : ', or the guidance when the box is empty'}.</span>
+    <span class="muted" style="font-size:11px">Δ% = budget vs ${esc(refLabel)}.${basisT3 ? ' <b>Targets are growth over the T3 annualized</b>: a typed target colours the Δ% T3; Δ% T12 keeps the guidance colours.' : ''}${useU && !basisT3 ? ` Δ% is the budget against UW for ${esc(String(bv.budget.year))} (the Year-1 plan, then the UW Year-2 trend): green on or above it for income and NOI, on or under it for expenses and losses; an empty box ties to 0%, on the underwriting. The memo's guidance is growth over the T12 — pick Trailing-12 actuals to see it.` : ''}${useG && !basisT3 ? ` Grey number in an empty box = the guidance; Δ% is green at or above it on income rows, at or below it on expense rows (NOI at least ${p1(G.noiPct)}%), red the wrong side. <b>fill blank</b> puts those numbers in the empty boxes.` : ''} <b>tie</b> lands a row on its target — the number you typed${basisT3 ? '' : ', or the guidance when the box is empty'}.</span>
     ${fillable.length ? `<button class="rb" id="fill-targets" title="Put the guidance number in every EMPTY target box (${fillable.length}): income lines ${p1(G.incomePct)}%, expense categories ${p1(G.expensePct)}%, RE taxes ${p1(G.reTaxPct)}%, payroll ${p1(G.payrollPct)}%, insurance at $${G.insurancePerUnit}/unit. Typed boxes and NOI are left alone. Nothing ties until you press tie.">fill ${fillable.length} blank</button>` : ''}
-    ${nTargets ? `<button class="rb" id="tie-all" title="Apply every target that is set — categories first, then rental income / total income (they move GPR), then OpEx, then NOI">tie all (${nTargets})</button>` : ''}
+    ${nTargets && canTie ? `<button class="rb" id="tie-all" title="Apply every target that is set — categories first, then rental income / total income (they move GPR), then OpEx, then NOI">tie all (${nTargets})</button>` : ''}
   </div>
   <p class="muted" style="font-size:11px"><b>Nothing derives from an underwriting.</b> “tie” shifts the trailing-12 × factor lines of that subtotal by one uniform number of points (MROUNDs kept), so the subtotal grows by the target; GPR solves its monthly %; concessions &amp; rental loss scale their % of GPR; loss to lease is set under Assumptions; mgmt fee follows income; <b>Total Rental Income / Total Income</b> move the lever you pick — vacancy % or GPR (other income is held; a target the lever cannot reach is refused, nothing changes); a subtotal with no factor lines left (all overridden) rebalances proportionally. OpEx / NOI targets spread across every expense category but the fee.</p>`;
 }
@@ -5664,7 +5673,7 @@ function annualInputsHtml(inp) {
       <div class="fld"><label>Shape</label><select id="in-blshape">${['actual', 'wavg', 'flat', 'curve'].map((k) => `<option value="${k}" ${(bl.shape || 'actual') === k ? 'selected' : ''}>${SHAPE_LABELS[k]}</option>`).join('')}</select></div>
       <div class="fld"><label>MROUND $ (0 = each GL's foundation multiple)</label><input id="in-blmround" value="${bl.mround || 0}" style="width:80px"></div>
       ${(S.bv.t12Dead || []).length || (S.bv.t12Startup || []).length ? `<div class="fld"><label title="A new acquisition's first months are not a clean picture: a partial month of rent, closing entries, catch-up bills. The months left out are filled with each line's average over the months that remain. Default: the first month. At least two months are always kept.">Start-up months left out of the history${(S.bv.t12Startup || []).length ? ` <span class="muted">— now: ${esc(S.bv.t12Startup.join(', '))}</span>` : ''}</label><select id="in-startup">${[0, 1, 2, 3].map((n) => `<option value="${n}" ${(inp.startupExclude ?? 1) === n ? 'selected' : ''}>${n === 0 ? 'none' : n === 1 ? 'the first month (default)' : `the first ${n} months`}</option>`).join('')}</select></div>` : ''}
-      ${S.bv.y1Plan ? (() => { const y = S.bv.y1Plan, span = y.months.length ? `${MONTHS[y.months[0]]}–${MONTHS[y.months[y.months.length - 1]]}` : ''; return `<div class="fld"><label title="This property's Year-1 (acquisition) budget ties to the underwriting NOI and its 12 ownership months run into this year. With this on, ${span} on every line through NOI are that budget's amounts, so Year 1 as a whole lands on the underwriting. The months after run on this budget's formulas. Interest, principal and SP are not touched; locked lines are not moved.">Year-1 months (${span}) <span class="muted">— Year 1 NOI ${money(y.y1Noi)} vs ${y.uwNoi != null ? 'UW ' + money(y.uwNoi) : 'plan ' + money(y.planNoi)}</span></label><select id="in-y1plan"><option value="1" ${inp.y1Plan !== false ? 'selected' : ''}>from the Year-1 budget</option><option value="0" ${inp.y1Plan === false ? 'selected' : ''}>this budget's own formulas</option></select></div>`; })() : ''}
+      ${S.bv.y1Plan ? (() => { const y = S.bv.y1Plan, span = y.months.length ? `${MONTHS[y.months[0]]}–${MONTHS[y.months[y.months.length - 1]]}` : ''; return `<div class="fld"><label title="This property's Year-1 (acquisition) budget ties to the underwriting NOI and its 12 ownership months run into this year. With this on, the WHOLE year runs off that budget: ${span} are its amounts (Year 1 lands on the underwriting), and the months after carry its same months a year earlier on the UW book's Year-2 trend by category. Inside each category the rows are fitted to what has posted since closing (the fit % beside this) and turn lines follow the turn curve; category totals stay on UW. Interest, principal and SP are not touched; locked lines are not moved.">Year-1 plan (${span}${y.acq && y.acq.afterIdx.length ? ` + ${MONTHS[y.acq.afterIdx[0]]}–${MONTHS[y.acq.afterIdx[y.acq.afterIdx.length - 1]]} on the UW trend` : ''}) <span class="muted">— Year 1 NOI ${money(y.y1Noi)} vs ${y.uwNoi != null ? 'UW ' + money(y.uwNoi) : 'plan ' + money(y.planNoi)}</span></label><select id="in-y1plan"><option value="1" ${inp.y1Plan !== false ? 'selected' : ''}>the whole year from the Year-1 budget</option><option value="0" ${inp.y1Plan === false ? 'selected' : ''}>this budget's own formulas</option></select></div>${y.on && y.acq ? `<div class="fld"><label title="How far the months posted since closing (${y.acq.postedMonths} on file${y.acq.start ? `, ownership from ${esc(y.acq.start)}` : ''}) move each category's mix of GLs away from the Year-1 budget's: 0% = the budget's mix, 100% = the posted mix. Category totals do not move, so NOI stays on UW.">Fit rows to posted actuals <span class="muted">(${y.acq.postedMonths} mo posted)</span></label><input id="in-acqfit" value="${Math.round((inp.acqFit ?? y.acq.fit) * 100)}" style="width:52px; text-align:right"> %</div>` : ''}`; })() : ''}
       <div class="fld"><label title="History-based expense lines (admin, marketing, utilities, R&M, rehab) are tilted so December runs this much above January, in a straight line. The YEAR TOTAL does not change — only when the dollars land. 0 = off. Not applied to payroll, taxes, insurance, the fee or contract-flat lines.">Cost drift within the year % (Jan → Dec)</label><input id="in-drift" value="${+(((bl.costDrift ?? 0.03)) * 100).toFixed(2)}" style="width:70px"></div>
       <label style="align-self:center" title="The Yardi template carries Conservice's per-GL per-month utility % forecasts. The GRKS foundation used a flat 5% instead; tick to apply the forecast where one exists."><input type="checkbox" id="in-blutil" ${bl.useUtilForecast ? 'checked' : ''}> Use Conservice utility forecasts</label>
     </div>
@@ -5782,6 +5791,8 @@ async function applyAnnualInputs(b, el) {
     burdenBasis: q('#in-burden') ? q('#in-burden').value : (cur.burdenBasis || 't12'),
     ...(q('#in-burdenfrom') ? { burdenFrom: q('#in-burdenfrom').value || null } : {}),
     ...(q('#in-y1plan') ? { y1Plan: q('#in-y1plan').value === '0' ? false : (cur.y1Plan === false ? true : cur.y1Plan) } : {}),
+    // posted-actuals fit for a new acquisition's whole-year plan: stored only when it differs from what is in force
+    ...(() => { const el = q('#in-acqfit'); if (!el) return {}; const v = parseFloat(String(el.value).replace(/[%\s]/g, '')); if (!Number.isFinite(v)) return {}; const f = Math.min(1, Math.max(0, v / 100)); const now = cur.acqFit ?? ((S.bv.y1Plan || {}).acq || {}).fit; return Math.abs(f - now) > 1e-9 ? { acqFit: f } : {}; })(),
     utilities: { ...(cur.utilities || {}), billing: q('#in-utilbill') ? q('#in-utilbill').value : ((cur.utilities || {}).billing || 'rubs') },
     baseline: { ...(cur.baseline || {}), source: q('#in-blsrc').value, shape: q('#in-blshape').value, mround: num('#in-blmround'), costDrift: q('#in-drift') ? Math.max(0, num('#in-drift', 3)) / 100 : (cur.baseline || {}).costDrift, growthPct, useUtilForecast: q('#in-blutil').checked },
     turnFees, corpRates,
