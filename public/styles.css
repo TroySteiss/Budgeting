@@ -633,3 +633,24 @@ table.grid tr.returns .cocview .rb.on { background: var(--good); color: var(--pa
 table.grid td.overall { font-variant-numeric: tabular-nums; color: var(--accent); }
 table.grid td.overall.ratio { font-weight: 600; }
 table.grid td.overall.neg { color: var(--bad); }
+
+/* Assumptions, reorganised (Troy 2026-11-13) */
+.asecs { display: flex; flex-direction: column; gap: 8px; }
+details.asec { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+details.asec > summary { cursor: pointer; padding: 8px 12px; display: flex; gap: 12px; align-items: baseline; list-style: none; }
+details.asec > summary::-webkit-details-marker { display: none; }
+details.asec > summary::before { content: '▸'; color: var(--dim); width: 10px; }
+details.asec[open] > summary::before { content: '▾'; }
+details.asec > summary .asec-t { font-weight: 700; font-size: 13px; white-space: nowrap; }
+details.asec > summary .asec-s { color: var(--dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+details.asec .asec-b { padding: 4px 12px 10px; border-top: 1px solid var(--line); }
+details.asec .row { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: flex-end; margin-top: 6px; }
+details.asec .fld { display: flex; flex-direction: column; gap: 2px; }
+details.asec .fld.wide { flex-basis: 100%; }
+details.asec .fld > label { font-size: 11px; color: var(--dim); white-space: nowrap; }
+details.asec .fld > label .hint { color: var(--accent); cursor: help; font-size: 10px; }
+details.asec label.chk { font-size: 12px; align-self: center; white-space: nowrap; }
+details.asec .asub { font-weight: 600; font-size: 12px; margin-top: 10px; }
+details.asec .asec-note { font-size: 11px; margin: 6px 0 0; }
+details.asec details.asub-d { margin-top: 6px; font-size: 11.5px; }
+details.asec details.asub-d > summary { cursor: pointer; color: var(--dim); }

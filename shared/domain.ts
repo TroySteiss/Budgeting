@@ -153,6 +153,8 @@ export interface BudgetInputs {
   burdenFromGl?: Record<string, string[]>;
   /** per GL, the properties whose monthly CURVE the line takes (its total stays its own) — change spec 2026-11-13 §4 */
   shapeFromGl?: Record<string, string[]>;
+  /** a budget run off the acquisition plan: GLs taken off the plan by hand (their own formula shows) — Troy 2026-11-13 */
+  offPlan?: string[];
   /** annual: share of the previous month's delinquency (5035) collected as prior-period collections (5036); unset = the trailing-12 rate, capped at 100% */
   collectPct?: number;
   /** annual budgets: the per-GL formula rules this budget runs on — a COPY of the saved formula

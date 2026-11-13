@@ -1665,8 +1665,9 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
      compare card. */
   const picked = (ls: BudgetLine[]): Set<string> => {
     const out = new Set<string>(rollGls);
-    const bl = (inputs.baseline || {}) as any;
-    for (const gl of Object.keys(bl.glShape || {})) out.add(gl);
+    // lines taken off the plan by hand (Troy 2026-11-13: "Adjusting CWND formulas is basically impossible"): a % or a
+    // formula picked on the row / section, or "Use this line's own formula" in the row menu (inputs.offPlan)
+    for (const gl of (inputs as any).offPlan || []) out.add(String(gl));
     // an increase % (row or section) is NOT a pick here: a formula set copies one onto every line (CWND took BCND's
     // 28 — taxes went to the seller T12 × 3%; Troy 2026-11-13). The plan sets the level; the % has nothing to grow.
     // RE taxes are their own: the current accrual × (1 + %) (taxAccrual), never the plan
@@ -1868,6 +1869,29 @@ router.put('/budgets/:id', h(async (req, res) => {
   if (inputs) {
     const lb1 = (await loadBudget(id))!;   // reload — snapshots may have been relinked above
     const merged: BudgetInputs = { ...lb1.budget.inputs, ...inputs };
+    /* A FORMULA PICKED ON A ROW TAKES THAT LINE OFF THE PLAN (Troy 2026-11-13: "Adjusting CWND formulas is basically
+       impossible"). On a budget run off the acquisition plan, every GL whose row shape or row % changed, and every line
+       under a section whose % changed, joins inputs.offPlan, so the edit shows; clearing the row choice puts it back.
+       A formula SET is applied elsewhere and never lands here, so its copied %s do not pull lines off the plan. */
+    if (acqPlanOn(lb1.budget.inputs, lb1.y1Plan) && inputs.baseline && !Array.isArray((inputs as any).offPlan)) {
+      const ob: any = lb1.budget.inputs?.baseline || {}, nb: any = merged.baseline || {};
+      const off = new Set<string>(((lb1.budget.inputs as any)?.offPlan || []).map(String));
+      const changed = (k: string) => { const a = ob[k] || {}, z = nb[k] || {}; return [...new Set([...Object.keys(a), ...Object.keys(z)])].filter((gl) => JSON.stringify(a[gl]) !== JSON.stringify(z[gl])); };
+      for (const gl of [...changed('glShape'), ...changed('glGrowth')]) {
+        if ((nb.glShape || {})[gl] != null || (nb.glGrowth || {})[gl] != null) off.add(gl);
+        else off.delete(gl);
+      }
+      for (const sec of changed('secGrowth')) {
+        const gls = lb1.coa.filter((c) => c.kind === 'detail' && String(c.section) === sec).map((c) => c.code);
+        const setNow = (nb.secGrowth || {})[sec] != null;
+        for (const gl of gls) {
+          const ln = lb1.lines.find((l) => l.gl_code === gl);
+          if (!ln || ln.override || (ln.driver as any)?.method === 'contract') continue;
+          if (setNow) off.add(gl); else if ((nb.glShape || {})[gl] == null && (nb.glGrowth || {})[gl] == null) off.delete(gl);
+        }
+      }
+      (merged as any).offPlan = [...off].sort();
+    }
     // save the inputs FIRST and load again: some inputs change what is loaded (the start-up
     // months left out of the trailing-12), so the build must see the data as those inputs give it
     await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(merged)]);
