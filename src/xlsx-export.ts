@@ -8,7 +8,7 @@
 import ExcelJS from 'exceljs';
 import { summaryColumn, sumSummaryCols, type SummaryCol } from '../shared/annual.js';
 import { fillSummaryPanel, fillSchedule, PANEL_ROW, type ScheduleRow } from './xlsx-summary.js';
-import { fillCachedResults } from './xlsx-calc.js';
+import { fillCachedResults, type CachedDiff } from './xlsx-calc.js';
 import {
   CoaAccount, BudgetLine, UwSnapshotData, BudgetInputs, PCODES, PCODE_LABELS,
   sum, zero12, r2, Months, monthLabels, WAGE_GLS,
@@ -104,16 +104,37 @@ const reviewNote = (ln: BudgetLine | undefined, i: number): string => {
   return ids.map((id) => { const r = d.rev?.rows?.[id] || {}; return `${id} · ${r.action || ''} · ${r.item || ''}\n${r.firmness || ''}${r.basis ? ` — ${r.basis}` : ''}${r.source ? `\nSource: ${r.source}${r.contractsRow ? ` (Contracts row ${r.contractsRow})` : ''}` : ''}`; }).join('\n\n') + (d.rev?.file ? `\n\nFrom ${d.rev.file}` : '');
 };
 const MON3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-/** A line whose Year-1 months come from the property's Y1 budget says so ahead of its formula. */
-function driverLabel(d: any): string {
-  let base = driverLabelBase(d);
+/* spec 1.6: what a plan-run acquisition's line actually is — the months the acquisition plan supplied (driver.y1), the
+   n/12 split of Year 1 / Year 2, the UW trend, the pace move and where the months come from — not "Jan-Dec from the
+   Year-1 budget; then <the formula the plan replaced>". */
+function acqLabel(d: any): string {
+  const a = d.acq || {};
+  const after: number[] = Array.isArray(a.after) ? a.after : [];
+  const y1 = (Array.isArray(d.y1) ? d.y1 : []).filter((i: number) => !after.includes(i));
+  const span = (ix: number[]) => (ix.length ? `${MON3[ix[0]]}-${MON3[ix[ix.length - 1]]}` : '');
+  const parts = [`acquisition plan (UW): ${span(y1)} = ${y1.length}/12 of Year 1`];
+  if (after.length) parts.push(`${span(after)} = ${after.length}/12 of Year 1 on the UW Year-2 trend (${a.trend >= 0 ? '+' : ''}${((a.trend || 0) * 100).toFixed(1)}%)`);
+  if (a.pace != null && Math.abs(a.pace - 1) >= 0.005 && a.fit) parts.push(`level moved ${Math.round(a.fit * 100)}% toward its pace since closing (${a.pace > 1 ? '+' : ''}${((a.pace - 1) * 100).toFixed(1)}%)`);
+  parts.push(`months on ${a.turns ? 'the turn curve' : a.hist ? "the property's own history (posted + seller T12)" : "the Year-1 budget's pattern"}`);
+  return parts.join('; ');
+}
+/** A line whose Year-1 months come from the property's Y1 budget says so ahead of its formula. `ctx` = the line's year
+    total and the units, so a per-unit line can show the rate it actually came to (spec 1.6). */
+function driverLabel(d: any, ctx: { total?: number; units?: number; gl?: string } = {}): string {
+  let base = d?.reTax ? (d.reTax.branch === 'UW' ? `RE tax = UW book Taxes tab, Ryan PP Year 2 ($${Math.round(d.reTax.tax).toLocaleString('en-US')}), ÷ 12`
+      : `RE tax from the bill: A $${Math.round(d.reTax.a || 0).toLocaleString('en-US')}${d.reTax.b != null ? ` / B (sale reassessed) $${Math.round(d.reTax.b).toLocaleString('en-US')}` : ''} — the higher (${d.reTax.branch}), ÷ 12`)
+    : d?.accrual ? `RE tax: this year's cost $${Math.round(d.taxYear || d.accrual * 12).toLocaleString('en-US')} (accrual $${Math.round(d.accrual).toLocaleString('en-US')}/mo) × ${(1 + (d.pct || 0)).toFixed(3)}${d.taxNoInputs ? ' — no bill inputs on file: review' : ''}`
+    : d?.acq ? acqLabel(d) : driverLabelBase(d);
+  // insurance: the $/unit the line actually comes to (CWND / RRND carry a lender rate above the $275 guidance)
+  if (ctx.gl === '6108' && ctx.units && ctx.total) base += `; = $${(Math.abs(ctx.total) / ctx.units).toFixed(2)}/unit for the year`;
   // 2027 notes pass: one-time items out of the T12, and the recurring-journal split
   if (d?.qShift) base += `; quarter shift: year total kept, dollars moved so NOI lands at ${(d.qShift.targets || []).map((t: number, i: number) => `Q${i + 1} ${(t * 100).toFixed(1)}%`).join(' / ')}${d.qShift.capped ? ' (stopped short at the floor)' : ''}`;
   if (d?.fitT12) base += `; months ${Math.round(d.fitT12 * 100)}% fitted to its own T12 (total unchanged)`;
+  if (d?.shapeFrom) base += `; months on the ${String(d.shapeFrom).toUpperCase()} curve; total = own formula`;
   if (d?.oneTime) base += `; $${Math.round(d.oneTime).toLocaleString('en-US')} of one-time items taken out of the T12 first`;
   if (d?.allocOut) base += `; ${Math.round(d.allocOut.pct * 10000) / 100}% to ${String(d.allocOut.to).toUpperCase()} by recurring journal ($${Math.round(d.allocOut.out).toLocaleString('en-US')} of $${Math.round(d.allocOut.gross).toLocaleString('en-US')})`;
   if (d?.smooth && d.method !== 'smooth') return `${base}; missed-bill smoothed x${d.smooth.passes || 0}, rounded to $${d.smooth.mult || 5}`;
-  if (!Array.isArray(d?.y1) || !d.y1.length) return base;
+  if (d?.acq || !Array.isArray(d?.y1) || !d.y1.length) return base;
   const span = `${MON3[d.y1[0]]}-${MON3[d.y1[d.y1.length - 1]]} from the Year-1 budget`;
   return d.method === 'manual' ? span : `${span}; then ${base}`;
 }
@@ -126,7 +147,9 @@ function driverLabelBase(d: any): string {
     case 'perUnitComp': return `Minot $${d.perUnit}/unit`;
     case 'payrollModel': return 'payroll model wages';
     case 'burdenRatio': return d.from ? `${(d.ratio * 100).toFixed(1)}% of wages — ratio and monthly shape from ${String(d.from).toUpperCase()}` : `Minot ratio ${(d.ratio * 100).toFixed(1)}% of wages`;
-    case 'mgmtPct': return `${(d.pct * 100).toFixed(2)}% of ${d.priorMonth ? 'prior-month ' : ''}income`;
+    case 'mgmtPct': return d.firstYear && d.firstYear.months
+      ? `${(Number(d.firstYear.pct) * 100).toFixed(2)}% of ${d.priorMonth ? 'prior-month ' : ''}income through ${d.firstYear.through || 'the first year'} (${d.firstYear.months} fee month${d.firstYear.months === 1 ? '' : 's'}), then ${(d.pct * 100).toFixed(2)}%`
+      : `${(d.pct * 100).toFixed(2)}% of ${d.priorMonth ? 'prior-month ' : ''}income`;
     case 'interest': return 'loan interest';
     case 'sellerUtil': return 'seller statement level';
     case 'recovery': return `${(d.pct * 100).toFixed(1)}% recovery of prior-month billing`;
@@ -139,6 +162,7 @@ function driverLabelBase(d: any): string {
     case 'review': return `ND 2027 Budget Review: ${Object.entries(d.rev?.rows || {}).map(([id, r]: any) => `${id} ${r.item} (${r.action}, ${r.firmness})`).join('; ')}`;
     case 'linkLine': return `= ${d.src || ''} × ${d.weight ?? 1}`;
     case 'setTotal': return `total set to ${Math.round(d.total || 0).toLocaleString()}`;
+    case 'perOccupiedUnit': return `$${d.rate} per occupied unit per month (× ${d.units} units × occupancy${d.share ? ' × flat-fee share' : ''})`;
     case 'zero': return 'zeroed out';
     case 'imported': return `imported from draft${d.file ? ` (${d.file})` : ''}`;
     default: return annualDriverLabel(d);
@@ -173,7 +197,7 @@ function uwColumnValues(uw: UwSnapshotData, catBudget: (pcode: string, range: [n
   return out;
 }
 
-export interface RefCol { key: string; label: string; period: string; byGl: Record<string, number>; totals: Record<string, number> }
+export interface RefCol { key: string; label: string; period: string; byGl: Record<string, number>; totals: Record<string, number>; nMonths?: number }
 export interface ReviewArgs {
   propertyCode: string; propertyName: string; year: number; units: number;
   coa: CoaAccount[]; lines: BudgetLine[]; inputs: BudgetInputs;
@@ -191,9 +215,11 @@ export interface ReviewArgs {
   summaryLabels?: { t12: string; t4: string; draft: string };
   region?: string;
   noiTrend?: { label: string; noi: number | null }[];
+  /** how the trailing-12 was built, printed under the Budget Comps title (spec 1.5) */
+  t12Basis?: string;
 }
 /** What a property's "Budget Comps" sheet holds, for the portfolio panel and the Schedule. */
-interface CompsInfo { site: ReviewArgs; sheet: string; t12: SummaryCol | null; t4: SummaryCol | null; bud: SummaryCol; capital: number; units: number; cyBudgetNoi: number | null; cyBudgetLabel: string | null; cyRef: string | null; trendRefs: (string | null)[] }
+interface CompsInfo { site: ReviewArgs; sheet: string; t12: SummaryCol | null; t4: SummaryCol | null; bud: SummaryCol; capital: number; units: number; cyBudgetNoi: number | null; cyBudgetMonths: number; cyBudgetLabel: string | null; cyRef: string | null; trendRefs: (string | null)[] }
 const compsByWorkbook = new WeakMap<ExcelJS.Workbook, CompsInfo[]>();
 
 /** Where a property's Payroll sheet keeps its rows (the portfolio's Payroll
@@ -229,7 +255,10 @@ export async function buildReviewWorkbook(args: ReviewArgs): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'nd-budget-tool';
   addReviewSheets(wb, args, '');
-  fillCachedResults(wb);   // every formula carries its value, so nothing is blank in Protected View / previews
+  // every formula carries the value it computes (spec 1.1), and Excel recalculates everything on open
+  { const diffs: CachedDiff[] = []; fillCachedResults(wb, { recompute: true, onDiff: (d) => diffs.push(d) });
+    if (diffs.length) console.log(`[xlsx] ${diffs.length} formula value(s) written differently from what they compute — now stored as computed; e.g. ${diffs.slice(0, 6).map((d) => `${d.sheet}!${d.cell} ${String(d.stored)} → ${String(d.computed)}`).join('; ')}`); }
+  (wb as any).calcProperties = { ...((wb as any).calcProperties || {}), fullCalcOnLoad: true };
   const buf = await wb.xlsx.writeBuffer();
   return Buffer.from(buf as ArrayBuffer);
 }
@@ -274,7 +303,9 @@ export async function buildPortfolioWorkbook(sites: ReviewArgs[], portfolioLabel
       const withT = set.find((c) => (c.site.noiTrend || []).length) || set[0];
       const labels = (withT.site.noiTrend || []).map((t) => t.label);
       const cyLabel = (set.find((c) => c.cyBudgetLabel) || {}).cyBudgetLabel || `${year - 1} budget`;
-      const cyHead = /^\d{4} budget$/i.test(cyLabel) ? `NOI Growth over ${cyLabel.replace(/ budget$/i, '')}'s Budget` : `NOI Growth over the ${cyLabel.replace(/^budget /i, '')} Budget`;
+      const part = set.filter((c) => c.cyBudgetMonths < 12);
+      const cyHead = (/^\d{4} budget$/i.test(cyLabel) ? `NOI Growth over ${cyLabel.replace(/ budget$/i, '')}'s Budget` : `NOI Growth over the ${cyLabel.replace(/^budget /i, '')} Budget`)
+        + (part.length ? ` (annualized, ${part.map((c) => `${c.site.propertyCode.toUpperCase()} ${c.cyBudgetMonths} mo`).join(', ')})` : '');
       const rows: ScheduleRow[] = set.map((c) => ({
         code: c.site.propertyCode, units: c.units, sheet: c.sheet,
         trend: labels.length ? labels.map((_, i) => (c.site.noiTrend || [])[i]?.noi ?? null) : [c.t12 ? c.t12.noi : null],
@@ -293,7 +324,7 @@ export async function buildPortfolioWorkbook(sites: ReviewArgs[], portfolioLabel
   // analytics columns after the PORTFOLIO total: UW Y1, Δ vs UW, per unit, per unit/mo
   const uwColP = totCol + 1, dColP = totCol + 2, puColP = totCol + 3, pumColP = totCol + 4;
   [15, 13, 11, 13].forEach((w, i) => { wsP.getColumn(totCol + 1 + i).width = w; });
-  wsP.getCell(1, 2).value = `${portfolioLabel} — Year 1 Budget Portfolio Rollup`;
+  wsP.getCell(1, 2).value = `${portfolioLabel} — ${anyAnnual ? `${sites[0]?.year || ''} Budget` : 'Year 1 Budget'} Portfolio Rollup`;
   wsP.getCell(1, 2).font = { size: 12, bold: true };
   const sq = (s: ReviewArgs) => `'${s.propertyCode.toUpperCase()} Summary'!`;
   // header
@@ -308,7 +339,11 @@ export async function buildPortfolioWorkbook(sites: ReviewArgs[], portfolioLabel
   tc.value = 'PORTFOLIO'; tc.font = f8b; tc.alignment = { horizontal: 'right' };
   tc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRAND } };
   tc.border = { bottom: { style: 'thin' } };
-  ([[uwColP, 'Year 1 UW Budget'], [dColP, 'Δ vs UW'], [puColP, 'Per Unit'], [pumColP, 'Per Unit / Month']] as [number, string][]).forEach(([col, t]) => {
+  // spec 1.3: on annual budgets column D of each site's Summary is its trailing-12, not a UW budget
+  const t12End = (() => { const per = String(((sites.find((s) => s.annual)?.refs || []).find((r) => r.key === 'actual') || {}).period || ''); const m = per.match(/-\s*([A-Z][a-z]{2})\s+\d{4}/); return m ? m[1] : ''; })();
+  const uwHead = anyAnnual ? `T12${t12End ? ` (${t12End})` : ''}` : 'Year 1 UW Budget';
+  const dHead = anyAnnual ? 'Δ vs T12' : 'Δ vs UW';
+  ([[uwColP, uwHead], [dColP, dHead], [puColP, 'Per Unit'], [pumColP, 'Per Unit / Month']] as [number, string][]).forEach(([col, t]) => {
     const c = wsP.getCell(4, col);
     c.value = t; c.font = f8b; c.alignment = { horizontal: 'right', wrapText: true };
     c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: col === uwColP ? UWFILL : HEAD } };
@@ -374,7 +409,8 @@ export async function buildPortfolioWorkbook(sites: ReviewArgs[], portfolioLabel
   put(S_CAP_ROW, 'Capital Contributions', `D${S_CAP_ROW}`, { fmt: CUR });
   // Y1 CoC per site + portfolio (CF / capital)
   const cocRow = S_CAP_ROW + 2;
-  wsP.getCell(cocRow, 2).value = 'Y1 Cash on Cash';
+  // the budget's own cash flow ÷ capital (each site's Summary column E): label it as the budget year's
+  wsP.getCell(cocRow, 2).value = anyAnnual ? `${sites[0]?.year || ''} Budget Cash on Cash`.trim() : 'Y1 Cash on Cash';
   wsP.getCell(cocRow, 2).font = { size: 8.5, bold: true, color: { argb: RED } };
   sites.forEach((s, i) => {
     const L = wsP.getColumn(3 + i).letter;
@@ -387,7 +423,10 @@ export async function buildPortfolioWorkbook(sites: ReviewArgs[], portfolioLabel
   cocT.value = { formula: `IF(${LT}${S_CAP_ROW}>0,${LT}${S_CASH_ROW}/${LT}${S_CAP_ROW},"")` } as any;
   cocT.numFmt = PCT; cocT.font = { size: 11, bold: true, color: { argb: RED } };
 
-  fillCachedResults(wb);   // every formula carries its value, so nothing is blank in Protected View / previews
+  // every formula carries the value it computes (spec 1.1), and Excel recalculates everything on open
+  { const diffs: CachedDiff[] = []; fillCachedResults(wb, { recompute: true, onDiff: (d) => diffs.push(d) });
+    if (diffs.length) console.log(`[xlsx] ${diffs.length} formula value(s) written differently from what they compute — now stored as computed; e.g. ${diffs.slice(0, 6).map((d) => `${d.sheet}!${d.cell} ${String(d.stored)} → ${String(d.computed)}`).join('; ')}`); }
+  (wb as any).calcProperties = { ...((wb as any).calcProperties || {}), fullCalcOnLoad: true };
   const buf = await wb.xlsx.writeBuffer();
   return Buffer.from(buf as ArrayBuffer);
 }
@@ -555,7 +594,7 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     if (a.kind === 'detail') {
       const ln = byGl.get(a.code);
       const payRow = wsPay ? payRowOf.get(a.code) : undefined;
-      ws.getCell(r, C.driver).value = (payRow ? '→ Payroll sheet' + (ln ? ' · ' : '') : '') + (ln ? driverLabel(ln.driver) + (ln.override ? ' (manual)' : '') : '');
+      ws.getCell(r, C.driver).value = (payRow ? '→ Payroll sheet' + (ln ? ' · ' : '') : '') + (ln ? driverLabel(ln.driver, { total: sum(ln.months), units, gl: a.code }) + (ln.override ? ' (manual)' : '') : '');
       ws.getCell(r, C.driver).font = { size: 7.5, italic: true, color: { argb: 'FF808080' } };
       const hasVals = ln && (ln.months.some((v) => v) || ln.override);
       const dFill = DRIVER_FILLS[driverKind(hasVals ? ln : undefined)].fill;
@@ -573,6 +612,14 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
       if (ln?.note) {
         ws.getCell(r, C.note).value = ln.note;
         ws.getCell(r, C.note).font = { size: 8, italic: true, color: { argb: 'FF505050' } };
+      } else if (ln && args.annual) {
+        // spec 1.6: a line that moves more than $25K against its T12 with no note says so (a flag; nothing changes)
+        const t12 = refVal(refA, a.code, 'detail');
+        const mv = t12 != null ? sum(ln.months) - t12 : null;
+        if (mv != null && Math.abs(mv) > 25000) {
+          ws.getCell(r, C.note).value = `REVIEW: ${mv > 0 ? '+' : '−'}$${Math.round(Math.abs(mv)).toLocaleString('en-US')} vs the T12 and no note`;
+          ws.getCell(r, C.note).font = { size: 8, bold: true, color: { argb: 'FFC00000' } };
+        }
       }
       if (args.compWeights && args.compUnits && args.compWeights[a.code]) {
         const cc = ws.getCell(r, C.comp);
@@ -937,9 +984,11 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     for (const [k, label] of T4KEYS) { t4Row[k] = rrw; rawRow([label, t4 ? (t4 as any)[k] : 0]); }
     // Schedule inputs: the current-year budget NOI and the trailing-12 NOI windows on file (the Schedule sheet reads column B)
     const cyb = refs.find((x) => x.key === 'budget');
-    const cyNoi = cyb ? r2(cyb.totals['7280'] || 0) : null;
+    // spec 1.4: a CY budget covering only the months owned is annualized: NOI × 12 ÷ its months with NOI
+    const cyN = cyb?.nMonths && cyb.nMonths < 12 ? cyb.nMonths : 12;
+    const cyNoi = cyb ? r2((cyb.totals['7280'] || 0) * 12 / cyN) : null;
     let cyRef: string | null = null;
-    if (cyNoi) { cyRef = `${RQ}B${rrw}`; rawRow([`NOI, ${cyb!.label}`, cyNoi]); }
+    if (cyNoi) { cyRef = `${RQ}B${rrw}`; rawRow([`NOI, ${cyb!.label}${cyN < 12 ? ` (annualized, ${cyN} mo × 12/${cyN})` : ''}`, cyNoi]); }
     const trendRefs: (string | null)[] = (args.noiTrend || []).map((t) => {
       if (t.noi == null) return null;
       const at = `${RQ}B${rrw}`; rawRow([`T12 NOI, window ending ${t.label}`, t.noi]); return at;
@@ -969,6 +1018,7 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     };
     fillSummaryPanel(wsX, {
       title: args.propertyCode.toUpperCase() + (args.propertyName && args.propertyName.toUpperCase() !== args.propertyCode.toUpperCase() ? ` — ${args.propertyName}` : ''),
+      basis: args.t12Basis || '',
       labels: args.summaryLabels || { t12: 'T12', t4: 'T4 Ann.', draft: 'Draft #1' },
       capital, units, t12, t4, bud,
       src: (col, key) => {
@@ -982,7 +1032,7 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
       },
     });
     const list = compsByWorkbook.get(wb) || [];
-    list.push({ site: args, sheet: `${prefix}Budget Comps`, t12, t4, bud, capital, units, cyBudgetNoi: cyNoi, cyBudgetLabel: cyb ? cyb.label : null, cyRef, trendRefs });
+    list.push({ site: args, sheet: `${prefix}Budget Comps`, t12, t4, bud, capital, units, cyBudgetNoi: cyNoi, cyBudgetMonths: cyN, cyBudgetLabel: cyb ? cyb.label : null, cyRef, trendRefs });
     compsByWorkbook.set(wb, list);
   }
   return payInfo;
@@ -996,7 +1046,7 @@ const colLetter = (n: number): string => { let s = ''; while (n > 0) { s = Strin
    ratio sits beside the historicals it comes from (T12 actual % of wages, CY
    budget % of wages) — default per the budget's burden basis, overwrite with a
    number or any formula (=AVERAGE(U7,V7)). Below: the historicals by month. */
-const PC = { code: 1, name: 2, m1: 3, total: 15, t12: 16, bud: 17, diff: 18, pct: 19, rT12: 21, rBud: 22, used: 23, how: 24 };
+const PC = { code: 1, name: 2, m1: 3, total: 15, t12: 16, bud: 17, diff: 18, pct: 19, rT12: 21, rBud: 22, used: 23, how: 24, fac0: 26 };   // fac0..fac0+11: each month's burden factor (spec 1.2)
 
 function fillPayrollSheet(
   ws: ExcelJS.Worksheet, name: string, args: ReviewArgs, payGls: CoaAccount[], rowOf: Map<string, number>,
@@ -1040,8 +1090,16 @@ function fillPayrollSheet(
   }
 
   const rows: PayrollSheetInfo['rows'] = [];
+  // the budget's wages by month (the base every ratio row multiplies)
+  const wagesMonths = Array.from({ length: 12 }, (_, i) => payGls.filter((a) => wageSet.has(a.code)).reduce((acc, a) => acc + ((byGl.get(a.code)?.months || zero12())[i] || 0), 0));
+  ws.getCell(5, PC.fac0).value = 'month factor (its ratio ÷ the year\'s) →';
+  ws.getCell(5, PC.fac0).font = { size: 7, italic: true, color: { argb: 'FFA0A0A0' } };
   const t12Wages = wageRows.length ? r2(payGls.filter((a) => wageSet.has(a.code)).reduce((acc, a) => acc + t12Of(a.code), 0)) : 0;
   const budWages = wageRows.length ? r2(payGls.filter((a) => wageSet.has(a.code)).reduce((acc, a) => acc + budOf(a.code), 0)) : 0;
+  // the ratio the "Ratio used" cell computes (its formula reads the T12 / budget columns at full precision)
+  const ratioT12 = (code: string) => (t12Wages ? t12Of(code) / t12Wages : 0);
+  const ratioBud = (code: string) => (budWages ? budOf(code) / budWages : 0);
+  const usedRatio = (code: string): number => basis === 'budget' ? ratioBud(code) : basis === 'mix' ? (ratioT12(code) + ratioBud(code)) / 2 : ratioT12(code);
   const money = (cell: ExcelJS.Cell, bold = false) => { cell.numFmt = CUR; cell.font = bold ? f8b : f8; };
   for (const a of payGls) {
     const r = rowOf.get(a.code)!;
@@ -1059,7 +1117,19 @@ function fillPayrollSheet(
     ws.getCell(r, PC.name).font = f8;
     months.forEach((v, i) => {
       const cell = ws.getCell(r, PC.m1 + i);
-      if (asFormula) cell.value = { formula: `$${L(PC.used)}${r}*${L(PC.m1 + i)}${wagesRow}`, result: v || 0 } as any;
+      // spec 1.2: the engine prices each month on its own ratio (same-month burden since 11-09). The month's factor (its
+      // ratio ÷ the year's) sits in the helper columns right of the notes, so the formula gives the engine's month to the
+      // cent and typing a new Ratio used still moves every month
+      if (asFormula) {
+        // the ratio the "Ratio used" cell itself computes (full precision), not the engine's rounded one
+        const w = wagesMonths[i] || 0, ratio = usedRatio(a.code) || Number(d.ratio) || 0;
+        const fct = w && ratio ? (v || 0) / (ratio * w) : null;
+        if (fct != null) {
+          const fc = ws.getCell(r, PC.fac0 + i);
+          fc.value = fct; fc.numFmt = '0.0000'; fc.font = { size: 7, color: { argb: 'FFA0A0A0' } };
+          cell.value = { formula: `$${L(PC.used)}${r}*${L(PC.fac0 + i)}${r}*${L(PC.m1 + i)}${wagesRow}`, result: v || 0 } as any;
+        } else if (v) cell.value = v;
+      }
       else if (v) cell.value = v;
       money(cell);
       if (!asFormula && isHardCell(ln, i)) cell.font = HARD_FONT;

@@ -64,6 +64,7 @@ function drvMeta(l) {
     extra.push({ cls: 'drv-t12', tag: 'SMOOTH', label: `Missed-bill smoothing ×${l.driver.smooth.passes || 0} on top of this formula: spikes spread into the surrounding months, no negative months, every month rounded to $${l.driver.smooth.mult || 5}. The months are now fixed; 🔓 puts the line back on its formula.` });
   }
   if (l && l.driver && l.driver.qShift) { const q = l.driver.qShift; extra.push({ cls: 'drv-fee', tag: q.capped ? 'Q-SHIFT·cap' : 'Q-SHIFT', label: `Carries part of the quarter shift: its year total is unchanged, its dollars sit in other quarters so NOI lands at ${(q.targets || []).map((v, i) => `Q${i + 1} ${(v * 100).toFixed(1)}%`).join(' · ')}${q.capped ? ` — stopped at ${Math.round(q.lam * 100)}% of the shift (a quarter reached half its formula amount)` : ''}. More → Shift NOI between quarters…` }); }
+  if (l && l.driver && l.driver.shapeFrom) extra.push({ cls: 'drv-base', tag: `SHAPE·${String(l.driver.shapeFrom).toUpperCase()}`, label: `Months on the ${String(l.driver.shapeFrom).toUpperCase()} curve; the year total is this line's own formula (row menu → Monthly shape from another property…)` });
   if (l && l.driver && l.driver.fitT12) extra.push({ fit: true, cls: 'drv-t12', tag: `FIT ${Math.round(l.driver.fitT12 * 100)}%`, label: `Months lean ${Math.round(l.driver.fitT12 * 100)}% toward this GL's own trailing-12 months (year total unchanged) — row menu or section header "fit to T12"` });
   // one-time items taken out of this GL's trailing-12 before the formula read it (More → One-time items)
   if (l && l.driver && l.driver.oneTime) extra.push({ cls: 'drv-t12', tag: '−1X', label: `$${money(l.driver.oneTime)} of one-time items taken out of the trailing-12 before this formula read it (More → One-time items out of the T12…)` });
@@ -173,7 +174,9 @@ function drvMetaBase(l) {
     case 'baseline': {
       const d = l.driver;
       // RE taxes from the current accrual (Troy 2026-11-13: "revisit taxes as a whole for all formats")
-      if (d.accrual) return { cls: 'drv-base', tag: 'ACCRUAL', label: `RE taxes: this year's cost $${money(d.taxYear || d.accrual * 12)} (what has posted this calendar year + the rest at the current monthly accrual $${money(d.accrual)}, the latest posted month that repeats; a one-off true-up month is skipped; a property bought this year: the accrual × 12) × ${(1 + (d.pct || 0)).toFixed(3)}, spread evenly · T12 ${Math.round(d.base || 0).toLocaleString('en-US')}. Type a % on the row to change the increase; pick a formula on the row to leave the accrual.` };
+      // RE tax from the bill (change spec §2)
+      if (d.reTax) { const t = d.reTax; return { cls: 'drv-base', tag: t.branch === 'UW' ? 'TAX·UW Y2' : `TAX·${t.branch}`, label: t.branch === 'UW' ? `RE taxes = the UW book's Taxes tab, Ryan PP, Year 2: $${money(t.tax)} (the sale is already in that number), ÷ 12 flat${t.source ? ` · ${t.source}` : ''}` : `RE taxes from the bill: A = the year-before estimate × 1.03 = $${money(t.a || 0)}${t.b != null ? `; B = the sale reassessed (market × 90.5% × the 2025 ad valorem rate × 95% + specials) × 1.03 = $${money(t.b)}` : ''}; the higher wins${t.branch === 'B' ? ' (B)' : ''}: $${money(t.tax)}, ÷ 12 flat${t.source ? ` · ${t.source}` : ''}` }; }
+      if (d.accrual) return { cls: 'drv-base', tag: d.taxNoInputs ? '⚠ACCRUAL' : 'ACCRUAL', label: `RE taxes: this year's cost $${money(d.taxYear || d.accrual * 12)} (what has posted this calendar year + the rest at the current monthly accrual $${money(d.accrual)}, the latest posted month that repeats; a one-off true-up month is skipped; a property bought this year: the accrual × 12) × ${(1 + (d.pct || 0)).toFixed(3)}, spread evenly · T12 ${Math.round(d.base || 0).toLocaleString('en-US')}. Type a % on the row to change the increase; pick a formula on the row to leave the accrual.` };
       let shape = { actual: 'same calendar month', wavg: '1-2-1 weighted distribution', flat: 'T12 ÷ 12 flat', curve: `T12 total on the GL curve${d.fit ? `, fit ${Math.round(d.fit * 100)}% to its own T12 months` : ''}`, last: 'last actual month, flat', avgnz: 'average of active months, flat', turns: `turnover curve: T12 total on lease expirations + 1 mo lag${d.turns ? ` (${Math.round(d.turns)} expirations)` : ''}${d.fit ? `, fit ${Math.round(d.fit * 100)}% to its own T12 months` : ''}` }[d.shape] || d.shape;
       const factor = d.pcts ? `+ Conservice forecast ${(Math.min(...d.pcts) * 100).toFixed(0)}–${(Math.max(...d.pcts) * 100).toFixed(0)}% by month` : `× ${(1 + (d.pct || 0)).toFixed(3)}`;
       // a GL with no seasonal curve on "curve" is exactly T12 ÷ 12 — show it as that, not CURVE (Troy 2026-11-11)
@@ -186,6 +189,7 @@ function drvMetaBase(l) {
     }
     case 'pctGpr': return { cls: 'drv-base', tag: l.driver.of === 'net' ? '%NET RENT' : l.driver.of === 'netgpr' ? '%NET GPR' : '%GPR', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.of === 'net' ? 'net rental income' : l.driver.of === 'netgpr' ? 'net GPR' : 'GPR'} (${l.driver.basis === 'last' ? 'last-month' : 'trailing-12'} ratio)${l.driver.capped ? ` — CAPPED at each month's budgeted delinquency (the ratio alone gave ${money(l.driver.uncapped || 0)} for the year; collections cannot exceed what is delinquent)` : ''}` };
     case 'badDebtRecovery': return { cls: 'drv-base', tag: 'REC·60D', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% of what is still uncollected 60 days on is recovered: each month = rate × (current delinquency two months back − prior period collections one month back). Rate = the trailing-12's recovery $${money(l.driver.t12 || 0)} ÷ its uncollected $${money(l.driver.t12Uncollected || 0)} (delinquency − collections). Follows 5035 / 5036 whatever formula they are on.` };
+    case 'perOccupiedUnit': return { cls: 'drv-base', tag: `$${l.driver.rate}/OCC`, label: `$${l.driver.rate} per occupied unit per month: $${l.driver.rate} × ${l.driver.units} units × each month's occupancy (1 − the budgeted vacancy %)${l.driver.share ? ' × the share of leases on the flat-fee package' : ''}. Its own line, never folded into utility reimbursement.` };
     case 'collectionFee': return { cls: 'drv-base', tag: `${Math.round((l.driver.pct || 0) * 100)}% REC`, label: `Collection fees = ${Math.round((l.driver.pct || 0) * 100)}% of bad debt recovery (5110), month by month.` };
     case 'collections': return { cls: 'drv-base', tag: '%PRIOR DQ', label: `Follows current delinquency (5035) whatever formula it is on. ${((l.driver.pct || 0) * 100).toFixed(1)}% of the PREVIOUS month's delinquency is collected (January collects against the last actual month's $${money(l.driver.startDq || 0)}). Higher delinquency one month means higher collections the next; it can never exceed that delinquency${l.driver.capped ? ` — the trailing-12 collected ${((l.driver.t12Rate || 0) * 100).toFixed(0)}% of its delinquency (older balances), capped here at 100%` : ''}` };
     case 'recapture': return { cls: 'drv-base', tag: 'RECAP', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% recapture of the other concession lines (T12 ratio)` };
@@ -1849,6 +1853,7 @@ function overallOf(gl, l, linesByGl, totals, refA) {
     default: {
       if (gl === '6108') return perUnit(y);
       // RE taxes on the current accrual: growth over that year (Troy 2026-11-13)
+      if (d.reTax && d.reTax.a) return { v: y / (d.reTax.a / 1.03) - 1, kind: 'growth', what: `the year-before bill estimate ($${money(d.reTax.a / 1.03)})` };
       if (d.accrual) return { v: y / (d.taxYear || d.accrual * 12) - 1, kind: 'growth', what: `this year's tax cost ($${money(d.taxYear || d.accrual * 12)})` };
       const ref = refA ? (refA.byGl[gl] || 0) : 0;
       if (!ref) return Math.abs(y) > 0.5 ? { v: null, kind: 'new', what: refA ? refA.label : 'the reference' } : null;
@@ -3225,6 +3230,46 @@ function openBurdenFrom(b, gl, acc) {
   });
   dlg.showModal();
 }
+/* MONTHLY SHAPE FROM ANOTHER PROPERTY (change spec 2026-11-13 §4, Troy: "ECND curve is generally safe. Please note i said curve,
+   not value"): the line keeps its own year total; its months follow the picked properties' trailing-12 curve for this GL. */
+function openShapeFrom(b, gl, acc) {
+  const dlg = ensureDlg('sfrom-dlg');
+  const inp = S.bv.budget.inputs || {};
+  const own = String(b.property_code).toLowerCase();
+  const cur = new Set(((inp.shapeFromGl || {})[gl] || []).map((c) => String(c).toLowerCase()));
+  const withStmt = new Set((S.state.stmtSnapshots || []).filter((x) => x.kind === 'actual').map((x) => String(x.property_code).toLowerCase()));
+  const props = (S.state.properties || []).filter((p) => String(p.code).toLowerCase() !== own);
+  const regions = [...new Set(props.map((p) => p.market || 'Other'))].sort();
+  const src = (S.bv.shapeGlSrc || {})[gl];
+  dlg.innerHTML = `<h2>${esc(gl)} ${esc(acc.name || '')}: monthly shape from another property</h2>
+    <p class="muted" style="font-size:12px; margin:0 0 8px">The line's year total stays what its own formula makes. Only the months move: each month = the total × the picked properties' share of their trailing-12 ${esc(gl)} in that calendar month (several are pooled). December takes the rounding. A typed or contract line is never re-spread.</p>
+    ${src && src.missing && src.missing.length ? `<p class="err" style="font-size:12px">No ${esc(gl)} history on file for ${esc(src.missing.join(', ').toUpperCase())} — left out.</p>` : ''}
+    <div style="max-height:52vh; overflow:auto; border:1px solid var(--line); border-radius:6px; padding:6px 10px">
+      ${regions.map((rg) => {
+        const ps = props.filter((p) => (p.market || 'Other') === rg);
+        return `<div style="margin:6px 0"><div style="font-weight:700">${esc(rg)}</div>
+          <div style="display:flex; flex-wrap:wrap; gap:4px 14px; margin:3px 0 0 22px">${ps.map((p) => { const c = String(p.code).toLowerCase(), ok = withStmt.has(c); return `<label title="${ok ? '' : 'no actual statement on file'}" class="${ok ? '' : 'muted'}"><input type="checkbox" data-sfp="${esc(c)}" ${cur.has(c) ? 'checked' : ''} ${ok ? '' : 'disabled'}> ${esc(c.toUpperCase())}${p.name && p.name.toLowerCase() !== c ? ` · ${esc(p.name)}` : ''}</label>`; }).join('')}</div></div>`;
+      }).join('')}
+    </div>
+    <div class="row" style="justify-content:space-between; margin-top:10px">
+      <span>${cur.size ? '<button class="btn sub" id="sf-own">Back to its own months</button>' : ''}</span>
+      <span><button class="btn sub" id="sf-x">Cancel</button> <button class="btn" id="sf-save">Save &amp; recalculate</button></span>
+    </div>`;
+  const save = async (codes) => {
+    const map = { ...(inp.shapeFromGl || {}) };
+    if (codes.length) map[gl] = codes; else delete map[gl];
+    dlg.close();
+    try { await saveInputs(b, { shapeFromGl: map }); } catch (e) { alert(e.message); }
+  };
+  dlg.querySelector('#sf-x').addEventListener('click', () => dlg.close());
+  { const o = dlg.querySelector('#sf-own'); if (o) o.addEventListener('click', () => save([])); }
+  dlg.querySelector('#sf-save').addEventListener('click', () => {
+    const codes = [...dlg.querySelectorAll('[data-sfp]:checked')].map((c) => c.dataset.sfp);
+    if (!codes.length) { alert('Tick at least one property, or go back to its own months.'); return; }
+    save(codes);
+  });
+  dlg.showModal();
+}
 function ensureDlg(id) {
   let dlg = document.getElementById(id);
   if (!dlg) { dlg = document.createElement('dialog'); dlg.id = id; document.body.appendChild(dlg); }
@@ -4280,6 +4325,7 @@ function openRowTools(b, gl, anchorBtn) {
     ${(S.bv.sellerT12 || []).length ? `<button data-act="seller" title="${S.bv.annual ? 'This GL\'s own trailing-12 months × growth. No GL to pick: the row is the GL. Shift-click to take another statement line instead. A GL with no T12 offers its own current-year budget.' : 'Match this GL to a seller T12 line and take its monthly actuals × growth'}">${dot('drv-t12', 'seller')}${S.bv.annual ? 'Own T12 actuals × growth (this GL)' : 'Seller actuals — match a seller line…'}</button>` : ''}
     ${S.bv.annual && fcBudgetRow(S.bv, gl) ? `<button data-act="ownBudget" title="This GL's own current-year budget, month by month, × growth. It is read from the Yardi template along with the T12: no GL to pick.">${dot('drv-t12', 'ownBudget')}CY budget × growth (this GL · ${money(fcBudgetRow(S.bv, gl).total)})</button>` : ''}
     ${(S.bv.sellerT12 || []).length && !(S.bv.annual && !glHasCurve(gl)) ? `<button data-act="t12curve" title="${S.bv.annual ? 'Take a statement line\'s T12 total × growth and spread it on a clean seasonal curve' : 'For non-accrual seller billing (credits/gaps/spikes): the ANNUAL total is still right even when the months are garbage. Takes the seller line\'s T12 total × growth and spreads it on a clean seasonal curve.'}">${dot('drv-t12', 't12curve')}${S.bv.annual ? 'T12 TOTAL → seasonal curve… (this GL)' : 'Seller T12 TOTAL → seasonal curve… (bad bills)'}</button>` : ''}
+    ${S.bv.annual ? `<button data-act="shapeFrom" title="Keep this line's year total, but spread it over the months on another property's trailing-12 curve for this GL (e.g. ECND's utilities). Curve, not value.">${dot('drv-base', 'shapeFrom')}Monthly shape from another property…${((S.bv.budget.inputs || {}).shapeFromGl || {})[gl] ? ` <span class="muted">(${esc(((S.bv.shapeGlSrc || {})[gl] || {}).code || ((S.bv.budget.inputs || {}).shapeFromGl[gl] || []).join('+').toUpperCase())})</span>` : ''}</button>` : ''}
     ${S.bv.annual && acc.pcode === '10' && !BUDGET_WAGE_GLS.includes(gl) && gl !== '6413' ? `<button data-act="burdenFrom" title="Take this line's % of wages and its monthly shape (annual true-ups, quarterly bonuses) from other properties — one, several pooled, or a whole region — applied to this property's own wages. Only this line; the others keep their own ratios.">${dot('drv-pay', 'burdenFrom')}% of wages from other properties…${((S.bv.budget.inputs || {}).burdenFromGl || {})[gl] ? ` <span class="muted">(${esc(((S.bv.burdenGlSrc || {})[gl] || {}).code || ((S.bv.budget.inputs || {}).burdenFromGl[gl] || []).join('+').toUpperCase())})</span>` : ''}</button>` : ''}
     <button data-act="link" title="Set this GL equal to another budget line × a weight (e.g. sewer = water × 0.8). LIVE: re-follows the source on every regeneration.">${dot('drv-fee', 'link')}= another line × weight… (moves in conjunction)</button>
     ${line && line.months.some((v) => v) ? `<button data-act="smooth" title="Gentle: only the months that are wrong move. A spike gives its excess to the low months next to it and a credit month is netted against the nearest high month; ordinary months are not touched. A line with nothing wrong is left alone unless you ask for a light pass. No negative months; every month rounded to $5, so the total can move by a few dollars. The line keeps its formula chip and gains a SMOOTH chip.">${dot('drv-t12', 'smooth')}Smooth missed bills — spikes into surrounding months</button>` : ''}
@@ -4368,6 +4414,7 @@ function openRowTools(b, gl, anchorBtn) {
       return;
     }
     if (act === 'burdenFrom') { openBurdenFrom(b, gl, acc); return; }
+    if (act === 'shapeFrom') { openShapeFrom(b, gl, acc); return; }
     if (act === 'link') {
       openLinkLineMatch(b, gl, acc, anchorBtn, put);
       return;

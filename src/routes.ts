@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, parseReviewApply, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
-  acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, acqDelinquency, FIXED_ANNUAL_GLS, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
+  acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, acqDelinquency, applyT12Adjust, FIXED_ANNUAL_GLS, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
   refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
@@ -739,6 +739,8 @@ router.post('/uploads/apply', h(async (req, res) => {
 
 /* ---------------- budgets ---------------- */
 interface RefCol { key: string; label: string; period: string; byGl: Record<string, number>; totals: Record<string, number>;
+  /** months with amounts on the NOI lines (the CY budget: fewer than 12 when it only covers the months owned) */
+  nMonths?: number;
   /** category totals (pcode → $) + EGI / TOE / NOI of this column — the tie card's comparison columns */
   cat?: { y1: Record<string, number>; egi: number; toe: number; noi: number } }
 interface LoadedBudget {
@@ -772,6 +774,8 @@ interface LoadedBudget {
   burdenSrc: { code: string; actual: Record<string, Months> | null; budget: Record<string, Months> | null; period: string; found: boolean } | null;
   /** annual: per payroll line, the properties its % of wages is borrowed from, pooled (inputs.burdenFromGl) */
   burdenGlSrc: Record<string, { code: string; codes: string[]; missing: string[]; actual: Record<string, Months> | null; budget: Record<string, Months> | null }>;
+  /** annual: per GL, another property's monthly curve (inputs.shapeFromGl, change spec §4): donors' trailing-12, pooled */
+  shapeGlSrc: Record<string, { code: string; codes: string[]; missing: string[]; months: Months }>;
   /** annual: when ownership began + the acquisition budget's first-year management fee % */
   acquisition: { start: string | null; firstYearPct: number | null } | null;
   /** annual: the property's acquisition (UW Year-1) budget, when its 12 ownership months reach into this budget's year */
@@ -964,6 +968,30 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
       burdenGlSrc[gl] = { code: regionOf(list) || list.join('+'), codes: have, missing: list.filter((c) => !have.includes(c)), actual: have.length ? pool('actual') : null, budget: have.length ? pool('budget') : null };
     }
   }
+  /* MONTHS FROM ANOTHER PROPERTY'S CURVE (change spec 2026-11-13 §4): inputs.shapeFromGl { gl: [codes] }. Each donor's composed
+     trailing-12 for the GL, read AFTER the donor's own one-time items (its budget for this year, inputs.t12Adjust), pooled
+     month by month. Only the shape is used; the line's total stays its own. */
+  const shapeGlSrc: LoadedBudget['shapeGlSrc'] = {};
+  const perShape: Record<string, string[]> = annual && budget.inputs?.shapeFromGl && typeof budget.inputs.shapeFromGl === 'object' ? budget.inputs.shapeFromGl : {};
+  if (Object.keys(perShape).length) {
+    const own = String(budget.property_code || '').toLowerCase();
+    const codes = [...new Set(Object.values(perShape).flat().map((c) => String(c).trim().toLowerCase()).filter((c) => c && c !== own))];
+    const donors = new Map<string, Record<string, Months> | null>();
+    for (const c of codes) {
+      const rows = (await query(`select data from stmt_snapshots where property_code=$1 and kind='actual' order by created_at desc`, [c])).rows as { data: StmtData }[];
+      const t = trailing12(rows.map((r) => r.data));
+      const adj = (await query(`select inputs->'t12Adjust' as a from budgets where lower(property_code)=$1 and year=$2 and budget_type='annual' order by updated_at desc limit 1`, [c, budget.year])).rows[0]?.a;
+      donors.set(c, t ? applyT12Adjust(t.cal, Array.isArray(adj) ? adj : null).actual : null);
+    }
+    for (const [gl, list0] of Object.entries(perShape)) {
+      const list = [...new Set((list0 || []).map((c) => String(c).trim().toLowerCase()).filter((c) => c && c !== own))];
+      const have = list.filter((c) => donors.get(c)?.[gl]?.some((v) => v));
+      if (!have.length) { shapeGlSrc[gl] = { code: list.join('+'), codes: [], missing: list, months: zero12() }; continue; }
+      const m = zero12();
+      for (const c of have) donors.get(c)![gl].forEach((v, i) => { m[i] = r2(m[i] + (Number(v) || 0)); });
+      shapeGlSrc[gl] = { code: have.map((c) => c.toUpperCase()).join('+'), codes: have, missing: list.filter((c) => !have.includes(c)), months: m };
+    }
+  }
   // when ownership began and the first-year management fee: the Yardi template's acquisition
   // date wins for the date; the rate comes from the property's own acquisition budget (UW Y1)
   let acquisition: { start: string | null; firstYearPct: number | null } | null = null;
@@ -1099,7 +1127,11 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
         refs.push({ key: 'ann3', label: 'T3 annualized', period: `${mo[0]}–${mo[2]} actuals × 4`, ...refColumn(a3), cat: { y1: c.y1, egi: c.egi, toe: c.toe, noi: c.noi } });
       }
     }
-    if (budgetCal) refs.push({ key: 'budget', label: budgetRefLabel(sb?.period), period: sb?.period || '', ...refColumn(budgetCal) });
+    if (budgetCal) {
+      // spec 1.4: how many months of the CY budget carry NOI (a 2026 acquisition budget covers only the months owned)
+      const nMonths = Array.from({ length: 12 }, (_, i) => Object.entries(budgetCal!).some(([gl, m]) => feedsNoiGl(gl) && Math.abs(Number(m[i]) || 0) > 0.5)).filter(Boolean).length;
+      refs.push({ key: 'budget', label: budgetRefLabel(sb?.period), period: sb?.period || '', ...refColumn(budgetCal), nMonths });
+    }
     if (actualCal && t12) { const a4 = annualizedFromCal(actualCal, t12.lastMonth, 4); if (Object.keys(a4).length) refs.push({ key: 'ann4', label: '4 mo annualized', period: '', ...refColumn(a4) }); }
     // UW for the calendar year (Troy 2026-11-12, a new acquisition): each category n1/12 of the Year-1 plan plus n2/12
     // of it on the UW Year-2 trend, months shaped by the property's history (acqCalendarPlan.target). The default
@@ -1135,7 +1167,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     if (stmtActual?.rows?.length || actualCal) sellerRows = ownT12Rows(stmtActual, actualCal, (gl) => coaMap.get(gl) || null);
   }
   const guidance = await loadGuidance();
-  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, rollMarket, sellerUtil, charges, sellerRows, defaultRules, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, uwBasisLatest, burdenSrc, burdenGlSrc, guidance, refKey,
+  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, rollMarket, sellerUtil, charges, sellerRows, defaultRules, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, uwBasisLatest, burdenSrc, burdenGlSrc, shapeGlSrc, guidance, refKey,
            annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs, priorT12 };
 }
 
@@ -1264,7 +1296,9 @@ function summaryOf(lb: LoadedBudget, lines: BudgetLine[]) {
     t12, t4, bud,
     noiTrend: lb.noiTrend,
     priorT12: (lb.priorT12 || []).map((p) => { const st = Number(lb.budget.inputs?.startMonth) || 1; return { label: p.label, noi: rotate12(p.noi, st), income: rotate12(p.income, st), expense: rotate12(p.expense, st) }; }),
-    cyBudgetNoi: cyb ? r2(cyb.totals['7280'] || 0) : null,
+    // a part-year CY budget is annualized for the comparison (spec 1.4): NOI × 12 ÷ the months it covers
+    cyBudgetNoi: cyb ? r2((cyb.totals['7280'] || 0) * (cyb.nMonths && cyb.nMonths < 12 ? 12 / cyb.nMonths : 1)) : null,
+    cyBudgetMonths: cyb?.nMonths ?? null,
     cyBudgetLabel: cyb ? cyb.label : null,
   };
 }
@@ -1397,6 +1431,7 @@ function budgetView(lb: LoadedBudget) {
     burdenSrc: lb.burdenSrc ? { code: lb.burdenSrc.code, period: lb.burdenSrc.period, found: lb.burdenSrc.found } : null,
     // per payroll line: the donor properties its % of wages is pooled from (and any picked with no statements on file)
     burdenGlSrc: Object.fromEntries(Object.entries(lb.burdenGlSrc || {}).map(([gl, d]) => [gl, { code: d.code, codes: d.codes, missing: d.missing }])),
+    shapeGlSrc: Object.fromEntries(Object.entries(lb.shapeGlSrc || {}).map(([gl, d]) => [gl, { code: d.code, codes: d.codes, missing: d.missing, months: d.months }])),
     // ownership start + first-year management fee % on file (annual) — the Assumptions defaults
     acquisition: lb.acquisition,
     // Year-1 plan in this budget: which months it supplies and how Year 1 stands against the UW NOI
@@ -1589,6 +1624,7 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
     // ANNUAL: the property's own statements + the Yardi template rules (shared/annual.ts)
     const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: effectiveRules(inputs, loadAnnualRules() as any, lb.defaultRules) as any, comps: lb.comps, payrollWages: wages, wagesLive: live ? { label: live.label, effective: live.effective, draft: live.draft, monthly: live.monthly as Record<string, Months> } : null, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code, acquisition: lb.acquisition,
       burdenSrc: lb.burdenSrc && lb.burdenSrc.found && String(inputs.burdenFrom || '').toLowerCase() === lb.burdenSrc.code ? { code: lb.burdenSrc.code, actual: lb.burdenSrc.actual, budget: lb.burdenSrc.budget } : null,
+      shapeGl: Object.fromEntries(Object.entries(lb.shapeGlSrc || {}).filter(([gl, d]) => d.codes.length && (inputs.shapeFromGl || {})[gl]?.length).map(([gl, d]) => [gl, { code: d.code, months: d.months }])),
       burdenGl: Object.fromEntries(Object.entries(lb.burdenGlSrc || {}).filter(([gl, d]) => d.actual && (inputs.burdenFromGl || {})[gl]?.length).map(([gl, d]) => [gl, { code: d.code, actual: d.actual, budget: d.budget }])) };
     lines = existing ? regenerateAnnual(existing, lb.coa, inputs, src) : generateAnnualLines(lb.coa, inputs, src);
   } else {
@@ -1634,7 +1670,11 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
     // an increase % (row or section) is NOT a pick here: a formula set copies one onto every line (CWND took BCND's
     // 28 — taxes went to the seller T12 × 3%; Troy 2026-11-13). The plan sets the level; the % has nothing to grow.
     // RE taxes are their own: the current accrual × (1 + %) (taxAccrual), never the plan
-    for (const l of ls) if (FIXED_ANNUAL_GLS.has(l.gl_code) && (l.driver as any)?.accrual) out.add(l.gl_code);
+    for (const l of ls) if (FIXED_ANNUAL_GLS.has(l.gl_code) && ((l.driver as any)?.accrual || (l.driver as any)?.reTax)) out.add(l.gl_code);
+    /* the management fee is never laid over (change spec 2026-11-13 §3.2): the plan grew it on the UW Year-2 trend for the
+       fee (+38%, the UW's 3% → 4% step), so Sep–Dec 2027 billed ~3.94% of prior-month income under a "3%" label. The fee
+       is its own formula: the first-year rate for the 12 months from closing, then the regular rate, on prior-month income. */
+    for (const l of ls) if (l.gl_code === '6112' && (l.driver as any)?.method === 'mgmtPct' && !l.override) out.add(l.gl_code);
     for (const [gl, v] of Object.entries(inputs.burdenFromGl || {})) if ((v || []).length) out.add(gl);
     const own = String(lb.budget.property_code || '').toLowerCase();
     const borrowAll = !!inputs.burdenFrom && String(inputs.burdenFrom).toLowerCase() !== own;
@@ -2233,7 +2273,7 @@ router.get('/summary', h(async (req, res) => {
     const unitsR = Number(lb.budget.inputs?.units) || Number(r.units) || 0;
     const reviewRes = review.rules.map((rule) => reviewCell(rule, { code: r.property_code, months: calOf(byGl.get(rule.gl)), t12: lb.annual && lb.actualCal ? (lb.actualCal[rule.gl] || null) : undefined, units: unitsR,
       // RE taxes on the current accrual: the % is over that year (Troy 2026-11-13)
-      base: (() => { const d: any = lb.lines.find((l) => l.gl_code === rule.gl)?.driver; return d?.accrual ? (d.taxYear || d.accrual * 12) : null; })() }));
+      base: (() => { const d: any = lb.lines.find((l) => l.gl_code === rule.gl)?.driver; return d?.reTax?.a ? d.reTax.a / 1.03 : d?.accrual ? (d.taxYear || d.accrual * 12) : null; })() }));
     out.push({ id: r.id, code: r.property_code, name: r.name, region: String(r.market || '').trim() || 'Other', type: r.budget_type, status: r.status, updatedAt: r.updated_at,
                stale: lb.budget.calc_version !== ENGINE_VERSION, ...summaryOf(lb, lines), units: Number(lb.budget.inputs?.units) || Number(r.units) || 0,
                cmp: compareOf(lb, lines), review: reviewRes });
@@ -2767,6 +2807,34 @@ const mmddyyyy = (): string => {
 /** Review-workbook arguments: acquisition budgets carry the UW book; annual
     budgets carry their reference columns (T12 actuals, CY budget, 4-mo
     annualized) and the template facts instead. */
+/** How the trailing-12 was built, for the Budget Comps header (spec 1.5): "T12 = Nov 2025–Oct 2026"; "T12 = Jan–Oct 2026
+    × 12/10 (Nov–Dec 2025 excluded)"; a plan-run acquisition: "T12 = Sep–Oct 2026 posted + seller actuals (Nov 2025–Aug
+    2026 from the seller T12)". The first one or two owned months are left out on purpose (partial months, unposted bills,
+    closing credits and true-ups). */
+function t12BasisText(lb: LoadedBudget): string {
+  if (!lb.annual || !lb.t12End) return '';
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const end = lb.t12End.year * 12 + lb.t12End.month - 1;
+  const win = Array.from({ length: 12 }, (_, k) => end - 11 + k);               // absolute months, oldest first
+  const name = (a: number) => `${MON[((a % 12) + 12) % 12]} ${Math.floor(a / 12)}`;
+  const out = new Set([...(lb.t12Dead || []), ...(lb.t12Startup || []), ...(lb.t12Missing || [])]);
+  // runs of consecutive months as "Nov–Dec 2025", "Nov 2025–Aug 2026"
+  const runs = (ms: number[]): string => {
+    const rs: number[][] = [];
+    for (const a of ms) { const last = rs[rs.length - 1]; if (last && last[last.length - 1] === a - 1) last.push(a); else rs.push([a]); }
+    return rs.map((r) => {
+      const a = r[0], b = r[r.length - 1];
+      if (a === b) return name(a);
+      return Math.floor(a / 12) === Math.floor(b / 12) ? `${MON[a % 12]}–${name(b)}` : `${name(a)}–${name(b)}`;
+    }).join(', ');
+  };
+  const excluded = win.filter((a) => out.has(name(a)));
+  const live = win.filter((a) => !out.has(name(a)));
+  if (!excluded.length) return `T12 = ${runs(win)}`;
+  const actualLabel = lb.refs.find((r) => r.key === 'actual')?.label || '';
+  if (/seller/i.test(actualLabel)) return `T12 = ${runs(live)} posted + seller actuals (${runs(excluded)} from the seller T12)`;
+  return `T12 = ${runs(live)} × 12/${live.length} (${runs(excluded)} excluded)`;
+}
 function reviewArgs(lb: LoadedBudget, prop: any, compName: string): ReviewArgs {
   return {
     propertyCode: lb.budget.property_code, propertyName: prop?.name || lb.budget.property_code,
@@ -2782,6 +2850,7 @@ function reviewArgs(lb: LoadedBudget, prop: any, compName: string): ReviewArgs {
     summaryLabels: summaryLabels(lb.t12End?.month, lb.t12End?.year, lb.budget.inputs?.summaryLabels),
     region: String(prop?.market || '').trim() || 'Other',
     noiTrend: lb.noiTrend.map((t) => ({ label: t.label, noi: t.noi })),
+    t12Basis: t12BasisText(lb),
   };
 }
 

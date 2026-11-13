@@ -70,8 +70,14 @@ function tokenize(src: string): Tok[] {
   return out;
 }
 
-/** Works out and stores a value for every formula in the workbook that has none. Returns how many it filled. */
-export function fillCachedResults(wb: ExcelJS.Workbook): number {
+/** A formula whose stored value differs from what the formula itself computes (the recompute pass). */
+export interface CachedDiff { sheet: string; cell: string; stored: unknown; computed: unknown }
+/** Works out and stores a value for every formula in the workbook that has none. Returns how many it filled.
+    `recompute` (Troy 2026-11-13 change spec 1.1: "Anything that opens the file without recalculating ... must see the same
+    numbers Excel will"): EVERY formula is worked out from its own inputs and that result stored, whatever value it was
+    written with; `onDiff` hears each one whose stored value was different. A formula it cannot read keeps its stored value. */
+export function fillCachedResults(wb: ExcelJS.Workbook, opts: { recompute?: boolean; onDiff?: (d: CachedDiff) => void } = {}): number {
+  const recompute = !!opts.recompute;
   const sheets = new Map<string, ExcelJS.Worksheet>();
   for (const ws of wb.worksheets) sheets.set(ws.name.toLowerCase(), ws);
   const memo = new Map<string, Scalar>();
@@ -88,13 +94,18 @@ export function fillCachedResults(wb: ExcelJS.Workbook): number {
     if (v instanceof Date) throw new Unsupported('date');
     if (typeof v === 'object' && (v.formula != null || v.sharedFormula != null)) {
       const have = stored(cell);
-      if (have !== undefined && have !== null) { if (have instanceof Date) throw new Unsupported('date'); return have; }
-      if (v.formula == null) throw new Unsupported('shared formula');
+      if (!recompute && have !== undefined && have !== null) { if (have instanceof Date) throw new Unsupported('date'); return have; }
       const key = `${ws.id}!${row},${col}`;
       if (memo.has(key)) return memo.get(key)!;
+      if (v.formula == null) { if (recompute && have != null && !(have instanceof Date)) return have; throw new Unsupported('shared formula'); }
       if (busy.has(key)) throw new Unsupported('circular');
       busy.add(key);
-      try { const res = evaluate(String(v.formula), ws); memo.set(key, res); return res; } finally { busy.delete(key); }
+      try { const res = evaluate(String(v.formula), ws); memo.set(key, res); return res; }
+      catch (e) {
+        // recompute: a formula this reader cannot work out keeps the value it was written with
+        if (recompute && e instanceof Unsupported && have !== undefined && have !== null && !(have instanceof Date)) { memo.set(key, have); return have; }
+        throw e;
+      } finally { busy.delete(key); }
     }
     if (typeof v === 'object' && Array.isArray(v.richText)) return v.richText.map((p: any) => p.text).join('');
     if (typeof v === 'object' && 'error' in v) return v as Err;
@@ -328,11 +339,17 @@ export function fillCachedResults(wb: ExcelJS.Workbook): number {
         const v: any = cell.value;
         if (!v || typeof v !== 'object' || v.formula == null) return;
         const have = stored(cell);
-        if (have !== undefined && have !== null) return;
+        if (!recompute && have !== undefined && have !== null) return;
         try {
           let res = cellValue(ws, r, c);
           if (res == null) res = 0;                                   // a reference to an empty cell shows 0
           if (typeof res === 'number' && !Number.isFinite(res)) return;
+          if (recompute && opts.onDiff && have !== undefined && have !== null) {
+            // a blank written for an empty input that computes 0 is not a real difference
+            const blank = (x: unknown) => x === '' || x === 0;
+            const differs = typeof res === 'number' && typeof have === 'number' ? Math.abs(res - have) > 0.005 : !(blank(res) && blank(have)) && JSON.stringify(res) !== JSON.stringify(have);
+            if (differs) opts.onDiff({ sheet: ws.name, cell: cell.address, stored: have, computed: res });
+          }
           cell.value = { ...v, result: res } as any;
           filled++;
         } catch (e) {

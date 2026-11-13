@@ -35,6 +35,8 @@ type ColL = 'C' | 'D' | 'E';
 
 export interface PanelSpec {
   title: string;
+  /** how the T12 column was built (spec 1.5), printed under the title */
+  basis?: string;
   labels: { t12: string; t4: string; draft: string };
   capital: number; units: number;
   /** cached results */
@@ -84,6 +86,8 @@ export function fillSummaryPanel(ws: ExcelJS.Worksheet, spec: PanelSpec): void {
   // title + headers
   ws.getRow(1).height = 26.25;
   ws.getCell('B1').value = spec.title; ws.getCell('B1').font = { bold: true, size: 20, name: 'Calibri' };
+  // how the T12 column was built (spec 1.5)
+  if (spec.basis) { ws.getCell('B2').value = spec.basis; ws.getCell('B2').font = { italic: true, size: 9, name: 'Calibri', color: { argb: 'FF505050' } }; }
   ws.getRow(3).height = 45.75;
   const H: [string, string, 'center' | 'left'][] = [['C3', spec.labels.t12, 'center'], ['D3', spec.labels.t4, 'left'], ['E3', spec.labels.draft, 'center']];
   for (const [a, text, al] of H) { const c = ws.getCell(a); c.value = text; c.font = bold; c.alignment = { horizontal: al, wrapText: true }; }

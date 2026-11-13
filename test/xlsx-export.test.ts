@@ -59,8 +59,10 @@ describe('Payroll sheet → Budget sheet', () => {
     // 6418: T12 ratio 3,600 / 36,000 = 10% → Ratio used (W) = T12 % of wages (U); months = $W × wages
     expect(formulaOf(pay.getCell(rB, 23))).toBe(`U${rB}`);
     expect(resultOf(pay.getCell(rB, 23))).toBeCloseTo(0.1, 4);
-    expect(formulaOf(pay.getCell(rB, 3))).toBe(`$W${rB}*C${wagesRow}`);
-    expect(resultOf(pay.getCell(rB, 3))).toBeCloseTo(0.1 * 4000, 1);
+    // spec 1.2: each month = Ratio used × that month's factor (col Z on: its ratio ÷ the year's) × wages — the engine's month
+    expect(formulaOf(pay.getCell(rB, 3))).toBe(`$W${rB}*Z${rB}*C${wagesRow}`);
+    expect(resultOf(pay.getCell(rB, 3))).toBeCloseTo(400, 1);                       // the engine's January, to the cent
+    expect(Number(pay.getCell(rB, 26).value)).toBeCloseTo(400 / (0.1 * 4000), 6);
     expect(formulaOf(pay.getCell(rB, 21))).toBe(`IF($P$${wagesRow}<>0,P${rB}/$P$${wagesRow},"")`);
     expect(resultOf(pay.getCell(rB, 16))).toBeCloseTo(3600, 1);     // T12 actuals column
     expect(resultOf(pay.getCell(rB, 17))).toBeCloseTo(5400, 1);     // CY budget column

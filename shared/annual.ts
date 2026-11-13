@@ -40,7 +40,10 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-13b';   // b: RE taxes from the current accrual; formula-set growth % no longer pulls plan lines
+export const ENGINE_VERSION = '2026-11-13e';   // e: pest fee per occupied unit (spec §5.2)
+// earlier: d: months from another property's curve (shapeFromGl); fee off the acquisition plan
+// earlier: c: RE tax from the bill inputs (spec §2), accrual as the fallback
+// earlier: b: RE taxes from the current accrual; formula-set growth % no longer pulls plan lines
 // earlier: a: new acquisitions' delinquency chain from the posted months
 // earlier: h: fit to T12 / section picks work on plan-run acquisitions
 // earlier: g: lines with a formula picked on the row are not laid over by the acquisition plan
@@ -488,6 +491,71 @@ export const RE_TAX_DEFAULT_PCT = 0.03;
    base (WYND accrues 41,728 now against a T12 of 446k; CLND 42,020 against 488k) and a true-up wrecks it. The current
    accrual = the most recent posted month that equals the month before it (within 1%) — a one-off month is skipped. The
    budget = that × (1 + the RE tax %) every month. No two equal months in the window: null (the T12 ÷ 12 stays). */
+/* RE TAX FROM THE BILL (change spec 2026-11-13 §2, Troy: "Taxes are budgeted as accurately as possible, and when two
+   methods disagree, the more conservative (higher) one wins"). The budget year is the tax year (2027 budget = the bill
+   paid Feb 2028). g = 3% (ND HB 1176 caps local levy growth at 3%); the 5% early-pay discount is on ad valorem only.
+     A = Riley's estimate for the year before (bill2025 after discount × value2026 / value2025) × (1 + g)
+     sale not yet on the roll in value2026: B = (marketValue × 0.905 × the 2025 ad valorem rate × 0.95 + specials) × (1 + g);
+       tax = max(A, B)
+     an MF / commercial split (TPND): × the MF share
+     ND East (plan-run acquisitions): the UW book's Taxes tab, Ryan PP, Year 2 (the sale is already in that number)
+   Monthly = tax ÷ 12, flat. Inputs: Riley's RMC 06.07.2026 ND Tax Analysis (Summary P / H / I / R / AD, Parcels) and the
+   06.30.2026 UW books. Without inputs the accrual rule stays (taxYearBase) and the line says so. */
+export interface ReTaxInputs {
+  /** the tax year these inputs price (= the budget year) */
+  year: number;
+  value2025?: number; value2026?: number;
+  /** the 2025 bill after the early-pay discount */
+  bill2025?: number;
+  /** Riley's estimate for the year before the budget year (bill2025 × value2026 / value2025 when not given) */
+  riley2026?: number;
+  /** the sale is already on the roll behind value2026 (no reassessment branch) */
+  saleOnRoll: boolean;
+  marketValue?: number;
+  /** Σ ad valorem tax 2025 ÷ Σ value 2025 (PRE-discount) */
+  adValRate2025?: number;
+  specials2025?: number;
+  /** a property with an MF / commercial split budgets only the MF share (TPND) */
+  mfShare?: number;
+  /** a plan-run acquisition: the UW book's Taxes tab, Ryan PP, Year 2 */
+  uwY2?: number;
+  /** stored, NOT applied (BLOCKED, Troy): the county reassessing the sale on the next roll */
+  stress?: number;
+  g?: number; reassessRatio?: number; discount?: number;
+  source?: string;
+}
+export const RE_TAX_G = 0.03, RE_TAX_REASSESS = 0.905, RE_TAX_DISCOUNT = 0.05;
+/** The 2027 inputs (spec §2 table; values are public assessments and bills). A budget's own `inputs.reTax` wins. */
+export const RE_TAX_INPUTS: Record<string, ReTaxInputs> = {
+  clnd: { year: 2027, value2025: 32143000, value2026: 34210000, bill2025: 489558, riley2026: 521039, saleOnRoll: true, source: 'RMC 06.07.2026 ND Tax Analysis' },
+  spnd: { year: 2027, value2025: 13035000, value2026: 13740000, bill2025: 213825, riley2026: 225389, saleOnRoll: true, source: 'RMC 06.07.2026 ND Tax Analysis' },
+  tcnd: { year: 2027, value2025: 10922000, value2026: 11789000, bill2025: 166212, riley2026: 179406, saleOnRoll: true, source: 'RMC 06.07.2026 ND Tax Analysis' },
+  tpnd: { year: 2027, value2025: 17009000, value2026: 17184000, bill2025: 258844, riley2026: 261507, saleOnRoll: true, mfShare: 157006 / 266609, source: 'RMC 06.07.2026 ND Tax Analysis (whole property; MF share 157,006 / 266,609)' },
+  wynd: { year: 2027, value2025: 24384000, value2026: 32168000, bill2025: 386201, riley2026: 509486, saleOnRoll: true, source: 'RMC 06.07.2026 ND Tax Analysis' },
+  bcnd: { year: 2027, value2025: 35002580, value2026: 37169520, bill2025: 457128, riley2026: 485428, saleOnRoll: true, source: 'RMC 06.07.2026 ND Tax Analysis' },
+  ecnd: { year: 2027, value2025: 23503030, value2026: 18281600, bill2025: 245785, riley2026: 191161, saleOnRoll: true, source: 'RMC 06.07.2026 ND Tax Analysis (value2026 per Williams iTax 11/13)' },
+  fhnd: { year: 2027, value2025: 30135760, value2026: 33517240, bill2025: 292891, riley2026: 325756, saleOnRoll: false, marketValue: 38750000, adValRate2025: 302504 / 30135760, specials2025: 5513, source: 'RMC 06.07.2026 ND Tax Analysis (closed 4/16/2026, not on the 2026 roll)' },
+  phnd: { year: 2027, value2025: 15131240, value2026: 13868930, bill2025: 133800, riley2026: 122638, saleOnRoll: false, marketValue: 21750000, adValRate2025: 140842 / 15131240, specials2025: 0, source: 'RMC 06.07.2026 ND Tax Analysis (closed 4/16/2026, not on the 2026 roll)' },
+  cwnd: { year: 2027, saleOnRoll: true, uwY2: 417083, stress: 509645, source: 'Bismarck UW (AGM) BOOK MODEL 06.30.2026, Taxes tab, Ryan PP Year 2' },
+  lhnd: { year: 2027, saleOnRoll: true, uwY2: 218612, stress: 231980, source: 'Bismarck UW (AGM) BOOK MODEL 06.30.2026, Taxes tab, Ryan PP Year 2' },
+  drnd: { year: 2027, saleOnRoll: true, uwY2: 336259, stress: 450929, source: 'Jamestown UW (AGM) BOOK MODEL 06.30.2026, Taxes tab, Ryan PP Year 2' },
+};
+/** The budget year's RE tax from the inputs (spec §2), or null when they cannot price it. */
+export function reTaxFromInputs(t: ReTaxInputs | null | undefined): { tax: number; branch: 'A' | 'B' | 'UW'; a: number | null; b: number | null } | null {
+  if (!t) return null;
+  if (t.uwY2 && t.uwY2 > 0) return { tax: r2(t.uwY2), branch: 'UW', a: null, b: null };
+  const g = t.g ?? RE_TAX_G;
+  const riley = t.riley2026 ?? (t.bill2025 && t.value2025 && t.value2026 ? t.bill2025 * (t.value2026 / t.value2025) : null);
+  if (!(riley && riley > 0)) return null;
+  const a = riley * (1 + g);
+  let b: number | null = null;
+  if (!t.saleOnRoll && t.marketValue && t.adValRate2025) {
+    b = (t.marketValue * (t.reassessRatio ?? RE_TAX_REASSESS) * t.adValRate2025 * (1 - (t.discount ?? RE_TAX_DISCOUNT)) + (t.specials2025 || 0)) * (1 + g);
+  }
+  let tax = b != null && b > a ? b : a;
+  if (t.mfShare && t.mfShare > 0 && t.mfShare < 1) tax *= t.mfShare;
+  return { tax: r2(tax), branch: b != null && b > a ? 'B' : 'A', a: r2(a), b: b == null ? null : r2(b) };
+}
 /** This year's RE tax cost (checked across all 17 sites, Troy 2026-11-13: "Check on multiple sites, not just one"):
     the months posted so far this calendar year (Jan..lastMonth of the trailing-12) plus the rest of the year at the
     current accrual. Same as accrual × 12 where the rate stepped in January (CLND, TPND, TCND, SPND, the KC sites); where
@@ -997,6 +1065,9 @@ export interface AnnualSources {
   burdenSrc?: { code: string; actual: Record<string, Months> | null; budget: Record<string, Months> | null } | null;
   /** per payroll line: pooled donor history for that GL's % of wages (inputs.burdenFromGl); wins over burdenSrc */
   burdenGl?: Record<string, { code: string; actual: Record<string, Months> | null; budget: Record<string, Months> | null }> | null;
+  /** per GL, another property's monthly curve (inputs.shapeFromGl): the donors' trailing-12 for the GL, pooled, calendar
+      months (change spec 2026-11-13 §4) */
+  shapeGl?: Record<string, { code: string; months: Months }> | null;
   /** when ownership began ('YYYY-MM': the Yardi template's acquisition date, else the start of
       the property's acquisition budget) and the first-year management fee % that budget ran on */
   acquisition?: { start?: string | null; firstYearPct?: number | null } | null;
@@ -1232,7 +1303,9 @@ export function guidanceCheck(a: {
   const expense = g2(T(bud, '7279'), T(ref, '7279'));
   const noi = g2(T(bud, '7280'), T(ref, '7280'));
   const cy = a.cyBudget && Object.keys(a.cyBudget).length ? rollup(new Map(Object.entries(a.cyBudget))) : null;
-  const cyNoi = cy ? T(cy, '7280') : null;
+  // a CY budget covering only the months owned (a 2026 acquisition budget) is annualized: × 12 ÷ its months with NOI (spec 1.4)
+  const cyMonths = cy ? (cy.get('7280') || zero12()).filter((v) => Math.abs(v) > 0.5).length : 0;
+  const cyNoi = cy ? T(cy, '7280') * (cyMonths && cyMonths < 12 ? 12 / cyMonths : 1) : null;
   const noiVsCy = cyNoi ? g2(T(bud, '7280'), cyNoi) : null;
   const items: GuideItem[] = [];
   const add = (key: string, label: string, value: string, target: string, status: GuideStatus, must = false) => items.push({ key, label, value, target, status, must });
@@ -1240,7 +1313,7 @@ export function guidanceCheck(a: {
 
   // NOI first: the most important of all
   add('noi', 'NOI vs October T12', pctTxt(noi), `${pctTxt(G.noiPct)} or better`, noi == null ? 'info' : noi < 0 ? 'bad' : noi >= G.noiPct - 1e-9 ? 'ok' : 'check', true);
-  if (G.noiVsCyBudget && cyNoi) add('noicy', 'NOI vs current (2026) budget', pctTxt(noiVsCy), 'not lower', noiVsCy != null && noiVsCy < -1e-9 ? 'bad' : 'ok', true);
+  if (G.noiVsCyBudget && cyNoi) add('noicy', `NOI vs current (2026) budget${cyMonths && cyMonths < 12 ? ` (annualized, ${cyMonths} mo)` : ''}`, pctTxt(noiVsCy), 'not lower', noiVsCy != null && noiVsCy < -1e-9 ? 'bad' : 'ok', true);
   add('income', 'Total income vs October T12', pctTxt(income), `${pctTxt(G.incomePct)} or better`, atLeast(income, G.incomePct), true);
   add('expense', 'Total expenses vs October T12', pctTxt(expense), `${pctTxt(expenseCeil(G))} or less`, atMost(expense, expenseCeil(G)), true);
   if (income != null && expense != null) {
@@ -1272,8 +1345,17 @@ export function guidanceCheck(a: {
     const tl = line('6116'); const d: any = tl?.driver || {};
     const gross = d.allocOut ? d.allocOut.gross : sum(tl?.months || zero12());
     // built on the current accrual (taxAccrual): measured against that year, not a T12 that still carries last year's rate
+    if (d.reTax) {
+      // from the bill (spec §2): A = the year-before estimate × (1 + g); B (a sale not yet on the roll) is higher on purpose
+      const rt = d.reTax;
+      const base = rt.a ? rt.a / (1 + RE_TAX_G) : null;
+      const vb = base ? g2(gross, base) : null;
+      add('tax', rt.branch === 'UW' ? 'RE taxes = UW Year 2 (Ryan PP)' : `RE taxes from the bill (branch ${rt.branch})`, rt.branch === 'UW' ? `$${Math.round(gross).toLocaleString('en-US')}` : pctTxt(vb),
+        rt.branch === 'B' ? 'the reassessed sale (higher than the levy growth: conservative)' : rt.branch === 'UW' ? 'the sale is already in that number' : `${pctTxt(RE_TAX_G)} levy growth`, 'ok');
+    } else {
     const v = d.accrual ? g2(gross, d.taxYear || d.accrual * 12) : g2(gross, taxT12);
     add('tax', d.accrual ? 'RE taxes vs this year\'s cost' : 'RE taxes vs T12', pctTxt(v), `${pctTxt(G.reTaxPct)} or less unless documented`, v == null ? 'ok' : atMost(v, G.reTaxPct));
+    }
   }
   const pay = (m: Map<string, Months>, ls: { gl: string; months: Months }[]) => ls.reduce((x, l) => { const acc = a.coaList.find((c) => c.code === l.gl); return acc?.pcode === '10' ? x + sum(l.months) : x; }, 0);
   const payB = pay(bud, a.lines.map((l) => ({ gl: l.gl_code, months: l.months })));
@@ -1542,7 +1624,19 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     }
     // RE taxes (6116): the current accrual × (1 + %), flat — unless a formula was picked on the row (taxAccrual)
     let accrual: number | null = null, taxYear: number | null = null;
+    let reTax: { tax: number; branch: string; a: number | null; b: number | null; source?: string } | null = null;
+    let taxNoInputs = false;
     if (FIXED_ANNUAL_GLS.has(a.code) && !bl.glShape?.[a.code] && !shape && (!rule || ['fixedAnnual', 'flatT12', 'same', 'wavg', 'last'].includes(rule.method))) {
+      // the bill rule when the inputs price this budget year (spec §2); a budget's own inputs.reTax wins over the table
+      const ti: ReTaxInputs | null = (inputs as any).reTax ?? RE_TAX_INPUTS[String(src.propertyCode || '').toLowerCase()] ?? null;
+      const rt = ti && Number(ti.year) === Number(inputs.year) ? reTaxFromInputs(ti) : null;
+      if (rt) {
+        reTax = { ...rt, ...(ti?.source ? { source: ti.source } : {}) };
+        const mo = rt.tax / 12;
+        months = Array(12).fill(mult ? r2(Math.round(mo / mult) * mult) : r2(mo)) as Months;
+      } else taxNoInputs = true;
+    }
+    if (!reTax && FIXED_ANNUAL_GLS.has(a.code) && !bl.glShape?.[a.code] && !shape && (!rule || ['fixedAnnual', 'flatT12', 'same', 'wavg', 'last'].includes(rule.method))) {
       accrual = taxAccrual(cal, lastMonth);
       if (accrual) {
         // a property acquired this calendar year: its Jan..last month are partly the seller's — the accrual × 12
@@ -1553,7 +1647,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
         months = Array(12).fill(mult ? r2(Math.round(mo / mult) * mult) : r2(mo)) as Months;
       }
     }
-    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(accrual ? { accrual, taxYear } : {}), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(fit ? { fit } : {}), ...(lastDev != null ? { lastDev } : {}), ...(drift ? { drift } : {}), ...(noNeg.folded ? { folded: noNeg.folded } : {}) } as any);
+    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(accrual ? { accrual, taxYear } : {}), ...(reTax ? { reTax } : {}), ...(taxNoInputs ? { taxNoInputs: true } : {}), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(fit ? { fit } : {}), ...(lastDev != null ? { lastDev } : {}), ...(drift ? { drift } : {}), ...(noNeg.folded ? { folded: noNeg.folded } : {}) } as any);
     return true;
   };
 
@@ -1934,6 +2028,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
      from that month's occupancy to each budget month's budgeted occupancy, so it ties
      to the vacancy assumption. No GPR link; a typed per-GL % is a fee increase. HAP
      utility allowance (5122) is not a fee and keeps its history. ---- */
+  let flatShare: Months | null = null;
   if (flatFeeBilling(inputs, src.propertyCode)) {
     const act = src.actual || {};
     const lastAct = (gl: string): number => (act[gl] || zero12())[lastMonth - 1] || 0;
@@ -1945,6 +2040,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const feeGls = detail.filter((a) => a.pcode === '4' && a.code !== '5122' && !isSet(a.code) && (act[a.code] || []).some((v) => v) && lastAct(a.code));
     const lastTot = feeGls.reduce((x, a) => x + lastAct(a.code), 0);
     const fs = sch && feeGls.length && lastTot > 0 ? flatFeeFromSchedule(sch, { lastIncome: lastTot, occLast, units, vacPct: vacPct as Months, leases: src.leases, year: inputs.year, startMonth }) : null;
+    if (fs) flatShare = fs.share;
     if (fs) {
       let left = fs.months.slice() as Months;
       feeGls.forEach((a, k) => {
@@ -1961,6 +2057,15 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       const pct = bl.glGrowth?.[a.code] ?? 0;
       const months = Array.from({ length: 12 }, (_, i) => r2(feeBase * (1 + pct) * (1 - (vacPct[i] || 0)) / occLast)) as Months;
       mk(a.code, months, { method: 'flatFee', base: feeBase, lastMonth, occLast: Math.round(occLast * 10000) / 10000, pct } as any);
+    }
+  }
+
+  // per occupied unit (spec §5.2): after the flat-fee block, so the pest fee is its own rate × occupied units
+  {
+    const per: Record<string, number> = { ...(PER_OCCUPIED_DEFAULTS[String(src.propertyCode || '').toLowerCase()] || {}), ...((inputs as any).perOccupiedUnit || {}) };
+    for (const [gl, rate] of Object.entries(per)) {
+      if (!coaByCode.has(gl) || !(Number(rate) > 0) || userShaped.has(gl) || (lines.get(gl)?.driver as any)?.method === 'contract' || !units) continue;
+      mk(gl, perOccupiedMonths(Number(rate), units, vacPct as Months, flatShare), { method: 'perOccupiedUnit', rate: Number(rate), units, ...(flatShare ? { share: flatShare.map((v) => Math.round(v * 1000) / 1000) } : {}) } as any);
     }
   }
 
@@ -2000,6 +2105,16 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     ln.driver = { ...d, fitT12: Math.round(f * 1000) / 1000 } as any;
   };
   for (const gl of [...lines.keys()]) if (gl !== '6112') fitLine(gl);
+  // another property's monthly curve on the line's own total (inputs.shapeFromGl, spec §4): after the line's formula and
+  // its fit, before the fee and the quarter shift; never a locked line, a contract or a zeroed / dropped line
+  for (const [gl, sh] of Object.entries(src.shapeGl || {})) {
+    const ln = lines.get(gl); const d: any = ln?.driver || {};
+    if (!ln || ln.override || ['contract', 'zero', 'dropped', 'manual', 'review'].includes(d.method) || !ln.months.some((v) => v)) continue;
+    const out = reshapeToCurve(ln.months, sh.months, startMonth, d.mult || 0);
+    if (!out) continue;
+    ln.months = out;
+    ln.driver = { ...d, shapeFrom: sh.code } as any;
+  }
 
   /* ---- the delinquency chain (Troy 2026-11-12: "Collection fee is 50% of bad debt recovery. Bad debt recovery is
      based on uncollected debt over 60 days, which stems from Current DQ and Prior Period Collections"): 5110 BAD DEBT
@@ -2133,6 +2248,34 @@ export interface Y1Plan { year: number; startMonth: number; lines: { gl_code: st
      6309 COLLECTION FEES (driver collectionFee) = pct (50%) × 5110
    A locked (typed) line is never moved; a line on another formula is left alone. Pure. */
 export const COLLECTION_FEE_PCT = 0.5;
+/* PER OCCUPIED UNIT (change spec 2026-11-13 §5.2): the pest fee is $5 / unit / month × occupied units, on its own line
+   (5158 never folds into 5170). month = rate × units × (1 − that month's vacancy %), × the flat-fee conversion share where
+   the package converts with renewals (FHND / PHND, `share`). A budget's inputs.perOccupiedUnit { gl: rate } wins; the
+   default table covers the sites already billing it. */
+export const PER_OCCUPIED_DEFAULTS: Record<string, Record<string, number>> = { bcnd: { '5158': 5 }, ecnd: { '5158': 5 } };
+export function perOccupiedMonths(rate: number, units: number, vacPct: Months, share?: Months | null): Months {
+  return vacPct.map((v, i) => r2(rate * units * (1 - (Number(v) || 0)) * (share ? Math.min(1, Math.max(0, Number(share[i]) || 0)) : 1))) as Months;
+}
+/* MONTHS FROM ANOTHER PROPERTY'S CURVE (change spec 2026-11-13 §4, Troy: "PHND and FHND can more or less be based off BCND or
+   ECND for seasonality. ECND curve is generally safe. Please note i said curve, not value"). The line's year total stays
+   what its own formula made; only the months move: month m = total × the donor's share of its year in calendar month m.
+   Whole-dollar (or the line's MROUND) months, December absorbing the rounding so the year is exact. `curve` is calendar
+   Jan..Dec; the result is in the budget's month order. Null when the donor has nothing to shape with. */
+export function reshapeToCurve(months: Months, curve: Months, startMonth: number, mult = 0): Months | null {
+  const tot = curve.reduce((a, v) => a + Math.max(0, Number(v) || 0), 0);
+  if (!(tot > 0)) return null;
+  const total = r2(months.reduce((a, v) => a + (Number(v) || 0), 0));
+  const round = (v: number) => (mult ? Math.round(v / mult) * mult : Math.round(v * 100) / 100);
+  const decIdx = (11 - (startMonth - 1) + 12) % 12;   // budget index of calendar December
+  const out = zero12();
+  for (let i = 0; i < 12; i++) {
+    if (i === decIdx) continue;
+    const cal = (startMonth - 1 + i) % 12;
+    out[i] = r2(round(total * Math.max(0, Number(curve[cal]) || 0) / tot));
+  }
+  out[decIdx] = r2(total - out.reduce((a, v, i) => (i === decIdx ? a : a + v), 0));
+  return out;
+}
 /* A NEW ACQUISITION'S DELINQUENCY FROM WHAT HAS POSTED (Troy 2026-11-13: "Something is wrong with DQ for Newer
    acquisitions. Not pulling any DQ though, and collections is all in one month, with no dependency on prior month. That
    flows through into bad debt ... we should not have bad debt recovery if we do not have bad debt"). The acquisition

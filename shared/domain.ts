@@ -151,6 +151,8 @@ export interface BudgetInputs {
   /** annual (Troy 2026-11-12): per payroll line, the properties its % of wages and monthly shape are borrowed from
       (several = pooled: their wages and that GL added together). Wins over burdenFrom for that line. */
   burdenFromGl?: Record<string, string[]>;
+  /** per GL, the properties whose monthly CURVE the line takes (its total stays its own) — change spec 2026-11-13 §4 */
+  shapeFromGl?: Record<string, string[]>;
   /** annual: share of the previous month's delinquency (5035) collected as prior-period collections (5036); unset = the trailing-12 rate, capped at 100% */
   collectPct?: number;
   /** annual budgets: the per-GL formula rules this budget runs on — a COPY of the saved formula

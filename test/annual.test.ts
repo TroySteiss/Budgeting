@@ -77,6 +77,22 @@ describe('generateAnnualLines — template rules on own history', () => {
   const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
   const lines = generateAnnualLines(coaList, inputs, src);
 
+  it('RE tax: a 2027 budget at a site with bill inputs takes the bill rule; without them the accrual rule, flagged (spec §2)', () => {
+    const in27 = { ...inputs, year: 2027 };
+    const clnd = L(generateAnnualLines(coaList, in27, { ...src, propertyCode: 'clnd' }), '6116');
+    expect(clnd.months[0]).toBeCloseTo(521039 * 1.03 / 12, 1);
+    expect((clnd.driver as any).reTax.branch).toBe('A');
+    const fhnd = L(generateAnnualLines(coaList, in27, { ...src, propertyCode: 'fhnd' }), '6116');
+    expect(sum(fhnd.months)).toBeCloseTo(350131, -1);
+    // a 2026 budget, or a site with no inputs: the accrual rule, with the review flag
+    const none = L(generateAnnualLines(coaList, in27, { ...src, propertyCode: 'zzzz' }), '6116');
+    expect((none.driver as any).reTax).toBeUndefined();
+    expect((none.driver as any).taxNoInputs).toBe(true);
+    expect((none.driver as any).accrual).toBe(900);
+    // a budget's own inputs.reTax wins over the table
+    const own = L(generateAnnualLines(coaList, { ...in27, reTax: { year: 2027, saleOnRoll: true, riley2026: 1200 } } as any, { ...src, propertyCode: 'clnd' }), '6116');
+    expect(own.months[0]).toBeCloseTo(1200 * 1.03 / 12, 2);
+  });
   it('GPR = last actual month × monthly % changes (no rent roll)', () => {
     expect(L(lines, '4994').months[0]).toBe(10000);
     expect((L(lines, '4994').driver as any).method).toBe('gpr');
@@ -2156,5 +2172,97 @@ describe('RE tax accrual (Troy 2026-11-13: "revisit taxes as a whole for all for
     expect(taxYearBase(T([33149, 33149, 33149, 41728, 41728, 41728, 41728, 41728, 41728, 41728, 27424, 27424]), 10, 41728, true)).toBe(474999);
     // CWND: Jan–Aug are the seller's: the accrual × 12
     expect(taxYearBase(T([25925, 25925, 25925, 17713, 23872, 23872, 30922, 30922, 32976, 32976, 30922, -45255]), 10, 32976, false)).toBe(395712);
+  });
+});
+
+import { reTaxFromInputs, RE_TAX_INPUTS } from '../shared/annual.js';
+describe('RE tax from the bill (change spec 2026-11-13 §2: "when two methods disagree, the more conservative (higher) one wins")', () => {
+  // the spec's Expected table, rounded to the dollar
+  const expected: Record<string, [string, number]> = {
+    clnd: ['A', 536670], spnd: ['A', 232151], tcnd: ['A', 184788], tpnd: ['A', 158622], wynd: ['A', 524771], bcnd: ['A', 499991],
+    ecnd: ['A', 196896], fhnd: ['B', 350131], phnd: ['B', 179278], cwnd: ['UW', 417083], lhnd: ['UW', 218612], drnd: ['UW', 336259],
+  };
+  it('every site lands on the Expected table within $5, on the branch it says', () => {
+    let total = 0;
+    for (const [site, [branch, tax]] of Object.entries(expected)) {
+      const r = reTaxFromInputs(RE_TAX_INPUTS[site])!;
+      expect(r.branch, site).toBe(branch);
+      expect(Math.abs(r.tax - tax), `${site} ${r.tax}`).toBeLessThanOrEqual(5);
+      total += r.tax;
+    }
+    expect(Math.abs(total - 3835252)).toBeLessThanOrEqual(12);
+  });
+  it('branch B is the sale reassessed at 90.5% on the 2025 ad valorem rate less 5%, plus specials, × 1.03; the higher of A and B wins', () => {
+    const f = reTaxFromInputs(RE_TAX_INPUTS.fhnd)!;
+    expect(f.b! / 1.03).toBeCloseTo(38750000 * 0.905 * (302504 / 30135760) * 0.95 + 5513, 0);   // 339,933 before growth
+    expect(f.a!).toBeCloseTo(325756 * 1.03, 0);
+    expect(f.tax).toBe(f.b);
+    // TPND: the MF share of the whole property's A
+    expect(reTaxFromInputs(RE_TAX_INPUTS.tpnd)!.tax).toBeCloseTo(261507 * 1.03 * (157006 / 266609), 0);
+    // no Riley estimate given: bill2025 × value2026 / value2025
+    expect(reTaxFromInputs({ year: 2027, saleOnRoll: true, bill2025: 100, value2025: 1000, value2026: 1100 })!.tax).toBeCloseTo(113.3, 2);
+  });
+  it('the ND East stress case is stored, never applied; nothing to price = null (the accrual rule stays)', () => {
+    expect(reTaxFromInputs(RE_TAX_INPUTS.cwnd)!.tax).toBe(417083);
+    expect(RE_TAX_INPUTS.cwnd.stress).toBe(509645);
+    expect(reTaxFromInputs({ year: 2027, saleOnRoll: true })).toBeNull();
+    expect(reTaxFromInputs(null)).toBeNull();
+  });
+});
+
+describe('first-year management fee (change spec 2026-11-13 §3)', () => {
+  it('FHND / PHND: closed 4/16/2026 → 3% on income Apr-26..Mar-27 = fees billed Jan–Apr 2027, then 4%', () => {
+    const r = mgmtFeeRates(2027, 1, 0.04, { pct: 0.03, start: '2026-04' });
+    expect(r.rates).toEqual([0.03, 0.03, 0.03, 0.03, 0.04, 0.04, 0.04, 0.04, 0.04, 0.04, 0.04, 0.04]);
+    expect(r.firstMonths).toBe(4);
+    expect(r.through).toBe('Mar 2027');
+  });
+  it('ND East: closed 8/11/2026 → 3% on income Aug-26..Jul-27 = fees billed Jan–Aug 2027, then 4% (Sep = 4% × August income)', () => {
+    const r = mgmtFeeRates(2027, 1, 0.04, { pct: 0.03, start: '2026-08' });
+    expect(r.rates.slice(0, 8)).toEqual(Array(8).fill(0.03));
+    expect(r.rates.slice(8)).toEqual([0.04, 0.04, 0.04, 0.04]);
+    expect(r.through).toBe('Jul 2027');
+  });
+  it('the same rate for both = no first-year step (why FHND / PHND never got one: their acquisition rate equals the regular one)', () => {
+    expect(mgmtFeeRates(2027, 1, 0.03, { pct: 0.03, start: '2026-04' }).firstMonths).toBe(0);
+  });
+});
+
+import { reshapeToCurve, perOccupiedMonths } from '../shared/annual.js';
+describe('months from another property\'s curve (change spec 2026-11-13 §4: "curve, not value")', () => {
+  // ECND's 6604 share from the 11/13 draft (%), Jan..Dec
+  const ecnd6604 = [20.1, 12.3, 8.4, 10.7, 8.7, 9.0, 4.6, 2.2, 3.7, 3.4, 8.4, 8.4] as Months;
+  it('the year total is unchanged, every month follows the donor share, December takes the rounding', () => {
+    const own = Array(12).fill(1000.37) as Months;                          // a flat line, 12,004.44 for the year
+    const out = reshapeToCurve(own, ecnd6604, 1)!;
+    expect(out.reduce((a, v) => a + v, 0)).toBeCloseTo(12004.44, 2);
+    const tot = ecnd6604.reduce((a, v) => a + v, 0);
+    expect(out[0]).toBeCloseTo(12004.44 * 20.1 / tot, 1);                    // January = 20.1% of the pooled curve
+    expect(out[7]).toBeCloseTo(12004.44 * 2.2 / tot, 1);
+    // MROUND: every month but December on the multiple; December absorbs the rest so the year is exact
+    const m5 = reshapeToCurve(own, ecnd6604, 1, 5)!;
+    for (let i = 0; i < 11; i++) expect(m5[i] % 5).toBe(0);
+    expect(m5.reduce((a, v) => a + v, 0)).toBeCloseTo(12004.44, 2);
+    // a donor with nothing posted: nothing to shape with
+    expect(reshapeToCurve(own, zero12(), 1)).toBeNull();
+  });
+  it('the engine re-spreads the line after its formula, and leaves a locked line alone', () => {
+    const actual = synthetic();
+    const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
+    const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
+    const plain = L(generateAnnualLines(coaList, inputs, src), '6604');
+    const shaped = L(generateAnnualLines(coaList, inputs, { ...src, shapeGl: { '6604': { code: 'ECND', months: ecnd6604 } } }), '6604');
+    expect(sum(shaped.months)).toBeCloseTo(sum(plain.months), 2);
+    expect((shaped.driver as any).shapeFrom).toBe('ECND');
+    expect(shaped.months[0]).toBeGreaterThan(shaped.months[7]);              // January above August on the ECND curve
+  });
+});
+describe('per occupied unit (change spec 2026-11-13 §5.2: the pest fee at $5 × occupied units)', () => {
+  it('rate × units × occupancy each month, × the flat-fee share where it converts with the package', () => {
+    // BCND ≈ 5 × 558 × 12 × 0.955 = 31,973; ECND ≈ 5 × 360 × 12 × 0.96 = 20,736
+    expect(perOccupiedMonths(5, 558, Array(12).fill(0.045) as Months).reduce((a, v) => a + v, 0)).toBeCloseTo(31973.4, 0);
+    expect(perOccupiedMonths(5, 360, Array(12).fill(0.04) as Months).reduce((a, v) => a + v, 0)).toBeCloseTo(20736, 0);
+    const half = perOccupiedMonths(5, 100, zero12(), Array(12).fill(0.5) as Months);
+    expect(half[0]).toBe(250);
   });
 });
