@@ -1994,3 +1994,37 @@ describe('HAP is GPR (Troy 2026-11-12: "back out HAP, just combine all of the ma
     expect(foldHapCal(null)).toBeNull();
   });
 });
+
+import { sellerFillT12 } from '../shared/annual.js';
+describe('a new acquisition\'s T12 and pace (Troy 2026-11-12: "T12 actuals ... flat and confusing" / "everything is 0% from UW")', () => {
+  const pc = (gl: string) => ({ '6614': '12', '6116': '8' } as Record<string, string>)[gl] || '';
+  it('the months before ownership follow the seller\'s pattern at the posted level; live months and flat categories stay', () => {
+    const avg = 6973;
+    const cal = { '6614': [avg, avg, avg, avg, avg, avg, avg, avg, 5243, 8704, avg, avg] as Months, '6116': Array(12).fill(32976) as Months };
+    const seller = { '12': [9000, 8500, 7500, 7000, 6500, 6000, 6000, 6200, 6500, 7000, 8000, 9000] as Months, '8': [0, 0, 0, 0, 0, 200000, 0, 0, 0, 0, 0, 200000] as Months };
+    const filled = [0, 1, 2, 3, 4, 5, 6, 7, 10, 11];
+    const f = sellerFillT12(cal, filled, seller, pc);
+    const u = f.cal['6614'];
+    expect(u[8]).toBe(5243); expect(u[9]).toBe(8704);                    // posted months untouched
+    expect(u[0]).toBeGreaterThan(u[6]);                                    // January above July, as the seller ran
+    expect(u[0]).toBeCloseTo(((5243 + 8704) / 2) * (9000 / ((6500 + 7000) / 2)), 0);
+    expect(f.cal['6116']).toEqual(cal['6116']);                            // taxes: flat, as budgeted
+    expect(f.shaped).toEqual(['12']);
+    expect(sellerFillT12(cal, filled, null, pc).cal).toBe(cal);
+  });
+  it('the pace since closing moves a category\'s level by the fit %; the UW target does not move', () => {
+    const coa3 = [{ code: '4994', pcode: '1' }, { code: '6620', pcode: '12' }].map((a) => ({ ...a, name: a.code, kind: 'detail', curve: 'flat', active: true })) as unknown as CoaAccount[];
+    const plan3 = { year: 2026, startMonth: 9, lines: [{ gl_code: '4994', months: Array(12).fill(1000) as Months }, { gl_code: '6620', months: Array(12).fill(100) as Months }] };
+    // Sep-Oct 2026 posted: utilities 240 against 200 planned (pace 1.2), rent on plan
+    const postedCal = { '6620': [0, 0, 0, 0, 0, 0, 0, 0, 120, 120, 0, 0] as Months, '4994': [0, 0, 0, 0, 0, 0, 0, 0, 1000, 1000, 0, 0] as Months };
+    const ap = acqCalendarPlan({ plan: plan3, calYear: 2027, coaList: coa3, uw: { y1: { '1': 12000, '12': 1200 } }, fit: 0.5, posted: { '6620': 240, '4994': 2000 }, history: { postedCal, ownedIdx: [8, 9] } });
+    expect(ap.pace['12']).toBeCloseTo(1.2, 4);
+    expect(ap.pace['1']).toBeCloseTo(1, 4);
+    const T = (m: Months | undefined) => (m || []).reduce((a, v) => a + v, 0);
+    expect(T(ap.target.get('6620'))).toBe(1200);                           // UW for the year
+    expect(T(ap.cal.get('6620'))).toBe(1320);                              // halfway to the pace: 1,200 × 1.1
+    expect(T(ap.cal.get('4994'))).toBe(12000);
+    // one posted month is not a pace
+    expect(acqCalendarPlan({ plan: plan3, calYear: 2027, coaList: coa3, uw: { y1: { '1': 12000, '12': 1200 } }, fit: 0.5, history: { postedCal, ownedIdx: [9] } }).pace).toEqual({});
+  });
+});

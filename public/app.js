@@ -9,6 +9,8 @@ const S = {
   view: 'dash',        // dash | uploads | editor | settings
   bv: null,            // budget view payload {budget, lines, tieout, kpis, uw, compWeights}
   showZero: false,
+  // the seller T12 rows under the grid's subtotals (a new acquisition), remembered per browser
+  sellerRows: (() => { try { return localStorage.getItem('bt-seller-rows') === '1'; } catch (_) { return false; } })(),
   upload: { kind: 'yardi_template', files: [], parsed: null, busy: false, msg: '', err: '' },
   err: '',
   theme: localStorage.getItem('bt-theme') || 'light',
@@ -80,6 +82,10 @@ function drvMetaCore(l) {
   }
   return m;
 }
+// where each UW category's seller T12 shows in the grid: the subtotal that holds it (R&M spans the three maintenance
+// sections, so it sits under the maintenance subtotal; insurance / fee / taxes under fixed administrative)
+const SELLER_AT = { '5004': ['1', 'loss'], '5029': ['2'], '5049': ['3'], '5190': ['4', '5'], '6170': ['6', '7', '8'], '6370': ['9'], '6470': ['10'], '6570': ['11'], '6670': ['12'], '7098': ['13', '14'] };
+const PCODE_NAMES = { '1': 'GPR', loss: 'Loss to lease', '2': 'Concessions', '3': 'Rental loss', '4': 'Utility income', '5': 'Other income', '6': 'Insurance', '7': 'Management fee', '8': 'RE & PP taxes', '9': 'Admin', '10': 'Payroll', '11': 'Marketing', '12': 'Utilities', '13': 'R&M', '14': 'Rehab' };
 function drvMetaBase(l) {
   if (!l) return { cls: 'drv-none', tag: '—', label: 'No formula (zero)' };
   const method = (l.driver || {}).method;
@@ -409,6 +415,15 @@ function guideDashCell(gd) {
    (click the pill for the list), and Open / + Start. A property not started for the year shows its reports and
    + Start with the figures blank. Export / Recalculate with nothing ticked act on the budgets of the year shown. */
 // which categories of a new acquisition's year follow the property's own history (seller T12 + posted since closing)
+// each category's pace since closing (posted ÷ what UW expected for the same months)
+function acqPaceTxt(a) {
+  const LBL = { '1': 'GPR', loss: 'LTL', '2': 'concessions', '3': 'rental loss', '4': 'utility income', '5': 'other income', '6': 'insurance', '7': 'fee', '8': 'taxes', '9': 'admin', '10': 'payroll', '11': 'marketing', '12': 'utilities', '13': 'R&M', '14': 'rehab' };
+  const pc = (a && a.pace) || {};
+  const ks = Object.keys(pc).filter((k) => Math.abs(pc[k] - 1) >= 0.02);
+  if (!Object.keys(pc).length) return ' (fewer than two posted months: no pace yet, levels stay on UW)';
+  // the pace counts only inside 75%–133% (two or three months carry start-up noise)
+  return ks.length ? ` (pace vs UW: ${ks.map((k) => `${LBL[k] || 'cat ' + k} ${pc[k] >= 1 ? '+' : ''}${((pc[k] - 1) * 100).toFixed(0)}%`).join(', ')})` : ' (every category on UW pace)';
+}
 function acqShapedTxt(a) {
   const LBL = { '4': 'utility income', '5': 'other income', '9': 'admin', '11': 'marketing', '12': 'utilities' };
   const sh = (a && a.shaped) || {};
@@ -1214,6 +1229,7 @@ function renderEditor(el) {
           <button class="chip" id="tag-key" title="What every chip on the grid means">? chip key</button>
           ${defaultsChipHtml(bv)}
           ${droppedChipHtml(bv)}
+          ${bv.hist && bv.hist.seller ? `<button class="chip hist-all" id="seller-rows" title="Show the seller T12 month by month under each subtotal, by UW category (the seller's chart maps to ours by category, not GL). Reference rows, not part of the budget — this is the history the months follow for utilities, utility / other income, admin and marketing">${S.sellerRows ? '▾ hide seller T12' : '▸ seller T12 by category'}</button>` : ''}
           ${bv.hist && (bv.hist.t12 || bv.hist.budget) ? `<button class="chip hist-all" id="hist-all" title="Unfold the prior trailing-12 and current-year budget by month under every GL — reference rows, not part of the budget">${S.histAll ? '▾ hide history' : '▸ history under every GL'}</button>` : ''}
     ${bv.hist && bv.hist.payroll ? (() => { const tpl = Object.values(bv.hist.payroll.cal).reduce((a, m) => a + m.reduce((x, y) => x + y, 0), 0); const bud = (bv.categoryTotals && bv.categoryTotals['10']) ?? null; const d = bud == null ? null : bud - tpl; return `<button class="chip paytie-chip" id="paytie-open" title="${esc(bv.hist.payroll.label)} — Seth's payroll template for this property: budget payroll ${money(bud)} vs template ${money(tpl)}. Click to unfold the template under every payroll GL (reference rows; the budget is not changed).">payroll template Δ ${d == null ? '' : `${d >= 0 ? '+' : ''}${money(d)}`}${tpl && d != null ? ` (${((d / Math.abs(tpl)) * 100).toFixed(1)}%)` : ''}</button>`; })() : ''}
           ${(() => {
@@ -1589,6 +1605,8 @@ function renderEditor(el) {
   }));
   const payTieBtn = el.querySelector('#paytie-open');
   if (payTieBtn) payTieBtn.addEventListener('click', (e) => { e.stopPropagation(); const codes = Object.keys((S.bv.hist && S.bv.hist.payroll && S.bv.hist.payroll.cal) || {}); const allOpen = codes.every((c) => S.histOpenSet.has(c)); S.histAll = false; if (allOpen) codes.forEach((c) => S.histOpenSet.delete(c)); else codes.forEach((c) => S.histOpenSet.add(c)); localStorage.setItem('bt-hist', JSON.stringify([...S.histOpenSet])); render(); });
+  const sellerBtn = el.querySelector('#seller-rows');
+  if (sellerBtn) sellerBtn.addEventListener('click', (e) => { e.stopPropagation(); S.sellerRows = !S.sellerRows; try { localStorage.setItem('bt-seller-rows', S.sellerRows ? '1' : ''); } catch (_) { /* private mode */ } render(); });
   const histAllBtn = el.querySelector('#hist-all');
   if (histAllBtn) histAllBtn.addEventListener('click', (e) => { e.stopPropagation(); S.histAll = !S.histAll; if (!S.histAll) { S.histOpenSet = new Set(); localStorage.setItem('bt-hist', '[]'); } render(); });
   // inline formula params: change → patch inputs → regenerate
@@ -1832,6 +1850,24 @@ function gridHtml(bv, totals) {
         ${refCells(a.code, 'total', ann, false)}
         ${cols.punit ? `<td>${money(ann / units)}</td>` : ''}
         ${cols.note ? '<td></td>' : ''}</tr>`);
+      // the seller T12 by UW category under the subtotal it belongs to (a new acquisition)
+      const sellerAt = SELLER_AT[a.code];
+      const sh = bv.hist && bv.hist.seller;
+      if (S.sellerRows && sellerAt && sh) {
+        const ps = sellerAt.filter((p) => sh.byPcode[p]);
+        if (ps.length) {
+          const sm = Array(12).fill(0);
+          for (const p of ps) for (let i = 0; i < 12; i++) sm[i] += Number(sh.byPcode[p][i]) || 0;
+          const st = sumM(sm);
+          rows.push(`<tr class="hist seller" title="${esc(sh.label)}${sh.period ? ' ' + esc(sh.period) : ''}: the seller's own months for UW ${ps.map((p) => 'cat ' + p + ' ' + (PCODE_NAMES[p] || '')).join(' + ')}, as the seller posted them (before Monarch owned it). Reference only.">
+            <td class="code"></td><td class="name"><span class="histtag">seller</span>${esc(sh.label)} · ${ps.map((p) => PCODE_NAMES[p] || 'cat ' + p).join(' + ')} <span class="muted">${esc(sh.period || '')}</span></td>
+            ${cols.fx ? '<td></td>' : ''}${monthIdx.map((i) => `<td class="${sm[i] < 0 ? 'neg' : ''}">${money(sm[i])}</td>`).join('')}
+            ${cols.annual ? `<td class="${st < 0 ? 'neg' : ''}">${money(st)}</td>` : ''}${refBlank}${cols.punit ? `<td>${money(st / units)}</td>` : ''}${cols.note ? '<td></td>' : ''}</tr>`);
+          if (st) rows.push(`<tr class="dist seller"><td></td><td class="name"><span class="histtag">seller</span>% of the seller's year</td>
+            ${cols.fx ? '<td></td>' : ''}${monthIdx.map((i) => `<td>${((sm[i] / st) * 100).toFixed(1)}%</td>`).join('')}
+            ${cols.annual ? '<td>100%</td>' : ''}${refBlank}${cols.punit ? '<td></td>' : ''}${cols.note ? '<td></td>' : ''}</tr>`);
+        }
+      }
       if (a.code === '6470' && payTie) {
         const d = payTie.bud - payTie.tpl;
         rows.push(`<tr class="hist paytie" title="Seth's Payroll Budget Workbook sheet for this property — reference only, never part of the budget">
@@ -2779,7 +2815,7 @@ function defaultsInUse(bv) {
     const y = bv.y1Plan, span = y.months.length ? `${MONTHS[y.months[0]]}–${MONTHS[y.months[y.months.length - 1]]}` : '';
     const a = y.acq, after = a && a.afterIdx.length ? `${MONTHS[a.afterIdx[0]]}–${MONTHS[a.afterIdx[a.afterIdx.length - 1]]}` : '';
     add('y1plan', 'Year-1 plan', y.on
-      ? `the whole year from the Year-1 budget, weighted by months: ${span} = ${y.months.length}/12 of Year 1${after ? `, ${after} = ${a.afterIdx.length}/12 of Year 1 × the UW Year-2 trend${a.trendFrom === 'uw' ? '' : ' (no Year-2 column in the UW book: held flat)'}` : ''} by category; months shaped by ${acqShapedTxt(a)}; rows fitted ${Math.round((a ? a.fit : 0) * 100)}% to ${a ? a.postedMonths : 0} posted month${a && a.postedMonths === 1 ? '' : 's'} within each category, turn lines on the turn curve. Year 1 NOI ${money(y.y1Noi)}${y.actualMonths ? ` (${y.actualMonths} month${y.actualMonths === 1 ? '' : 's'} posted ${money(y.actualNoi)} vs plan ${money(y.planForActual)})` : ''} vs ${y.uwNoi != null ? 'UW ' + money(y.uwNoi) : 'plan ' + money(y.planNoi)} (${Math.abs(y.variance) < 1 ? 'ties' : (y.variance > 0 ? '+' : '−') + money(Math.abs(y.variance))})${y.locked.length ? `; ${y.locked.length} locked line${y.locked.length === 1 ? '' : 's'} differ from the plan` : ''}`
+      ? `the whole year from the Year-1 budget, weighted by months: ${span} = ${y.months.length}/12 of Year 1${after ? `, ${after} = ${a.afterIdx.length}/12 of Year 1 × the UW Year-2 trend${a.trendFrom === 'uw' ? '' : ' (no Year-2 column in the UW book: held flat)'}` : ''} by category; months shaped by ${acqShapedTxt(a)}; levels and rows fitted ${Math.round((a ? a.fit : 0) * 100)}% toward ${a ? (a.liveMonths ?? a.postedMonths) : 0} posted month${a && (a.liveMonths ?? a.postedMonths) === 1 ? '' : 's'} since closing${acqPaceTxt(a)}, turn lines on the turn curve. Year 1 NOI ${money(y.y1Noi)}${y.actualMonths ? ` (${y.actualMonths} month${y.actualMonths === 1 ? '' : 's'} posted ${money(y.actualNoi)} vs plan ${money(y.planForActual)})` : ''} vs ${y.uwNoi != null ? 'UW ' + money(y.uwNoi) : 'plan ' + money(y.planNoi)} (${Math.abs(y.variance) < 1 ? 'ties' : (y.variance > 0 ? '+' : '−') + money(Math.abs(y.variance))})${y.locked.length ? `; ${y.locked.length} locked line${y.locked.length === 1 ? '' : 's'} differ from the plan` : ''}`
       : `off — ${span} run on this budget's own formulas. Year 1 NOI would be ${money(y.y1Noi)} vs ${y.uwNoi != null ? 'UW ' + money(y.uwNoi) : 'plan ' + money(y.planNoi)} (${(y.variance > 0 ? '+' : '−') + money(Math.abs(y.variance))})`,
       inp.y1Plan == null, !y.on || Math.abs(y.variance) >= 1 ? 'Year 1 does not land on the underwriting NOI' : '');
   }
@@ -6008,7 +6044,7 @@ function annualInputsHtml(inp) {
       <div class="fld"><label>Shape</label><select id="in-blshape">${['actual', 'wavg', 'flat', 'curve'].map((k) => `<option value="${k}" ${(bl.shape || 'actual') === k ? 'selected' : ''}>${SHAPE_LABELS[k]}</option>`).join('')}</select></div>
       <div class="fld"><label>MROUND $ (0 = each GL's foundation multiple)</label><input id="in-blmround" value="${bl.mround || 0}" style="width:80px"></div>
       ${(S.bv.t12Dead || []).length || (S.bv.t12Startup || []).length ? `<div class="fld"><label title="A new acquisition's first months are not a clean picture: a partial month of rent, closing entries, catch-up bills. The months left out are filled with each line's average over the months that remain. Default: the first month. At least two months are always kept.">Start-up months left out of the history${(S.bv.t12Startup || []).length ? ` <span class="muted">— now: ${esc(S.bv.t12Startup.join(', '))}</span>` : ''}</label><select id="in-startup">${[0, 1, 2, 3].map((n) => `<option value="${n}" ${(inp.startupExclude ?? 1) === n ? 'selected' : ''}>${n === 0 ? 'none' : n === 1 ? 'the first month (default)' : `the first ${n} months`}</option>`).join('')}</select></div>` : ''}
-      ${S.bv.y1Plan ? (() => { const y = S.bv.y1Plan, span = y.months.length ? `${MONTHS[y.months[0]]}–${MONTHS[y.months[y.months.length - 1]]}` : ''; return `<div class="fld"><label title="This property's Year-1 (acquisition) budget ties to the underwriting NOI and its 12 ownership months run into this year. With this on, the WHOLE year runs off that budget, weighted by months: each category's ${span} total is ${y.months.length}/12 of its Year 1 and the months after are the rest of the year's share on the UW book's Year-2 trend. When the money lands comes from the property's own history (months posted since closing, the seller T12 for the rest) for utilities, utility income, other income, admin and marketing; turn lines follow the turn curve; rent, payroll and fixed costs keep the Year-1 budget's pattern. Inside each category the rows are fitted to what has posted since closing (the fit % beside this); category totals stay on UW. Year 1 NOI counts the months already posted as actuals. Interest, principal and SP are not touched; locked lines are not moved.">Year-1 plan (${span}${y.acq && y.acq.afterIdx.length ? ` + ${MONTHS[y.acq.afterIdx[0]]}–${MONTHS[y.acq.afterIdx[y.acq.afterIdx.length - 1]]} on the UW trend` : ''}) <span class="muted">— Year 1 NOI ${money(y.y1Noi)}${y.actualMonths ? ` (${y.actualMonths} mo actual)` : ''} vs ${y.uwNoi != null ? 'UW ' + money(y.uwNoi) : 'plan ' + money(y.planNoi)}</span></label><select id="in-y1plan"><option value="1" ${inp.y1Plan !== false ? 'selected' : ''}>the whole year from the Year-1 budget</option><option value="0" ${inp.y1Plan === false ? 'selected' : ''}>this budget's own formulas</option></select></div>${y.on && y.acq ? `<div class="fld"><label title="How far the months posted since closing (${y.acq.postedMonths} on file${y.acq.start ? `, ownership from ${esc(y.acq.start)}` : ''}) move each category's mix of GLs away from the Year-1 budget's: 0% = the budget's mix, 100% = the posted mix. Category totals do not move, so NOI stays on UW.">Fit rows to posted actuals <span class="muted">(${y.acq.postedMonths} mo posted)</span></label><input id="in-acqfit" value="${Math.round((inp.acqFit ?? y.acq.fit) * 100)}" style="width:52px; text-align:right"> %</div>` : ''}`; })() : ''}
+      ${S.bv.y1Plan ? (() => { const y = S.bv.y1Plan, span = y.months.length ? `${MONTHS[y.months[0]]}–${MONTHS[y.months[y.months.length - 1]]}` : ''; return `<div class="fld"><label title="This property's Year-1 (acquisition) budget ties to the underwriting NOI and its 12 ownership months run into this year. With this on, the WHOLE year runs off that budget, weighted by months: each category's ${span} total is ${y.months.length}/12 of its Year 1 and the months after are the rest of the year's share on the UW book's Year-2 trend. When the money lands comes from the property's own history (months posted since closing, the seller T12 for the rest) for utilities, utility income, other income, admin and marketing; turn lines follow the turn curve; rent, payroll and fixed costs keep the Year-1 budget's pattern. Inside each category the rows are fitted to what has posted since closing (the fit % beside this); category totals stay on UW. Year 1 NOI counts the months already posted as actuals. Interest, principal and SP are not touched; locked lines are not moved.">Year-1 plan (${span}${y.acq && y.acq.afterIdx.length ? ` + ${MONTHS[y.acq.afterIdx[0]]}–${MONTHS[y.acq.afterIdx[y.acq.afterIdx.length - 1]]} on the UW trend` : ''}) <span class="muted">— Year 1 NOI ${money(y.y1Noi)}${y.actualMonths ? ` (${y.actualMonths} mo actual)` : ''} vs ${y.uwNoi != null ? 'UW ' + money(y.uwNoi) : 'plan ' + money(y.planNoi)}</span></label><select id="in-y1plan"><option value="1" ${inp.y1Plan !== false ? 'selected' : ''}>the whole year from the Year-1 budget</option><option value="0" ${inp.y1Plan === false ? 'selected' : ''}>this budget's own formulas</option></select></div>${y.on && y.acq ? `<div class="fld"><label title="How far the months posted since closing (${y.acq.postedMonths} on file${y.acq.start ? `, ownership from ${esc(y.acq.start)}` : ''}) move the budget away from UW toward what is actually posting: each category's LEVEL moves this far toward its pace since closing (posted ÷ what UW expected for those months), and its mix of GLs this far toward the posted mix. 0% = exactly UW (every row 0% on the compare card); 100% = the posted pace. The gap shows against UW on the compare card; nothing ties it back.">Fit rows to posted actuals <span class="muted">(${y.acq.postedMonths} mo posted)</span></label><input id="in-acqfit" value="${Math.round((inp.acqFit ?? y.acq.fit) * 100)}" style="width:52px; text-align:right"> %</div>` : ''}`; })() : ''}
       <div class="fld"><label title="History-based expense lines (admin, marketing, utilities, R&M, rehab) are tilted so December runs this much above January, in a straight line. The YEAR TOTAL does not change — only when the dollars land. 0 = off. Not applied to payroll, taxes, insurance, the fee or contract-flat lines.">Cost drift within the year % (Jan → Dec)</label><input id="in-drift" value="${+(((bl.costDrift ?? 0.03)) * 100).toFixed(2)}" style="width:70px"></div>
       <label style="align-self:center" title="The Yardi template carries Conservice's per-GL per-month utility % forecasts. The GRKS foundation used a flat 5% instead; tick to apply the forecast where one exists."><input type="checkbox" id="in-blutil" ${bl.useUtilForecast ? 'checked' : ''}> Use Conservice utility forecasts</label>
     </div>

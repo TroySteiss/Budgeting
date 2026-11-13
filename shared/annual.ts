@@ -40,7 +40,7 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-12c';   // c: HAP inside GPR (4994); b: new acquisitions weighted Y1/Y2 by months, shaped by history
+export const ENGINE_VERSION = '2026-11-12d';   // d: acquisition levels move toward the pace since closing (fit), T12 fill follows the seller; c: HAP inside GPR (4994); b: new acquisitions weighted Y1/Y2 by months, shaped by history
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -215,6 +215,45 @@ function annualizeDead(t: Trailing12, firstKey: number, excludeStartup = STARTUP
     for (const m of out) row[m] = avg;
   }
   return { ...t, dead: deadIdx.map(nameOf), startup: startupIdx.map(nameOf), early: earlyIdx.map(nameOf), liveMonths: live, period: `${t.period} · ${live} mo annualized` };
+}
+
+/* THE FILLED T12 MONTHS OF A NEW ACQUISITION FOLLOW THE SELLER (Troy 2026-11-12: "T12 actuals on Bismarck and
+   Jamestown still flat and confusing. Expenses are following a curve, but its extremely unclear why due to those flat
+   T12 mock figures"). annualizeDead fills the months before ownership (and the start-up month) with each GL's live
+   average — flat. Where the seller T12 is on file, those filled months take the seller's month-by-month pattern for
+   the GL's category, at the same level: filled month = the GL's live average × seller[m] / the seller's average over
+   the live months. Only the categories whose budget months follow history (ACQ_HISTORY_PCODES + R&M 13); rent,
+   contra income, insurance, fee, taxes and payroll stay on the flat average, as their budgets do. Missed / catch-up
+   billing in the seller's months is smoothed first. Live (posted) months never change. Pure. */
+export const SELLER_FILL_PCODES = new Set(['4', '5', '9', '11', '12', '13']);
+export function sellerFillT12(cal: Record<string, Months>, filledIdx: number[], seller: Record<string, Months> | null | undefined, pcodeOf: (gl: string) => string): { cal: Record<string, Months>; shaped: string[] } {
+  if (!seller || !filledIdx.length) return { cal, shaped: [] };
+  const filled = new Set(filledIdx);
+  const liveIdx = [...Array(12).keys()].filter((m) => !filled.has(m));
+  if (!liveIdx.length) return { cal, shaped: [] };
+  const shapeOf = new Map<string, Months | null>();
+  const shapeFor = (p: string): Months | null => {
+    if (shapeOf.has(p)) return shapeOf.get(p)!;
+    const raw = seller[p];
+    let w: Months | null = null;
+    if (raw && SELLER_FILL_PCODES.has(p)) {
+      const sg = Math.sign(raw.reduce((a, v) => a + v, 0));
+      const pos = raw.map((v) => Math.max(0, v * sg)) as Months;
+      if (sg && pos.some((v) => v > 0)) w = shapeSmells(pos) ? smoothShape(pos) : pos;
+    }
+    shapeOf.set(p, w); return w;
+  };
+  const out: Record<string, Months> = {}; const shaped = new Set<string>();
+  for (const [gl, row] of Object.entries(cal)) {
+    const p = pcodeOf(gl); const w = p ? shapeFor(p) : null;
+    const liveW = w ? liveIdx.reduce((a, m) => a + w[m], 0) / liveIdx.length : 0;
+    if (!w || !(liveW > 0)) { out[gl] = row; continue; }
+    const liveAvg = liveIdx.reduce((a, m) => a + (row[m] || 0), 0) / liveIdx.length;
+    const r = [...row] as Months;
+    for (const m of filledIdx) r[m] = r2(liveAvg * (w[m] / liveW));
+    out[gl] = r; shaped.add(p);
+  }
+  return { cal: out, shaped: [...shaped] };
 }
 
 /** "N months annualized" off a trailing-12 calendar: the last n months ending at lastMonth × 12/n. */
@@ -2062,7 +2101,12 @@ export interface AcqPlan {
   fitted: string[]; turnGls: string[];
   /** categories whose months follow the property's own history, and where it came from */
   shaped: Record<string, 'posted+seller' | 'seller' | 'posted'>;
+  /** each category's PACE since closing: what posted over the live owned months ÷ what the UW-tied plan expected for
+      those same months (on the category's monthly pattern), held to ACQ_PACE_BAND (0.75..1.33). `fit` moves the level this far toward it. */
+  pace: Record<string, number>;
 }
+/** How far a category's pace since closing may count (posted ÷ expected is held inside this band). */
+export const ACQ_PACE_BAND: [number, number] = [0.75, 1.33];   // two or three posted months carry start-up noise
 /** Categories whose monthly pattern comes from the property's own financials (seller T12 + posted since closing). */
 export const ACQ_HISTORY_PCODES = new Set(['4', '5', '9', '11', '12']);
 /** Categories that keep the plan's own monthly pattern (rent roll, contra income, accrued fixed costs, payroll model). */
@@ -2140,6 +2184,7 @@ export function acqCalendarPlan(o: {
   for (const gl of planY1.keys()) addCat(gl);
   if (o.posted) for (const [gl, v] of Object.entries(o.posted)) if (v && coa.has(gl)) addCat(gl);
   const shaped: AcqPlan['shaped'] = {};
+  const pace: Record<string, number> = {};
   const fittedSet = new Set<string>(); const turnSet = new Set<string>();
   const build = (fit: number): Map<string, Months> => {
     const out = new Map<string, Months>();
@@ -2154,6 +2199,7 @@ export function acqCalendarPlan(o: {
         { idx: y1Idx, total: (pY1 * y1Idx.length) / 12 },
         { idx: afterIdx, total: (pY1 * (1 + g) * afterIdx.length) / 12 },
       ].filter((s) => s.idx.length);
+      const segsAt = (lv: number) => segs.map((sg) => ({ ...sg, total: sg.total * lv }));
       // the GL mix: the plan's Year-1 shares, moved toward the posted shares by `fit`
       const postedTot = o.posted ? gls.reduce((a, gl) => a + (o.posted![gl] || 0), 0) : 0;
       const planOk = gls.every((gl) => (planY1.get(gl) || 0) * sgn >= 0);
@@ -2167,6 +2213,20 @@ export function acqCalendarPlan(o: {
       // the category's pattern from its own history (when it is one of those categories)
       const hist = ACQ_HISTORY_PCODES.has(p) ? acqHistoryShape(p, gls, sgn, o.history) : null;
       if (hist) shaped[p] = hist.from;
+      /* LEVEL FIT (Troy 2026-11-12: "The comparison chart also still makes no sense. It just says everything is 0% from
+         UW. That should not be the case"). The category's pace since closing: posted over the live owned months ÷ what
+         the plan expected for the same months (the plan's Year 1 on the category's monthly pattern — its history when it
+         has one, else the plan's own months). `fit` moves the level that far toward the pace, so a category running hot
+         or cold shows against UW; the target (fit 0) stays on UW. Two posted months at least. */
+      const ownIdx = o.history?.ownedIdx || [];
+      if (o.history?.postedCal && ownIdx.length >= 2) {
+        const posted = ownIdx.reduce((a, m) => a + gls.reduce((x, gl) => x + ((o.history!.postedCal![gl] || [])[m] || 0), 0), 0) * sgn;
+        let expected = 0;
+        if (hist) expected = Math.abs(pY1) * ownIdx.reduce((a, m) => a + hist.shape[m], 0);
+        else for (const l of plan.lines) if (glSet.has(l.gl_code)) { const sl = calendarSlice(l.months, plan.year, plan.startMonth, calYear - 1); expected += ownIdx.reduce((a, m) => a + (sl[m] || 0), 0) * sgn; }
+        if (expected > 0 && posted > 0) pace[p] = Math.round(Math.min(ACQ_PACE_BAND[1], Math.max(ACQ_PACE_BAND[0], posted / expected)) * 10000) / 10000;
+      }
+      const lvl = pace[p] != null ? 1 + fit * (pace[p] - 1) : 1;
       const catPat = Array.from({ length: 12 }, (_, i) => gls.reduce((a, gl) => a + ((planPat.get(gl) || zero12())[i] || 0) * sgn, 0)) as Months;
       const weightsFor = (gl: string): Months => {
         if (isTurn(gl)) return turns!;
@@ -2178,7 +2238,7 @@ export function acqCalendarPlan(o: {
         if (curve && curve !== 'flat' && CURVES[curve]) return CURVES[curve];
         return own && own.some((v) => v) ? (own.map((v) => v * sgn) as Months) : catPat;
       };
-      for (const seg of segs) {
+      for (const seg of segsAt(lvl)) {
         const res = new Map<string, Months>();
         for (const gl of gls) {
           const amt = share(gl) * seg.total;
@@ -2207,7 +2267,7 @@ export function acqCalendarPlan(o: {
   };
   const target = build(0);   // a fit of 0 never marks a category fitted
   const cal = fitIn > 0 && o.posted ? build(fitIn) : new Map([...target].map(([gl, m]) => [gl, [...m] as Months]));
-  return { cal, target, y1Idx, afterIdx, trend, trendFrom, fitted: [...fittedSet], turnGls: [...turnSet], shaped };
+  return { cal, target, y1Idx, afterIdx, trend, trendFrom, fitted: [...fittedSet], turnGls: [...turnSet], shaped, pace };
 }
 /** How far posted actuals move a category's GL mix by default (0 = the plan's mix, 1 = the posted mix). */
 export const ACQ_FIT_DEFAULT = 0.5;

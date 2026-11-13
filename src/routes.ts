@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, parseReviewApply, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
-  acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, foldHapCal, foldHapLines, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
+  acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, foldHapCal, foldHapLines, sellerFillT12, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
   refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
@@ -708,7 +708,9 @@ interface LoadedBudget {
   /** annual: when ownership began + the acquisition budget's first-year management fee % */
   acquisition: { start: string | null; firstYearPct: number | null } | null;
   /** annual: the property's acquisition (UW Year-1) budget, when its 12 ownership months reach into this budget's year */
-  y1Plan: (Y1Plan & { budgetId: number; uwNoi: number | null; seller?: Record<string, Months> | null; uw: { y1: Record<string, number>; years?: Record<string, Record<string, number>>; basis?: UwSnapshotData['basis']; units?: number; returns?: UwSnapshotData['returns']; noi?: number; capital?: number; loan?: number; rate?: number } | null }) | null;
+  y1Plan: (Y1Plan & { budgetId: number; uwNoi: number | null; seller?: Record<string, Months> | null; sellerPeriod?: string;
+    /** trailing-12 months filled in (before ownership / the start-up month), calendar index: never counted as posted */
+    t12Filled?: number[]; uw: { y1: Record<string, number>; years?: Record<string, Record<string, number>>; basis?: UwSnapshotData['basis']; units?: number; returns?: UwSnapshotData['returns']; noi?: number; capital?: number; loan?: number; rate?: number } | null }) | null;
   /** the property's latest UW upload that carries the per-category basis (older uploads lack it) */
   uwBasisLatest: { basis: NonNullable<UwSnapshotData['basis']>; label: string } | null;
   /** annual: which reference the compare card uses — inputs.refSource, else 'uw' when the acquisition plan runs the year */
@@ -725,10 +727,13 @@ interface LoadedBudget {
     closing (acqCalendarPlan `history`), and the posted months for the Year-1 check. */
 function acqHistoryOf(y1Plan: LoadedBudget['y1Plan'] | null, actualCal: Record<string, Months> | null, t12End: { month: number; year: number } | null, start: string | null | undefined) {
   const posted = postedSinceClosing(actualCal, t12End, start || (y1Plan ? `${y1Plan.year}-${String(y1Plan.startMonth).padStart(2, '0')}` : null));
+  // months the trailing-12 filled in (the start-up month) are not what posted: left out
+  const filled = new Set(y1Plan?.t12Filled || []);
+  const live = posted ? posted.owned.filter((o) => !filled.has(o.month - 1)) : [];
   return {
     posted,
-    history: { seller: y1Plan?.seller || null, postedCal: actualCal, ownedIdx: posted ? posted.owned.map((o) => o.month - 1) : [] } as AcqHistory,
-    actual: posted && actualCal ? { cal: actualCal, owned: posted.owned } : null,
+    history: { seller: y1Plan?.seller || null, postedCal: actualCal, ownedIdx: live.map((o) => o.month - 1) } as AcqHistory,
+    actual: live.length && actualCal ? { cal: actualCal, owned: live } : null,
   };
 }
 const acqPlanOn = (inputs: any, y1Plan: LoadedBudget['y1Plan'] | null): boolean => !!y1Plan && inputs?.y1Plan !== false && (Number(inputs?.startMonth) || 1) === 1;
@@ -834,6 +839,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   let actualCal: Record<string, Months> | null = null, budgetCal: Record<string, Months> | null = null;
   let lastMonth = 10, ref: UwSnapshotData | null = null, refLabel = 'UW', refKey = 'uw';
   let t12Missing: string[] = [], t12Dead: string[] = [], t12Live = 12, t12Startup: string[] = [], t12Early: string[] = [];
+  let t12SellerShaped: string[] = [];
   const noiTrend: { back: number; label: string; noi: number | null }[] = [];
   const priorT12: { label: string; noi: Months; income: Months; expense: Months }[] = [];
   let t12End: { month: number; year: number } | null = null;
@@ -914,12 +920,15 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
         const uwNoi = ud && ud.noi != null && Number.isFinite(Number(ud.noi)) ? Number(ud.noi) : null;
         // the seller T12 by category, calendar months (Troy 2026-11-12: "it still does not feel like it is considering
         // past financials in any way. Everything is dead flat"): the monthly pattern before closing
-        let seller: Record<string, Months> | null = null;
+        let seller: Record<string, Months> | null = null; let sellerPeriod = '';
         if (acqB.t12_snapshot_id && ud?.t12?.length) {
           const t = (await query('select data from t12_snapshots where id=$1', [acqB.t12_snapshot_id])).rows[0]?.data;
           if (t?.rows?.length) {
             const glToPcode: Record<string, string> = {};
             for (const r of ud.t12) glToPcode[r.gl] = r.pcode;
+            const mc: number[] = t.monthCal || [], my: number[] = t.monthYear || [];
+            const MN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            sellerPeriod = t.period || (mc.length ? `${MN[(mc[0] || 1) - 1]}${my[0] ? ' ' + my[0] : ''}–${MN[(mc[mc.length - 1] || 12) - 1]}${my[my.length - 1] ? ' ' + my[my.length - 1] : ''}` : '');
             seller = {};
             for (const r of t.rows as any[]) {
               const pc = glToPcode[r.gl]; if (!pc) continue;
@@ -930,7 +939,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
         }
         // HAP is GPR in the plan too (Troy 2026-11-12)
         const plCal: Record<string, Months> = foldHapCal(Object.fromEntries(pl.map((r: any) => [r.gl_code, (r.months as any[]).map(Number) as Months])) as Record<string, Months>) || {};
-        if (pl.length) y1Plan = { ...plan, budgetId: Number(acqB.id), uwNoi, seller, uw: ud ? { y1: ud.y1 || {}, years: ud.years || undefined, basis: ud.basis || undefined, units: Number(ud.units) || undefined, returns: ud.returns || undefined, noi: Number(ud.noi) || undefined, capital: Number(ud.assumptions?.capitalToClose) || undefined, loan: Number(ud.assumptions?.loanAmount) || undefined, rate: Number(ud.assumptions?.interestRate) || undefined } : null, lines: Object.entries(plCal).map(([gl_code, months]) => ({ gl_code, months })) };
+        if (pl.length) y1Plan = { ...plan, budgetId: Number(acqB.id), uwNoi, seller, sellerPeriod, uw: ud ? { y1: ud.y1 || {}, years: ud.years || undefined, basis: ud.basis || undefined, units: Number(ud.units) || undefined, returns: ud.returns || undefined, noi: Number(ud.noi) || undefined, capital: Number(ud.assumptions?.capitalToClose) || undefined, loan: Number(ud.assumptions?.loanAmount) || undefined, rate: Number(ud.assumptions?.interestRate) || undefined } : null, lines: Object.entries(plCal).map(([gl_code, months]) => ({ gl_code, months })) };
       }
     }
   }
@@ -952,6 +961,16 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     const t12 = stmtActual ? await composeT12(budget.property_code, budget.py_stmt_id, stmtActual, budget.inputs?.startupExclude) : null;
     // HAP is GPR (Troy 2026-11-12): the T12 carries HAP inside 4994, as the budget does
     actualCal = foldHapCal(t12?.cal || null);
+    // a new acquisition: the months before ownership follow the seller T12's pattern, not a flat average (sellerFillT12)
+    if (actualCal && t12 && y1Plan && (t12.dead.length || (t12.startup || []).length)) {
+      const MONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const idx = [...t12.dead, ...(t12.startup || [])].map((n) => MONS.indexOf(String(n).slice(0, 3))).filter((i) => i >= 0);
+      y1Plan.t12Filled = idx;
+      if (y1Plan.seller) {
+        const f = sellerFillT12(actualCal, idx, y1Plan.seller, (gl) => String(coaMap.get(gl)?.pcode || ''));
+        actualCal = f.cal; t12SellerShaped = f.shaped;
+      }
+    }
     t12Missing = t12?.missing || [];
     // NOI of the trailing-12 windows that ended 2, 1 and 0 months before the last posted month
     // (the Summary tab's trend columns) — only where every month of the window is on file
@@ -998,7 +1017,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
       payrollTpl = { id: pt.id, label: pt.label, period: pt.period, total: Number(pt.data?.total) || 0, cal };
     }
     const units = Number(budget.inputs?.units) || 0;
-    const t12Label = t12 && t12.dead.length ? `T12 actuals (${t12.liveMonths} mo annualized)` : 'T12 actuals';
+    const t12Label = t12 && t12.dead.length ? (t12SellerShaped.length ? `T12 actuals (${t12.liveMonths} mo posted; the rest on the seller T12's pattern)` : `T12 actuals (${t12.liveMonths} mo annualized)`) : 'T12 actuals';
     if (actualCal && t12) refs.push({ key: 'actual', label: t12Label, period: t12.period || sa?.period || '', ...refColumn(actualCal) });
     // T3 annualized (Troy 2026-11-09): the last three actual months × 4, shown right after the T12
     // in the grid and on the compare card — a reference column, never an input
@@ -1256,6 +1275,9 @@ function budgetView(lb: LoadedBudget) {
       t12: lb.actualCal ? { label: lb.refs.find((r) => r.key === 'actual')?.label || 'T12 actuals', period: lb.refs.find((r) => r.key === 'actual')?.period || '', cal: Object.fromEntries(Object.entries(lb.actualCal).map(([g, m]) => [g, rotate12(m, start)])) } : null,
       budget: lb.budgetCal ? { label: lb.refs.find((r) => r.key === 'budget')?.label || 'CY budget', period: lb.refs.find((r) => r.key === 'budget')?.period || '', cal: Object.fromEntries(Object.entries(lb.budgetCal).map(([g, m]) => [g, rotate12(m, start)])) } : null,
       // Seth's Payroll Budget Workbook sheet for this property/year: the payroll tie-out reference (Troy 2026-11-09)
+      // a new acquisition: the seller T12 by UW category (Troy 2026-11-12: "I need to be able to see seller trends for
+      // entire subcategories") — the seller's chart maps to ours by category only, so these sit under the subtotals
+      seller: lb.y1Plan?.seller ? { label: 'Seller T12', period: lb.y1Plan.sellerPeriod || '', byPcode: Object.fromEntries(Object.entries(lb.y1Plan.seller).map(([p, m]) => [p, rotate12(m, start)])) } : null,
       payroll: lb.payrollTpl ? { label: lb.payrollTpl.label, period: lb.payrollTpl.period, total: lb.payrollTpl.total, cal: Object.fromEntries(Object.entries(lb.payrollTpl.cal).map(([g, m]) => [g, rotate12(m, start)])) } : null,
     } : null,
     // the tie-out reference: UW book (acquisition) or trailing-12 / CY budget / targets (annual)
@@ -1312,7 +1334,7 @@ function budgetView(lb: LoadedBudget) {
         const h = acqHistoryOf(lb.y1Plan, lb.actualCal, lb.t12End, lb.acquisition?.start);
         const ap = acqCalendarPlan({ plan: lb.y1Plan!, calYear: Number(lb.budget.year), coaList: lb.coa, uw: lb.y1Plan!.uw, fit: 0, history: h.history });
         const posted = h.posted;
-        return { afterIdx: ap.afterIdx, y1Idx: ap.y1Idx, trend: ap.trend, trendFrom: ap.trendFrom, shaped: ap.shaped, hasSeller: !!lb.y1Plan!.seller, postedMonths: posted?.months || 0, fit: lb.budget.inputs?.acqFit ?? ACQ_FIT_DEFAULT, start: lb.acquisition?.start || null };
+        return { afterIdx: ap.afterIdx, y1Idx: ap.y1Idx, trend: ap.trend, trendFrom: ap.trendFrom, shaped: ap.shaped, pace: ap.pace, liveMonths: h.history.ownedIdx?.length || 0, hasSeller: !!lb.y1Plan!.seller, postedMonths: posted?.months || 0, fit: lb.budget.inputs?.acqFit ?? ACQ_FIT_DEFAULT, start: lb.acquisition?.start || null };
       })(),
       ...y1Check(lb.lines, lb.y1Plan, Number(lb.budget.year), lb.y1Plan.uwNoi, acqHistoryOf(lb.y1Plan, lb.actualCal, lb.t12End, lb.acquisition?.start).actual) } : null,
     // where the wages come from: the Pay-rates link (cycle, draft / finalized by region) or null
@@ -1520,7 +1542,7 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
     const a = acq;
     return applyPlanSlice(ls, lb.coa, a.cal, ALL12, (gl) => {
       const p = lb.coaMap.get(gl)?.pcode || '';
-      return { trend: a.trend[p] ?? 0, fit: a.fitted.includes(p) ? (inputs.acqFit ?? ACQ_FIT_DEFAULT) : 0, turns: a.turnGls.includes(gl), after: a.afterIdx, hist: a.shaped[p] || null };
+      return { trend: a.trend[p] ?? 0, fit: a.fitted.includes(p) ? (inputs.acqFit ?? ACQ_FIT_DEFAULT) : 0, turns: a.turnGls.includes(gl), after: a.afterIdx, hist: a.shaped[p] || null, pace: a.pace[p] ?? null };
     });
   };
   if (lb.annual) lines = clearY1Plan(lines);
