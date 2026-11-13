@@ -628,3 +628,8 @@ table.grid tr.returns td.name { white-space: nowrap; }
 table.grid tr.returns .cocview { font-weight: 400; white-space: nowrap; display: inline-flex; gap: 2px; }
 table.grid tr.returns .cocview .rb { padding: 0 5px; font-size: 10.5px; }
 table.grid tr.returns .cocview .rb.on { background: var(--good); color: var(--panel); border-color: var(--good); }
+
+/* Overall % column (Troy 2026-11-13) */
+table.grid td.overall { font-variant-numeric: tabular-nums; color: var(--accent); }
+table.grid td.overall.ratio { font-weight: 600; }
+table.grid td.overall.neg { color: var(--bad); }

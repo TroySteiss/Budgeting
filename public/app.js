@@ -1799,6 +1799,77 @@ function clientRollup(linesByGl) {
   return t;
 }
 
+/* OVERALL % (Troy 2026-11-13: "I need a column that shows the overall percentage of whatever that line is compared to.
+   The input should flow through to items that are not hard coded, but this column should measure overall. For example, I
+   should be able to see that Vacancy overall is 2.7%, even though the input says 2%, due to hard codes and manual
+   adjustments. For other lines, we want the % the box is tied to - for example, application fees would show a growth %
+   instead of % of GPR"). What the line's year actually comes to on the basis its formula uses — every month as it now
+   stands, hand-typed cells included. A ratio line shows its % of that basis; every other line its growth over the
+   reference (T12, or UW for a plan-run acquisition). */
+function overallOf(gl, l, linesByGl, totals, refA) {
+  if (!l) return null;
+  const Y = (g) => { const x = linesByGl.get(g); return x ? x.months.reduce((a, v) => a + (Number(v) || 0), 0) : 0; };
+  const T = (c) => (totals.get(c) || []).reduce((a, v) => a + (Number(v) || 0), 0);
+  const d = l.driver || {};
+  const y = Y(gl);
+  const ratio = (base, what) => (Math.abs(base) > 0.5 ? { v: Math.abs(y) / Math.abs(base), kind: 'ratio', what } : null);
+  const coa = S.state.coa;
+  const perUnit = (v) => { const u = Number((S.bv.budget.inputs || {}).units) || 0; return u ? { v: v / u, kind: 'unit', what: `${u} units` } : null; };
+  const netRental = () => coa.filter((a) => a.kind === 'detail' && (a.pcode === '1' || a.pcode === 'loss' || a.pcode === '2' || ['5031', '5032', '5033', '5034'].includes(a.code))).reduce((x, a) => x + Y(a.code), 0);
+  switch (d.method) {
+    case 'vacancy': return ratio(Y('4994'), 'GPR');
+    case 'ltl': return ratio(Y('4994'), 'GPR');
+    case 'pctGpr': return d.of === 'net' ? ratio(netRental(), 'net rental') : d.of === 'netgpr' ? ratio(Y('4994') + Y('4995') + Y('4996') + Y('5003'), 'GPR less LTL') : ratio(Y('4994'), 'GPR');
+    case 'collections': {
+      const dq = (linesByGl.get('5035') || {}).months || Array(12).fill(0);
+      return ratio(Math.abs(Number(d.startDq) || 0) + dq.slice(0, 11).reduce((a, v) => a + Math.abs(Number(v) || 0), 0), "the prior month's delinquency");
+    }
+    case 'badDebtRecovery': {
+      const dq = (linesByGl.get('5035') || {}).months || Array(12).fill(0), pp = (linesByGl.get('5036') || {}).months || Array(12).fill(0);
+      const D = (i) => (i < 0 ? Math.abs(Number(d.startDq) || 0) : Math.abs(Number(dq[i]) || 0)), P = (i) => (i < 0 ? Math.abs(Number(d.lastPpc) || 0) : Math.abs(Number(pp[i]) || 0));
+      let u = 0; for (let i = 0; i < 12; i++) u += Math.max(0, D(i - 2) - P(i - 1));
+      return ratio(u, 'what is still uncollected 60 days on');
+    }
+    case 'collectionFee': return ratio(Y('5110'), 'bad debt recovery');
+    case 'mgmtPct': return ratio(T('5500'), 'total income');
+    case 'burdenRatio': return ratio(BUDGET_WAGE_GLS.reduce((a, g) => a + Y(g), 0), 'wages');
+    case 'recovery': {
+      const src = coa.filter((a) => a.kind === 'detail' && a.pcode === '12').reduce((x, a) => x + Y(a.code), 0);
+      return ratio(src, 'utility expense');
+    }
+    // per unit (Troy 2026-11-13: "per unit for others"): insurance and the corporate per-unit rates
+    case 'corpRate': case 'perUnit': case 'perUnitComp': return perUnit(y);
+    default: {
+      if (gl === '6108') return perUnit(y);
+      const ref = refA ? (refA.byGl[gl] || 0) : 0;
+      if (!ref) return Math.abs(y) > 0.5 ? { v: null, kind: 'new', what: refA ? refA.label : 'the reference' } : null;
+      return { v: y / ref - 1, kind: 'growth', what: refA.label };
+    }
+  }
+}
+/* a subtotal's dominant comparable (Troy 2026-11-13: "Net DQ should show as % of GPR. Other sub categories and lines
+   should take the dominant comparable and compare to that. % Growth for most lines, per unit for others, % of GPR for
+   rental loss sub, etc"): concessions and rental loss as % of GPR, rehab / replacements per unit, every other subtotal
+   as growth over the reference */
+const OVERALL_TOTAL_GPR = new Set(['5029', '5049']);
+const OVERALL_TOTAL_UNIT = new Set(['7070']);
+function overallTotalOf(code, linesByGl, totals, refA) {
+  const T = (c) => (totals.get(c) || []).reduce((a, v) => a + (Number(v) || 0), 0);
+  const gpr = ((linesByGl.get('4994') || {}).months || []).reduce((a, v) => a + (Number(v) || 0), 0);
+  const t = T(code);
+  if (OVERALL_TOTAL_GPR.has(code)) return Math.abs(gpr) > 0.5 ? { v: Math.abs(t) / gpr, kind: 'ratio', what: 'GPR' } : null;
+  if (OVERALL_TOTAL_UNIT.has(code)) { const u = Number((S.bv.budget.inputs || {}).units) || 0; return u ? { v: t / u, kind: 'unit', what: `${u} units` } : null; }
+  const ref = refA ? (refA.totals[code] || 0) : 0;
+  return ref ? { v: t / ref - 1, kind: 'growth', what: refA.label } : null;
+}
+function overallCellHtml(o, l) {
+  if (!o) return '<td class="ref overall"></td>';
+  if (o.kind === 'unit') return `<td class="ref overall ratio" title="$${money(o.v)} per unit for the year (${esc(o.what)})">$${money(o.v)}/u</td>`;
+  const hard = l && l.override ? ' — hand-typed cells included' : '';
+  if (o.kind === 'new') return `<td class="ref overall muted" title="Nothing in ${esc(o.what)} to grow from">new</td>`;
+  if (o.kind === 'growth') return `<td class="ref overall${o.v < 0 ? ' neg' : ''}" title="Growth over ${esc(o.what)}: the year as it stands${hard}">${o.v >= 0 ? '+' : ''}${(o.v * 100).toFixed(1)}%</td>`;
+  return `<td class="ref overall ratio" title="${(o.v * 100).toFixed(2)}% of ${esc(o.what)} over the year as it stands${hard}">${(o.v * 100).toFixed(2)}%</td>`;
+}
 function gridHtml(bv, totals) {
   const coa = S.state.coa;
   const linesByGl = new Map(bv.lines.map((l) => [l.gl_code, l]));
@@ -1814,7 +1885,8 @@ function gridHtml(bv, totals) {
   const refB = bv.annual ? (bv.refs || []).find((r) => r.key === 'budget') : null;
   const refT3 = bv.annual && !acqOn ? (bv.refs || []).find((r) => r.key === 'ann3') : null;   // last 3 actual months × 4, right after the T12
   const cols = { fx: !hide.has('fx'), annual: !hide.has('annual'), refpct: !!refA && !hide.has('refpct'), ref1: !!refA && !hide.has('ref1'), ref3: !!refT3 && !hide.has('ref3'), ref2: !!refB && !hide.has('ref2'), punit: !hide.has('punit'), note: !hide.has('note') };
-  const nRef = (cols.refpct ? 1 : 0) + (cols.ref1 ? 1 : 0) + (cols.ref3 ? 1 : 0) + (cols.ref2 ? 1 : 0);
+  cols.overall = !hide.has('overall');
+  const nRef = (cols.overall ? 1 : 0) + (cols.refpct ? 1 : 0) + (cols.ref1 ? 1 : 0) + (cols.ref3 ? 1 : 0) + (cols.ref2 ? 1 : 0);
   const refBlank = '<td></td>'.repeat(nRef);   // the reference columns on rows that have no reference figure
   const span = 2 + (cols.fx ? 1 : 0) + monthIdx.length + (cols.annual ? 1 : 0) + nRef + (cols.punit ? 1 : 0) + (cols.note ? 1 : 0);
   const actIdx = new Set((bv.actualMonths || []).filter((a) => a.index >= 0).map((a) => a.index));   // months locked to posted actuals (declared BEFORE the header row uses it)
@@ -1830,7 +1902,7 @@ function gridHtml(bv, totals) {
     const v = (kind === 'total' ? refA.totals[code] : refA.byGl[code]) || 0;
     return `<td class="ref t12pct${manual ? ' man' : ''}" ${kind === 'total' ? '' : `data-t12pct="${code}"`} data-t12="${v}" title="${kind === 'total' ? 'Subtotal' : 'Line'} total vs its trailing-12 actual of ${money(v)}${manual ? ' — this line is hand-adjusted' : ''}">${t12PctText(ann, v)}</td>`;
   };
-  const refCells = (code, kind, ann, manual) => `${cols.refpct ? pctCell(code, kind, ann, manual) : ''}${cols.ref1 ? refCell(refA, code, kind) : ''}${cols.ref3 ? refCell(refT3, code, kind) : ''}${cols.ref2 ? refCell(refB, code, kind) : ''}`;
+  const refCells = (code, kind, ann, manual) => `${cols.overall ? (kind === 'total' ? overallCellHtml(overallTotalOf(code, linesByGl, totals, refA), null) : overallCellHtml(overallOf(code, linesByGl.get(code), linesByGl, totals, refA), linesByGl.get(code))) : ''}${cols.refpct ? pctCell(code, kind, ann, manual) : ''}${cols.ref1 ? refCell(refA, code, kind) : ''}${cols.ref3 ? refCell(refT3, code, kind) : ''}${cols.ref2 ? refCell(refB, code, kind) : ''}`;
   // per-GL history (Troy 2026-11-04): the prior trailing-12 and the current-year budget by
   // month, unfolded under a GL on click — reference rows, never part of the budget
   if (!S.histOpenSet) S.histOpenSet = new Set(JSON.parse(localStorage.getItem('bt-hist') || '[]'));
@@ -1852,7 +1924,7 @@ function gridHtml(bv, totals) {
   })();
   const histOpen = (code) => S.histAll || S.histOpenSet.has(code);
   const rows = [];
-  rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th${actIdx.has(i) ? ' class="actcol" title="Locked to posted actuals — an edit here corrects the posted figure"' : ''}>${labels[i]}${actIdx.has(i) ? ' ✓' : ''}</th>`).join('')}${cols.annual ? `<th>${bv.annual ? bv.budget.year : 'Year 1'}</th>` : ''}${cols.refpct ? `<th title="Blended increase: the ${bv.budget.year} total vs ${acqOn ? 'UW for the year (' + esc(refA.period) + ')' : 'the trailing-12 actual (' + esc(refA.period) + ')'}">Δ% ${acqOn ? 'UW' : 'T12'}</th>` : ''}${cols.ref1 ? `<th title="${esc(refA.period)}">${acqOn ? 'UW' : 'T12'}</th>` : ''}${cols.ref3 ? `<th title="T3 annualized — ${esc(refT3.period)}">T3 ann</th>` : ''}${cols.ref2 ? `<th title="${esc(refB.period)}">${esc(refB.label.replace(/^budget /i, 'Bud ').replace(/ budget$/i, ' bud'))}</th>` : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
+  rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th${actIdx.has(i) ? ' class="actcol" title="Locked to posted actuals — an edit here corrects the posted figure"' : ''}>${labels[i]}${actIdx.has(i) ? ' ✓' : ''}</th>`).join('')}${cols.annual ? `<th>${bv.annual ? bv.budget.year : 'Year 1'}</th>` : ''}${cols.overall ? `<th title="What each line comes to over the year as it stands, hand-typed cells included: a ratio line as its % of what its formula is tied to (vacancy of GPR, delinquency of net rental, collections of the prior month's delinquency, the fee of income, burden of wages…), every other line as its growth over ${acqOn ? 'UW' : 'the T12'}. Hover a cell for its basis.">Overall</th>` : ''}${cols.refpct ? `<th title="Blended increase: the ${bv.budget.year} total vs ${acqOn ? 'UW for the year (' + esc(refA.period) + ')' : 'the trailing-12 actual (' + esc(refA.period) + ')'}">Δ% ${acqOn ? 'UW' : 'T12'}</th>` : ''}${cols.ref1 ? `<th title="${esc(refA.period)}">${acqOn ? 'UW' : 'T12'}</th>` : ''}${cols.ref3 ? `<th title="T3 annualized — ${esc(refT3.period)}">T3 ann</th>` : ''}${cols.ref2 ? `<th title="${esc(refB.period)}">${esc(refB.label.replace(/^budget /i, 'Bud ').replace(/ budget$/i, ' bud'))}</th>` : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
   const units = Number(bv.budget.inputs?.units) || 1;
   const GRAND = new Set(['5500', '7279', '7280', '8200', '9000']);
   // condensed (collapsed) sections — locked via localStorage across renders
@@ -2038,7 +2110,7 @@ function gridHtml(bv, totals) {
         <td class="code"></td><td class="name">NET DELINQUENCY (5035 + 5036)</td>${cols.fx ? '<td></td>' : ''}
         ${monthIdx.map((i) => `<td class="${nm[i] < 0 ? 'neg' : ''}">${money(nm[i])}</td>`).join('')}
         ${cols.annual ? `<td class="${nt < 0 ? 'neg' : ''}"><b>${money(nt)}</b></td>` : ''}
-        ${cols.refpct ? `<td class="ref">${r1 ? `${((nt - r1) / Math.abs(r1) * 100 >= 0 ? '+' : '')}${((nt - r1) / Math.abs(r1) * 100).toFixed(1)}%` : ''}</td>` : ''}${cols.ref1 ? rc(refA) : ''}${cols.ref3 ? rc(refT3) : ''}${cols.ref2 ? rc(refB) : ''}
+        ${cols.overall ? (() => { const g = ((linesByGl.get('4994') || {}).months || []).reduce((a, v) => a + (Number(v) || 0), 0); return overallCellHtml(Math.abs(g) > 0.5 ? { v: Math.abs(nt) / g, kind: 'ratio', what: 'GPR' } : null, null); })() : ''}${cols.refpct ? `<td class="ref">${r1 ? `${((nt - r1) / Math.abs(r1) * 100 >= 0 ? '+' : '')}${((nt - r1) / Math.abs(r1) * 100).toFixed(1)}%` : ''}</td>` : ''}${cols.ref1 ? rc(refA) : ''}${cols.ref3 ? rc(refT3) : ''}${cols.ref2 ? rc(refB) : ''}
         ${cols.punit ? `<td>${money(nt / units)}</td>` : ''}${cols.note ? '<td></td>' : ''}</tr>`);
     }
   }
@@ -2353,6 +2425,7 @@ function openColsMenu(anchorBtn, labels) {
     ${item('fx', 'Fx (formula chip)')}
     ${labels.map((lb, i) => item('m' + i, lb)).join('')}
     ${item('annual', S.bv && S.bv.annual ? `${S.bv.budget.year} total` : 'Year 1 total')}
+    ${item('overall', 'Overall % (what each line comes to)')}
     ${S.bv && S.bv.annual ? item('refpct', 'Δ% vs T12') + item('ref1', 'T12 actuals') + item('ref3', 'T3 annualized') + item('ref2', 'CY budget') : ''}
     ${item('punit', '$/Unit')}
     ${item('note', 'Note')}
