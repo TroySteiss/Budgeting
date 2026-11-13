@@ -2069,3 +2069,31 @@ describe('the delinquency chain (Troy 2026-11-12: PPC on DQ; recovery on 60-day 
     expect(new Map(dqChain(other).map((l) => [l.gl_code, l.months])).get('6309')![0]).toBe(3);
   });
 });
+
+describe('the T12 before closing = the seller\'s own dollars by our GLs (Troy 2026-11-12: "the UW workbooks ... have all of the prior year seller financials")', () => {
+  const pc = (gl: string) => ({ '6614': '12', '6622': '12', '6620': '12', '6116': '8', '5003': 'loss' } as Record<string, string>)[gl] || '';
+  it('seller category month × our GL\'s share of that category in the tied-out 2026 budget; posted months stay', () => {
+    const cal = { '6614': [7000, 7000, 7000, 7000, 7000, 7000, 7000, 7000, 5243, 8704, 7000, 7000] as Months };
+    const seller = { '12': [30663, 32297, 27851, 26301, 26656, 20251, 19465, 21877, 23136, 20639, 26772, 31881] as Months, 'loss': Array(12).fill(-1000) as Months };
+    const yr = (t: number) => Array(12).fill(t / 12) as Months;
+    const plan = { '6614': yr(90000), '6622': yr(60000), '6620': yr(150000), '5003': yr(-12000) };    // utilities: sewer 30%, water 20%
+    const filled = [0, 1, 2, 3, 4, 5, 6, 7, 10, 11];
+    const f = sellerFillT12(cal, filled, seller, pc, plan);
+    expect(f.dollars).toBe(true);
+    expect(f.cal['6614'][0]).toBe(r2n(30663 * 0.3));
+    expect(f.cal['6622'][0]).toBe(r2n(30663 * 0.2));                          // budgeted, never posted: still on the T12
+    expect(f.cal['6614'][8]).toBe(5243);                                       // posted months untouched
+    expect(f.cal['5003'][0]).toBe(-1000);                                      // contra lines keep their sign
+    const util = (m: number) => ['6614', '6622', '6620'].reduce((a, gl) => a + f.cal[gl][m], 0);
+    expect(util(0)).toBeCloseTo(30663, 0);                                     // the seller's utilities that month
+    expect(f.shaped.sort()).toEqual(['12', 'loss']);
+  });
+  it('the split follows the 2026 budget month by month: snow only takes R&M dollars where the budget has snow', () => {
+    const pc2 = (gl: string) => ({ '6934': '13', '6720': '13' } as Record<string, string>)[gl] || '';
+    const snow = [1000, 1000, 500, 0, 0, 0, 0, 0, 0, 0, 500, 1000] as Months, other = Array(12).fill(1000) as Months;
+    const f = sellerFillT12({}, [0, 6], { '13': Array(12).fill(4000) as Months }, pc2, { '6934': snow, '6720': other });
+    expect(f.cal['6934'][0]).toBe(2000);                                       // January: half of R&M
+    expect(f.cal['6934'][6]).toBe(0);                                          // July: no snow
+    expect(f.cal['6720'][6]).toBe(4000);
+  });
+});

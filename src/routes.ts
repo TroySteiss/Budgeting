@@ -965,7 +965,11 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
       const idx = [...t12.dead, ...(t12.startup || [])].map((n) => MONS.indexOf(String(n).slice(0, 3))).filter((i) => i >= 0);
       y1Plan.t12Filled = idx;
       if (y1Plan.seller) {
-        const f = sellerFillT12(actualCal, idx, y1Plan.seller, (gl) => String(coaMap.get(gl)?.pcode || ''));
+        // the seller's own dollars, split over our GLs by the tied-out 2026 acquisition budget (Troy 2026-11-12)
+        // the 2026 budget's months laid on the calendar (its 12 ownership months cover each calendar month once)
+        const planCal: Record<string, Months> = {};
+        for (const l of y1Plan.lines) if (feedsNoiGl(l.gl_code)) { const m = zero12(); l.months.forEach((v, i) => { m[(y1Plan!.startMonth - 1 + i) % 12] = Number(v) || 0; }); planCal[l.gl_code] = m; }
+        const f = sellerFillT12(actualCal, idx, y1Plan.seller, (gl) => String(coaMap.get(gl)?.pcode || ''), planCal);
         actualCal = f.cal; t12SellerShaped = f.shaped;
       }
     }
@@ -1015,8 +1019,9 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
       payrollTpl = { id: pt.id, label: pt.label, period: pt.period, total: Number(pt.data?.total) || 0, cal };
     }
     const units = Number(budget.inputs?.units) || 0;
-    const t12Label = t12 && t12.dead.length ? (t12SellerShaped.length ? `T12 actuals (${t12.liveMonths} mo posted; the rest on the seller T12's pattern)` : `T12 actuals (${t12.liveMonths} mo annualized)`) : 'T12 actuals';
-    if (actualCal && t12) refs.push({ key: 'actual', label: t12Label, period: t12.period || sa?.period || '', ...refColumn(actualCal) });
+    const t12Label = t12 && t12.dead.length ? (t12SellerShaped.length ? `T12 actuals (${t12.liveMonths} mo posted + the seller's actuals before closing)` : `T12 actuals (${t12.liveMonths} mo annualized)`) : 'T12 actuals';
+    const t12Period = t12 && t12SellerShaped.length ? String(t12.period || '').replace(/ · \d+ mo annualized$/, ` · ${t12.liveMonths} mo posted + seller actuals`) : (t12?.period || '');
+    if (actualCal && t12) refs.push({ key: 'actual', label: t12Label, period: t12Period || sa?.period || '', ...refColumn(actualCal) });
     // T3 annualized (Troy 2026-11-09): the last three actual months × 4, shown right after the T12
     // in the grid and on the compare card — a reference column, never an input
     if (actualCal && t12) {

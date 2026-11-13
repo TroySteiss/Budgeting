@@ -228,8 +228,46 @@ function annualizeDead(t: Trailing12, firstKey: number, excludeStartup = STARTUP
    contra income, insurance, fee, taxes and payroll stay on the flat average, as their budgets do. Missed / catch-up
    billing in the seller's months is smoothed first. Live (posted) months never change. Pure. */
 export const SELLER_FILL_PCODES = new Set(['4', '5', '9', '11', '12', '13']);
-export function sellerFillT12(cal: Record<string, Months>, filledIdx: number[], seller: Record<string, Months> | null | undefined, pcodeOf: (gl: string) => string): { cal: Record<string, Months>; shaped: string[] } {
+/* THE SELLER'S OWN DOLLARS (Troy 2026-11-12: "There are indeed T12 numbers that you very easily could make work very
+   well. That is like the sole reason I gave you all of the UW workbooks - they have all of the prior year seller
+   financials in there. You also have the prior year financials saved down already - that would be from the 2026
+   budget, which is already tied out"). With `plan` (the 2026 acquisition budget's Year-1 total by GL, tied out to the
+   UW) the filled months are the seller's ACTUAL dollars for the GL's category that month (the seller T12 saved with
+   that budget, coded by category through the UW book), split over our GLs by the 2026 budget's mix IN THAT CALENDAR
+   MONTH (so snow only takes R&M dollars in the months the 2026 budget has snow): filled month = seller[p][m] ×
+   plan[gl][m] / plan[p][m]; a month the 2026 budget has nothing for the category uses its year mix. Every category the seller carried, any GL the 2026 budget has (posted or
+   not). A category with no seller months, or no 2026 budget total, keeps the live average. Live months never move. */
+export function sellerFillT12(cal: Record<string, Months>, filledIdx: number[], seller: Record<string, Months> | null | undefined, pcodeOf: (gl: string) => string,
+  /** the 2026 acquisition budget by GL, CALENDAR months (Jan..Dec) */
+  plan?: Record<string, Months> | null): { cal: Record<string, Months>; shaped: string[]; dollars?: boolean } {
   if (!seller || !filledIdx.length) return { cal, shaped: [] };
+  if (plan && Object.keys(plan).length) {
+    const catTot: Record<string, number> = {}; const catM: Record<string, Months> = {};
+    for (const [gl, m] of Object.entries(plan)) {
+      const p = pcodeOf(gl); if (!p) continue;
+      const cm = (catM[p] = catM[p] || zero12());
+      m.forEach((v, i) => { cm[i] += Number(v) || 0; });
+      catTot[p] = (catTot[p] || 0) + m.reduce((a, v) => a + (Number(v) || 0), 0);
+    }
+    const usable = (p: string) => !!p && !!seller[p] && seller[p].some((v) => v) && Math.abs(catTot[p] || 0) > 0.5;
+    const out: Record<string, Months> = {}; const shaped = new Set<string>();
+    const gls = new Set([...Object.keys(cal), ...Object.keys(plan).filter((gl) => usable(pcodeOf(gl)))]);
+    for (const gl of gls) {
+      const p = pcodeOf(gl);
+      const row = cal[gl] ? ([...cal[gl]] as Months) : zero12();
+      if (usable(p)) {
+        const pm = plan[gl] || zero12();
+        const yearShare = pm.reduce((a, v) => a + (Number(v) || 0), 0) / catTot[p];
+        for (const m of filledIdx) {
+          const share = Math.abs(catM[p][m]) > 0.5 ? (Number(pm[m]) || 0) / catM[p][m] : yearShare;
+          row[m] = r2((seller[p][m] || 0) * share);
+        }
+        shaped.add(p);
+      }
+      if (row.some((v) => v)) out[gl] = row;
+    }
+    return { cal: out, shaped: [...shaped], dollars: true };
+  }
   const filled = new Set(filledIdx);
   const liveIdx = [...Array(12).keys()].filter((m) => !filled.has(m));
   if (!liveIdx.length) return { cal, shaped: [] };
