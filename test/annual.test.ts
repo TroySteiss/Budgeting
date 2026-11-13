@@ -2290,7 +2290,39 @@ describe('per occupied unit (change spec 2026-11-13 §5.2: the pest fee at $5 ×
   });
 });
 
-import { scalePlanLines, applyPlanSlice } from '../shared/annual.js';
+import { scalePlanLines, taxFloor } from '../shared/annual.js';
+describe('taxes never go down (Troy 2026-11-13: "Taxes should have a minimum 3% increase over T12. It should never decrease.")', () => {
+  const ln = (gl: string, months: Months, extra: Partial<BudgetLine> = {}): BudgetLine => ({ gl_code: gl, months, driver: { method: 'baseline', reTax: { branch: 'A' } } as any, override: false, note: '', ...extra });
+  const flat = (v: number) => Array(12).fill(v) as Months;
+  // ECND: the bill rule came to 196,920 on a T12 of 245,737
+  const t12 = { '6116': flat(245737 / 12), '6117': flat(100), '6113': zero12() };
+  it('a tax line under the T12 x 1.03 is raised to it, flat stays flat, never under after rounding', () => {
+    const out = taxFloor([ln('6116', flat(16410), { round: 5 })], t12)[0];
+    expect(sum(out.months)).toBeGreaterThanOrEqual(245737 * 1.03 - 0.01);
+    expect(sum(out.months) - 245737 * 1.03).toBeLessThan(12 * 5);
+    expect(new Set(out.months).size).toBe(1);
+    expect(out.months[0] % 5).toBe(0);
+    expect((out.driver as any).taxFloor).toMatchObject({ t12: 245737, was: 196920, pct: 0.03 });
+    expect((out.driver as any).reTax).toEqual({ branch: 'A' });                         // the formula's own driver kept
+  });
+  it('a shaped line keeps its pattern; lines at or above the floor, locked lines and lines with no T12 are left alone', () => {
+    const shaped = taxFloor([ln('6117', [0, 0, 600, 0, 0, 0, 0, 0, 600, 0, 0, 0] as Months)], t12)[0];
+    expect(shaped.months[2]).toBe(shaped.months[8]);
+    expect(shaped.months[0]).toBe(0);
+    expect(sum(shaped.months)).toBeCloseTo(1236, 1);
+    const above = ln('6116', flat(30000));
+    expect(taxFloor([above], t12)[0]).toBe(above);
+    const locked = ln('6116', flat(100), { override: true });
+    expect(taxFloor([locked], t12)[0].months[0]).toBe(100);
+    const none = ln('6113', flat(10));
+    expect(taxFloor([none], t12)[0]).toBe(none);
+    expect(taxFloor([none], null)[0]).toBe(none);
+  });
+  it('a stale floor mark is dropped when the formula clears the floor on its own', () => {
+    const was = ln('6116', flat(30000), { driver: { method: 'baseline', taxFloor: { t12: 1, floor: 1, was: 0 } } as any });
+    expect((taxFloor([was], t12)[0].driver as any).taxFloor).toBeUndefined();
+  });
+});
 describe('a category tied to UW on the acquisition plan (Troy 2026-11-13: "or tie any categories to UW")', () => {
   const coaT = [{ code: '6601', pcode: '13' }, { code: '6602', pcode: '13' }, { code: '6603', pcode: '13' }, { code: '6101', pcode: '9' }]
     .map((a) => ({ ...a, name: a.code, kind: 'detail', curve: 'flat', active: true })) as unknown as CoaAccount[];

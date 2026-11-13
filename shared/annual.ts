@@ -40,7 +40,8 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-13f';   // f: a new acquisition's typed DQ / collection / recovery / fee % win
+export const ENGINE_VERSION = '2026-11-13g';   // g: taxes at least the T12 x 1.03, never down
+// earlier: f: a new acquisition's typed DQ / collection / recovery / fee % win
 // earlier: e: pest fee per occupied unit (spec §5.2)
 // earlier: d: months from another property's curve (shapeFromGl); fee off the acquisition plan
 // earlier: c: RE tax from the bill inputs (spec §2), accrual as the fallback
@@ -576,6 +577,31 @@ export function taxAccrual(cal: Months | null | undefined, lastMonth: number): n
     if (a > 0 && b > 0 && Math.abs(a - b) <= 0.01 * a) return r2(a);
   }
   return null;
+}
+/* TAXES NEVER GO DOWN (Troy 2026-11-13: "Taxes should have a minimum 3% increase over T12. It should never decrease."):
+   every tax line (6113 personal property, 6116 real estate, 6117 franchise) budgets at least its trailing-12 x 1.03,
+   whatever built it (the bill, the accrual, the acquisition plan, a row formula). A line under the floor is scaled up to
+   it, its monthly pattern kept (a flat line stays flat), months rounded UP to the line's MROUND so the year never lands
+   under. Hand-typed (locked) lines are never moved. No trailing-12 (or a net credit) = no floor. Pure. */
+export const TAX_FLOOR_PCT = 0.03;
+export const TAX_FLOOR_GLS = new Set(['6113', '6116', '6117']);
+export function taxFloor(lines: BudgetLine[], t12: Record<string, Months> | null | undefined, pct = TAX_FLOOR_PCT): BudgetLine[] {
+  return lines.map((l) => {
+    if (!TAX_FLOOR_GLS.has(l.gl_code)) return l;
+    const d = (l.driver || {}) as any;
+    const { taxFloor: _old, ...d0 } = d;
+    const clean = _old ? { ...l, driver: d0 as Driver } : l;
+    if (l.override) return clean;
+    const t = sum((t12?.[l.gl_code] || zero12()) as Months);
+    if (!(t > 0)) return clean;
+    const floor = r2(t * (1 + pct));
+    const cur = sum(l.months);
+    if (cur >= floor - 0.005) return clean;
+    const mult = Number(l.round) || Number(d.mult) || 0;
+    const up = (v: number) => (mult > 0 ? Math.ceil(v / mult - 1e-9) * mult : Math.ceil(v * 100 - 1e-6) / 100);
+    const raw = cur > 0 ? l.months.map((v) => (v * floor) / cur) : Array(12).fill(floor / 12);
+    return { ...l, months: raw.map((v) => r2(up(v)) || 0) as Months, driver: { ...d0, taxFloor: { t12: r2(t), floor, was: r2(cur), pct } } as Driver };
+  });
 }
 /** Per-GL increase factors the template hard-codes. */
 export const TEMPLATE_GL_PCT: Record<string, number> = {
