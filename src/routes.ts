@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, parseReviewApply, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
-  acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
+  acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
   refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
@@ -1598,6 +1598,9 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
     const bl = (inputs.baseline || {}) as any;
     for (const gl of Object.keys(bl.glShape || {})) out.add(gl);
     for (const gl of Object.keys(bl.glGrowth || {})) out.add(gl);
+    // a section formula or section increase % picked on a section header (every history line under it)
+    const secPick = new Set(Object.keys(bl.secGrowth || {}));
+    if (secPick.size) for (const c of lb.coa) if (c.kind === 'detail' && secPick.has(String(c.section))) { const l = ls.find((x) => x.gl_code === c.code); if ((l?.driver as any)?.method === 'baseline') out.add(c.code); }
     for (const [gl, v] of Object.entries(inputs.burdenFromGl || {})) if ((v || []).length) out.add(gl);
     const own = String(lb.budget.property_code || '').toLowerCase();
     const borrowAll = !!inputs.burdenFrom && String(inputs.burdenFrom).toLowerCase() !== own;
@@ -1624,6 +1627,19 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   // standing per-line MROUND re-applies as the final step (not a lock)
   lines = applyRounding(lines);
   lines = overlay(lines);
+  /* FIT TO T12 ON THE PLAN (Troy 2026-11-12: "Need to still be able to fit to curve, smooth, etc"): a line the plan
+     laid over and given a fit % (FIT chip / row menu / section box) leans its months toward its own trailing-12 months —
+     the seller's actuals before closing, posted after — with the plan's year total kept. */
+  if (acq) {
+    const glFit = ((inputs.baseline || {}) as any).glFit || {};
+    lines = lines.map((l) => {
+      const f = Math.min(1, Math.max(0, Number(glFit[l.gl_code]) || 0));
+      const d = l.driver as any;
+      if (!f || l.override || !d?.acq || !lb.actualCal?.[l.gl_code]) return l;
+      const out = fitToT12(l.months, rotate12(lb.actualCal[l.gl_code], Number(inputs.startMonth) || 1), f, l.round || 0);
+      return out ? { ...l, months: out, driver: { ...d, fitT12: Math.round(f * 1000) / 1000 } as any } : l;
+    });
+  }
   // the acquisition plan is laid over every month above: re-tie the delinquency chain to the 5035 it left
   if (acq) lines = dqChain(lines);
   // HAP stays on its own lines (4995 / 4996): Troy 2026-11-12 asked for the separate HAP line back after the fold

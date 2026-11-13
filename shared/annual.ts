@@ -40,7 +40,8 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-12g';   // g: lines with a formula picked on the row are not laid over by the acquisition plan
+export const ENGINE_VERSION = '2026-11-12h';   // h: fit to T12 / section picks work on plan-run acquisitions
+// earlier: g: lines with a formula picked on the row are not laid over by the acquisition plan
 // earlier: f: an acquisition's rent-roll GPR / LTL keep their own months (steps)
 // earlier: e: delinquency chain (PPC on DQ, recovery on 60-day uncollected, collection fee 50%); HAP back on 4995 / 4996
 // earlier: d: acquisition levels move toward the pace since closing (fit), T12 fill follows the seller; c: HAP inside GPR (4994); b: new acquisitions weighted Y1/Y2 by months, shaped by history

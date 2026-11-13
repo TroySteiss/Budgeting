@@ -52,8 +52,10 @@ function acqChip(l, m) {
 }
 function drvMeta(l) {
   const m0 = drvMetaCore(l);
-  if (acqRuns() && l && l.driver && l.driver.acq && !l.override) return acqChip(l, m0);
-  const m = m0;
+  // a plan line keeps its UW chip when smoothed (smoothing locks the months but keeps the formula); the SMOOTH / FIT /
+  // Q-SHIFT chips below ride along (Troy 2026-11-12: "Need to still be able to fit to curve, smooth, etc")
+  const onPlan = acqRuns() && l && l.driver && l.driver.acq && (!l.override || l.driver.smooth);
+  const m = onPlan ? acqChip(l, m0) : m0;
   // smoothing sits ON TOP of the line's formula: the formula keeps its chip, SMOOTH is a second one
   const extra = [];
   if (l && l.driver && l.driver.smooth && l.driver.method !== 'smooth') {
@@ -2444,7 +2446,7 @@ function openApplyFormulaSet(b) {
    every history-based line under it. A row with its own % and any hand-typed line keep theirs. ---- */
 const SEC_PCT_SECTIONS = new Set(['other_income', 'fixed_admin', 'admin', 'corporate_events', 'marketing', 'utilities', 'in_house_maint', 'exterior_cam', 'contract_services', 'rehab_replacement']);
 function secPctBoxHtml(bv, hdr, linesByGl) {
-  if (!bv.annual || !SEC_PCT_SECTIONS.has(hdr.section) || acqRuns()) return '';
+  if (!bv.annual || !SEC_PCT_SECTIONS.has(hdr.section)) return '';
   const bl = (bv.budget.inputs || {}).baseline || {};
   const own = bl.glGrowth || {}, shaped = bl.glShape || {};
   let follow = 0, keep = 0; const shapesNow = new Set();
@@ -2495,7 +2497,7 @@ const fitOfLine = (l) => (l && l.driver ? (l.driver.fit || l.driver.fitT12 || 0)
 const fitEligible = (gl, l) => !!(l && hasT12(gl) && !(l.driver && FIT_SKIP.has(l.driver.method) && !l.override));
 const fitPctOf = (gl, l) => Math.round((((((S.bv && S.bv.budget && S.bv.budget.inputs) || {}).baseline || {}).glFit || {})[gl] ?? fitOfLine(l)) * 100);
 function fitChipHtml(gl, l) {
-  if (acqRuns() || !fitEligible(gl, l)) return '';
+  if (!fitEligible(gl, l)) return '';
   const p = fitPctOf(gl, l);
   return `<button class="drv drv-t12 fitchip${p ? '' : ' off'}" data-fitgl="${esc(gl)}" style="margin-left:3px" title="Fit to T12: lean this line's months ${p ? `${p}% ` : ''}toward its own trailing-12 months — the year total does not change. Click to set.">${p ? `FIT ${p}%` : 'FIT'}</button>`;
 }
@@ -2790,7 +2792,6 @@ function rowT12(gl) { return ((((S.bv || {}).refs || []).find((r) => r.key === '
 /* ---- lines the template dropped (T12 at or under $1,000) ---- */
 function droppedLines(bv) { return (bv.lines || []).filter((l) => !l.override && l.driver && l.driver.method === 'dropped'); }
 function droppedChipHtml(bv) {
-  if (acqRuns()) return '';
   const dr = droppedLines(bv);
   if (!dr.length) return '';
   const tot = dr.reduce((a, l) => a + Math.abs(l.driver.t12 || 0), 0);
