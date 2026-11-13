@@ -10,7 +10,7 @@ import {
   refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
-import { planApply, type ApplyRow, type ApplyPlan } from '../shared/reviewApply.js';
+import { planApply, refileReviewLine, type ApplyRow, type ApplyPlan } from '../shared/reviewApply.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
 import {
@@ -280,6 +280,45 @@ router.post('/review-apply/preview', upload.single('file'), h(async (req, res) =
   }
   res.json({ filename, uploadId, applied, year, rows: f ? rows : undefined, nRows: rows.length, nPush: rows.filter((r) => r.push).length, sites });
 }));
+/* Re-file what the saved workbook already put in as REVIEW lines under Contracts & known costs (refileReviewLine):
+   every budget the workbook was applied to, every REVIEW line from that file whose rows are all set / at-least / add.
+   A save point first on each budget changed. */
+router.post('/review-apply/refile', h(async (req, res) => {
+  const st = await storedReview(Number(req.body?.uploadId) || null);
+  if (!st) return res.status(400).json({ error: 'No review workbook on file' });
+  const user = req.session.username || '';
+  const log: any[] = [];
+  const ids = Array.isArray(req.body?.budgetIds) && req.body.budgetIds.length ? req.body.budgetIds.map(Number) : Object.keys(st.applied || {}).map(Number);
+  for (const id of ids) {
+    const lb = await loadBudget(id);
+    if (!lb) continue;
+    const sm = Number(lb.budget.inputs?.startMonth) || 1;
+    const site = String(lb.budget.property_code).toLowerCase();
+    const rows = st.rows.filter((r) => String(r.site).toLowerCase() === site);
+    let contracts: any[] = [...(lb.budget.inputs?.contracts || [])];
+    const lines = lb.lines.map((l) => ({ ...l }));
+    const entries: any[] = [];
+    for (const ln of lines) {
+      const d: any = ln.driver || {};
+      if (d.method !== 'review' || !d.rev || (d.rev.file && d.rev.file !== st.filename)) continue;
+      const keep = contracts.filter((c) => c && c.gl === ln.gl_code && !c.review);
+      const r = refileReviewLine(ln.gl_code, ln.months, { ...d.rev, file: st.filename }, rows, keep, sm);
+      if (!r) continue;
+      const old = sum(ln.months);
+      contracts = [...contracts.filter((c) => !(c && c.gl === ln.gl_code && c.review)), ...r.contracts];
+      ln.months = r.months; ln.driver = r.driver as any; ln.override = false;
+      entries.push({ gl: ln.gl_code, old: r2(old), new: r2(sum(ln.months)), rows: r.rowIds, contracts: r.contracts.length });
+    }
+    if (!entries.length) { log.push({ budgetId: id, site, changes: [] }); continue; }
+    await captureSnapshot(lb, `Before re-filing review contracts (${st.filename})`, user);
+    await saveLines(lb.budget.id, lines);
+    await query('update budgets set inputs=$2, updated_at=now() where id=$1', [lb.budget.id, JSON.stringify({ ...(lb.budget.inputs || {}), contracts })]);
+    logChange(user, 'ND review re-file contracts', { id: lb.budget.id, site, file: st.filename, changes: entries });
+    log.push({ budgetId: id, site, changes: entries });
+  }
+  res.json({ ok: true, log });
+}));
+
 router.post('/review-apply/apply', h(async (req, res) => {
   // { year, filename, rows (from the preview), picks: [{ budgetId, gls: [...] }] } — re-planned here on the budget as it is now
   // the rows come from the saved workbook (uploadId); a client-held list is the fallback for a dropped file
@@ -1549,13 +1588,29 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
      budget's monthly steps — the plan never lays over them. Their gap to UW shows against the UW target. */
   const rollGls = new Set<string>(acq && Number(inputs.gpr?.baseMonthly) > 0
     ? lb.coa.filter((c) => c.kind === 'detail' && (c.pcode === '1' || c.pcode === 'loss')).map((c) => c.code) : []);
+  /* A LINE PICKED ON THE ROW KEEPS ITS FORMULA (Troy 2026-11-12: "The UW chip applied seems to overwrite everything
+     else. For example, if I use a Minot % of Wages, it does not show that line as changed"): the plan never lays over a
+     line whose formula was chosen for it — a row shape, a typed increase %, a % of wages borrowed from other
+     properties (per line, or the budget-wide pick for the non-wage payroll lines). Its gap to UW shows on the
+     compare card. */
+  const picked = (ls: BudgetLine[]): Set<string> => {
+    const out = new Set<string>(rollGls);
+    const bl = (inputs.baseline || {}) as any;
+    for (const gl of Object.keys(bl.glShape || {})) out.add(gl);
+    for (const gl of Object.keys(bl.glGrowth || {})) out.add(gl);
+    for (const [gl, v] of Object.entries(inputs.burdenFromGl || {})) if ((v || []).length) out.add(gl);
+    const own = String(lb.budget.property_code || '').toLowerCase();
+    const borrowAll = !!inputs.burdenFrom && String(inputs.burdenFrom).toLowerCase() !== own;
+    for (const l of ls) { const d = l.driver as any; if (d?.method === 'burdenRatio' && (d.from || borrowAll)) out.add(l.gl_code); }
+    return out;
+  };
   const overlay = (ls: BudgetLine[]): BudgetLine[] => {
     if (!acq) return ls;
     const a = acq;
     return applyPlanSlice(ls, lb.coa, a.cal, ALL12, (gl) => {
       const p = lb.coaMap.get(gl)?.pcode || '';
       return { trend: a.trend[p] ?? 0, fit: a.fitted.includes(p) ? (inputs.acqFit ?? ACQ_FIT_DEFAULT) : 0, turns: a.turnGls.includes(gl), after: a.afterIdx, hist: a.shaped[p] || null, pace: a.pace[p] ?? null };
-    }, rollGls);
+    }, picked(ls));
   };
   if (lb.annual) lines = clearY1Plan(lines);
   lines = overlay(lines);

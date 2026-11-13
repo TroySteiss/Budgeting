@@ -1,6 +1,6 @@
 /* ND 2027 Budget Review -> Apply (shared/reviewApply.ts): the workbook's Apply Rules on one budget. */
 import { describe, it, expect } from 'vitest';
-import { planApply, type ApplyRow } from '../shared/reviewApply.js';
+import { planApply, refileReviewLine, type ApplyRow } from '../shared/reviewApply.js';
 
 const m12 = (v: number) => Array(12).fill(v);
 const winter = (v: number) => [v, v, v, v, 0, 0, 0, 0, 0, 0, v, v];
@@ -109,5 +109,28 @@ describe('ND review apply plan', () => {
     expect(p.skipped.map((s) => s.rowId)).toEqual(['P1', 'I1', 'N1', 'C1']);
     expect(p.changes[0]).toMatchObject({ gl: '6108', locked: true });
     expect(p.changes[0].flags).toEqual(['replaces a hand-typed line', 'history: booked in 6110 before']);
+  });
+});
+
+describe('re-filing applied REVIEW lines under Contracts & known costs (Troy 2026-11-12: "all new contract items need to be incorporated")', () => {
+  const row = (o: Partial<ApplyRow>): ApplyRow => ({ rowId: 'A1', site: 'cwnd', gl: '6808', glName: '', item: 'Gutter cleaning – Ken\'s Gutters, spring (Apr)', action: 'set', pool: [], months: Array(12).fill(0), total: 0, push: true, firmness: 'bid', basis: '', source: '', contractsRow: '60', historyNote: '', targetGl: '', ...o });
+  const at = (i: number, v: number) => Array(12).fill(0).map((x, k) => (k === i ? v : x));
+  it('set rows become the contracts and the line is rebuilt from them (same numbers)', () => {
+    const rows = [row({ rowId: 'A047', months: at(3, 2678) }), row({ rowId: 'A048', item: 'Gutter cleaning – Ken\'s Gutters, fall (Oct)', months: at(9, 2678) })];
+    const line = [0, 0, 0, 2678, 0, 0, 0, 0, 0, 2678, 0, 0];
+    const r = refileReviewLine('6808', line, { rows: { A047: {}, A048: {} }, file: 'ND 2027 Budget Review_2.xlsx' }, rows, [], 1)!;
+    expect(r.months).toEqual(line);
+    expect(r.contracts.map((c) => c.id)).toEqual(['rv-A047', 'rv-A048']);
+    expect(r.contracts[0].review!.file).toBe('ND 2027 Budget Review_2.xlsx');
+    expect(r.driver.method).toBe('contract');
+  });
+  it('add rows sit on top of what the line was without them; a line with a fee-rate or reclass row stays REVIEW', () => {
+    const add = row({ rowId: 'A9', gl: '6518', action: 'add', item: 'Site SaaS – Vendor', months: Array(12).fill(100) });
+    const r = refileReviewLine('6518', Array(12).fill(600), { rows: { A9: {} } }, [add], [], 1)!;
+    expect(r.months).toEqual(Array(12).fill(600));                     // 500 formula + 100 contract, unchanged
+    expect(r.driver.mode).toBe('add');
+    const rate = row({ rowId: 'R1', gl: '6112', action: 'rate' });
+    expect(refileReviewLine('6112', Array(12).fill(1), { rows: { R1: {} } }, [rate], [], 1)).toBeNull();
+    expect(refileReviewLine('6808', Array(12).fill(1), { rows: { ZZ: {} } }, [], [], 1)).toBeNull();
   });
 });

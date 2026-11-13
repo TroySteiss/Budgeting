@@ -76,6 +76,30 @@ export function rowContracts(r: ApplyRow, file?: string): Contract[] {
   }));
 }
 
+/* RE-FILE AN APPLIED REVIEW LINE UNDER CONTRACTS & KNOWN COSTS (Troy 2026-11-12: "Before you push, all new contract
+   items need to be incorporated"). The workbook went in before contract rows were filed as contracts, so its set /
+   at-least / add rows sit on locked REVIEW lines and Contracts & known costs is empty. For one such line: the line's
+   own review rows (driver.rev.rows) from the saved workbook become contracts (rowContracts) and the line is rebuilt
+   from them exactly as a fresh apply builds it — set / at-least rows replace the line, add rows sit on top of what the
+   line was without them. A line that also carries a fee-rate or reclass row stays a REVIEW line (null). `months` and
+   the result are budget-month order; `keep` = the contracts typed by hand on this GL. */
+export function refileReviewLine(gl: string, months: number[], rev: { rows?: Record<string, any>; file?: string } | null | undefined,
+  rows: ApplyRow[], keep: Contract[], startMonth: number): { contracts: Contract[]; months: Months; driver: Record<string, any>; rowIds: string[] } | null {
+  const ids = Object.keys(rev?.rows || {});
+  const rs = rows.filter((r) => ids.includes(r.rowId) && r.gl === gl);
+  if (!rs.length || rs.length !== ids.length || rs.some((r) => !['set', 'at_least', 'add'].includes(r.action))) return null;
+  const cs = rs.flatMap((r) => rowContracts(r, rev?.file));
+  const allAdd = cs.length > 0 && [...keep, ...cs].every((c) => c.mode === 'add');
+  let prev: { months: Months } | null = null;
+  if (allAdd) {
+    // what the line was without the add rows (the workbook's months are calendar; the budget's start at startMonth)
+    const addCal = zero(); for (const r of rs) r.months.forEach((v, i) => { addCal[i] += Number(v) || 0; });
+    prev = { months: months.map((v, i) => r2((Number(v) || 0) - addCal[(startMonth - 1 + i) % 12])) as Months };
+  }
+  const cl = contractLine([...keep, ...cs], 0, startMonth, prev);
+  return { contracts: cs, months: cl.months, driver: cl.driver, rowIds: rs.map((r) => r.rowId) };
+}
+
 const r2 = (v: number) => Math.round(v * 100) / 100;
 const sum = (m: number[]) => m.reduce((a, v) => a + (v || 0), 0);
 const zero = () => Array(12).fill(0) as number[];

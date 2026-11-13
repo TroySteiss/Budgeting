@@ -1033,6 +1033,15 @@ function renderUploads(el) {
   if (u.parsed) renderUploadPreview(el.querySelector('#up-preview'), u.parsed);
   wireDataOnFile(el);
   { const b = el.querySelector('#rv-open'); if (b) b.addEventListener('click', () => openReviewApply()); }
+  { const b = el.querySelector('#rv-refile'); if (b) b.addEventListener('click', async () => {
+    if (!confirm('Move what the review workbook already put in as REVIEW lines (set / at-least / add rows) under Contracts & known costs on every budget it went into? Each line is rebuilt from its contracts; fee-rate and reclass rows stay. A save point is taken first on each budget.')) return;
+    try {
+      const r = await POST('/review-apply/refile', { uploadId: S.revStored && S.revStored.id });
+      const done = (r.log || []).filter((x) => x.changes.length);
+      alert(done.length ? done.map((x) => `${x.site.toUpperCase()}: ${x.changes.map((c) => `${c.gl} ${money(c.old)} → ${money(c.new)} (${c.rows.join(', ')})`).join('; ')}`).join(String.fromCharCode(10)) : 'Nothing to re-file: no REVIEW line from this workbook is made only of set / at-least / add rows.');
+      S.revStored = undefined; render();
+    } catch (e) { alert(e.message || String(e)); }
+  }); }
 }
 /* ---- the ND budget review workbook, kept on the Data page (Troy 2026-11-12: "I need to be able to drop it into
    data once, not redrop the same sheet"): dropped once, saved like any upload; this card names the newest one, the
@@ -1046,7 +1055,7 @@ function reviewStoredHtml() {
   return `<div class="card">
     <div class="row" style="justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap">
       <h2 style="margin:0">ND budget review workbook</h2>
-      <button class="btn" id="rv-open" title="Plan the saved workbook's Apply tab on each site's budget, tick what goes in, apply (a save point first)">Preview &amp; apply…</button>
+      <span>${applied.length ? `<button class="btn secondary" id="rv-refile" title="Move what this workbook already put in as REVIEW lines (set / at-least / add rows) under Contracts &amp; known costs on every budget it went into, rebuilt from those contracts like a fresh apply. Fee-rate and reclass rows stay REVIEW lines. A save point first on each budget.">Re-file contracts</button> ` : ''}<button class="btn" id="rv-open" title="Plan the saved workbook's Apply tab on each site's budget, tick what goes in, apply (a save point first)">Preview &amp; apply…</button></span>
     </div>
     <p class="muted" style="font-size:12px; margin:6px 0 0"><b>${esc(st.filename)}</b> · saved ${new Date(st.uploadedAt).toLocaleDateString()}${st.uploadedBy ? ` by ${esc(st.uploadedBy)}` : ''} · ${st.rows} rows, ${st.push} to push · drop a newer copy here to replace it.</p>
     <div style="display:flex; flex-wrap:wrap; gap:4px 10px; margin-top:6px; font-size:12px">${st.sites.map((c) => `<span class="${doneSites.has(c) ? 'ok' : 'muted'}" style="margin:0" title="${doneSites.has(c) ? `applied ${applied.filter((a) => String(a.site).toLowerCase() === c).map((a) => `${new Date(a.at).toLocaleDateString()}${a.by ? ` by ${a.by}` : ''} (${(a.gls || []).join(', ')})`).join('; ')}` : 'not applied yet'}">${doneSites.has(c) ? '✓' : '○'} ${esc(c.toUpperCase())}</span>`).join('')}</div>
