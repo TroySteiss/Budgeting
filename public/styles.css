@@ -620,3 +620,11 @@ td.m.drv-rev { background: var(--rev-bg); }
 td.m.rev input, td.ann.rev input { color: var(--rev) !important; font-weight: 800 !important; }
 td.m.rev { box-shadow: inset 0 -2px 0 var(--rev); cursor: help; }
 .revkey { color: var(--rev); font-weight: 800; }
+
+/* the returns row under NOI (Troy 2026-11-13: "Line should be distinct") */
+table.grid tr.returns td { background: color-mix(in srgb, var(--good) 14%, var(--panel)); color: var(--good); font-weight: 600; border-top: 2px solid var(--good); border-bottom: 2px solid var(--good); }
+table.grid tr.returns td.neg { color: var(--bad); }
+table.grid tr.returns td.name { white-space: nowrap; }
+table.grid tr.returns .cocview { font-weight: 400; white-space: nowrap; display: inline-flex; gap: 2px; }
+table.grid tr.returns .cocview .rb { padding: 0 5px; font-size: 10.5px; }
+table.grid tr.returns .cocview .rb.on { background: var(--good); color: var(--panel); border-color: var(--good); }

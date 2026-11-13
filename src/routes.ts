@@ -1302,6 +1302,10 @@ function budgetView(lb: LoadedBudget) {
     tieout: computeTieout(lines, lb.coaMap, refOf(lb)),
     monthLabels: monthLabels(lb.budget.year, start),
     kpis: kpis(monthsMap, Number(lb.budget.inputs?.capital) || 0),
+    // the capital the returns row under NOI divides by: the budget's own, else (a new acquisition) the UW capital to close
+    returnsCapital: Number(lb.budget.inputs?.capital) > 0 ? { capital: Number(lb.budget.inputs.capital), from: 'budget' }
+      : lb.y1Plan?.uw?.capital ? { capital: Number(lb.y1Plan.uw.capital), from: 'uw' }
+      : (lb.uw as any)?.assumptions?.capitalToClose ? { capital: Number((lb.uw as any).assumptions.capitalToClose), from: 'uw' } : null,
     // annual: the reference's own months (T12 actuals or CY budget) for the trend chart
     refMonthly: (() => {
       if (!lb.annual) return null;

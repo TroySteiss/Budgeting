@@ -11,6 +11,8 @@ const S = {
   showZero: false,
   // the seller T12 rows under the grid's subtotals (a new acquisition), remembered per browser
   sellerRows: (() => { try { return localStorage.getItem('bt-seller-rows') === '1'; } catch (_) { return false; } })(),
+  // the returns row under NOI: by month ('m') or quarter ('q')
+  cocView: (() => { try { return localStorage.getItem('bt-cocview') || 'm'; } catch (_) { return 'm'; } })(),
   upload: { kind: 'yardi_template', files: [], parsed: null, busy: false, msg: '', err: '' },
   err: '',
   theme: localStorage.getItem('bt-theme') || 'light',
@@ -1637,6 +1639,7 @@ function renderEditor(el) {
   }));
   const payTieBtn = el.querySelector('#paytie-open');
   if (payTieBtn) payTieBtn.addEventListener('click', (e) => { e.stopPropagation(); const codes = Object.keys((S.bv.hist && S.bv.hist.payroll && S.bv.hist.payroll.cal) || {}); const allOpen = codes.every((c) => S.histOpenSet.has(c)); S.histAll = false; if (allOpen) codes.forEach((c) => S.histOpenSet.delete(c)); else codes.forEach((c) => S.histOpenSet.add(c)); localStorage.setItem('bt-hist', JSON.stringify([...S.histOpenSet])); render(); });
+  el.querySelectorAll('[data-cocview]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); S.cocView = b.dataset.cocview; try { localStorage.setItem('bt-cocview', S.cocView); } catch (_) { /* private mode */ } render(); }));
   const sellerBtn = el.querySelector('#seller-rows');
   if (sellerBtn) sellerBtn.addEventListener('click', (e) => { e.stopPropagation(); S.sellerRows = !S.sellerRows; try { localStorage.setItem('bt-seller-rows', S.sellerRows ? '1' : ''); } catch (_) { /* private mode */ } render(); });
   const histAllBtn = el.querySelector('#hist-all');
@@ -1882,6 +1885,33 @@ function gridHtml(bv, totals) {
         ${refCells(a.code, 'total', ann, false)}
         ${cols.punit ? `<td>${money(ann / units)}</td>` : ''}
         ${cols.note ? '<td></td>' : ''}</tr>`);
+      /* RETURNS UNDER NOI (Troy 2026-11-13: "Under NOI line, I need to be able to see what returns we are making per
+         quarter or month (Annualized accordingly). Line should be distinct"): cash-on-cash, annualized — each month
+         (NOI − interest − principal) × 12 ÷ capital, each quarter × 4, the year as is. Live with every edit. */
+      if (a.code === '7280') {
+        const cap = Number(bv.returnsCapital && bv.returnsCapital.capital) || 0;
+        const intM = totals.get('7315') || Array(12).fill(0);
+        const prinM = Array(12).fill(0);
+        for (const l of bv.lines || []) { const n = Number(l.gl_code); if (n >= 3080 && n <= 3091) l.months.forEach((v, i) => { prinM[i] += Math.abs(v || 0); }); }
+        const cf = m.map((v, i) => (v || 0) - (intM[i] || 0) - prinM[i]);
+        const cfY = sumM(cf);
+        const pct = (v) => `${(v * 100).toFixed(2)}%`;
+        const byQ = S.cocView === 'q';
+        const toggle = `<span class="cocview">${['m', 'q'].map((k) => `<button class="rb${(byQ ? 'q' : 'm') === k ? ' on' : ''}" data-cocview="${k}" title="${k === 'm' ? 'By month: each month × 12' : 'By quarter: each quarter × 4'}">${k === 'm' ? 'mo' : 'qtr'}</button>`).join('')}</span>`;
+        const capTxt = cap ? `$${money(cap)} capital${bv.returnsCapital.from === 'uw' ? ' (UW capital to close)' : ''}` : '';
+        const cells = !cap ? `<td colspan="${monthIdx.length}" class="l muted">no capital on file — set Capital under Assumptions</td>`
+          : byQ ? [0, 1, 2, 3].map((q) => {
+            const vis = monthIdx.filter((i) => Math.floor(i / 3) === q).length;
+            if (!vis) return '';
+            const qcf = cf[q * 3] + cf[q * 3 + 1] + cf[q * 3 + 2];
+            return `<td colspan="${vis}" class="${qcf < 0 ? 'neg' : ''}" title="Q${q + 1}: cash flow $${money(qcf)} × 4 ÷ ${capTxt}">${pct((qcf * 4) / cap)}</td>`;
+          }).join('')
+          : monthIdx.map((i) => `<td class="${cf[i] < 0 ? 'neg' : ''}" title="${labels[i]}: NOI $${money(m[i])} − interest $${money(intM[i] || 0)} − principal $${money(prinM[i])} = $${money(cf[i])} × 12 ÷ ${capTxt}">${pct((cf[i] * 12) / cap)}</td>`).join('');
+        rows.push(`<tr class="returns" title="Cash-on-cash return, annualized: (NOI − interest − principal) ÷ capital. Months × 12, quarters × 4; the year column is the year itself.${cap ? ' ' + capTxt + '.' : ''}">
+          <td class="code">CoC</td><td class="name" title="Cash-on-cash return, annualized">CASH-ON-CASH (annualized)${cols.fx ? '' : ' ' + toggle}</td>${cols.fx ? `<td>${toggle}</td>` : ''}
+          ${cells}
+          ${cols.annual ? `<td class="${cfY < 0 ? 'neg' : ''}"><b>${cap ? pct(cfY / cap) : ''}</b></td>` : ''}${refBlank}${cols.punit ? '<td></td>' : ''}${cols.note ? '<td></td>' : ''}</tr>`);
+      }
       // the seller T12 by UW category under the subtotal it belongs to (a new acquisition)
       const sellerAt = SELLER_AT[a.code];
       const sh = bv.hist && bv.hist.seller;
