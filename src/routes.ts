@@ -7,7 +7,7 @@ import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayro
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
   acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, acqDelinquency, applyT12Adjust, FIXED_ANNUAL_GLS, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
-  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, scalePlanLines, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
 import { planApply, refileReviewLine, type ApplyRow, type ApplyPlan } from '../shared/reviewApply.js';
@@ -1685,14 +1685,20 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   const overlay = (ls: BudgetLine[]): BudgetLine[] => {
     if (!acq) return ls;
     const a = acq;
-    return applyPlanSlice(ls, lb.coa, a.cal, ALL12, (gl) => {
+    const laid = applyPlanSlice(ls, lb.coa, a.cal, ALL12, (gl) => {
       const p = lb.coaMap.get(gl)?.pcode || '';
       return { trend: a.trend[p] ?? 0, fit: a.fitted.includes(p) ? (inputs.acqFit ?? ACQ_FIT_DEFAULT) : 0, turns: a.turnGls.includes(gl), after: a.afterIdx, hist: a.shaped[p] || null, pace: a.pace[p] ?? null };
     }, picked(ls));
+    /* A CATEGORY TIED TO UW (Troy 2026-11-13: "or tie any categories to UW"): "tie" on the compare card scales the
+       category's PLAN lines by one factor (inputs.acqTie[pcode]) so the category lands on its target. Lines off the
+       plan, contracts and locked lines keep their own numbers; only lines the plan laid over in this pass move. */
+    return scalePlanLines(ls, laid, (gl) => String(lb.coaMap.get(gl)?.pcode || ''), (inputs as any).acqTie);
   };
   // a new acquisition's delinquency chain from what has posted (acqDelinquency), after each overlay (Troy 2026-11-13)
   const planRecovery = y1 ? y1.lines.filter((l) => l.gl_code === '5110').reduce((a, l) => a + sum(l.months), 0) : 0;
-  const acqDq = (ls: BudgetLine[]): BudgetLine[] => (acq ? acqDelinquency(ls, lb.coa, lb.actualCal, acqLive, planRecovery) : ls);
+  const acqDq = (ls: BudgetLine[]): BudgetLine[] => (acq ? acqDelinquency(ls, lb.coa, lb.actualCal, acqLive, planRecovery, {
+    dqPct: (inputs.pctGpr as any)?.['5035'] ?? null, collectPct: inputs.collectPct ?? null, recoveryPct: (inputs as any).recoveryPct ?? null, feePct: (inputs as any).collectionFeePct ?? null,
+  }) : ls);
   if (lb.annual) lines = clearY1Plan(lines);
   lines = acqDq(overlay(lines));
   lines = applyDependentPasses(lb, lines, inputs);
@@ -1711,7 +1717,9 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   if (acq) {
     const glFit = ((inputs.baseline || {}) as any).glFit || {};
     lines = lines.map((l) => {
-      const f = Math.min(1, Math.max(0, Number(glFit[l.gl_code]) || 0));
+      // the row's fit, else a formula set's rule fit — the engine's own order (fitOf); a set saved from a plan-run
+      // budget carries its plan-line fits on the rules (Troy 2026-11-13: sets from CWND copied almost nothing)
+      const f = Math.min(1, Math.max(0, Number(glFit[l.gl_code] ?? (inputs.rules as any)?.[l.gl_code]?.fit) || 0));
       const d = l.driver as any;
       if (!f || l.override || !d?.acq || !lb.actualCal?.[l.gl_code]) return l;
       const out = fitToT12(l.months, rotate12(lb.actualCal[l.gl_code], Number(inputs.startMonth) || 1), f, l.round || 0);
@@ -2239,6 +2247,12 @@ router.post('/budgets/:id/copy-formulas', h(async (req, res) => {
   if (!gls.length && !Object.keys(srcFit).length) return res.status(400).json({ error: 'No formula-driven lines in those sections on this budget' });
   const srcSec = (lb.budget.inputs?.baseline as any)?.secGrowth || null;
   const from = `${String(lb.budget.property_code).toUpperCase()} ${lb.budget.year}`;
+  /* the source's off-plan picks in those sections travel too (Troy 2026-11-13), only from a budget run off the
+     acquisition plan: in the copied sections the receiving list becomes the source's; other sections keep their own */
+  const srcPlan = acqPlanOn(lb.budget.inputs, lb.y1Plan);
+  const secGls = new Set(lb.coa.filter((c) => c.kind === 'detail' && sections.includes(String(c.section || ''))).map((c) => c.code));
+  const srcOff = ((lb.budget.inputs as any)?.offPlan || []).map(String).filter((gl: string) => secGls.has(gl));
+  const withOff = (cur: string[] | undefined): string[] => [...new Set([...(cur || []).map(String).filter((gl) => !secGls.has(gl)), ...srcOff])].sort();
   const noiOf = (lines: BudgetLine[]) => r2(sum(rollup(new Map(lines.map((l) => [l.gl_code, l.months]))).get('7280') || zero12()));
   const user = req.session.username || '';
   const budgets: any[] = [];
@@ -2248,6 +2262,11 @@ router.post('/budgets/:id/copy-formulas', h(async (req, res) => {
     const row: any = { id: bid, code: String(t.budget.property_code).toUpperCase(), year: Number(t.budget.year), label: t.budget.label || '' };
     if (!t.annual) { budgets.push({ ...row, skipped: 'not an annual budget' }); continue; }
     const { inputs, changed } = copyFormulas(t.budget.inputs || {}, { rules: srcF.rules, secGrowth: srcSec }, gls, sections, { pct, fallbackRules: loadAnnualRules() as any, fill: srcF.fill, fit: srcFit });
+    if (srcPlan) {
+      const before0 = JSON.stringify([...((t.budget.inputs as any)?.offPlan || [])].map(String).sort());
+      (inputs as any).offPlan = withOff((t.budget.inputs as any)?.offPlan);
+      if (JSON.stringify((inputs as any).offPlan) !== before0) for (const gl of srcOff) if (!changed.includes(gl)) changed.push(gl);
+    }
     const built = buildLines({ ...t, budget: { ...t.budget, inputs } }, inputs, t.lines);
     const before = new Map(t.lines.map((l) => [l.gl_code, l]));
     const moved = built.lines.filter((l) => { const o = before.get(l.gl_code); return !o ? l.months.some((v) => v) : o.months.some((v, i) => Math.abs(v - l.months[i]) >= 0.005); }).length;
@@ -2268,7 +2287,9 @@ router.post('/budgets/:id/copy-formulas', h(async (req, res) => {
     const out = copyFormulas({ rules: data.rules || {}, baseline: { glFit: { ...(data.fit || {}) } } } as BudgetInputs, { rules: srcF.rules, secGrowth: null }, gls, [], { pct, fill: srcF.fill, fit: srcFit });
     // the set keeps fit only on GLs it holds no rule for (a rule carries its own fit)
     const setFit = Object.fromEntries(Object.entries(((out.inputs.baseline as any)?.glFit || {}) as Record<string, number>).filter(([gl, f]) => f > 0 && !out.inputs.rules?.[gl]));
-    if (!dryRun && out.changed.length) await query('update formula_sets set data=$2 where id=$1', [sid, JSON.stringify({ ...data, rules: out.inputs.rules, ...(Object.keys(setFit).length ? { fit: setFit } : {}) })]);
+    const offNext = srcPlan ? withOff(data.offPlan) : data.offPlan;
+    const offMoved = JSON.stringify(offNext || []) !== JSON.stringify(data.offPlan || []);
+    if (!dryRun && (out.changed.length || offMoved)) await query('update formula_sets set data=$2 where id=$1', [sid, JSON.stringify({ ...data, rules: out.inputs.rules, ...(Object.keys(setFit).length ? { fit: setFit } : {}), ...(offNext && offNext.length ? { offPlan: offNext } : {}) })]);
     sets.push({ id: sid, name: s.name, formulas: out.changed.length });
   }
   if (!dryRun) logChange(user, 'copy formulas', { from: id, sections, pct, budgets: budgets.filter((b) => !b.skipped).map((b) => b.id), sets: sets.map((x) => x.id), gls: gls.length });
@@ -2450,9 +2471,73 @@ router.post('/budgets/:id/tie-growth', h(async (req, res) => {
   if (!lb.annual) return res.status(400).json({ error: 'Growth targets are for annual budgets' });
   // a new acquisition's year runs off its Year-1 plan: the plan is laid over every unlocked NOI line as the last
   // step of every build, so moving formulas here would change nothing. Say so instead of doing nothing.
-  if (acqPlanOn(lb.budget.inputs, lb.y1Plan)) return res.status(400).json({ error: 'This budget\'s year comes from the Year-1 (acquisition) plan, tied to UW, so a tie would be undone by the plan. To move a line, type over it (it locks and shows as variance), change the "fit rows to posted actuals" % under Assumptions, or set Year-1 plan to "this budget\'s own formulas". Nothing was changed.' });
   const ref = refOf(lb);
   if (!ref) return res.status(400).json({ error: 'No statement linked to compare to' });
+  /* A NEW ACQUISITION'S YEAR RUNS OFF THE ACQUISITION PLAN (Troy 2026-11-13: "or tie any categories to UW"). The plan is
+     laid over every unlocked NOI line last, so moving formulas would be undone. "tie" here scales the category's plan
+     lines by one factor (inputs.acqTie[pcode], applied in buildLines' overlay) until the category lands on UW × (1 +
+     target). Lines off the plan, contracts and locked lines are not moved; their gap stays as variance. Rent-roll GPR
+     (category 1 with a rent roll, and the GPR lever) still solves the monthly steps below. { clear: true } unties. */
+  if (acqPlanOn(lb.budget.inputs, lb.y1Plan)) {
+    const lever0 = req.body?.lever === 'gpr' ? 'gpr' : 'vacancy';
+    const rollOn = Number(lb.budget.inputs?.gpr?.baseMonthly) > 0;
+    if (key === '7') return res.status(400).json({ error: 'Management fee follows income — set its % under Assumptions' });
+    if (key === 'loss') return res.status(400).json({ error: 'Loss to lease is its own model (rent roll burnoff / flat / ramp) — set it under Assumptions' });
+    const viaSteps = (key === '1' && rollOn) || ((key === 'rental' || key === 'income') && lever0 === 'gpr');
+    if ((key === 'rental' || key === 'income') && lever0 === 'gpr' && !rollOn) return res.status(400).json({ error: 'GPR runs on the acquisition plan here (no rent roll linked), so there are no market-rent steps to solve. Tie with the vacancy lever, or tie the categories. Nothing was changed.' });
+    if (!viaSteps) {
+      const pinputs: BudgetInputs = JSON.parse(JSON.stringify(lb.budget.inputs));
+      const members: string[] = key === 'opex' || key === 'noi' ? GROWTH_EXPENSE_PCODES : key === 'rental' || key === 'income' ? ['3'] : [key];
+      if (!['rental', 'income', 'opex', 'noi'].includes(key) && !(PCODES as readonly string[]).includes(key)) return res.status(400).json({ error: `Unknown subtotal ${key}` });
+      const tie0: Record<string, number> = { ...((pinputs as any).acqTie || {}) };
+      const user0 = req.session.username || '';
+      const build = (t: Record<string, number>): BudgetLine[] => { (pinputs as any).acqTie = t; return buildLines({ ...lb, budget: { ...lb.budget, inputs: pinputs } }, pinputs, lb.lines).lines; };
+      if (req.body?.clear) {
+        const t = { ...tie0 }; for (const p of members) delete t[p];
+        const lines = build(t);
+        await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(pinputs)]);
+        await saveLines(id, lines, true);
+        logChange(user0, 'untie category from UW', { id, pcode: key });
+        return res.json(budgetView((await loadBudget(id))!));
+      }
+      const pct = req.body?.pct != null && req.body.pct !== '' ? Number(req.body.pct) : Number((lb.budget.inputs as any)?.growthTargets?.[key] ?? 0);
+      if (!Number.isFinite(pct)) return res.status(400).json({ error: `No target for ${key}` });
+      const pc = (gl: string) => { const a = lb.coaMap.get(gl); return a?.kind === 'detail' ? String(a.pcode || '') : ''; };
+      const catSum = (ls: BudgetLine[], ps: string[]) => ls.reduce((a, l) => (ps.includes(pc(l.gl_code)) ? r2(a + sum(l.months)) : a), 0);
+      const totOf = (ls: BudgetLine[], code: string) => sum(rollup(new Map(ls.map((l) => [l.gl_code, l.months]))).get(code) || zero12());
+      const planSum = (ls: BudgetLine[]) => ls.reduce((a, l) => (members.includes(pc(l.gl_code)) && !l.override && (l.driver as any)?.acq ? a + sum(l.months) : a), 0);
+      let want: number, measure: (ls: BudgetLine[]) => number;
+      if (key === 'rental') { want = r2(['1', 'loss', '2', '3'].reduce((a, p) => a + (ref.y1[p] || 0), 0) * (1 + pct)); measure = (ls) => totOf(ls, '5070'); }
+      else if (key === 'income') { want = r2(ref.egi * (1 + pct)); measure = (ls) => totOf(ls, '5500'); }
+      else if (key === 'opex') { want = r2(ref.toe * (1 + pct) - catSum(lb.lines, ['7'])); measure = (ls) => catSum(ls, members); }
+      else if (key === 'noi') { const t0 = computeTieout(lb.lines, lb.coaMap, ref); want = r2(t0.egi.budget - ref.noi * (1 + pct) - catSum(lb.lines, ['7'])); measure = (ls) => catSum(ls, members); }
+      else { want = r2((ref.y1[key] || 0) * (1 + pct)); measure = (ls) => catSum(ls, members); }
+      const scaled = (x: number) => { const t = { ...tie0 }; for (const p of members) t[p] = Math.max(0, Math.round((tie0[p] ?? 1) * x * 1e6) / 1e6); return t; };
+      let x = 1;
+      let lines = build(scaled(1));
+      let f = measure(lines);
+      const onPlan = planSum(lines);
+      if (!onPlan) return res.status(400).json({ error: 'Every line in this subtotal is off the acquisition plan, a contract or locked, so there is nothing on the plan to scale. Change those lines on their rows (or put them back on the UW plan). Nothing was changed.' });
+      let slope = onPlan;
+      const tol = Math.max(1, Math.abs(want) * 0.0005);
+      for (let pass = 0; pass < 12 && Math.abs(want - f) > tol; pass++) {
+        const nx = Math.max(0, x + (want - f) / (slope || 1e-9));
+        const nl = build(scaled(nx));
+        const nf = measure(nl);
+        if (Math.abs(nx - x) > 1e-12 && Math.abs(nf - f) > 1e-6) slope = (nf - f) / (nx - x);
+        x = nx; f = nf; lines = nl;
+        if (x === 0) break;
+      }
+      if (Math.abs(want - f) > Math.max(tol, Math.abs(want) * 0.001)) {
+        return res.status(400).json({ error: `Scaling the plan lines does not get this subtotal to ${(pct * 100).toFixed(2)}% over UW (it stops at ${Math.round(f).toLocaleString()} against ${Math.round(want).toLocaleString()}) — the rest sits in lines off the plan, contracts or locked lines. Nothing was changed.` });
+      }
+      (pinputs as any).acqTie = scaled(x);
+      await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(pinputs)]);
+      await saveLines(id, lines, true);
+      logChange(user0, 'tie category to UW (acquisition plan)', { id, pcode: key, pct, target: want, factor: Math.round(x * 1e6) / 1e6 });
+      return res.json(budgetView((await loadBudget(id))!));
+    }
+  }
   const inputs: BudgetInputs = JSON.parse(JSON.stringify(lb.budget.inputs));
   // TIE BASIS (Troy 2026-11-12: "Need an option of which to tie to, T3 or T12. It can be a toggle"): with
   // basis 't3' the % is growth over the T3 annualized (last three actual months x 4). Its targets are kept

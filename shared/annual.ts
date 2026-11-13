@@ -40,7 +40,8 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-13e';   // e: pest fee per occupied unit (spec §5.2)
+export const ENGINE_VERSION = '2026-11-13f';   // f: a new acquisition's typed DQ / collection / recovery / fee % win
+// earlier: e: pest fee per occupied unit (spec §5.2)
 // earlier: d: months from another property's curve (shapeFromGl); fee off the acquisition plan
 // earlier: c: RE tax from the bill inputs (spec §2), accrual as the fallback
 // earlier: b: RE taxes from the current accrual; formula-set growth % no longer pulls plan lines
@@ -855,6 +856,12 @@ export interface FormulaSet {
   /** Row choices (shape, increase %, MROUND) on the GLs whose builders read only these, not the rules:
       payroll (64xx: raises, burden shapes) and 6350. A set that dropped them reset those lines. */
   row?: { glShape?: Record<string, BaselineShape>; glGrowth?: Record<string, number>; glMround?: Record<string, number>; secGrowth?: Record<string, number> };
+  /** A set saved from a budget run off the acquisition plan: the lines it took off the plan (inputs.offPlan). On a
+      receiving budget that also runs off the plan, those lines show their copied formula instead of the UW level —
+      without it a set from CWND changed almost nothing on NRND (Troy 2026-11-13: "Fairly sure not everything is being
+      copied from UW models formula sets"). A set from a budget not on the plan carries none, so it never pulls lines
+      off a receiving budget's plan. */
+  offPlan?: string[];
 }
 /** Methods whose months never take a T12 fit (mirrors the generator's FIT_SKIP). */
 const FIT_NEVER = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest']);
@@ -919,7 +926,8 @@ export function formulaSetFromBudget(lines: BudgetLine[], inputs: BudgetInputs):
   if (Object.keys(rs).length) row.glShape = rs as any;
   if (Object.keys(rg).length) row.glGrowth = rg as any;
   if (Object.keys(rm).length) row.glMround = rm as any;
-  return { rules, settings, ...(Object.keys(fit).length ? { fit } : {}), ...(Object.keys(row).length ? { row } : {}) };
+  const off = ((inputs as any).offPlan || []).map(String).filter((gl: string) => formula.has(gl));
+  return { rules, settings, ...(Object.keys(fit).length ? { fit } : {}), ...(Object.keys(row).length ? { row } : {}), ...(off.length ? { offPlan: off.sort() } : {}) };
 }
 /** Give a budget a formula set: the set's rules and settings replace the budget's own per-GL
     shape / factor / MROUND choices. Dollars, GPR, vacancy average, expirations and every
@@ -939,6 +947,8 @@ export function applyFormulaSet(inputs: BudgetInputs, set: FormulaSet, from: { i
     ...(st.burdenFromGl ? { burdenFromGl: { ...st.burdenFromGl } } : {}),
     ...(st.wageSource ? { wageSource: st.wageSource } : {}),
     ...(st.payrollRaisePct != null ? { payrollRaisePct: st.payrollRaisePct } : {}),
+    // the source's off-plan lines come with it (a plan-run source only); a set without them leaves the budget's own
+    ...(Array.isArray(set.offPlan) ? { offPlan: [...set.offPlan] } : {}),
   } as BudgetInputs;
 }
 
@@ -2289,35 +2299,39 @@ export function reshapeToCurve(months: Months, curve: Months, startMonth: number
      6309 = 50% of the recovery
    then dqChain sets the months. A locked (typed) line is left alone. Nothing posted = the lines are left as they are. */
 export const NET_RENTAL_GLS = (code: string, pcode: string | undefined): boolean => pcode === '1' || pcode === 'loss' || pcode === '2' || ['5031', '5032', '5033', '5034'].includes(code);
-export function acqDelinquency(lines: BudgetLine[], coaList: CoaAccount[], actual: Record<string, Months> | null | undefined, liveIdx: number[], planRecovery: number): BudgetLine[] {
-  if (!actual || !liveIdx.length) return lines;
+export function acqDelinquency(lines: BudgetLine[], coaList: CoaAccount[], actual: Record<string, Months> | null | undefined, liveIdx: number[], planRecovery: number,
+  /** the budget's own typed rates win over the posted ones (Troy 2026-11-13: "Why cant I change CWND's DQ assumptions at
+      all"): DQ as a share of net rental (signed, as inputs.pctGpr['5035']), collections, recovery, the collection fee */
+  typed: { dqPct?: number | null; collectPct?: number | null; recoveryPct?: number | null; feePct?: number | null } = {}): BudgetLine[] {
+  const hasTyped = typed.dqPct != null || typed.collectPct != null || typed.recoveryPct != null;
+  if (!hasTyped && (!actual || !liveIdx.length)) return lines;
   const pc = new Map(coaList.map((a) => [a.code, a.pcode]));
   const isNet = (gl: string) => NET_RENTAL_GLS(gl, pc.get(gl) ?? undefined);
-  const A = (gl: string, i: number) => Number((actual[gl] || [])[i]) || 0;
+  const A = (gl: string, i: number) => Number(((actual || {})[gl] || [])[i]) || 0;
   const live = [...liveIdx].sort((a, b) => a - b);
-  const liveNet = live.reduce((x, i) => x + Object.keys(actual).filter(isNet).reduce((y, gl) => y + A(gl, i), 0), 0);
+  const liveNet = live.reduce((x, i) => x + Object.keys(actual || {}).filter(isNet).reduce((y, gl) => y + A(gl, i), 0), 0);
   const liveDq = live.reduce((x, i) => x + A('5035', i), 0);
-  if (!(liveNet > 0) || !(liveDq < 0)) return lines;
+  if (!hasTyped && (!(liveNet > 0) || !(liveDq < 0))) return lines;
   const out = lines.map((l) => ({ ...l }));
   const get = (gl: string) => out.find((l) => l.gl_code === gl);
   const free = (gl: string) => { const l = get(gl); return !l || !l.override; };
   const ensure = (gl: string): BudgetLine => { let l = get(gl); if (!l) { l = { gl_code: gl, months: zero12(), driver: { method: 'manual' } as Driver, override: false, note: '' }; out.push(l); } return l; };
   const strip = (d: any) => { const { y1: _y, acq: _a, ...rest } = d || {}; return rest; };
   // 5035: the posted rate on this budget's net rental
-  if (free('5035')) {
-    const pct = liveDq / liveNet;
+  if (free('5035') && (typed.dqPct != null || (liveNet > 0 && liveDq < 0))) {
+    const pct = typed.dqPct != null ? -Math.abs(Number(typed.dqPct)) : liveDq / liveNet;
     const net = zero12();
     for (const l of out) if (isNet(l.gl_code)) l.months.forEach((v, i) => { net[i] += Number(v) || 0; });
     const l = ensure('5035');
     l.months = net.map((v) => r2(pct * v)) as Months;
-    l.driver = { method: 'pctGpr', pct: Math.round(pct * 100000) / 100000, of: 'net', basis: 'posted', months: live.length } as any;
+    l.driver = { method: 'pctGpr', pct: Math.round(pct * 100000) / 100000, of: 'net', basis: typed.dqPct != null ? 'typed' : 'posted', months: live.length } as any;
   }
   // 5036: what a live month collected against the previous live month's delinquency
   const lastDq = Math.abs(A('5035', live[live.length - 1]));
   if (free('5036')) {
     let col = 0, prior = 0;
     for (const i of live) if (live.includes(i - 1)) { col += A('5036', i); prior += Math.abs(A('5035', i - 1)); }
-    const rate = prior > 0 ? col / prior : Math.abs(liveDq) > 0 ? live.reduce((x, i) => x + A('5036', i), 0) / Math.abs(liveDq) : 0;
+    const rate = typed.collectPct != null ? Number(typed.collectPct) : prior > 0 ? col / prior : Math.abs(liveDq) > 0 ? live.reduce((x, i) => x + A('5036', i), 0) / Math.abs(liveDq) : 0;
     const l = ensure('5036');
     l.driver = { ...strip(l.driver), method: 'collections', pct: Math.round(Math.min(1, Math.max(0, rate)) * 100000) / 100000, startDq: r2(lastDq), basis: 'posted' } as any;
   }
@@ -2333,9 +2347,9 @@ export function acqDelinquency(lines: BudgetLine[], coaList: CoaAccount[], actua
     // the budget's own uncollected (60 days on) for the plan fallback
     const probe = dqChain(out.map((x) => (x.gl_code === '5110' ? { ...x, override: false, driver: { method: 'badDebtRecovery', pct: 1, startDq: lastDq, lastPpc } as any } : x)));
     const budUnc = sum(probe.find((x) => x.gl_code === '5110')!.months);
-    const pct = rec > 0 && unc > 0 ? rec / unc : planRecovery > 0 && budUnc > 0 ? planRecovery / budUnc : 0;
-    l.driver = { method: 'badDebtRecovery', pct: Math.round(pct * 100000) / 100000, startDq: r2(lastDq), lastPpc: r2(lastPpc), basis: rec > 0 && unc > 0 ? 'posted' : planRecovery > 0 ? 'plan' : 'none' } as any;
-    if (free('6309')) { const f = ensure('6309'); f.driver = { method: 'collectionFee', pct: COLLECTION_FEE_PCT } as any; }
+    const pct = typed.recoveryPct != null ? Math.max(0, Number(typed.recoveryPct)) : rec > 0 && unc > 0 ? rec / unc : planRecovery > 0 && budUnc > 0 ? planRecovery / budUnc : 0;
+    l.driver = { method: 'badDebtRecovery', pct: Math.round(pct * 100000) / 100000, startDq: r2(lastDq), lastPpc: r2(lastPpc), basis: typed.recoveryPct != null ? 'typed' : rec > 0 && unc > 0 ? 'posted' : planRecovery > 0 ? 'plan' : 'none' } as any;
+    if (free('6309')) { const f = ensure('6309'); f.driver = { method: 'collectionFee', pct: typed.feePct != null ? Math.max(0, Number(typed.feePct)) : COLLECTION_FEE_PCT } as any; }
   }
   return dqChain(out);
 }
@@ -2729,6 +2743,19 @@ export function sinceClosing(plan: Y1Plan, actualCal: Record<string, Months> | n
 }
 /** The overlay itself: these GLs take `slice` in the `idx` months; a GL the slice lacks is zero there, a GL only
     the slice has is added. Locked (overridden) lines are never moved. Marks the months on `driver.y1`. */
+/** A category tied to UW on a budget run off the acquisition plan (Troy 2026-11-13: "or tie any categories to UW"):
+    the plan lines of each tied category (pcode → factor, inputs.acqTie) scaled by its factor. Only lines the plan laid
+    over in this pass move (`laid[i] !== before[i]`, or appended by the plan); lines off the plan, contracts and locked
+    lines keep their own numbers. Pure. */
+export function scalePlanLines(before: BudgetLine[], laid: BudgetLine[], pcodeOf: (gl: string) => string, tie: Record<string, number> | null | undefined): BudgetLine[] {
+  if (!tie || !Object.keys(tie).length) return laid;
+  return laid.map((l, i) => {
+    if (i < before.length && l === before[i]) return l;
+    const d = l.driver as any, k = Number(tie[pcodeOf(l.gl_code)]);
+    if (!d?.acq || !Number.isFinite(k) || k === 1) return l;
+    return { ...l, months: l.months.map((v) => r2(v * k)) as Months, driver: { ...d, acq: { ...d.acq, tie: k } } as any };
+  });
+}
 export function applyPlanSlice(lines: BudgetLine[], coaList: CoaAccount[], slice: Map<string, Months>, idx: number[], meta?: (gl: string) => Record<string, any> | null,
   /** GLs the plan never touches (a new acquisition's rent-roll GPR / LTL: Troy 2026-11-12, "items like GPR still need to
       make sense. A feb increase should flow through") */

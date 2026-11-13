@@ -48,8 +48,8 @@ function acqChip(l, m) {
   const cat = ACQ_CAT[acc.pcode] || ('cat ' + (acc.pcode || '?'));
   const pace = a.pace != null && Math.abs(a.pace - 1) >= 0.005 ? a.pace : null;
   const how = a.turns ? 'the turn curve (lease expirations + 1 month)' : a.hist ? `the property's own history (${a.hist === 'posted+seller' ? 'months posted since closing + the seller T12' : a.hist === 'posted' ? 'posted months' : 'the seller T12'})` : "the Year-1 budget's own monthly pattern";
-  const tag = `UW${a.turns ? '·TURNS' : a.hist ? '·HIST' : ''}${pace && a.fit ? `·${pace > 1 ? '+' : '−'}${Math.round(Math.abs(pace - 1) * a.fit * 100)}%` : ''}`;
-  const label = `From the acquisition plan, tied to UW: ${cat} = ${n1}/12 of its Year 1${n2 ? ` + ${n2}/12 of it on the UW Year-2 trend (${(((a.trend || 0)) * 100).toFixed(1)}%)` : ''}${pace ? `; level moved ${Math.round((a.fit || 0) * 100)}% toward its pace since closing (${pace > 1 ? '+' : ''}${((pace - 1) * 100).toFixed(1)}% vs UW)` : ''}${a.fit ? `; this GL's share of ${cat} fitted ${Math.round(a.fit * 100)}% to what posted` : ''}. Months on ${how}.`;
+  const tag = `UW${a.turns ? '·TURNS' : a.hist ? '·HIST' : ''}${pace && a.fit ? `·${pace > 1 ? '+' : '−'}${Math.round(Math.abs(pace - 1) * a.fit * 100)}%` : ''}${a.tie != null ? '·TIED' : ''}`;
+  const label = `From the acquisition plan, tied to UW: ${cat} = ${n1}/12 of its Year 1${n2 ? ` + ${n2}/12 of it on the UW Year-2 trend (${(((a.trend || 0)) * 100).toFixed(1)}%)` : ''}${pace ? `; level moved ${Math.round((a.fit || 0) * 100)}% toward its pace since closing (${pace > 1 ? '+' : ''}${((pace - 1) * 100).toFixed(1)}% vs UW)` : ''}${a.fit ? `; this GL's share of ${cat} fitted ${Math.round(a.fit * 100)}% to what posted` : ''}. Months on ${how}.${a.tie != null ? ` ${cat} is tied on the compare card: its plan lines ×${Number(a.tie).toFixed(4)} (untie there).` : ''}`;
   return { cls: 'drv-fee', tag, label };
 }
 function drvMeta(l) {
@@ -1716,6 +1716,11 @@ function renderEditor(el) {
     // saved without recalculating: a target moves nothing until "tie"
     S.bv = await POST(`/budgets/${b.id}/targets`, { [mk]: gtNew }); render();
   }));
+  el.querySelectorAll('.tie [data-untie]').forEach((btn) => btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    pushUndo();
+    try { S.bv = await POST(`/budgets/${b.id}/tie-growth`, { pcode: btn.dataset.untie, clear: true }); render(); } catch (err) { S.undo.stack.pop(); alert(err.message); }
+  }));
   el.querySelectorAll('.tie [data-tie]').forEach((btn) => btn.addEventListener('click', (e) => {
     e.stopPropagation();
     const key = btn.dataset.tie;
@@ -2400,6 +2405,13 @@ function paramFor(gl, line, inp) {
   if (m === 'flatFee') {
     const bl = inp.baseline || {};
     return { label: 'fee increase % (on the last actual month)', value: pct(line.driver.pct || 0), patch: (v) => ({ baseline: { ...bl, glGrowth: { ...(bl.glGrowth || {}), [gl]: v / 100 } } }) };
+  }
+  // the delinquency chain's other two rates (they always existed in the engine; a box to type them)
+  if (gl === '5110' && m === 'badDebtRecovery') {
+    return { label: 'recovery rate on what is still uncollected 60 days on', value: +(((line.driver.pct || 0) * 100).toFixed(2)), patch: (v) => ({ recoveryPct: Math.max(0, v) / 100 }) };
+  }
+  if (gl === '6309' && m === 'collectionFee') {
+    return { label: '% of bad debt recovery', value: +(((line.driver.pct || 0) * 100).toFixed(2)), patch: (v) => ({ collectionFeePct: Math.min(100, Math.max(0, v)) / 100 }) };
   }
   if (gl === '5036' && m === 'collections') {
     return { label: "% of the previous month's delinquency collected", value: +(((line.driver.pct || 0) * 100).toFixed(2)), patch: (v) => ({ collectPct: Math.min(100, Math.max(0, v)) / 100 }) };
@@ -3687,7 +3699,9 @@ function tieGrowthHtml(bv) {
   const useU = bv.refKey === 'uw';
   // the Year-1 plan is laid over every unlocked NOI line last, so a tie here could not move anything (the server
   // refuses too): no tie buttons while the plan runs the year
-  const canTie = !(bv.y1Plan && bv.y1Plan.on);
+  // a new acquisition ties a category by scaling its plan lines (inputs.acqTie) — Troy 2026-11-13: "or tie any categories to UW"
+  const canTie = true;
+  const acqTie = acqRuns() ? (inp.acqTie || {}) : {};
   const p1 = (v) => +(v * 100).toFixed(2);
   // ONE number per row (Troy 2026-11-11): what an empty box would be filled with
   const tol = G ? (G.tolerance ?? 0.0025) : 0.0025;
@@ -3741,7 +3755,8 @@ function tieGrowthHtml(bv) {
     // NOI guidance is a floor (≥), not a point, so NOI still ties only to a typed number.
     const gPt = !basisT3 && key != null && tgt == null && GT[key] != null && gIn === false ? GT[key] : null;
     const tieTo = !canTie ? null : tgt != null ? (off == null || off >= 0.0015 ? tgt : null) : gPt;
-    const tieBtn = tieTo != null ? `<button class="rb" data-tie="${key}" data-pct="${tieTo}" title="Shift this subtotal's growth factors so it lands at ${esc(basisName)} ${fmtPct(tieTo)}${tgt == null ? (useU ? ' (on UW)' : ' (the guidance)') : ''}">tie</button>` : '';
+    const tieBtn = (tieTo != null ? `<button class="rb" data-tie="${key}" data-pct="${tieTo}" title="${acqRuns() ? `Scale this subtotal's plan lines so it lands at ${esc(basisName)} ${fmtPct(tieTo)}${tgt == null ? ' (on UW)' : ''}. Lines off the plan, contracts and locked lines are not moved.` : `Shift this subtotal's growth factors so it lands at ${esc(basisName)} ${fmtPct(tieTo)}${tgt == null ? (useU ? ' (on UW)' : ' (the guidance)') : ''}`}">tie</button>` : '')
+      + (key != null && acqTie[key] != null ? `<button class="rb" data-untie="${key}" title="Tied: this category's plan lines are scaled ×${Number(acqTie[key]).toFixed(4)}. Untie puts them back on the plan level.">untie</button>` : '');
     const ub = uwBasisParts(bv, dk || key, r, { uwRef: useU, gpr: (byP['1'] || {}).budget || 0, egi: t.egi.budget || 0 });
     return `<tr class="${cls || ''}"><td title="${esc(r.label)}">${esc(SHORT[r.pcode] || r.label)}${ub.label}</td>
       <td>${money(r.uw)}</td>${t3Cell(r)}<td>${money(r.budget)}</td>

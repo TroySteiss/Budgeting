@@ -155,6 +155,9 @@ export interface BudgetInputs {
   shapeFromGl?: Record<string, string[]>;
   /** a budget run off the acquisition plan: GLs taken off the plan by hand (their own formula shows) — Troy 2026-11-13 */
   offPlan?: string[];
+  /** a budget run off the acquisition plan: per category (pcode), the factor its plan lines are scaled by so the category
+      ties to UW ("tie" on the compare card) — Troy 2026-11-13 */
+  acqTie?: Record<string, number>;
   /** annual: share of the previous month's delinquency (5035) collected as prior-period collections (5036); unset = the trailing-12 rate, capped at 100% */
   collectPct?: number;
   /** annual budgets: the per-GL formula rules this budget runs on — a COPY of the saved formula

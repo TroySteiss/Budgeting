@@ -1024,6 +1024,14 @@ describe('saved formula sets (Troy 2026-11-09): the recipe of a budget, without 
     expect((L(ls, '6622').driver as any).mult).toBe(50);
     expect((L(ls, '6920').driver as any).pct).toBeCloseTo(0.08, 6);
   });
+  it('a set from a plan-run budget carries its off-plan lines; a set without them leaves the target\'s own (Troy 2026-11-13)', () => {
+    const s1 = formulaSetFromBudget(built, { ...srcInputs, offPlan: ['6920', '9999'] } as any);
+    expect(s1.offPlan).toEqual(['6920']);                                             // only lines the source budgets
+    expect((applyFormulaSet({ ...base, offPlan: ['6601'] } as any, s1, { id: 5, name: 'CWND' }) as any).offPlan).toEqual(['6920']);
+    const s0 = formulaSetFromBudget(built, srcInputs);
+    expect(s0.offPlan).toBeUndefined();
+    expect((applyFormulaSet({ ...base, offPlan: ['6601'] } as any, s0, { id: 4, name: 'BCND' }) as any).offPlan).toEqual(['6601']);
+  });
   it('a zero-out in the set stays zero on the target; "template defaults" is an empty rule set', () => {
     const z = formulaSetFromBudget(built.map((l) => (l.gl_code === '6920' ? { ...l, months: zero12(), driver: { method: 'zero' } as any } : l)), srcInputs);
     expect(z.rules['6920']).toEqual({ method: 'zero' });
@@ -2151,6 +2159,21 @@ describe('a new acquisition\'s delinquency from what has posted (Troy 2026-11-13
     const locked = lines(); locked[3] = { ...locked[3], override: true, months: Array(12).fill(-100) as Months };
     expect(new Map(acqDelinquency(locked, coaD, actual, [8, 9], 6000).map((l) => [l.gl_code, l])).get('5035')!.months[0]).toBe(-100);
   });
+  it('typed rates win over the posted ones and the chain stays connected (Troy 2026-11-13: "Why cant I change CWND\'s DQ assumptions at all")', () => {
+    const out = new Map(acqDelinquency(lines(), coaD, actual, [8, 9], 6000, { dqPct: 0.02, collectPct: 0.4, recoveryPct: 0.3, feePct: 0.25 }).map((l) => [l.gl_code, l]));
+    const dq = out.get('5035')!.months, ppc = out.get('5036')!.months, rec = out.get('5110')!.months, fee = out.get('6309')!.months;
+    expect((out.get('5035')!.driver as any).pct).toBe(-0.02);                        // typed as a positive %, still a loss
+    expect((out.get('5035')!.driver as any).basis).toBe('typed');
+    expect(dq[0]).toBeCloseTo(-0.02 * (432000 - 26000 - 14000), 0);
+    expect((out.get('5036')!.driver as any).pct).toBe(0.4);
+    expect(ppc[1]).toBeCloseTo(0.4 * Math.abs(dq[0]), 0);                              // still on the month before
+    expect((out.get('5110')!.driver as any).pct).toBe(0.3);
+    expect(rec.some((v) => v > 0)).toBe(true);
+    expect(fee.map((v) => Math.round(v))).toEqual(rec.map((v) => Math.round(v * 0.25)));
+    // a typed rate works with nothing posted yet
+    const none = new Map(acqDelinquency(lines(), coaD, actual, [], 6000, { dqPct: 0.015 }).map((l) => [l.gl_code, l]));
+    expect(none.get('5035')!.months[0]).toBeCloseTo(-0.015 * (432000 - 26000 - 14000), 0);
+  });
 });
 
 import { taxAccrual, taxYearBase } from '../shared/annual.js';
@@ -2264,5 +2287,31 @@ describe('per occupied unit (change spec 2026-11-13 §5.2: the pest fee at $5 ×
     expect(perOccupiedMonths(5, 360, Array(12).fill(0.04) as Months).reduce((a, v) => a + v, 0)).toBeCloseTo(20736, 0);
     const half = perOccupiedMonths(5, 100, zero12(), Array(12).fill(0.5) as Months);
     expect(half[0]).toBe(250);
+  });
+});
+
+import { scalePlanLines, applyPlanSlice } from '../shared/annual.js';
+describe('a category tied to UW on the acquisition plan (Troy 2026-11-13: "or tie any categories to UW")', () => {
+  const coaT = [{ code: '6601', pcode: '13' }, { code: '6602', pcode: '13' }, { code: '6603', pcode: '13' }, { code: '6101', pcode: '9' }]
+    .map((a) => ({ ...a, name: a.code, kind: 'detail', curve: 'flat', active: true })) as unknown as CoaAccount[];
+  const pc = (gl: string) => String(coaT.find((a) => a.code === gl)?.pcode || '');
+  const ln = (gl: string, v: number, extra: Partial<BudgetLine> = {}): BudgetLine => ({ gl_code: gl, months: Array(12).fill(v) as Months, driver: { method: 'baseline' } as any, override: false, note: '', ...extra });
+  const before = [ln('6601', 100), ln('6602', 50, { override: true }), ln('6603', 40, { driver: { method: 'contract' } as any }), ln('6101', 200)];
+  const slice = new Map<string, Months>([['6601', Array(12).fill(120) as Months], ['6602', Array(12).fill(70) as Months], ['6603', Array(12).fill(60) as Months], ['6101', Array(12).fill(210) as Months]]);
+  const all = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+  it('only the tied category\'s plan lines move; locked, contract and other categories keep their numbers', () => {
+    const laid = applyPlanSlice(before, coaT, slice, all, () => ({}));
+    const out = new Map(scalePlanLines(before, laid, pc, { '13': 1.1 }).map((l) => [l.gl_code, l]));
+    expect(out.get('6601')!.months[0]).toBe(132);                                       // 120 on the plan × 1.1
+    expect((out.get('6601')!.driver as any).acq.tie).toBe(1.1);
+    expect(out.get('6602')!.months[0]).toBe(50);                                        // locked
+    expect(out.get('6603')!.months[0]).toBe(40);                                        // contract
+    expect(out.get('6101')!.months[0]).toBe(210);                                       // another category: plan level
+    expect(scalePlanLines(before, laid, pc, {})).toBe(laid);
+  });
+  it('a line off the plan (skipped by the overlay) is never scaled', () => {
+    const laid = applyPlanSlice(before, coaT, slice, all, () => ({}), new Set(['6601']));
+    const out = new Map(scalePlanLines(before, laid, pc, { '13': 2 }).map((l) => [l.gl_code, l]));
+    expect(out.get('6601')!.months[0]).toBe(100);
   });
 });
