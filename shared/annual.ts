@@ -40,7 +40,8 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-12e';   // e: delinquency chain (PPC on DQ, recovery on 60-day uncollected, collection fee 50%); HAP back on 4995 / 4996
+export const ENGINE_VERSION = '2026-11-12f';   // f: an acquisition's rent-roll GPR / LTL keep their own months (steps)
+// earlier: e: delinquency chain (PPC on DQ, recovery on 60-day uncollected, collection fee 50%); HAP back on 4995 / 4996
 // earlier: d: acquisition levels move toward the pace since closing (fit), T12 fill follows the seller; c: HAP inside GPR (4994); b: new acquisitions weighted Y1/Y2 by months, shaped by history
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
@@ -2435,14 +2436,17 @@ export function sinceClosing(plan: Y1Plan, actualCal: Record<string, Months> | n
 }
 /** The overlay itself: these GLs take `slice` in the `idx` months; a GL the slice lacks is zero there, a GL only
     the slice has is added. Locked (overridden) lines are never moved. Marks the months on `driver.y1`. */
-export function applyPlanSlice(lines: BudgetLine[], coaList: CoaAccount[], slice: Map<string, Months>, idx: number[], meta?: (gl: string) => Record<string, any> | null): BudgetLine[] {
+export function applyPlanSlice(lines: BudgetLine[], coaList: CoaAccount[], slice: Map<string, Months>, idx: number[], meta?: (gl: string) => Record<string, any> | null,
+  /** GLs the plan never touches (a new acquisition's rent-roll GPR / LTL: Troy 2026-11-12, "items like GPR still need to
+      make sense. A feb increase should flow through") */
+  skip?: Set<string>): BudgetLine[] {
   if (!idx.length) return lines;
   const coa = new Set(coaList.map((a) => a.code)); const seen = new Set<string>();
   const mark = (gl: string) => { const x = meta ? meta(gl) : null; return x ? { y1: idx, acq: x } : { y1: idx }; };
   const out = lines.map((l) => {
     seen.add(l.gl_code);
     // locked lines and CONTRACT lines are never moved: a known cost wins over the plan (Troy 2026-11-12)
-    if (!feedsNoi(l.gl_code) || l.override || (l.driver as any)?.method === 'contract') return l;
+    if (!feedsNoi(l.gl_code) || l.override || (l.driver as any)?.method === 'contract' || skip?.has(l.gl_code)) return l;
     const s = slice.get(l.gl_code); const m = [...l.months] as Months; let touched = false;
     for (const i of idx) { const v = s ? s[i] : 0; if (v || m[i]) touched = true; m[i] = v; }
     if (!touched) return l;
@@ -2450,7 +2454,7 @@ export function applyPlanSlice(lines: BudgetLine[], coaList: CoaAccount[], slice
     return { ...l, months: m, driver: { ...d0, ...mark(l.gl_code) } as Driver };
   });
   for (const [gl, s] of slice) {
-    if (seen.has(gl) || !coa.has(gl) || !idx.some((i) => s[i])) continue;
+    if (seen.has(gl) || !coa.has(gl) || skip?.has(gl) || !idx.some((i) => s[i])) continue;
     const m = zero12(); for (const i of idx) m[i] = s[i];
     out.push({ gl_code: gl, months: m, driver: { method: 'manual', ...mark(gl) } as Driver, override: false, note: '' });
   }

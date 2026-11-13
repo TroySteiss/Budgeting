@@ -1449,6 +1449,13 @@ describe('Year-1 plan in the annual budget', () => {
       expect(postedSinceClosing(cal, { month: 10, year: 2026 }, '2027-01')).toBeNull();
       expect(postedSinceClosing(cal, { month: 10, year: 2026 }, null)).toBeNull();
     });
+    it('GLs on the skip list keep their own months: a rent-roll GPR keeps its February step (Troy 2026-11-12)', () => {
+      const ap = acqCalendarPlan({ plan: plan2, calYear: 2027, coaList: coa2, uw });
+      const stepped = [100, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103] as Months;
+      const out = new Map(applyPlanSlice([line('4994', stepped), line('6720', flat(1))], coa2, ap.cal, [...Array(12).keys()], undefined, new Set(['4994'])).map((l) => [l.gl_code, l]));
+      expect(out.get('4994')!.months).toEqual(stepped);
+      expect(out.get('6720')!.months).toEqual(ap.cal.get('6720'));
+    });
     it('the overlay takes every month, marks the lines, and never moves a locked one', () => {
       const ap = acqCalendarPlan({ plan: plan2, calYear: 2027, coaList: coa2, uw });
       const ls = [line('4994', flat(125)), line('6702', flat(7), { override: true }), line('7300', flat(41))];

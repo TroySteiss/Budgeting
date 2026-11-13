@@ -1538,13 +1538,19 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
       fit: inputs.acqFit ?? ACQ_FIT_DEFAULT, turns: exp ? lagMonths(exp as Months, 1) : null, turnGls: TURN_EXPENSE_GLS, history: h.history });
   }
   const ALL12 = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+  /* GPR MAKES SENSE (Troy 2026-11-12: "I know there is a blending of the old UW and the new one for CWND and those
+     properties, but items like GPR still need to make sense. A feb increase should flow through"): with a rent roll
+     linked, GPR (4994 and the HAP lines, category 1) and loss to lease (5003, per lease) are the rent roll × the
+     budget's monthly steps — the plan never lays over them. Their gap to UW shows against the UW target. */
+  const rollGls = new Set<string>(acq && Number(inputs.gpr?.baseMonthly) > 0
+    ? lb.coa.filter((c) => c.kind === 'detail' && (c.pcode === '1' || c.pcode === 'loss')).map((c) => c.code) : []);
   const overlay = (ls: BudgetLine[]): BudgetLine[] => {
     if (!acq) return ls;
     const a = acq;
     return applyPlanSlice(ls, lb.coa, a.cal, ALL12, (gl) => {
       const p = lb.coaMap.get(gl)?.pcode || '';
       return { trend: a.trend[p] ?? 0, fit: a.fitted.includes(p) ? (inputs.acqFit ?? ACQ_FIT_DEFAULT) : 0, turns: a.turnGls.includes(gl), after: a.afterIdx, hist: a.shaped[p] || null, pace: a.pace[p] ?? null };
-    });
+    }, rollGls);
   };
   if (lb.annual) lines = clearY1Plan(lines);
   lines = overlay(lines);
