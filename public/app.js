@@ -1888,9 +1888,13 @@ function gridHtml(bv, totals) {
       /* RETURNS UNDER NOI (Troy 2026-11-13: "Under NOI line, I need to be able to see what returns we are making per
          quarter or month (Annualized accordingly). Line should be distinct"): cash-on-cash, annualized — each month
          (NOI − interest − principal) × 12 ÷ capital, each quarter × 4, the year as is. Live with every edit. */
-      if (a.code === '7280') {
+      // under TOTAL INTEREST EXPENSE (Troy 2026-11-13: "move cash on cash to below interest expense / total interest
+      // expense"); under NOI when the budget carries no interest (that subtotal row is not drawn)
+      const intAny = (totals.get('7315') || []).some((v) => v);
+      if (a.code === '7315' || (a.code === '7280' && !intAny)) {
         const cap = Number(bv.returnsCapital && bv.returnsCapital.capital) || 0;
         const intM = totals.get('7315') || Array(12).fill(0);
+        const m = totals.get('7280') || Array(12).fill(0);   // NOI, whichever row this sits under
         const prinM = Array(12).fill(0);
         for (const l of bv.lines || []) { const n = Number(l.gl_code); if (n >= 3080 && n <= 3091) l.months.forEach((v, i) => { prinM[i] += Math.abs(v || 0); }); }
         const cf = m.map((v, i) => (v || 0) - (intM[i] || 0) - prinM[i]);
@@ -2500,8 +2504,8 @@ function secPctBoxHtml(bv, hdr, linesByGl) {
 /* ONE flat option (Troy 2026-11-11: "way too many options for flatlining, please cut all but main one"):
    "Average of active months" and "Last actual month, flat" are no longer offered anywhere. Lines already on
    them keep working and are labelled "(retired)" so nothing moves unasked. */
-const SEC_SHAPES = [['actual', 'Same month last year'], ['wavg', '1-2-1 weighted months'], ['flat', 'T12 ÷ 12, flat'], ['curve', 'T12 on the seasonal curve'], ['turns', 'Turnover curve (lease expirations + 1 month)']];
-const RETIRED_SHAPES = [['avgnz', 'Average of active months (retired)'], ['last', 'Last actual month, flat (retired)']];
+const SEC_SHAPES = [['actual', 'Same month last year'], ['wavg', '1-2-1 weighted months'], ['flat', 'T12 ÷ 12, flat'], ['last', 'Most recent month, flat (e.g. MTM)'], ['curve', 'T12 on the seasonal curve'], ['turns', 'Turnover curve (lease expirations + 1 month)']];
+const RETIRED_SHAPES = [['avgnz', 'Average of active months (retired)']];
 const shapeLabel = (k) => ([...SEC_SHAPES, ...RETIRED_SHAPES].find((x) => x[0] === k) || [k, k])[1];
 function secShapeHtml(hdr, shapesNow) {
   const now = [...shapesNow].filter(Boolean);
@@ -6078,7 +6082,9 @@ function moveOutsHtml(tpl, exp) {
   return `<div class="fld" style="grid-column:1/-1"><label>PY move-outs (template MoveOuts sheet, reference only): ${sum(sch)} scheduled + ${sum(un)} unscheduled = ${sum(sch) + sum(un)} · colour = move-outs ÷ expirations (red over 40%, amber 30-40%)</label>
     <table style="font-size:11.5px;border-collapse:collapse"><tr>${MONTHS.map((m) => `<th style="text-align:right;font-weight:500;color:var(--muted);padding:1px 6px">${m}</th>`).join('')}</tr><tr>${cells}</tr></table></div>`;
 }
-const SHAPE_LABELS = { turns: 'Turnover curve: T12 total on lease expirations, +1 month lag', actual: 'Same month × factor (template default)', wavg: '1-2-1 weighted distribution × factor', flat: 'T12 total ÷ 12, flat', curve: 'T12 total on the GL seasonal curve' };
+const SHAPE_LABELS = { turns: 'Turnover curve: T12 total on lease expirations, +1 month lag', actual: 'Same month × factor (template default)', wavg: '1-2-1 weighted distribution × factor', flat: 'T12 total ÷ 12, flat', curve: 'T12 total on the GL seasonal curve',
+  // back on the menus (Troy 2026-11-13: "I also do not have an option to base any line off of most recent month, such as MTM")
+  last: 'Most recent month, flat × factor (e.g. month-to-month)' };
 
 function annualInputsHtml(inp) {
   const g = inp.gpr || {};

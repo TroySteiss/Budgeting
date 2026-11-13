@@ -40,7 +40,8 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-12h';   // h: fit to T12 / section picks work on plan-run acquisitions
+export const ENGINE_VERSION = '2026-11-13a';   // a: new acquisitions' delinquency chain from the posted months
+// earlier: h: fit to T12 / section picks work on plan-run acquisitions
 // earlier: g: lines with a formula picked on the row are not laid over by the acquisition plan
 // earlier: f: an acquisition's rent-roll GPR / LTL keep their own months (steps)
 // earlier: e: delinquency chain (PPC on DQ, recovery on 60-day uncollected, collection fee 50%); HAP back on 4995 / 4996
@@ -2086,6 +2087,69 @@ export interface Y1Plan { year: number; startMonth: number; lines: { gl_code: st
      6309 COLLECTION FEES (driver collectionFee) = pct (50%) × 5110
    A locked (typed) line is never moved; a line on another formula is left alone. Pure. */
 export const COLLECTION_FEE_PCT = 0.5;
+/* A NEW ACQUISITION'S DELINQUENCY FROM WHAT HAS POSTED (Troy 2026-11-13: "Something is wrong with DQ for Newer
+   acquisitions. Not pulling any DQ though, and collections is all in one month, with no dependency on prior month. That
+   flows through into bad debt ... we should not have bad debt recovery if we do not have bad debt"). The acquisition
+   plan carries no current delinquency, so the chain had nothing to follow. On a plan-run budget the four lines are
+   built from the months posted since closing (`liveIdx`, calendar = budget order for a January budget):
+     5035 = the posted delinquency rate (Σ 5035 ÷ Σ net rental over the live months) × each month's net rental
+     5036 = collections chain: rate = what was collected in a live month ÷ the previous live month's delinquency (Oct
+            collects Sep), held to 0..100%; else Σ 5036 ÷ Σ |5035|; January collects the last live month's delinquency
+     5110 = recovery chain on the 60-day uncollected: rate = posted recovery ÷ posted uncollected; else the plan's own 5110
+            ÷ the budget's uncollected (the UW level, tied to bad debt); no uncollected = no recovery
+     6309 = 50% of the recovery
+   then dqChain sets the months. A locked (typed) line is left alone. Nothing posted = the lines are left as they are. */
+export const NET_RENTAL_GLS = (code: string, pcode: string | undefined): boolean => pcode === '1' || pcode === 'loss' || pcode === '2' || ['5031', '5032', '5033', '5034'].includes(code);
+export function acqDelinquency(lines: BudgetLine[], coaList: CoaAccount[], actual: Record<string, Months> | null | undefined, liveIdx: number[], planRecovery: number): BudgetLine[] {
+  if (!actual || !liveIdx.length) return lines;
+  const pc = new Map(coaList.map((a) => [a.code, a.pcode]));
+  const isNet = (gl: string) => NET_RENTAL_GLS(gl, pc.get(gl) ?? undefined);
+  const A = (gl: string, i: number) => Number((actual[gl] || [])[i]) || 0;
+  const live = [...liveIdx].sort((a, b) => a - b);
+  const liveNet = live.reduce((x, i) => x + Object.keys(actual).filter(isNet).reduce((y, gl) => y + A(gl, i), 0), 0);
+  const liveDq = live.reduce((x, i) => x + A('5035', i), 0);
+  if (!(liveNet > 0) || !(liveDq < 0)) return lines;
+  const out = lines.map((l) => ({ ...l }));
+  const get = (gl: string) => out.find((l) => l.gl_code === gl);
+  const free = (gl: string) => { const l = get(gl); return !l || !l.override; };
+  const ensure = (gl: string): BudgetLine => { let l = get(gl); if (!l) { l = { gl_code: gl, months: zero12(), driver: { method: 'manual' } as Driver, override: false, note: '' }; out.push(l); } return l; };
+  const strip = (d: any) => { const { y1: _y, acq: _a, ...rest } = d || {}; return rest; };
+  // 5035: the posted rate on this budget's net rental
+  if (free('5035')) {
+    const pct = liveDq / liveNet;
+    const net = zero12();
+    for (const l of out) if (isNet(l.gl_code)) l.months.forEach((v, i) => { net[i] += Number(v) || 0; });
+    const l = ensure('5035');
+    l.months = net.map((v) => r2(pct * v)) as Months;
+    l.driver = { method: 'pctGpr', pct: Math.round(pct * 100000) / 100000, of: 'net', basis: 'posted', months: live.length } as any;
+  }
+  // 5036: what a live month collected against the previous live month's delinquency
+  const lastDq = Math.abs(A('5035', live[live.length - 1]));
+  if (free('5036')) {
+    let col = 0, prior = 0;
+    for (const i of live) if (live.includes(i - 1)) { col += A('5036', i); prior += Math.abs(A('5035', i - 1)); }
+    const rate = prior > 0 ? col / prior : Math.abs(liveDq) > 0 ? live.reduce((x, i) => x + A('5036', i), 0) / Math.abs(liveDq) : 0;
+    const l = ensure('5036');
+    l.driver = { ...strip(l.driver), method: 'collections', pct: Math.round(Math.min(1, Math.max(0, rate)) * 100000) / 100000, startDq: r2(lastDq), basis: 'posted' } as any;
+  }
+  // 5110 / 6309: recovery on the 60-day uncollected, collection fee on the recovery
+  if (free('5110')) {
+    // before the year: December collects November at the collection rate (the posted month alone can be a catch-up)
+    const cr = Number((get('5036')?.driver as any)?.pct);
+    const lastPpc = Number.isFinite(cr) && (get('5036')?.driver as any)?.method === 'collections' ? r2(cr * lastDq) : Math.abs(A('5036', live[live.length - 1]));
+    // the posted 60-day uncollected: only months whose delinquency two months back and collections one month back posted
+    let unc = 0; for (const i of live) if (live.includes(i - 2) && live.includes(i - 1)) unc += Math.max(0, Math.abs(A('5035', i - 2)) - Math.abs(A('5036', i - 1)));
+    const rec = live.reduce((x, i) => x + A('5110', i), 0);
+    const l = ensure('5110');
+    // the budget's own uncollected (60 days on) for the plan fallback
+    const probe = dqChain(out.map((x) => (x.gl_code === '5110' ? { ...x, override: false, driver: { method: 'badDebtRecovery', pct: 1, startDq: lastDq, lastPpc } as any } : x)));
+    const budUnc = sum(probe.find((x) => x.gl_code === '5110')!.months);
+    const pct = rec > 0 && unc > 0 ? rec / unc : planRecovery > 0 && budUnc > 0 ? planRecovery / budUnc : 0;
+    l.driver = { method: 'badDebtRecovery', pct: Math.round(pct * 100000) / 100000, startDq: r2(lastDq), lastPpc: r2(lastPpc), basis: rec > 0 && unc > 0 ? 'posted' : planRecovery > 0 ? 'plan' : 'none' } as any;
+    if (free('6309')) { const f = ensure('6309'); f.driver = { method: 'collectionFee', pct: COLLECTION_FEE_PCT } as any; }
+  }
+  return dqChain(out);
+}
 export function dqChain(lines: BudgetLine[]): BudgetLine[] {
   const by = new Map(lines.map((l) => [l.gl_code, l]));
   const out = new Map(by);

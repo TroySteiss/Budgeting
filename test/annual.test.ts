@@ -2097,3 +2097,39 @@ describe('the T12 before closing = the seller\'s own dollars by our GLs (Troy 20
     expect(f.cal['6720'][6]).toBe(4000);
   });
 });
+
+import { acqDelinquency } from '../shared/annual.js';
+describe('a new acquisition\'s delinquency from what has posted (Troy 2026-11-13: "Not pulling any DQ ... collections is all in one month")', () => {
+  const coaD = [{ code: '4994', pcode: '1' }, { code: '5003', pcode: 'loss' }, { code: '5031', pcode: '3' }, { code: '5035', pcode: '3' }, { code: '5036', pcode: '3' }, { code: '5110', pcode: '5' }, { code: '6309', pcode: '9' }]
+    .map((a) => ({ ...a, name: a.code, kind: 'detail', curve: 'flat', active: true })) as unknown as CoaAccount[];
+  const at = (vals: Record<number, number>) => Array.from({ length: 12 }, (_, i) => vals[i] || 0) as Months;
+  // CWND: Sep / Oct 2026 posted
+  const actual = { '4994': at({ 8: 430000, 9: 430000 }), '5003': at({ 8: -26000, 9: -26000 }), '5031': at({ 8: -15487, 9: -12149 }), '5035': at({ 8: -6371, 9: -7125 }), '5036': at({ 8: 263, 9: 4806 }) };
+  const ln = (gl: string, months: Months, driver: any = { method: 'manual' }): BudgetLine => ({ gl_code: gl, months, driver, override: false, note: '' });
+  const lines = () => [ln('4994', Array(12).fill(432000) as Months), ln('5003', Array(12).fill(-26000) as Months), ln('5031', Array(12).fill(-14000) as Months),
+    ln('5035', zero12(), { method: 'pctGpr', acq: {} }), ln('5036', at({ 0: 2676 }), { method: 'collections', pct: 0.6, startDq: 7125, acq: {} }), ln('5110', at({ 0: 1379, 1: 2646 }), { method: 'badDebtRecovery', pct: 0.59 }), ln('6309', zero12(), { method: 'collectionFee', pct: 0.5 })];
+  it('DQ every month at the posted rate; collections follow the previous month at Oct ÷ Sep; recovery only on what stays uncollected', () => {
+    const out = new Map(acqDelinquency(lines(), coaD, actual, [8, 9], 6000).map((l) => [l.gl_code, l]));
+    const dq = out.get('5035')!.months, ppc = out.get('5036')!.months, rec = out.get('5110')!.months, fee = out.get('6309')!.months;
+    const rate = (6371 + 7125) / (2 * 430000 - 2 * 26000 - 15487 - 12149);
+    expect(dq[0]).toBeCloseTo(-rate * (432000 - 26000 - 14000), 0);                 // every month, not zero
+    expect(dq.every((v) => v < 0)).toBe(true);
+    const cr = (out.get('5036')!.driver as any).pct;
+    expect(cr).toBeCloseTo(4806 / 6371, 4);                                           // October collected September
+    expect(ppc[0]).toBeCloseTo(cr * 7125, 0);                                         // January collects October's delinquency
+    expect(ppc[1]).toBeCloseTo(cr * Math.abs(dq[0]), 0);                              // every month on the month before
+    expect(rec.reduce((a, v) => a + v, 0)).toBeCloseTo(6000, -1);                     // the plan's recovery, tied to bad debt
+    expect(rec.some((v) => v > 0)).toBe(true);
+    expect(fee.map((v) => Math.round(v))).toEqual(rec.map((v) => Math.round(v * 0.5)));
+  });
+  it('no bad debt (everything collected) = no recovery; nothing posted = lines left as they are; a typed line is never moved', () => {
+    const allIn = { ...actual, '5036': at({ 8: 263, 9: 7000 }) };                     // Oct collected more than Sep's delinquency
+    const out = new Map(acqDelinquency(lines(), coaD, allIn, [8, 9], 6000).map((l) => [l.gl_code, l]));
+    expect((out.get('5036')!.driver as any).pct).toBe(1);
+    expect(out.get('5110')!.months.every((v) => v === 0)).toBe(true);                 // collections cover the delinquency: no bad debt
+    const same = lines();
+    expect(acqDelinquency(same, coaD, actual, [], 6000)).toBe(same);
+    const locked = lines(); locked[3] = { ...locked[3], override: true, months: Array(12).fill(-100) as Months };
+    expect(new Map(acqDelinquency(locked, coaD, actual, [8, 9], 6000).map((l) => [l.gl_code, l])).get('5035')!.months[0]).toBe(-100);
+  });
+});

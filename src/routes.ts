@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, parseReviewApply, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
-  acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
+  acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, acqDelinquency, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
   refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
@@ -1576,8 +1576,10 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   // months — Year-1 months from the plan, later months on the UW Year-2 trend, rows fitted to what has posted
   // since closing within each category (acqCalendarPlan). Locked lines are never moved.
   let acq: AcqPlan | null = null;
+  let acqLive: number[] = [];
   if (y1) {
     const h = acqHistoryOf(y1, lb.actualCal, lb.t12End, lb.acquisition?.start);
+    acqLive = h.history.ownedIdx || [];
     const posted = h.posted;
     const exp = (inputs.expirations && inputs.expirations.some((v) => v)) ? inputs.expirations
       : lb.leases?.length ? expirationsFromLeases(lb.leases, Number(inputs.year), { asOf: lb.rollAsOf, startMonth: 1 })
@@ -1619,8 +1621,11 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
       return { trend: a.trend[p] ?? 0, fit: a.fitted.includes(p) ? (inputs.acqFit ?? ACQ_FIT_DEFAULT) : 0, turns: a.turnGls.includes(gl), after: a.afterIdx, hist: a.shaped[p] || null, pace: a.pace[p] ?? null };
     }, picked(ls));
   };
+  // a new acquisition's delinquency chain from what has posted (acqDelinquency), after each overlay (Troy 2026-11-13)
+  const planRecovery = y1 ? y1.lines.filter((l) => l.gl_code === '5110').reduce((a, l) => a + sum(l.months), 0) : 0;
+  const acqDq = (ls: BudgetLine[]): BudgetLine[] => (acq ? acqDelinquency(ls, lb.coa, lb.actualCal, acqLive, planRecovery) : ls);
   if (lb.annual) lines = clearY1Plan(lines);
-  lines = overlay(lines);
+  lines = acqDq(overlay(lines));
   lines = applyDependentPasses(lb, lines, inputs);
   const ref = refOf(lb);
   if (ref) {
@@ -1630,7 +1635,7 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   }
   // standing per-line MROUND re-applies as the final step (not a lock)
   lines = applyRounding(lines);
-  lines = overlay(lines);
+  lines = acqDq(overlay(lines));
   /* FIT TO T12 ON THE PLAN (Troy 2026-11-12: "Need to still be able to fit to curve, smooth, etc"): a line the plan
      laid over and given a fit % (FIT chip / row menu / section box) leans its months toward its own trailing-12 months —
      the seller's actuals before closing, posted after — with the plan's year total kept. */
