@@ -33,8 +33,27 @@ function applyTheme() {
 }
 
 /* driver metadata: colour class + short tag + label for the formula a row uses */
+/* A NEW ACQUISITION'S YEAR RUNS OFF ITS PLAN (Troy 2026-11-12: "CWND still has references all over for T12 that mean
+   nothing"): every NOI line is the plan's level (UW, Year 1 / Year 2 by months, moved toward the pace since closing) on
+   its history pattern, so the T12 formulas, T12 fits, section T12 pickers and the "annualized T12" badges say nothing
+   about how the numbers were made. They are not shown on these budgets. */
+const acqRuns = () => !!(S.bv && S.bv.annual && S.bv.y1Plan && S.bv.y1Plan.on && S.bv.y1Plan.acq);
+const ACQ_CAT = { '1': 'GPR', loss: 'loss to lease', '2': 'concessions', '3': 'rental loss', '4': 'utility income', '5': 'other income', '6': 'insurance', '7': 'management fee', '8': 'RE & PP taxes', '9': 'admin', '10': 'payroll', '11': 'marketing', '12': 'utilities', '13': 'R&M', '14': 'rehab' };
+function acqChip(l, m) {
+  const a = l.driver.acq || {}, y = (S.bv.y1Plan && S.bv.y1Plan.acq) || {};
+  const n1 = (y.y1Idx || []).length, n2 = (a.after || y.afterIdx || []).length;
+  const acc = (S.state.coa || []).find((x) => x.code === l.gl_code) || {};
+  const cat = ACQ_CAT[acc.pcode] || ('cat ' + (acc.pcode || '?'));
+  const pace = a.pace != null && Math.abs(a.pace - 1) >= 0.005 ? a.pace : null;
+  const how = a.turns ? 'the turn curve (lease expirations + 1 month)' : a.hist ? `the property's own history (${a.hist === 'posted+seller' ? 'months posted since closing + the seller T12' : a.hist === 'posted' ? 'posted months' : 'the seller T12'})` : "the Year-1 budget's own monthly pattern";
+  const tag = `UW${a.turns ? '·TURNS' : a.hist ? '·HIST' : ''}${pace && a.fit ? `·${pace > 1 ? '+' : '−'}${Math.round(Math.abs(pace - 1) * a.fit * 100)}%` : ''}`;
+  const label = `From the acquisition plan, tied to UW: ${cat} = ${n1}/12 of its Year 1${n2 ? ` + ${n2}/12 of it on the UW Year-2 trend (${(((a.trend || 0)) * 100).toFixed(1)}%)` : ''}${pace ? `; level moved ${Math.round((a.fit || 0) * 100)}% toward its pace since closing (${pace > 1 ? '+' : ''}${((pace - 1) * 100).toFixed(1)}% vs UW)` : ''}${a.fit ? `; this GL's share of ${cat} fitted ${Math.round(a.fit * 100)}% to what posted` : ''}. Months on ${how}.`;
+  return { cls: 'drv-fee', tag, label };
+}
 function drvMeta(l) {
-  const m = drvMetaCore(l);
+  const m0 = drvMetaCore(l);
+  if (acqRuns() && l && l.driver && l.driver.acq && !l.override) return acqChip(l, m0);
+  const m = m0;
   // smoothing sits ON TOP of the line's formula: the formula keeps its chip, SMOOTH is a second one
   const extra = [];
   if (l && l.driver && l.driver.smooth && l.driver.method !== 'smooth') {
@@ -160,7 +179,9 @@ function drvMetaBase(l) {
       return { cls: 'drv-base', tag: d.lastDev != null ? '⚠LAST' : tag, label: `${d.src === 'budget' ? 'CY budget' : 'Own trailing-12 actual'} — ${shape} ${factor}${d.mult ? ` → MROUND $${d.mult}` : ''} · T12 ${Math.round(d.base || 0).toLocaleString()}${foldTxt}${d.drift ? ` · tilted ${(d.drift * 100).toFixed(1)}% January to December (costs drift up through the year; year total unchanged)` : ''}${d.rule ? ' · default shape and factor from the 2026 GRKS draft (not set for this property)' : ''}${lastWarn}` };
     }
     case 'pctGpr': return { cls: 'drv-base', tag: l.driver.of === 'net' ? '%NET RENT' : l.driver.of === 'netgpr' ? '%NET GPR' : '%GPR', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.of === 'net' ? 'net rental income' : l.driver.of === 'netgpr' ? 'net GPR' : 'GPR'} (${l.driver.basis === 'last' ? 'last-month' : 'trailing-12'} ratio)${l.driver.capped ? ` — CAPPED at each month's budgeted delinquency (the ratio alone gave ${money(l.driver.uncapped || 0)} for the year; collections cannot exceed what is delinquent)` : ''}` };
-    case 'collections': return { cls: 'drv-base', tag: '%PRIOR DQ', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% of the PREVIOUS month's delinquency is collected (January collects against the last actual month's $${money(l.driver.startDq || 0)}). Higher delinquency one month means higher collections the next; it can never exceed that delinquency${l.driver.capped ? ` — the trailing-12 collected ${((l.driver.t12Rate || 0) * 100).toFixed(0)}% of its delinquency (older balances), capped here at 100%` : ''}` };
+    case 'badDebtRecovery': return { cls: 'drv-base', tag: 'REC·60D', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% of what is still uncollected 60 days on is recovered: each month = rate × (current delinquency two months back − prior period collections one month back). Rate = the trailing-12's recovery $${money(l.driver.t12 || 0)} ÷ its uncollected $${money(l.driver.t12Uncollected || 0)} (delinquency − collections). Follows 5035 / 5036 whatever formula they are on.` };
+    case 'collectionFee': return { cls: 'drv-base', tag: `${Math.round((l.driver.pct || 0) * 100)}% REC`, label: `Collection fees = ${Math.round((l.driver.pct || 0) * 100)}% of bad debt recovery (5110), month by month.` };
+    case 'collections': return { cls: 'drv-base', tag: '%PRIOR DQ', label: `Follows current delinquency (5035) whatever formula it is on. ${((l.driver.pct || 0) * 100).toFixed(1)}% of the PREVIOUS month's delinquency is collected (January collects against the last actual month's $${money(l.driver.startDq || 0)}). Higher delinquency one month means higher collections the next; it can never exceed that delinquency${l.driver.capped ? ` — the trailing-12 collected ${((l.driver.t12Rate || 0) * 100).toFixed(0)}% of its delinquency (older balances), capped here at 100%` : ''}` };
     case 'recapture': return { cls: 'drv-base', tag: 'RECAP', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% recapture of the other concession lines (T12 ratio)` };
     case 'perTurn': return { cls: 'drv-base', tag: 'T12·TURNS', label: `Last year's dollars placed on the months with projected move-ins (${money(l.driver.turns)} of them, $${money(l.driver.amount)} each). The YEAR total stays at the trailing-12 unless a $ per move-in is typed — it does not move with the renewal %` };
     case 'suggested': return { cls: 'drv-corp', tag: 'CORP', label: `Corporate budget suggestion${l.driver.note ? ` — ${l.driver.note}` : ''}` };
@@ -1195,7 +1216,7 @@ function renderEditor(el) {
     <div class="row" style="justify-content:space-between; margin-bottom:10px">
       <div>
         <h2 style="margin:0">${esc(prop.name)} <span class="muted">(${esc(b.property_code)}) — ${bv.annual ? `${b.year} annual budget` : `Year 1 budget · ${windowLabel}`}</span></h2>
-        <div class="meta">${bv.annual ? (() => { const t12 = (bv.refs || []).find((r) => r.key === 'actual'); return t12 ? ` <span class="badge" title="The property's own trailing-12 actuals drive every PY-based line; last actual month = ${MONTHS[(bv.lastMonth || 10) - 1]}">T12 ${esc(t12.period)}</span>${(bv.t12Missing || []).length ? ` <span class="badge" style="color:var(--bad)" title="No statement on file covers ${esc(bv.t12Missing.join(', '))} — those months are ZERO in the trailing-12, so every same-month line is zero there. Upload last year's 12 Month Statement (Data page or ⬆ in New budget) or export the statement for ${esc(t12.period)} directly.">⚠ T12 missing ${esc(bv.t12Missing.join(', '))}</span>` : ''}${(bv.t12Dead || []).length ? ` <span class="badge" style="color:var(--warn)" title="${esc(bv.t12Dead.join(', '))} had no rent — the property was not operating (pre-acquisition). Those months are filled with each line's average over the ${bv.t12Live} live months, so the T12 column, the same-month rules and the chart all read as ${bv.t12Live} months annualized.">${bv.t12Live} mo annualized · ${esc(bv.t12Dead.join(', '))} pre-acquisition</span>` : ''}${(bv.t12Startup || []).length ? ` <span class="badge" style="color:var(--warn)" title="New acquisition: the first month${bv.t12Startup.length > 1 ? 's' : ''} of operations (${esc(bv.t12Startup.join(', '))}) ${bv.t12Startup.length > 1 ? 'are' : 'is'} LEFT OUT of the history — a partial month of rent, closing entries and catch-up bills. Filled with each line's average over the remaining months, like the pre-acquisition months. Change how many are left out under Assumptions.">start-up ${esc(bv.t12Startup.join(', '))} left out</span>` : ''}${(bv.t12Early || []).length ? ` <span class="badge" style="color:var(--bad)" title="${esc(bv.t12Early.join(' and '))} ${bv.t12Early.length > 1 ? 'are months' : 'is month'} 2-3 of operations and still IN the history${bv.t12Live <= 3 ? ` — and the whole history is only ${bv.t12Live} month${bv.t12Live === 1 ? '' : 's'}, annualized` : ''}. Early months often carry start-up noise (missing bills, one-time costs, light staffing). Check the lines against them before trusting the budget; leave them out too under Assumptions if they look off.">⚠ review ${esc(bv.t12Early.join(', '))} (month 2-3 of operations)</span>` : ''}` : ' <span class="badge" style="color:var(--warn)" title="No trailing-12 statement linked — upload the Yardi budget template or a 12 Month Statement">⚠ no T12 statement</span>'; })() + (bv.template ? ` <span class="badge" title="Yardi budget template on file: debt schedule, fee matrix, Conservice utility forecasts, corporate suggestions, lease expirations">template ${esc(String(bv.template.budgetYear || ''))}</span>` : '') : ''}${acts.length ? ` <span class="badge" title="Closed months budgeted 1:1 to posted actuals">✓ actuals: ${acts.map((a) => esc(a.period)).join(', ')}</span>` : ''}</div>
+        <div class="meta">${bv.annual && acqRuns() ? (() => { const a = bv.y1Plan.acq; return ` <span class="badge" title="This year runs off the acquisition plan, tied to UW: each category n/12 of Year 1 and Year 2 by months, moved toward its pace since closing, months on the property's own history. The trailing-12 is mostly before Monarch owned it, so nothing here is built on it.">Acquisition plan · UW ${esc(String(bv.budget.year))}</span> <span class="badge" title="Months posted since closing (the start-up month left out) — what the pace is measured on">${a.liveMonths ?? a.postedMonths ?? 0} mo posted since closing${a.start ? ` (owned from ${esc(a.start)})` : ''}</span>`; })() : bv.annual ? (() => { const t12 = (bv.refs || []).find((r) => r.key === 'actual'); return t12 ? ` <span class="badge" title="The property's own trailing-12 actuals drive every PY-based line; last actual month = ${MONTHS[(bv.lastMonth || 10) - 1]}">T12 ${esc(t12.period)}</span>${(bv.t12Missing || []).length ? ` <span class="badge" style="color:var(--bad)" title="No statement on file covers ${esc(bv.t12Missing.join(', '))} — those months are ZERO in the trailing-12, so every same-month line is zero there. Upload last year's 12 Month Statement (Data page or ⬆ in New budget) or export the statement for ${esc(t12.period)} directly.">⚠ T12 missing ${esc(bv.t12Missing.join(', '))}</span>` : ''}${(bv.t12Dead || []).length ? ` <span class="badge" style="color:var(--warn)" title="${esc(bv.t12Dead.join(', '))} had no rent — the property was not operating (pre-acquisition). Those months are filled with each line's average over the ${bv.t12Live} live months, so the T12 column, the same-month rules and the chart all read as ${bv.t12Live} months annualized.">${bv.t12Live} mo annualized · ${esc(bv.t12Dead.join(', '))} pre-acquisition</span>` : ''}${(bv.t12Startup || []).length ? ` <span class="badge" style="color:var(--warn)" title="New acquisition: the first month${bv.t12Startup.length > 1 ? 's' : ''} of operations (${esc(bv.t12Startup.join(', '))}) ${bv.t12Startup.length > 1 ? 'are' : 'is'} LEFT OUT of the history — a partial month of rent, closing entries and catch-up bills. Filled with each line's average over the remaining months, like the pre-acquisition months. Change how many are left out under Assumptions.">start-up ${esc(bv.t12Startup.join(', '))} left out</span>` : ''}${(bv.t12Early || []).length ? ` <span class="badge" style="color:var(--bad)" title="${esc(bv.t12Early.join(' and '))} ${bv.t12Early.length > 1 ? 'are months' : 'is month'} 2-3 of operations and still IN the history${bv.t12Live <= 3 ? ` — and the whole history is only ${bv.t12Live} month${bv.t12Live === 1 ? '' : 's'}, annualized` : ''}. Early months often carry start-up noise (missing bills, one-time costs, light staffing). Check the lines against them before trusting the budget; leave them out too under Assumptions if they look off.">⚠ review ${esc(bv.t12Early.join(', '))} (month 2-3 of operations)</span>` : ''}` : ' <span class="badge" style="color:var(--warn)" title="No trailing-12 statement linked — upload the Yardi budget template or a 12 Month Statement">⚠ no T12 statement</span>'; })() + (bv.template ? ` <span class="badge" title="Yardi budget template on file: debt schedule, fee matrix, Conservice utility forecasts, corporate suggestions, lease expirations">template ${esc(String(bv.template.budgetYear || ''))}</span>` : '') : ''}${acts.length ? ` <span class="badge" title="Closed months budgeted 1:1 to posted actuals">✓ actuals: ${acts.map((a) => esc(a.period)).join(', ')}</span>` : ''}</div>
       </div>
       <div class="row">
         <button class="btn sub" id="undo-btn" ${S.undo.budgetId === b.id && S.undo.stack.length ? '' : 'disabled'}>↶ Undo${S.undo.budgetId === b.id && S.undo.stack.length ? ` (${S.undo.stack.length})` : ''}</button>
@@ -1960,6 +1981,21 @@ function gridHtml(bv, totals) {
         ${cols.annual ? `<td class="${hs < 0 ? 'neg' : ''}">${money(hs)}</td>` : ''}${refBlank}
         ${cols.punit ? `<td>${money(hs / units)}</td>` : ''}${cols.note ? '<td></td>' : ''}</tr>`);
     }
+    // NET DELINQUENCY (Troy 2026-11-12: "Need subtotal line for combined Current DQ and Prior Period Collections"):
+    // 5035 + 5036, right under prior period collections — what is still uncollected each month
+    if (a.code === '5036' && (linesByGl.get('5035') || linesByGl.get('5036'))) {
+      const dqm = (linesByGl.get('5035') || {}).months || Array(12).fill(0), ppm = (linesByGl.get('5036') || {}).months || Array(12).fill(0);
+      const nm = dqm.map((v, i) => (v || 0) + (ppm[i] || 0)), nt = sumM(nm);
+      const refSum = (ref) => (ref ? (ref.byGl['5035'] || 0) + (ref.byGl['5036'] || 0) : 0);
+      const rc = (ref) => { const v = refSum(ref); return `<td class="ref ${v < 0 ? 'neg' : ''}">${v ? money(v) : ''}</td>`; };
+      const r1 = refSum(refA);
+      rows.push(`<tr class="total netdq" title="Current delinquency (5035) + prior period collections (5036): what is still uncollected each month. Prior period collections follow the previous month's delinquency whatever formula 5035 is on; bad debt recovery (5110) works off what is still uncollected 60 days on, and collection fees (6309) are 50% of the recovery.">
+        <td class="code"></td><td class="name">NET DELINQUENCY (5035 + 5036)</td>${cols.fx ? '<td></td>' : ''}
+        ${monthIdx.map((i) => `<td class="${nm[i] < 0 ? 'neg' : ''}">${money(nm[i])}</td>`).join('')}
+        ${cols.annual ? `<td class="${nt < 0 ? 'neg' : ''}"><b>${money(nt)}</b></td>` : ''}
+        ${cols.refpct ? `<td class="ref">${r1 ? `${((nt - r1) / Math.abs(r1) * 100 >= 0 ? '+' : '')}${((nt - r1) / Math.abs(r1) * 100).toFixed(1)}%` : ''}</td>` : ''}${cols.ref1 ? rc(refA) : ''}${cols.ref3 ? rc(refT3) : ''}${cols.ref2 ? rc(refB) : ''}
+        ${cols.punit ? `<td>${money(nt / units)}</td>` : ''}${cols.note ? '<td></td>' : ''}</tr>`);
+    }
   }
   return `<table class="grid">${rows.join('')}</table>`;
 }
@@ -2399,7 +2435,7 @@ function openApplyFormulaSet(b) {
    every history-based line under it. A row with its own % and any hand-typed line keep theirs. ---- */
 const SEC_PCT_SECTIONS = new Set(['other_income', 'fixed_admin', 'admin', 'corporate_events', 'marketing', 'utilities', 'in_house_maint', 'exterior_cam', 'contract_services', 'rehab_replacement']);
 function secPctBoxHtml(bv, hdr, linesByGl) {
-  if (!bv.annual || !SEC_PCT_SECTIONS.has(hdr.section)) return '';
+  if (!bv.annual || !SEC_PCT_SECTIONS.has(hdr.section) || acqRuns()) return '';
   const bl = (bv.budget.inputs || {}).baseline || {};
   const own = bl.glGrowth || {}, shaped = bl.glShape || {};
   let follow = 0, keep = 0; const shapesNow = new Set();
@@ -2450,7 +2486,7 @@ const fitOfLine = (l) => (l && l.driver ? (l.driver.fit || l.driver.fitT12 || 0)
 const fitEligible = (gl, l) => !!(l && hasT12(gl) && !(l.driver && FIT_SKIP.has(l.driver.method) && !l.override));
 const fitPctOf = (gl, l) => Math.round((((((S.bv && S.bv.budget && S.bv.budget.inputs) || {}).baseline || {}).glFit || {})[gl] ?? fitOfLine(l)) * 100);
 function fitChipHtml(gl, l) {
-  if (!fitEligible(gl, l)) return '';
+  if (acqRuns() || !fitEligible(gl, l)) return '';
   const p = fitPctOf(gl, l);
   return `<button class="drv drv-t12 fitchip${p ? '' : ' off'}" data-fitgl="${esc(gl)}" style="margin-left:3px" title="Fit to T12: lean this line's months ${p ? `${p}% ` : ''}toward its own trailing-12 months — the year total does not change. Click to set.">${p ? `FIT ${p}%` : 'FIT'}</button>`;
 }
@@ -2745,6 +2781,7 @@ function rowT12(gl) { return ((((S.bv || {}).refs || []).find((r) => r.key === '
 /* ---- lines the template dropped (T12 at or under $1,000) ---- */
 function droppedLines(bv) { return (bv.lines || []).filter((l) => !l.override && l.driver && l.driver.method === 'dropped'); }
 function droppedChipHtml(bv) {
+  if (acqRuns()) return '';
   const dr = droppedLines(bv);
   if (!dr.length) return '';
   const tot = dr.reduce((a, l) => a + Math.abs(l.driver.t12 || 0), 0);

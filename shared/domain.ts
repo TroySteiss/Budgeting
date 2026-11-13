@@ -108,6 +108,10 @@ export type BaselineShape = 'wavg' | 'actual' | 'flat' | 'curve' | 'last' | 'avg
 
 /** Everything the generator needs. Stored on budgets.inputs (jsonb). */
 export interface BudgetInputs {
+  /** bad debt recovery rate on the 60-day uncollected (dqChain); unset = the trailing-12's */
+  recoveryPct?: number | null;
+  /** collection fees as a share of bad debt recovery (dqChain); unset = COLLECTION_FEE_PCT 50% */
+  collectionFeePct?: number | null;
   /** per-budget wage adjustments by GL ($/yr) — override the linked payroll
       model's aggregates; a GL not present here keeps the model value. Burden
       (benefits/bonuses) re-derives from the ADJUSTED wage total. */

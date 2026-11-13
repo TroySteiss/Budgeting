@@ -111,10 +111,15 @@ describe('generateAnnualLines — template rules on own history', () => {
     expect(L(l, '6104').months[0]).toBe(525);                              // auto insurance: October 500 × 1.05 flat
     expect((L(l, '6104').driver as any).lastDev).toBeCloseTo(500 / (2953 / 12) - 1, 2);   // +103% vs the average → flagged
   });
-  it('T12/12 flat only above $1,000; bad-debt recovery = average of active months', () => {
+  it('T12/12 flat only above $1,000; bad-debt recovery runs on the delinquency chain, collection fees at 50% of it', () => {
     expect(L(lines, '5135').months[0]).toBe(200);
     expect(sum(L(lines, '5151').months)).toBe(0);
-    expect(L(lines, '5110').months[0]).toBe(450);
+    // Troy 2026-11-12: recovery = the T12 recovery rate × what is still uncollected 60 days on (dqChain)
+    const rec = L(lines, '5110');
+    expect((rec.driver as any).method).toBe('badDebtRecovery');
+    expect(sum(rec.months)).toBeGreaterThan(0);
+    const fee = lines.find((l) => l.gl_code === '6309');
+    if (fee) expect(fee.months.map((v) => Math.round(v))).toEqual(rec.months.map((v) => Math.round(v * 0.5)));
   });
   it('delinquency / prior-period collections / PEP run at their ratios', () => {
     expect((L(lines, '5035').driver as any).method).toBe('pctGpr');
@@ -2026,5 +2031,34 @@ describe('a new acquisition\'s T12 and pace (Troy 2026-11-12: "T12 actuals ... f
     expect(T(ap.cal.get('4994'))).toBe(12000);
     // one posted month is not a pace
     expect(acqCalendarPlan({ plan: plan3, calYear: 2027, coaList: coa3, uw: { y1: { '1': 12000, '12': 1200 } }, fit: 0.5, history: { postedCal, ownedIdx: [9] } }).pace).toEqual({});
+  });
+});
+
+import { dqChain } from '../shared/annual.js';
+describe('the delinquency chain (Troy 2026-11-12: PPC on DQ; recovery on 60-day uncollected; collection fee 50% of recovery)', () => {
+  const ln = (gl: string, months: Months, driver: any, extra: Partial<BudgetLine> = {}): BudgetLine => ({ gl_code: gl, months, driver, override: false, note: '', ...extra });
+  const dq = [-1000, -1200, -800, -1000, -1000, -1000, -1000, -1000, -1000, -1000, -1000, -1000] as Months;
+  const base = () => [
+    ln('5035', dq, { method: 'wavg' }),                                   // DQ on any formula (weighted average here)
+    ln('5036', Array(12).fill(0) as Months, { method: 'collections', pct: 0.6, startDq: 900 }),
+    ln('5110', Array(12).fill(0) as Months, { method: 'badDebtRecovery', pct: 0.25, startDq: 900, lastPpc: 500 }),
+    ln('6309', Array(12).fill(0) as Months, { method: 'collectionFee', pct: 0.5 }),
+  ];
+  it('PPC = rate × the previous month\'s DQ; recovery = rate × (DQ two months back − PPC one month back); fee = 50% of recovery', () => {
+    const out = new Map(dqChain(base()).map((l) => [l.gl_code, l.months]));
+    expect(out.get('5036')!.slice(0, 3)).toEqual([540, 600, 720]);          // 0.6 × 900, × 1000, × 1200
+    // Jan: 900 − 500 (before the year); Feb: 900 − PPC Jan 540; Mar: DQ Jan 1000 − PPC Feb 600; Apr: 1200 − 720
+    expect(out.get('5110')!.slice(0, 4)).toEqual([100, 90, 100, 120]);
+    expect(out.get('6309')!.slice(0, 4)).toEqual([50, 45, 50, 60]);
+  });
+  it('change DQ and everything downstream follows; a typed line or another formula is left alone', () => {
+    const b = base(); b[0] = { ...b[0], months: dq.map((v) => v * 2) as Months };
+    expect(new Map(dqChain(b).map((l) => [l.gl_code, l.months])).get('5036')![1]).toBe(1200);
+    const locked = base(); locked[1] = { ...locked[1], override: true, months: Array(12).fill(7) as Months };
+    const o = new Map(dqChain(locked).map((l) => [l.gl_code, l.months]));
+    expect(o.get('5036')![0]).toBe(7);
+    expect(o.get('5110')![2]).toBe(r2n(0.25 * (1000 - 7)));                 // recovery reads the typed collections
+    const other = base(); other[3] = { ...other[3], driver: { method: 'baseline' } as any, months: Array(12).fill(3) as Months };
+    expect(new Map(dqChain(other).map((l) => [l.gl_code, l.months])).get('6309')![0]).toBe(3);
   });
 });

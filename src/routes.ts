@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, parseReviewApply, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
-  acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, foldHapCal, foldHapLines, sellerFillT12, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
+  acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
   refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
@@ -937,8 +937,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
             }
           }
         }
-        // HAP is GPR in the plan too (Troy 2026-11-12)
-        const plCal: Record<string, Months> = foldHapCal(Object.fromEntries(pl.map((r: any) => [r.gl_code, (r.months as any[]).map(Number) as Months])) as Record<string, Months>) || {};
+        const plCal: Record<string, Months> = Object.fromEntries(pl.map((r: any) => [r.gl_code, (r.months as any[]).map(Number) as Months]));
         if (pl.length) y1Plan = { ...plan, budgetId: Number(acqB.id), uwNoi, seller, sellerPeriod, uw: ud ? { y1: ud.y1 || {}, years: ud.years || undefined, basis: ud.basis || undefined, units: Number(ud.units) || undefined, returns: ud.returns || undefined, noi: Number(ud.noi) || undefined, capital: Number(ud.assumptions?.capitalToClose) || undefined, loan: Number(ud.assumptions?.loanAmount) || undefined, rate: Number(ud.assumptions?.interestRate) || undefined } : null, lines: Object.entries(plCal).map(([gl_code, months]) => ({ gl_code, months })) };
       }
     }
@@ -959,8 +958,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     // for the property (the linked one wins): a Jan–Dec export in November
     // carries empty Nov–Dec, and those come from last year's statement
     const t12 = stmtActual ? await composeT12(budget.property_code, budget.py_stmt_id, stmtActual, budget.inputs?.startupExclude) : null;
-    // HAP is GPR (Troy 2026-11-12): the T12 carries HAP inside 4994, as the budget does
-    actualCal = foldHapCal(t12?.cal || null);
+    actualCal = t12?.cal || null;
     // a new acquisition: the months before ownership follow the seller T12's pattern, not a flat average (sellerFillT12)
     if (actualCal && t12 && y1Plan && (t12.dead.length || (t12.startup || []).length)) {
       const MONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -1000,7 +998,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     t12Startup = t12?.startup || [];
     t12Early = t12?.early || [];
     t12Live = t12?.liveMonths || 12;
-    budgetCal = foldHapCal(stmtBudget ? stmtCalendar(stmtBudget) : null);
+    budgetCal = stmtBudget ? stmtCalendar(stmtBudget) : null;
     lastMonth = t12 ? t12.lastMonth : (template?.lastActual?.month || 10);
     const pt = (await query(
       `select id, label, period, data from stmt_snapshots where property_code=$1 and kind='payroll_template' and (data->>'year')::int = $2 order by created_at desc limit 1`,
@@ -1372,6 +1370,9 @@ function effectiveWages(model: Record<string, number> | null, adj?: Record<strin
     deactivate a line to keep it out). Month 0 keeps the generated value (it
     recovers the pre-start seller month). */
 function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[], inputs?: BudgetInputs): BudgetLine[] {
+  // the delinquency chain first (PPC on DQ, recovery on the 60-day uncollected, collection fee on recovery), so the
+  // fee and every pass below read it (Troy 2026-11-12)
+  input = dqChain(input);
   let lines = input.map((l) => {
     const d = l.driver as any;
     if (l.override && d?.method === 'linkLine' && d.src) {
@@ -1557,8 +1558,10 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   // standing per-line MROUND re-applies as the final step (not a lock)
   lines = applyRounding(lines);
   lines = overlay(lines);
-  // HAP is GPR (Troy 2026-11-12): last, so every pass above (fees, vacancy, ties) read the same income
-  lines = foldHapLines(lines);
+  // the acquisition plan is laid over every month above: re-tie the delinquency chain to the 5035 it left
+  if (acq) lines = dqChain(lines);
+  // HAP stays on its own lines (4995 / 4996): Troy 2026-11-12 asked for the separate HAP line back after the fold
+  // ("Add HAP rent back in too" → "Separate 4996 line again"); foldHapLines is no longer applied
   return { lines };
 }
 
@@ -1787,7 +1790,7 @@ router.put('/budgets/:id/lines/:gl', h(async (req, res) => {
   // not at the next recalc
   const before = new Map(
     lb.lines
-      .filter((l) => { const m2 = (l.driver as any)?.method; return m2 === 'recovery' || m2 === 'linkLine' || m2 === 'burdenRatio'; })
+      .filter((l) => { const m2 = (l.driver as any)?.method; return m2 === 'recovery' || m2 === 'linkLine' || m2 === 'burdenRatio' || m2 === 'collections' || m2 === 'badDebtRecovery' || m2 === 'collectionFee'; })
       .map((l) => [l.gl_code, JSON.stringify(l.months) + '|' + JSON.stringify(l.driver)])
   );
   let passed: BudgetLine[] = lb.lines;

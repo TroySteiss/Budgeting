@@ -40,7 +40,8 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-12d';   // d: acquisition levels move toward the pace since closing (fit), T12 fill follows the seller; c: HAP inside GPR (4994); b: new acquisitions weighted Y1/Y2 by months, shaped by history
+export const ENGINE_VERSION = '2026-11-12e';   // e: delinquency chain (PPC on DQ, recovery on 60-day uncollected, collection fee 50%); HAP back on 4995 / 4996
+// earlier: d: acquisition levels move toward the pace since closing (fit), T12 fill follows the seller; c: HAP inside GPR (4994); b: new acquisitions weighted Y1/Y2 by months, shaped by history
 
 /** Header label for a budget statement used as a reference column: a calendar year reads
     "2026 budget"; anything else names its real window ("budget Nov-25–Oct-26") — the Yardi
@@ -1912,6 +1913,33 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   };
   for (const gl of [...lines.keys()]) if (gl !== '6112') fitLine(gl);
 
+  /* ---- the delinquency chain (Troy 2026-11-12: "Collection fee is 50% of bad debt recovery. Bad debt recovery is
+     based on uncollected debt over 60 days, which stems from Current DQ and Prior Period Collections"): 5110 BAD DEBT
+     RECOVERY = the trailing-12's recovery rate × what is still uncollected 60 days on (dqChain); 6309 COLLECTION FEES =
+     50% of the recovery (inputs.collectionFeePct). Rate = T12 recovery ÷ (T12 delinquency − T12 collections), not
+     capped. A GL with a formula picked on the row keeps it. ---- */
+  {
+    const t12 = (gl: string) => sum((src.actual || {})[gl] || zero12());
+    const lastDq = Math.abs(((src.actual || {})['5035'] || zero12())[lastMonth - 1] || 0);
+    const lastPpc = Math.abs(((src.actual || {})['5036'] || zero12())[lastMonth - 1] || 0);
+    const unc = Math.abs(t12('5035')) - Math.abs(t12('5036'));
+    const recT12 = t12('5110');
+    // the chain wins over a history formula from the defaults or a formula set; a formula picked on the row itself, a
+    // known contract, a review line or a deliberate zero keeps its line
+    const chainMay = (gl: string): boolean => { const d = lines.get(gl)?.driver as any; return !userShaped.has(gl) && !['contract', 'review', 'zero', 'dropped'].includes(d?.method); };
+    if (coaByCode.has('5110') && chainMay('5110') && unc > 0 && recT12 > 0) {
+      // not capped at 100%: recoveries also come off older written-off balances (CLND: $13,977 recovered on $574 left
+      // uncollected), so the rate keeps the T12's level and moves with the 60-day uncollected
+      const pct = inputs.recoveryPct != null ? Math.max(0, Number(inputs.recoveryPct)) : recT12 / unc;
+      mk('5110', zero12(), { method: 'badDebtRecovery', pct: Math.round(pct * 100000) / 100000, startDq: r2(lastDq), lastPpc: r2(lastPpc), t12: r2(recT12), t12Uncollected: r2(unc) } as any);
+    }
+    if (coaByCode.has('6309') && chainMay('6309') && (lines.get('5110')?.driver as any)?.method === 'badDebtRecovery') {
+      const fp = inputs.collectionFeePct != null ? Math.min(1, Math.max(0, Number(inputs.collectionFeePct))) : COLLECTION_FEE_PCT;
+      mk('6309', zero12(), { method: 'collectionFee', pct: fp } as any);
+    }
+    for (const l of dqChain([...lines.values()])) lines.set(l.gl_code, l);
+  }
+
   /* ---- management fee: % of the PRIOR month's total income, rounded to the dollar
      (2027 template: the fee bills a month in arrears, so January runs on December's
      budgeted income; without a current-year budget January runs on its own income) ---- */
@@ -2005,7 +2033,47 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
    A locked (overridden) line is never moved: its difference shows in y1Check as variance.
    ========================================================================== */
 export interface Y1Plan { year: number; startMonth: number; lines: { gl_code: string; months: Months }[] }
-/* HAP IS GPR (Troy 2026-11-12: "HAP Rent is still causing issues. HAP rent should be treated as GPR. Really, you could
+/* THE DELINQUENCY CHAIN (Troy 2026-11-12: "Need these to stay connected even if formula is changed (for example to
+   weighted averages PPC still needs to be based on Current DQ). Collection fee is 50% of bad debt recovery. Bad debt
+   recovery is based on uncollected debt over 60 days, which stems from Current DQ and Prior Period Collections").
+   Re-run after every build and every hand edit (applyDependentPasses), so whatever formula 5035 is on:
+     5036 PRIOR PERIOD COLLECTIONS (driver collections) = rate × |5035| of the PREVIOUS month (January: the last
+          actual month's delinquency, `startDq`)
+     5110 BAD DEBT RECOVERY (driver badDebtRecovery) = rate × uncollected over 60 days: month m = |5035| two months
+          back − 5036 one month back (what was collected on it), never below zero; before the year starts the last
+          actual month's delinquency and collections stand in
+     6309 COLLECTION FEES (driver collectionFee) = pct (50%) × 5110
+   A locked (typed) line is never moved; a line on another formula is left alone. Pure. */
+export const COLLECTION_FEE_PCT = 0.5;
+export function dqChain(lines: BudgetLine[]): BudgetLine[] {
+  const by = new Map(lines.map((l) => [l.gl_code, l]));
+  const out = new Map(by);
+  const live = (gl: string, method: string) => { const l = by.get(gl); return l && !l.override && (l.driver as any)?.method === method ? l : null; };
+  const dqM = by.get('5035')?.months || zero12();
+  const ppcL = live('5036', 'collections');
+  let ppcM = by.get('5036')?.months || zero12();
+  if (ppcL) {
+    const d = ppcL.driver as any; const rate = Number(d.pct) || 0;
+    const startDq = Math.abs(Number(d.startDq) || 0) || Math.abs(dqM[0]);
+    ppcM = dqM.map((_, i) => r2(rate * (i === 0 ? startDq : Math.abs(dqM[i - 1])))) as Months;
+    out.set('5036', { ...ppcL, months: ppcM });
+  }
+  const recL = live('5110', 'badDebtRecovery');
+  let recM = by.get('5110')?.months || zero12();
+  if (recL) {
+    const d = recL.driver as any; const rate = Number(d.pct) || 0;
+    const D = (i: number) => (i < 0 ? Math.abs(Number(d.startDq) || 0) : Math.abs(dqM[i] || 0));
+    const P = (i: number) => (i < 0 ? Math.abs(Number(d.lastPpc) || 0) : Math.abs(ppcM[i] || 0));
+    recM = dqM.map((_, i) => r2(rate * Math.max(0, D(i - 2) - P(i - 1)))) as Months;
+    out.set('5110', { ...recL, months: recM });
+  }
+  const feeL = live('6309', 'collectionFee');
+  if (feeL) out.set('6309', { ...feeL, months: recM.map((v) => r2((Number((feeL.driver as any).pct) || 0) * v)) as Months });
+  return lines.map((l) => out.get(l.gl_code) || l);
+}
+
+/* NOT APPLIED since later 2026-11-12 (Troy: "Add HAP rent back in too" → the separate 4996 line again). Kept for reference.
+   HAP IS GPR (Troy 2026-11-12: "HAP Rent is still causing issues. HAP rent should be treated as GPR. Really, you could
    back out HAP, just combine all of the market rents, and just look at it from the perspective of GPR. Either way it
    needs to be fixed"). Every budget carries HAP inside 4994 TENANT GROSS POTENTIAL: GPR = every unit's market rent,
    the HAP lines (4995 HAP CONTRACT RENT, 4996 HAP VOUCHER RENT) budget nothing. The reference columns (T12, CY
