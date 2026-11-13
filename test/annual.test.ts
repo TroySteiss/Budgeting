@@ -92,14 +92,17 @@ describe('generateAnnualLines — template rules on own history', () => {
     expect(L(lines, '6620').months[0]).toBe(321);
     expect(L(lines, '5165').months[2]).toBe(110);          // other income 0%
   });
-  it('real estate taxes = trailing-12 total ÷ 12 flat (never October × 12), no $1,000 threshold', () => {
-    expect(L(lines, '6116').months).toEqual(Array(12).fill(952.75));       // (9 × 900 + 3 × 1,000) ÷ 12, × 1.03 (RE taxes grow 3% by default)
+  it('real estate taxes = this year\'s cost (posted Jan–Oct + the rest at the current accrual) × 1.03, flat; no $1,000 threshold (Troy 2026-11-13)', () => {
+    // Oct 1,000 against Sep 900 is a one-off: the accrual is the 900 that repeats; the year = 9 × 900 + 1,000 + 2 × 900
+    expect(L(lines, '6116').months).toEqual(Array(12).fill(935.58));
+    expect((L(lines, '6116').driver as any).accrual).toBe(900);
+    expect((L(lines, '6116').driver as any).taxYear).toBe(10900);
     expect((L(lines, '6116').driver as any).shape).toBe('flat');
     const small = { ...actual, '6116': cal(Array(12).fill(50)) };          // T12 600 ≤ 1,000 still budgets
     expect(L(generateAnnualLines(coaList, inputs, { ...src, actual: small }), '6116').months[0]).toBe(51.5);
     // the GRKS rule for 6116 is `fixedAnnual` (RMC typed an annual) — same flat default, rule carried
     const withRule = L(generateAnnualLines(coaList, inputs, { ...src, rules: { '6116': { method: 'fixedAnnual' } } }), '6116');
-    expect(withRule.months).toEqual(Array(12).fill(952.75));
+    expect(withRule.months).toEqual(Array(12).fill(935.58));
     expect((withRule.driver as any).rule).toBe('fixedAnnual');
   });
   it('"October actual" lines are flat at the last actual month, and flag a last month far off the T12 average', () => {
@@ -507,7 +510,7 @@ describe('parseYardiBudgetTemplate — GRKS RMC draft ties to its Summary', () =
     const inputs = baseInputs(2026, t.units, actual, null, coaList, t, 10);
     const lines = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10, template: t });
     expect(sum(L(lines, '4994').months)).toBeCloseTo(1493914.18, 1);
-    expect(sum(L(lines, '6116').months)).toBeCloseTo(101838.76 * 1.03, 0);   // RE tax: T12 flat × 1.03 (the 3% default), not RMC's typed 103,355 (October × 12)
+    expect(sum(L(lines, '6116').months)).toBeCloseTo(103355.3 * 1.03, 0);   // RE tax: the current accrual (October repeats September: RMC's 103,355) × 1.03 (Troy 2026-11-13)
     expect(sum(L(lines, '6108').months)).toBe(28500);
     expect(sum(L(lines, '7300').months)).toBeCloseTo(234066.04, 1);
     expect(sum(L(lines, '3080').months)).toBeCloseTo(-100862.94, 1);
@@ -548,9 +551,9 @@ describe('foundation rules (seed/annual-rules.json, extracted from the GRKS draf
       expect(L(lines, '6604').months[0]).toBe(800);                  // Jan: PY × 1.05 → MROUND 10 (RMC: 800)
       expect(sum(L(lines, '6702').months)).toBeCloseTo(2092.2, 0);   // flatT12 × 1.10 (RMC: 2,092)
       expect(L(lines, '5165').months[0]).toBe(1050);                 // PY Jan 1,030.65 → MROUND 50 (RMC: 1,050)
-      // RE tax: trailing-12 total flat (101,839), NOT October × 12 (103,355 — RMC's typed annual
-      // was a property decision; on clnd the same rule put 2026 taxes 110k under what was loaded)
-      expect(sum(L(lines, '6116').months)).toBeCloseTo(101838.76 * 1.03, 0);   // × 1.03: the RE tax default
+      // RE tax (Troy 2026-11-13): the current accrual — October repeats September, so 103,355 a year, RMC's own typed
+      // annual — × 1.03, not the trailing-12's 101,839 that still carries last year's lower rate
+      expect(sum(L(lines, '6116').months)).toBeCloseTo(103355.3 * 1.03, 0);
       expect((L(lines, '6116').driver as any).rule).toBe('fixedAnnual');
     });
     it('a typed category % outranks the per-GL foundation factors (the Assumptions boxes used to be inert)', () => {
@@ -2131,5 +2134,27 @@ describe('a new acquisition\'s delinquency from what has posted (Troy 2026-11-13
     expect(acqDelinquency(same, coaD, actual, [], 6000)).toBe(same);
     const locked = lines(); locked[3] = { ...locked[3], override: true, months: Array(12).fill(-100) as Months };
     expect(new Map(acqDelinquency(locked, coaD, actual, [8, 9], 6000).map((l) => [l.gl_code, l])).get('5035')!.months[0]).toBe(-100);
+  });
+});
+
+import { taxAccrual, taxYearBase } from '../shared/annual.js';
+describe('RE tax accrual (Troy 2026-11-13: "revisit taxes as a whole for all formats")', () => {
+  const T = (m: number[]) => m as unknown as Months;
+  it('the most recent month that repeats: a step-up mid-year, a true-up month skipped, nothing steady = null', () => {
+    // WYND: Nov-Dec 27,424, Jan-Mar 33,149, Apr-Oct 41,728 (calendar order, last posted = Oct)
+    expect(taxAccrual(T([33149, 33149, 33149, 41728, 41728, 41728, 41728, 41728, 41728, 41728, 27424, 27424]), 10)).toBe(41728);
+    // CWND (seller months before closing): Sep / Oct posted 32,976; the seller's December true-up never counts
+    expect(taxAccrual(T([25925, 25925, 25925, 17713, 23872, 23872, 30922, 30922, 32976, 32976, 30922, -45255]), 10)).toBe(32976);
+    // a true-up in the last month: the month before it that repeats
+    expect(taxAccrual(T([500, 500, 500, 500, 500, 500, 500, 500, 500, 2400, 500, 500]), 10)).toBe(500);
+    expect(taxAccrual(T([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]), 10)).toBeNull();
+  });
+  it('the year\'s cost: a January step = accrual × 12; a mid-year catch-up keeps what was booked; an acquisition = accrual × 12', () => {
+    // CLND: 42,020 from January
+    expect(taxYearBase(T([42020, 42020, 42020, 42020, 42020, 42020, 42020, 42020, 42020, 42020, 33931, 33931]), 10, 42020, true)).toBe(504240);
+    // WYND: Jan–Mar 33,149, Apr–Oct 41,728 → 474,999 (not 41,728 × 12 = 500,736)
+    expect(taxYearBase(T([33149, 33149, 33149, 41728, 41728, 41728, 41728, 41728, 41728, 41728, 27424, 27424]), 10, 41728, true)).toBe(474999);
+    // CWND: Jan–Aug are the seller's: the accrual × 12
+    expect(taxYearBase(T([25925, 25925, 25925, 17713, 23872, 23872, 30922, 30922, 32976, 32976, 30922, -45255]), 10, 32976, false)).toBe(395712);
   });
 });

@@ -172,6 +172,8 @@ function drvMetaBase(l) {
     /* ---- annual (template) rules ---- */
     case 'baseline': {
       const d = l.driver;
+      // RE taxes from the current accrual (Troy 2026-11-13: "revisit taxes as a whole for all formats")
+      if (d.accrual) return { cls: 'drv-base', tag: 'ACCRUAL', label: `RE taxes: this year's cost $${money(d.taxYear || d.accrual * 12)} (what has posted this calendar year + the rest at the current monthly accrual $${money(d.accrual)}, the latest posted month that repeats; a one-off true-up month is skipped; a property bought this year: the accrual × 12) × ${(1 + (d.pct || 0)).toFixed(3)}, spread evenly · T12 ${Math.round(d.base || 0).toLocaleString('en-US')}. Type a % on the row to change the increase; pick a formula on the row to leave the accrual.` };
       let shape = { actual: 'same calendar month', wavg: '1-2-1 weighted distribution', flat: 'T12 ÷ 12 flat', curve: `T12 total on the GL curve${d.fit ? `, fit ${Math.round(d.fit * 100)}% to its own T12 months` : ''}`, last: 'last actual month, flat', avgnz: 'average of active months, flat', turns: `turnover curve: T12 total on lease expirations + 1 mo lag${d.turns ? ` (${Math.round(d.turns)} expirations)` : ''}${d.fit ? `, fit ${Math.round(d.fit * 100)}% to its own T12 months` : ''}` }[d.shape] || d.shape;
       const factor = d.pcts ? `+ Conservice forecast ${(Math.min(...d.pcts) * 100).toFixed(0)}–${(Math.max(...d.pcts) * 100).toFixed(0)}% by month` : `× ${(1 + (d.pct || 0)).toFixed(3)}`;
       // a GL with no seasonal curve on "curve" is exactly T12 ÷ 12 — show it as that, not CURVE (Troy 2026-11-11)
@@ -1050,6 +1052,11 @@ function renderUploads(el) {
 /* ---- the ND budget review workbook, kept on the Data page (Troy 2026-11-12: "I need to be able to drop it into
    data once, not redrop the same sheet"): dropped once, saved like any upload; this card names the newest one, the
    sites it covers and where it has gone in, and opens Preview & apply from the saved copy. ---- */
+// does the site have an annual budget for the workbook's year (its name: "ND 2027 Budget Review")?
+function rvHasBudget(site, st) {
+  const m = String((st && st.filename) || '').match(/20\d\d/); const yr = m ? Number(m[0]) : new Date().getFullYear() + 1;
+  return ((S.state && S.state.budgets) || []).some((b) => String(b.property_code).toLowerCase() === site && b.budget_type === 'annual' && Number(b.year) === yr);
+}
 function reviewStoredHtml() {
   if (S.revStored === undefined) { S.revStored = null; GET('/review-apply/stored').then((r) => { S.revStored = r.stored || false; render(); }).catch(() => { S.revStored = false; }); return ''; }
   const st = S.revStored;
@@ -1061,8 +1068,8 @@ function reviewStoredHtml() {
       <h2 style="margin:0">ND budget review workbook</h2>
       <span>${applied.length ? `<button class="btn secondary" id="rv-refile" title="Move what this workbook already put in as REVIEW lines (set / at-least / add rows) under Contracts &amp; known costs on every budget it went into, rebuilt from those contracts like a fresh apply. Fee-rate and reclass rows stay REVIEW lines. A save point first on each budget.">Re-file contracts</button> ` : ''}<button class="btn" id="rv-open" title="Plan the saved workbook's Apply tab on each site's budget, tick what goes in, apply (a save point first)">Preview &amp; apply…</button></span>
     </div>
-    <p class="muted" style="font-size:12px; margin:6px 0 0"><b>${esc(st.filename)}</b> · saved ${new Date(st.uploadedAt).toLocaleDateString()}${st.uploadedBy ? ` by ${esc(st.uploadedBy)}` : ''} · ${st.rows} rows, ${st.push} to push · drop a newer copy here to replace it.</p>
-    <div style="display:flex; flex-wrap:wrap; gap:4px 10px; margin-top:6px; font-size:12px">${st.sites.map((c) => `<span class="${doneSites.has(c) ? 'ok' : 'muted'}" style="margin:0" title="${doneSites.has(c) ? `applied ${applied.filter((a) => String(a.site).toLowerCase() === c).map((a) => `${new Date(a.at).toLocaleDateString()}${a.by ? ` by ${a.by}` : ''} (${(a.gls || []).join(', ')})`).join('; ')}` : 'not applied yet'}">${doneSites.has(c) ? '✓' : '○'} ${esc(c.toUpperCase())}</span>`).join('')}</div>
+    <p class="muted" style="font-size:12px; margin:6px 0 0"><b>${esc(st.filename)}</b> · saved ${new Date(st.uploadedAt).toLocaleDateString()}${st.uploadedBy ? ` by ${esc(st.uploadedBy)}` : ''} · ${st.rows} rows, ${st.push} to push · drop a newer copy here to replace it. A site with no budget yet (◷) takes it automatically when its budget is made.</p>
+    <div style="display:flex; flex-wrap:wrap; gap:4px 10px; margin-top:6px; font-size:12px">${st.sites.map((c) => `<span class="${doneSites.has(c) ? 'ok' : 'muted'}" style="margin:0" title="${doneSites.has(c) ? `applied ${applied.filter((a) => String(a.site).toLowerCase() === c).map((a) => `${new Date(a.at).toLocaleDateString()}${a.by ? ` by ${a.by}` : ''}${a.auto ? ' when the budget was made' : ''} (${(a.gls || []).join(', ')})`).join('; ')}` : rvHasBudget(c, st) ? 'not applied yet: Preview & apply' : 'no budget yet: goes in automatically when its budget is made'}">${doneSites.has(c) ? '✓' : rvHasBudget(c, st) ? '○' : '◷'} ${esc(c.toUpperCase())}</span>`).join('')}</div>
   </div>`;
 }
 function renderReviewUploadPreview(el, parsed) {
@@ -1841,6 +1848,8 @@ function overallOf(gl, l, linesByGl, totals, refA) {
     case 'corpRate': case 'perUnit': case 'perUnitComp': return perUnit(y);
     default: {
       if (gl === '6108') return perUnit(y);
+      // RE taxes on the current accrual: growth over that year (Troy 2026-11-13)
+      if (d.accrual) return { v: y / (d.taxYear || d.accrual * 12) - 1, kind: 'growth', what: `this year's tax cost ($${money(d.taxYear || d.accrual * 12)})` };
       const ref = refA ? (refA.byGl[gl] || 0) : 0;
       if (!ref) return Math.abs(y) > 0.5 ? { v: null, kind: 'new', what: refA ? refA.label : 'the reference' } : null;
       return { v: y / ref - 1, kind: 'growth', what: refA.label };

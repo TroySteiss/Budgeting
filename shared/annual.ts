@@ -40,7 +40,8 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-13a';   // a: new acquisitions' delinquency chain from the posted months
+export const ENGINE_VERSION = '2026-11-13b';   // b: RE taxes from the current accrual; formula-set growth % no longer pulls plan lines
+// earlier: a: new acquisitions' delinquency chain from the posted months
 // earlier: h: fit to T12 / section picks work on plan-run acquisitions
 // earlier: g: lines with a formula picked on the row are not laid over by the acquisition plan
 // earlier: f: an acquisition's rent-roll GPR / LTL keep their own months (steps)
@@ -231,6 +232,8 @@ function annualizeDead(t: Trailing12, firstKey: number, excludeStartup = STARTUP
    contra income, insurance, fee, taxes and payroll stay on the flat average, as their budgets do. Missed / catch-up
    billing in the seller's months is smoothed first. Live (posted) months never change. Pure. */
 export const SELLER_FILL_PCODES = new Set(['4', '5', '9', '11', '12', '13']);
+/** Accrual categories (insurance, RE / PP taxes) whose seller months go into the T12 as the seller's year spread evenly. */
+export const SELLER_EVEN_PCODES = new Set(['6', '8']);
 /* THE SELLER'S OWN DOLLARS (Troy 2026-11-12: "There are indeed T12 numbers that you very easily could make work very
    well. That is like the sole reason I gave you all of the UW workbooks - they have all of the prior year seller
    financials in there. You also have the prior year financials saved down already - that would be from the 2026
@@ -261,9 +264,12 @@ export function sellerFillT12(cal: Record<string, Months>, filledIdx: number[], 
       if (usable(p)) {
         const pm = plan[gl] || zero12();
         const yearShare = pm.reduce((a, v) => a + (Number(v) || 0), 0) / catTot[p];
+        // insurance and taxes are accruals: the seller's year spread evenly (its true-ups are not a monthly pattern —
+        // CWND's seller booked −45,255 of taxes in one December; Troy 2026-11-13)
+        const evenly = SELLER_EVEN_PCODES.has(p) ? seller[p].reduce((a, v) => a + (Number(v) || 0), 0) / 12 : null;
         for (const m of filledIdx) {
           const share = Math.abs(catM[p][m]) > 0.5 ? (Number(pm[m]) || 0) / catM[p][m] : yearShare;
-          row[m] = r2((seller[p][m] || 0) * share);
+          row[m] = r2(evenly != null ? evenly * yearShare : (seller[p][m] || 0) * share);
         }
         shaped.add(p);
       }
@@ -476,6 +482,32 @@ export function flatFeeBilling(inputs: { utilities?: { billing?: string } } | nu
 export const LAST_DEV_WARN = 0.25;
 /** Real estate taxes grow 3% a year unless a % is typed on the row, the section or the category. */
 export const RE_TAX_DEFAULT_PCT = 0.03;
+/* RE TAXES FROM THE CURRENT ACCRUAL (Troy 2026-11-13: "revisit taxes as a whole for all formats. Cottonwood taxes are
+   beyond fucked"). Taxes post as a flat monthly accrual that steps up once a year when the new bill is known, plus the
+   odd true-up month (CWND's seller booked −45,255 in December). The trailing-12 total mixes last year's rate into the
+   base (WYND accrues 41,728 now against a T12 of 446k; CLND 42,020 against 488k) and a true-up wrecks it. The current
+   accrual = the most recent posted month that equals the month before it (within 1%) — a one-off month is skipped. The
+   budget = that × (1 + the RE tax %) every month. No two equal months in the window: null (the T12 ÷ 12 stays). */
+/** This year's RE tax cost (checked across all 17 sites, Troy 2026-11-13: "Check on multiple sites, not just one"):
+    the months posted so far this calendar year (Jan..lastMonth of the trailing-12) plus the rest of the year at the
+    current accrual. Same as accrual × 12 where the rate stepped in January (CLND, TPND, TCND, SPND, the KC sites); where
+    it stepped mid-year it keeps what was booked before (WYND: Jan–Mar 33,149, Apr–Oct 41,728 a catch-up rate → 474,999,
+    not 500,736). `ownedAll` false (a new acquisition: Jan..lastMonth includes the seller's months) = accrual × 12. */
+export function taxYearBase(cal: Months, lastMonth: number, accrual: number, ownedAll: boolean): number {
+  if (!ownedAll) return r2(accrual * 12);
+  let ytd = 0;
+  for (let i = 0; i < lastMonth; i++) { const v = Number(cal[i]) || 0; if (!(v > 0)) return r2(accrual * 12); ytd += v; }
+  return r2(ytd + (12 - lastMonth) * accrual);
+}
+export function taxAccrual(cal: Months | null | undefined, lastMonth: number): number | null {
+  if (!cal) return null;
+  for (let k = 0; k < 11; k++) {
+    const i = (((lastMonth - 1 - k) % 12) + 12) % 12, j = (i + 11) % 12;
+    const a = Number(cal[i]) || 0, b = Number(cal[j]) || 0;
+    if (a > 0 && b > 0 && Math.abs(a - b) <= 0.01 * a) return r2(a);
+  }
+  return null;
+}
 /** Per-GL increase factors the template hard-codes. */
 export const TEMPLATE_GL_PCT: Record<string, number> = {
   '5158': 0.05, '5167': 0.05, '5169': 0.05, '5170': 0.05, '5171': 0.05, '5172': 0.05, '5174': 0.05,
@@ -1239,8 +1271,9 @@ export function guidanceCheck(a: {
   if (taxT12) {
     const tl = line('6116'); const d: any = tl?.driver || {};
     const gross = d.allocOut ? d.allocOut.gross : sum(tl?.months || zero12());
-    const v = g2(gross, taxT12);
-    add('tax', 'RE taxes vs T12', pctTxt(v), `${pctTxt(G.reTaxPct)} or less unless documented`, v == null ? 'ok' : atMost(v, G.reTaxPct));
+    // built on the current accrual (taxAccrual): measured against that year, not a T12 that still carries last year's rate
+    const v = d.accrual ? g2(gross, d.taxYear || d.accrual * 12) : g2(gross, taxT12);
+    add('tax', d.accrual ? 'RE taxes vs this year\'s cost' : 'RE taxes vs T12', pctTxt(v), `${pctTxt(G.reTaxPct)} or less unless documented`, v == null ? 'ok' : atMost(v, G.reTaxPct));
   }
   const pay = (m: Map<string, Months>, ls: { gl: string; months: Months }[]) => ls.reduce((x, l) => { const acc = a.coaList.find((c) => c.code === l.gl); return acc?.pcode === '10' ? x + sum(l.months) : x; }, 0);
   const payB = pay(bud, a.lines.map((l) => ({ gl: l.gl_code, months: l.months })));
@@ -1507,7 +1540,20 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       const lastV = cal[lastMonth - 1] || 0;
       if (avg && Math.abs(lastV - avg) > LAST_DEV_WARN * Math.abs(avg)) lastDev = Math.round((lastV / avg - 1) * 1000) / 1000;
     }
-    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(fit ? { fit } : {}), ...(lastDev != null ? { lastDev } : {}), ...(drift ? { drift } : {}), ...(noNeg.folded ? { folded: noNeg.folded } : {}) } as any);
+    // RE taxes (6116): the current accrual × (1 + %), flat — unless a formula was picked on the row (taxAccrual)
+    let accrual: number | null = null, taxYear: number | null = null;
+    if (FIXED_ANNUAL_GLS.has(a.code) && !bl.glShape?.[a.code] && !shape && (!rule || ['fixedAnnual', 'flatT12', 'same', 'wavg', 'last'].includes(rule.method))) {
+      accrual = taxAccrual(cal, lastMonth);
+      if (accrual) {
+        // a property acquired this calendar year: its Jan..last month are partly the seller's — the accrual × 12
+        const acqStart = String(src.acquisition?.start || '').match(/^(\d{4})-(\d{1,2})/);
+        const ownedAll = !(acqStart && Number(acqStart[1]) >= inputs.year - 1 && (Number(acqStart[1]) > inputs.year - 1 || Number(acqStart[2]) > 1));
+        taxYear = taxYearBase(cal, lastMonth, accrual, ownedAll);
+        const mo = (taxYear * (1 + pct)) / 12;
+        months = Array(12).fill(mult ? r2(Math.round(mo / mult) * mult) : r2(mo)) as Months;
+      }
+    }
+    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(accrual ? { accrual, taxYear } : {}), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(fit ? { fit } : {}), ...(lastDev != null ? { lastDev } : {}), ...(drift ? { drift } : {}), ...(noNeg.folded ? { folded: noNeg.folded } : {}) } as any);
     return true;
   };
 

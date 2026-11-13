@@ -6,7 +6,7 @@ import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, parseReviewApply, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
-  acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, acqDelinquency, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
+  acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, acqDelinquency, FIXED_ANNUAL_GLS, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
   refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
@@ -223,7 +223,7 @@ async function applyTargets(rows: ApplyRow[], year: number) {
   const out: { site: string; budgetId: number | null; why?: string; lb?: LoadedBudget }[] = [];
   for (const site of sites) {
     const b = (await query(`select id from budgets where lower(property_code)=$1 and year=$2 and budget_type='annual' order by updated_at desc limit 1`, [site, year])).rows[0];
-    if (!b) { out.push({ site, budgetId: null, why: `no ${year} annual budget for ${site.toUpperCase()} in this region` }); continue; }
+    if (!b) { out.push({ site, budgetId: null, why: `no ${year} annual budget for ${site.toUpperCase()} yet — the workbook goes in automatically when it is made` }); continue; }
     const lb = await loadBudget(Number(b.id));
     if (!lb) { out.push({ site, budgetId: null, why: 'budget not found' }); continue; }
     out.push({ site, budgetId: Number(b.id), lb });
@@ -245,6 +245,26 @@ function noiWith(lb: LoadedBudget, changes: ApplyPlan['changes']): number {
   const m = new Map(lb.lines.map((l) => [l.gl_code, l.months]));
   for (const c of changes) m.set(c.gl, budOfCal(c.newMonths, sm));
   return kpis(m, 0).noi;
+}
+/** The budget year a saved review workbook is for: the year in its name ("ND 2027 Budget Review"), else next year. */
+const reviewYear = (filename: string): number => { const m = String(filename || '').match(/20\d\d/); return m ? Number(m[0]) : new Date().getFullYear() + 1; };
+/** A new annual budget takes the saved review workbook's rows for its site straight away (Troy 2026-11-13) — the same
+    plan Preview & apply would make, every change but a hand-typed line; recorded on the workbook like any apply. */
+async function autoApplyReview(budgetId: number, user: string): Promise<any[] | null> {
+  const st = await storedReview(null);
+  if (!st) return null;
+  const lb = await loadBudget(budgetId);
+  if (!lb || !lb.annual || Number(lb.budget.year) !== reviewYear(st.filename)) return null;
+  const site = String(lb.budget.property_code).toLowerCase();
+  const rows = st.rows.filter((r) => String(r.site).toLowerCase() === site);
+  if (!rows.some((r) => r.push)) return null;
+  const entries = await applyReviewToBudget(lb, st.rows, st.filename, user, null, 'when the budget was made');
+  if (!entries.length) return null;
+  const cur = (await query('select payload from uploads where id=$1', [st.id])).rows[0]?.payload || {};
+  const applied = { ...(cur.applied || {}), [String(budgetId)]: { at: new Date().toISOString(), by: user, site, gls: entries.map((c: any) => c.gl), auto: true } };
+  await query('update uploads set payload=$2 where id=$1', [st.id, JSON.stringify({ ...cur, applied })]);
+  logChange(user, 'ND review apply (new budget)', { id: budgetId, site, file: st.filename, changes: entries });
+  return entries;
 }
 /** The review workbook saved on the Data page (newest, or by id): its rows and which budgets it has been applied to. */
 async function storedReview(id?: number | null): Promise<{ id: number; filename: string; uploadedAt: string; uploadedBy: string; rows: ApplyRow[]; applied: Record<string, { at: string; by: string; gls: string[] }> } | null> {
@@ -319,6 +339,58 @@ router.post('/review-apply/refile', h(async (req, res) => {
   res.json({ ok: true, log });
 }));
 
+/** Apply the review workbook's rows to one budget (the Preview & apply picks, or every change the plan makes on a budget
+    just created — Troy 2026-11-13: "Why do I need a budget to populate for a property? It should all be stored and then
+    applied accordingly when I make that budget"). `want` = the GLs picked; null = every change but a hand-typed line.
+    A save point first. Returns what changed. */
+async function applyReviewToBudget(lb: LoadedBudget, rows: ApplyRow[], filename: string, user: string, want: Set<string> | null, how = ''): Promise<any[]> {
+  const plan = planFor(rows, lb);
+  const changes = plan.changes.filter((c) => (want ? want.has(c.gl) : !c.locked));
+  if (!changes.length) return [];
+  await captureSnapshot(lb, `Before ND review apply${how ? ` ${how}` : ''} (${filename})`, user);
+  const sm = Number(lb.budget.inputs?.startMonth) || 1;
+  const at = new Date().toISOString();
+  const lines = lb.lines.map((l) => ({ ...l }));
+  const entries: any[] = [];
+  // contracts go into Contracts & known costs (Troy 2026-11-12): on each picked GL built from contracts, the review
+  // contracts of an earlier apply are replaced by this plan's; contracts typed by hand stay
+  const conGls = new Set(changes.filter((c) => c.viaContracts).map((c) => c.gl));
+  let contracts = [...(lb.budget.inputs?.contracts || [])].filter((c: any) => !(c && c.review && conGls.has(c.gl)));
+  contracts = [...contracts, ...plan.contracts.filter((c) => conGls.has(c.gl)).map((c) => ({ ...c, review: { ...c.review!, file: filename } }))];
+  const units = Number(lb.budget.inputs?.units) || 0;
+  for (const c of changes) {
+    if (c.viaContracts) {
+      // built from its contracts exactly as the engine will on every recalculation: not locked, chip CONTRACT
+      let ln = lines.find((l) => l.gl_code === c.gl);
+      const old = ln ? sum(ln.months) : 0;
+      const cl = contractLine(contracts.filter((x: any) => x.gl === c.gl), units, sm, ln && !ln.override ? { months: ln.months, driver: ln.driver } : null);
+      if (!ln) { ln = { gl_code: c.gl, months: zero12(), driver: { method: 'manual' } as any, override: false, note: '' }; lines.push(ln); }
+      ln.months = cl.months; ln.driver = cl.driver as any; ln.override = false;
+      entries.push({ gl: c.gl, old: r2(old), new: r2(sum(ln.months)), rows: c.rowIds, kinds: c.kinds, flags: c.flags, contracts: true });
+      continue;
+    }
+    let ln = lines.find((l) => l.gl_code === c.gl);
+    if (!ln) { ln = { gl_code: c.gl, months: zero12(), driver: { method: 'manual' } as any, override: false, note: '' }; lines.push(ln); }
+    const old = sum(ln.months);
+    const prev: any = ln.driver || {};
+    // cells: budget-month index -> review rows (the workbook's months are calendar)
+    const cells: Record<number, string[]> = {};
+    for (const [ci, ids] of Object.entries(c.cells)) cells[(Number(ci) - (sm - 1) + 12) % 12] = ids;
+    const rowInfo = Object.fromEntries(c.rowIds.map((id) => [id, plan.rows[id]]));
+    ln.months = budOfCal(c.newMonths, sm);
+    ln.override = true;
+    // the REVIEW chip: the line keeps what it was (`from`) and which rows set which months; no cell is "typed"
+    ln.driver = { method: 'review', from: prev.method === 'review' ? prev.from : (prev.method || null), rev: { cells, rows: rowInfo, kinds: c.kinds, file: filename, at, by: user }, hard: [] } as any;
+    const tagNote = `ND review: ${c.rowIds.join(', ')}`;
+    ln.note = ln.note && !ln.note.includes(tagNote) ? `${ln.note} · ${tagNote}` : (ln.note || tagNote);
+    entries.push({ gl: c.gl, old: r2(old), new: r2(sum(ln.months)), rows: c.rowIds, kinds: c.kinds, flags: c.flags });
+  }
+  await saveLines(lb.budget.id, lines);
+  if (conGls.size) await query('update budgets set inputs=$2 where id=$1', [lb.budget.id, JSON.stringify({ ...(lb.budget.inputs || {}), contracts })]);
+  await query('update budgets set updated_at=now() where id=$1', [lb.budget.id]);
+  logChange(user, 'ND review apply', { id: lb.budget.id, site: lb.budget.property_code, file: filename, changes: entries });
+  return entries;
+}
 router.post('/review-apply/apply', h(async (req, res) => {
   // { year, filename, rows (from the preview), picks: [{ budgetId, gls: [...] }] } — re-planned here on the budget as it is now
   // the rows come from the saved workbook (uploadId); a client-held list is the fallback for a dropped file
@@ -332,52 +404,8 @@ router.post('/review-apply/apply', h(async (req, res) => {
   for (const pk of picks) {
     const lb = await loadBudget(Number(pk.budgetId));
     if (!lb) continue;
-    const plan = planFor(rows, lb);
-    const want = new Set((pk.gls || []).map(String));
-    const changes = plan.changes.filter((c) => want.has(c.gl));
-    if (!changes.length) continue;
-    await captureSnapshot(lb, `Before ND review apply (${filename})`, user);
-    const sm = Number(lb.budget.inputs?.startMonth) || 1;
-    const at = new Date().toISOString();
-    const lines = lb.lines.map((l) => ({ ...l }));
-    const entries: any[] = [];
-    // contracts go into Contracts & known costs (Troy 2026-11-12): on each picked GL built from contracts, the review
-    // contracts of an earlier apply are replaced by this plan's; contracts typed by hand stay
-    const conGls = new Set(changes.filter((c) => c.viaContracts).map((c) => c.gl));
-    let contracts = [...(lb.budget.inputs?.contracts || [])].filter((c: any) => !(c && c.review && conGls.has(c.gl)));
-    contracts = [...contracts, ...plan.contracts.filter((c) => conGls.has(c.gl)).map((c) => ({ ...c, review: { ...c.review!, file: filename } }))];
-    const units = Number(lb.budget.inputs?.units) || 0;
-    for (const c of changes) {
-      if (c.viaContracts) {
-        // built from its contracts exactly as the engine will on every recalculation: not locked, chip CONTRACT
-        let ln = lines.find((l) => l.gl_code === c.gl);
-        const old = ln ? sum(ln.months) : 0;
-        const cl = contractLine(contracts.filter((x: any) => x.gl === c.gl), units, sm, ln && !ln.override ? { months: ln.months, driver: ln.driver } : null);
-        if (!ln) { ln = { gl_code: c.gl, months: zero12(), driver: { method: 'manual' } as any, override: false, note: '' }; lines.push(ln); }
-        ln.months = cl.months; ln.driver = cl.driver as any; ln.override = false;
-        entries.push({ gl: c.gl, old: r2(old), new: r2(sum(ln.months)), rows: c.rowIds, kinds: c.kinds, flags: c.flags, contracts: true });
-        continue;
-      }
-      let ln = lines.find((l) => l.gl_code === c.gl);
-      if (!ln) { ln = { gl_code: c.gl, months: zero12(), driver: { method: 'manual' } as any, override: false, note: '' }; lines.push(ln); }
-      const old = sum(ln.months);
-      const prev: any = ln.driver || {};
-      // cells: budget-month index -> review rows (the workbook's months are calendar)
-      const cells: Record<number, string[]> = {};
-      for (const [ci, ids] of Object.entries(c.cells)) cells[(Number(ci) - (sm - 1) + 12) % 12] = ids;
-      const rowInfo = Object.fromEntries(c.rowIds.map((id) => [id, plan.rows[id]]));
-      ln.months = budOfCal(c.newMonths, sm);
-      ln.override = true;
-      // the REVIEW chip: the line keeps what it was (`from`) and which rows set which months; no cell is "typed"
-      ln.driver = { method: 'review', from: prev.method === 'review' ? prev.from : (prev.method || null), rev: { cells, rows: rowInfo, kinds: c.kinds, file: filename, at, by: user }, hard: [] } as any;
-      const tagNote = `ND review: ${c.rowIds.join(', ')}`;
-      ln.note = ln.note && !ln.note.includes(tagNote) ? `${ln.note} · ${tagNote}` : (ln.note || tagNote);
-      entries.push({ gl: c.gl, old: r2(old), new: r2(sum(ln.months)), rows: c.rowIds, kinds: c.kinds, flags: c.flags });
-    }
-    await saveLines(lb.budget.id, lines);
-    if (conGls.size) await query('update budgets set inputs=$2 where id=$1', [lb.budget.id, JSON.stringify({ ...(lb.budget.inputs || {}), contracts })]);
-    await query('update budgets set updated_at=now() where id=$1', [lb.budget.id]);
-    logChange(user, 'ND review apply', { id: lb.budget.id, site: lb.budget.property_code, file: filename, changes: entries });
+    const entries = await applyReviewToBudget(lb, rows, filename, user, new Set((pk.gls || []).map(String)));
+    if (!entries.length) continue;
     log.push({ budgetId: lb.budget.id, site: lb.budget.property_code, changes: entries });
   }
   // the saved workbook remembers where it has gone in
@@ -1603,10 +1631,10 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
     const out = new Set<string>(rollGls);
     const bl = (inputs.baseline || {}) as any;
     for (const gl of Object.keys(bl.glShape || {})) out.add(gl);
-    for (const gl of Object.keys(bl.glGrowth || {})) out.add(gl);
-    // a section formula or section increase % picked on a section header (every history line under it)
-    const secPick = new Set(Object.keys(bl.secGrowth || {}));
-    if (secPick.size) for (const c of lb.coa) if (c.kind === 'detail' && secPick.has(String(c.section))) { const l = ls.find((x) => x.gl_code === c.code); if ((l?.driver as any)?.method === 'baseline') out.add(c.code); }
+    // an increase % (row or section) is NOT a pick here: a formula set copies one onto every line (CWND took BCND's
+    // 28 — taxes went to the seller T12 × 3%; Troy 2026-11-13). The plan sets the level; the % has nothing to grow.
+    // RE taxes are their own: the current accrual × (1 + %) (taxAccrual), never the plan
+    for (const l of ls) if (FIXED_ANNUAL_GLS.has(l.gl_code) && (l.driver as any)?.accrual) out.add(l.gl_code);
     for (const [gl, v] of Object.entries(inputs.burdenFromGl || {})) if ((v || []).length) out.add(gl);
     const own = String(lb.budget.property_code || '').toLowerCase();
     const borrowAll = !!inputs.burdenFrom && String(inputs.burdenFrom).toLowerCase() !== own;
@@ -1743,6 +1771,8 @@ router.post('/budgets', h(async (req, res) => {
   const built = buildLines(lb!, inputs);
   await saveLines(id, built.lines, true);
   logChange(req.session.username || '', 'create budget', { id, propertyCode, year });
+  // the saved review workbook goes straight in for this site (Troy 2026-11-13)
+  if (annual) { try { await autoApplyReview(id, req.session.username || ''); } catch (e) { console.error('review auto-apply', e); } }
   res.json(budgetView((await loadBudget(id))!));
 }));
 
@@ -2201,7 +2231,9 @@ router.get('/summary', h(async (req, res) => {
     const calOf = (m: Months | undefined): number[] | null => (m ? Array.from({ length: 12 }, (_, c) => m[(c - (sm - 1) + 12) % 12] || 0) : null);
     const byGl = new Map(lines.map((l) => [l.gl_code, l.months]));
     const unitsR = Number(lb.budget.inputs?.units) || Number(r.units) || 0;
-    const reviewRes = review.rules.map((rule) => reviewCell(rule, { code: r.property_code, months: calOf(byGl.get(rule.gl)), t12: lb.annual && lb.actualCal ? (lb.actualCal[rule.gl] || null) : undefined, units: unitsR }));
+    const reviewRes = review.rules.map((rule) => reviewCell(rule, { code: r.property_code, months: calOf(byGl.get(rule.gl)), t12: lb.annual && lb.actualCal ? (lb.actualCal[rule.gl] || null) : undefined, units: unitsR,
+      // RE taxes on the current accrual: the % is over that year (Troy 2026-11-13)
+      base: (() => { const d: any = lb.lines.find((l) => l.gl_code === rule.gl)?.driver; return d?.accrual ? (d.taxYear || d.accrual * 12) : null; })() }));
     out.push({ id: r.id, code: r.property_code, name: r.name, region: String(r.market || '').trim() || 'Other', type: r.budget_type, status: r.status, updatedAt: r.updated_at,
                stale: lb.budget.calc_version !== ENGINE_VERSION, ...summaryOf(lb, lines), units: Number(lb.budget.inputs?.units) || Number(r.units) || 0,
                cmp: compareOf(lb, lines), review: reviewRes });

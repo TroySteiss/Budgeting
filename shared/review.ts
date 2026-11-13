@@ -133,7 +133,7 @@ const usd = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
 /** One rule on one property. `months` = the budget by CALENDAR month (Jan..Dec); `t12` = the GL's trailing-12 by
     calendar month (null = nothing posted on it; undefined = no trailing-12 on file at all, e.g. an acquisition
     budget — then nothing is said about last year). */
-export function reviewCell(rule: ReviewRule, p: { code: string; months: number[] | null; t12?: number[] | null; units: number }): ReviewResult {
+export function reviewCell(rule: ReviewRule, p: { code: string; months: number[] | null; t12?: number[] | null; units: number; /** the year the % is over, in place of the T12 (RE taxes: the current accrual × 12) */ base?: number | null }): ReviewResult {
   if (rule.props && rule.props.length && !rule.props.includes(String(p.code).toLowerCase())) return { status: 'na', text: '' };
   if (rule.kind === 'note') return { status: 'info', text: 'check by eye' };
   const m = (p.months || Array(12).fill(0)).map((v) => Math.round((v || 0) * 100) / 100);
@@ -194,7 +194,7 @@ export function reviewCell(rule: ReviewRule, p: { code: string; months: number[]
       return under.length ? { status: 'n', text: `under ${usd(want)} in ${under.length} month${under.length === 1 ? '' : 's'} (${usd(Math.min(...under.map((i) => m[i])))} low)` } : { status: 'y', text: '' };
     }
     case 'pctOverT12': {
-      const last = p.t12 ? tot(p.t12) : 0;
+      const last = p.base ? p.base : p.t12 ? tot(p.t12) : 0;
       if (!last) return { status: 'info', text: 'no T12 to compare' };
       const g = total / last - 1;
       const txt = `${g >= 0 ? '+' : ''}${(g * 100).toFixed(2)}%`;
