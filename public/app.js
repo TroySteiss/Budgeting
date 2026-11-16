@@ -434,6 +434,23 @@ function popMenu(anchorBtn, html, wire) {
 }
 
 /* ---------------- dashboard ---------------- */
+/* REGIONS IN TROY'S ORDER (2026-11-16: "Go Minot, Williston/Watford, Bismarck/JT"): a property's market folds into its
+   region group; anything else (KC East markets) keeps its own name and sorts after, alphabetically. */
+const REGION_GROUPS = [
+  { name: 'Minot', re: /minot/i },
+  { name: 'Williston / Watford', re: /williston|watford/i },
+  { name: 'Bismarck / Jamestown', re: /bismarck|jamestown/i },
+];
+function regionGroup(market) {
+  const m = String(market || '').trim();
+  const g = REGION_GROUPS.find((x) => x.re.test(m));
+  return g ? g.name : (m || 'Other');
+}
+function regionRank(name) {
+  const i = REGION_GROUPS.findIndex((x) => x.name === name);
+  return i >= 0 ? i : REGION_GROUPS.length;
+}
+const regionSort = (a, b) => regionRank(a) - regionRank(b) || String(a).localeCompare(String(b));
 function guideDashCell(gd) {
   if (!gd) return '<td class="muted">—</td>';
   const p = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%`);
@@ -473,37 +490,66 @@ function renderDash(el) {
   const year = pl.year || S.dashYear || new Date().getFullYear() + 1;
   const yearBudgets = st.budgets.filter((b) => b.year === year);
   const hasAcq = yearBudgets.some((b) => b.budget_type !== 'annual') || yearBudgets.some((b) => (b.dash || {}).capital);
-  const hasGuide = yearBudgets.some((b) => b.dash && b.dash.guide);
   const years = [...new Set([year, ...st.budgets.map((b) => b.year), new Date().getFullYear() + 1])].sort((a, b) => b - a);
   const notStarted = (pl.rows || []).filter((r) => !r.b).length;
   const repsPill = (r) => (r.missingReq.length ? `<span class="pill miss">${r.missingReq.length} required missing</span>` : r.missingRec.length ? `<span class="pill rec">${r.missingRec.length} recommended missing</span>` : '<span class="pill ok">all on file</span>');
+  /* PERCENTAGES AGAINST THE TARGET, NOT DOLLARS (Troy 2026-11-16: "If target is UW, it should show NOI vs UW target. If
+     it is T12 target, then it is growth over T12. I dont care about the $ values for income/opex/NOI per se, I'd rather
+     see a summary of change %'s or comparisons to targets. Think simplified high level version of the Summary page"):
+     each budget's NOI / income / OpEx as a % against its target — the UW for the year on a new acquisition, growth over
+     the T12 on the rest — coloured like the Summary (income and NOI floors, OpEx a ceiling). Dollars are on hover. */
+  const G = st.guidance || null;
+  const pctTxt = (v) => (v == null || !Number.isFinite(v) ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(1)}%`);
   const budgetCells = (b) => {
     const d = b.dash || {};
-    const varCell = (v) => (v == null ? '<td class="muted">—</td>' : `<td class="${Math.abs(v) < 1 ? '' : v > 0 ? '' : 'neg'}" style="${Math.abs(v) < 1 ? 'color:var(--good)' : ''}" title="vs ${esc(d.refLabel || 'UW')}">${Math.abs(v) < 1 ? 'tied' : money(v)}</td>`);
     const sm = d.startMonth > 1 ? `${MONTHS[d.startMonth - 1]}-${String(b.year).slice(2)} – ${MONTHS[(d.startMonth + 10) % 12]}-${String(b.year + 1).slice(2)}` : String(b.year);
     const ov = (d.overridesFormula || 0) + (d.overridesFixed || 0);
+    const gd = d.guide || null;
+    const uwT = !!gd && gd.kind === 'uw';
+    const g = (gd && gd.growth) || {};
+    const tgt = gd ? (uwT ? `UW ${b.year}` : 'T12') : (d.refLabel || '—');
+    // income / NOI are floors, OpEx a ceiling: UW = at or better than UW; T12 = the guidance numbers
+    const floorI = uwT ? -GUIDE_EPS : G ? G.incomePct - GUIDE_EPS : null;
+    const floorN = uwT ? -GUIDE_EPS : G ? G.noiPct - GUIDE_EPS : null;
+    const ceilE = uwT ? GUIDE_EPS : G ? expenseCeil(G) + GUIDE_EPS : null;
+    const cell = (v, ok, tip, big) => (v == null ? '<td class="muted">—</td>' : `<td class="dpct ${ok == null ? '' : ok ? 'gin' : 'gout'}" title="${esc(tip)}">${big ? `<b>${pctTxt(v)}</b>` : pctTxt(v)}</td>`);
+    const vs = uwT ? `vs UW ${b.year}` : 'over the T12';
+    const noiTip = `NOI ${vs}${d.noi != null ? ` · budget ${money(d.noi)}` : ''}${d.noiVar != null && d.refLabel ? ` (${d.noiVar >= 0 ? '+' : ''}${money(d.noiVar)} vs ${d.refLabel})` : ''}${floorN != null ? ` · target ${uwT ? 'at or above UW' : `${(G.noiPct * 100).toFixed(1)}% or better`}` : ''}`;
+    const look = gd ? (gd.bad || 0) + (gd.flags || 0) : null;
     return {
-      budget: `<b>${sm}</b> <span class="muted">${b.budget_type === 'annual' ? 'annual' : 'acquisition · UW Y1'}</span><div class="muted" style="font-size:11px">${ov ? `${ov} override${ov === 1 ? '' : 's'}` : 'no overrides'}${d.ltlMode === 'leases' ? ' · per-lease LTL' : ''}${d.savePoints ? ` · ${d.savePoints} save pt${d.savePoints === 1 ? '' : 's'}` : ''}</div>`,
-      figs: `<td>${money(d.income)}</td><td>${money(d.expense)}</td><td><b>${money(d.noi)}</b></td>${varCell(d.noiVar)}${varCell(d.egiVar)}
-        ${hasGuide ? guideDashCell(d.guide) : ''}
-        ${hasAcq ? `<td>${d.coc != null ? (d.coc * 100).toFixed(1) + '%' : '—'}${d.capital ? `<div class="muted" style="font-size:10.5px">on ${money(d.capital)}</div>` : ''}</td>` : ''}`,
+      budget: `<b>${sm}</b> <span class="muted">${b.budget_type === 'annual' ? 'annual' : 'acquisition · UW Y1'}</span><div class="muted" style="font-size:11px">${ov ? `${ov} override${ov === 1 ? '' : 's'}` : 'no overrides'}${d.savePoints ? ` · ${d.savePoints} save pt${d.savePoints === 1 ? '' : 's'}` : ''}</div>`,
+      figs: `<td class="muted" title="${uwT ? 'A new acquisition: the UW for the calendar year (Year 1 and Year 2 by months)' : 'Growth over the October T12 (the 2027 guidance)'}">${esc(tgt)}</td>
+        ${cell(g.noi, g.noi == null || floorN == null ? null : g.noi >= floorN, noiTip, true)}
+        ${cell(g.income, g.income == null || floorI == null ? null : g.income >= floorI, `Total income ${vs}${d.income != null ? ` · budget ${money(d.income)}` : ''}`)}
+        ${cell(g.expense, g.expense == null || ceilE == null ? null : g.expense <= ceilE, `Total OpEx ${vs}${d.expense != null ? ` · budget ${money(d.expense)}` : ''}`)}
+        <td class="${look == null ? 'muted' : look ? 'gout' : 'gin'}" title="${esc(gd ? ((gd.miss || []).join(' · ') || 'everything on target') : 'no scorecard')}">${look == null ? '—' : look ? `${look} to look at` : '✓ on target'}</td>
+        ${hasAcq ? `<td>${d.coc != null ? (d.coc * 100).toFixed(1) + '%' : '—'}${uwT && gd.coc && gd.coc.uw != null ? `<div class="muted" style="font-size:10.5px">UW ${(gd.coc.uw * 100).toFixed(1)}%</div>` : d.capital ? `<div class="muted" style="font-size:10.5px">on ${money(d.capital)}</div>` : ''}</td>` : ''}`,
     };
   };
-  const nFig = 5 + (hasGuide ? 1 : 0) + (hasAcq ? 1 : 0);
+  const nFig = 5 + (hasAcq ? 1 : 0);
   const cols = 8 + nFig;
-  const body = (pl.rows || []).map((r) => {
+  // by region, in Troy's order (2026-11-16): Minot, Williston / Watford, Bismarck / Jamestown
+  const plRows = (pl.rows || []).slice().sort((x, y) => regionSort(regionGroup(x.p.market), regionGroup(y.p.market)) || x.p.code.localeCompare(y.p.code));
+  let lastRg = null;
+  const body = plRows.map((r) => {
     const { p } = r;
-    const propCell = `<td class="pname" data-p="${esc(p.code)}" title="click for the reports on file"><b>${esc(p.code)}</b> · ${esc(p.name)}<div class="muted" style="font-size:10.5px">${p.units ? `${p.units} units` : ''}${p.market ? ` · ${esc(p.market)}` : ''}</div></td>`;
+    const rg = regionGroup(p.market);
+    const rgHead = rg !== lastRg ? `<tr class="rgnhead"><td colspan="${cols}">${esc(rg)} <span class="muted">· ${plRows.filter((x) => regionGroup(x.p.market) === rg).length} properties</span></td></tr>` : '';
+    lastRg = rg;
+    // the name opens the budget (Troy 2026-11-16: "I should be able to click a property name and get into the budget");
+    // the Reports pill still unfolds the reports on file
+    const firstB = r.bs && r.bs.length ? r.bs[0] : null;
+    const propCell = `<td class="${firstB ? 'popen' : 'pname'}" ${firstB ? `data-open-b="${firstB.id}" title="Open the ${year} budget"` : `data-p="${esc(p.code)}" title="click for the reports on file"`}><b class="plink">${esc(p.code)}</b> · <span class="plink">${esc(p.name)}</span><div class="muted" style="font-size:10.5px">${p.units ? `${p.units} units` : ''}${p.market ? ` · ${esc(p.market)}` : ''}</div></td>`;
     const detail = `<tr class="pdetail" data-pd="${esc(p.code)}" hidden><td colspan="${cols}"></td></tr>`;
     if (!r.b) {
-      return `<tr class="nostart"><td></td>${propCell}
+      return `${rgHead}<tr class="nostart"><td></td>${propCell}
         <td><span class="pill none">Not started</span>${r.others.length ? ` <span class="muted" style="font-size:11px">has ${r.others.join(', ')}</span>` : ''}</td>
         <td class="st pclick" data-p="${esc(p.code)}">${repsPill(r)}</td>
         <td colspan="${nFig}" class="muted" style="font-size:11.5px">${r.missingReq.length ? `needs ${r.missingReq.map((x) => x.label.toLowerCase()).join(' and ')} first` : ''}</td>
         <td></td><td></td>
         <td class="go"><button class="btn sub sm" data-rowstart="${esc(p.code)}" title="Start the ${year} budget for ${esc(p.code)}">+ Start</button></td></tr>${detail}`;
     }
-    return r.bs.map((b, k) => {
+    return rgHead + r.bs.map((b, k) => {
       const c = budgetCells(b);
       return `<tr class="click" data-id="${b.id}">
         <td><input type="checkbox" data-sel="${b.id}"></td>
@@ -513,7 +559,7 @@ function renderDash(el) {
         ${c.figs}
         <td>${esc(b.status || 'draft')}</td>
         <td class="muted">${new Date(b.updated_at).toLocaleDateString()}</td>
-        <td class="go" style="white-space:nowrap"><button class="btn sm" data-rowopen="${b.id}" title="Open this budget">Open</button>${S.auth.isAdmin ? ` <button class="rb" data-del="${b.id}" title="Delete this budget">🗑</button>` : ''}</td></tr>`;
+        <td class="go" style="white-space:nowrap">${S.auth.isAdmin ? `<button class="rb" data-del="${b.id}" title="Delete this budget">🗑</button>` : ''}</td></tr>`;
     }).join('') + detail;
   }).join('');
   el.innerHTML = `
@@ -527,7 +573,7 @@ function renderDash(el) {
           <button class="btn" id="newb">+ New budget</button>
         </div>
       </div>
-      ${(pl.rows || []).length ? `<table class="list plist"><tr><th><input type="checkbox" id="sel-all" title="Select all of ${year}'s budgets"></th><th>Property</th><th>${year} budget</th><th>Reports</th><th>Income</th><th>OpEx</th><th>NOI</th><th title="NOI vs the budget's reference (T12 actuals / CY budget / UW for the year)">Δ NOI</th><th title="EGI vs the reference">Δ EGI</th>${hasGuide ? '<th title="2027 guidance: growth vs the October T12 — income / expenses / NOI. Red = off (NOI down, or below the current budget); amber = outside a range.">Guidance</th>' : ''}${hasAcq ? '<th>CoC</th>' : ''}<th>Status</th><th>Updated</th><th></th></tr>
+      ${(pl.rows || []).length ? `<table class="list plist"><tr><th><input type="checkbox" id="sel-all" title="Select all of ${year}'s budgets"></th><th>Property</th><th>${year} budget</th><th>Reports</th><th title="What the %s are measured against: the UW for the year (new acquisitions) or the October T12 (growth over it)">Target</th><th title="NOI vs UW (new acquisitions) or growth over the T12. Green = at or above the target / guidance">NOI</th><th title="Total income vs the target. Green = at or above it">Income</th><th title="Total OpEx vs the target. Green = at or below it">OpEx</th><th title="The scorecard: items off the guidance (T12) or off UW (new acquisitions). Hover for the list">Guidance</th>${hasAcq ? '<th>CoC</th>' : ''}<th>Status</th><th>Updated</th><th></th></tr>
         ${body}</table>` : `<p class="muted">No properties yet. Click <b>+ New budget</b> — for an annual budget you only need the property's Yardi budget template (budgetYSR…xlsm); it carries the trailing-12 actuals and the current-year budget. Add the rent roll for the GPR anchor and per-lease burnoff.</p>`}
     </div>
     <dialog id="newdlg"></dialog>
@@ -535,6 +581,7 @@ function renderDash(el) {
     <dialog class="assump" id="actcsv-dlg"></dialog>`;
 
   wirePropertyList(el, pl);
+  el.querySelectorAll('[data-open-b]').forEach((td) => td.addEventListener('click', async (e) => { e.stopPropagation(); await openBudget(Number(td.dataset.openB)); }));
   el.querySelectorAll('tr.click').forEach((tr) => tr.addEventListener('click', async (e) => {
     if (e.target.dataset.del || e.target.closest('.pclick') || e.target.closest('.pname')) return;
     await openBudget(Number(tr.dataset.id));
@@ -6829,7 +6876,8 @@ function renderSummary(el) {
   const pct = (v, dp = 1) => (v == null || !Number.isFinite(v) ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(dp)}%`);
   // growth of the SIGNED reference, as on the compare card: a contra line whose loss grows reads +, like its card row
   const gr = (bud, ref) => (ref ? (bud - ref) / ref : null);
-  const regions = [...new Set(d.properties.map((p) => p.region))].sort();
+  // regions in Troy's order (2026-11-16): Minot, Williston / Watford, Bismarck / Jamestown
+  const regions = [...new Set(d.properties.map((p) => regionGroup(p.region)))].sort(regionSort);
 
   /* one row's figures: a property, or the sum of several */
   function rowData(props) {
@@ -6879,7 +6927,7 @@ function renderSummary(el) {
     const ov = c.overrides || 0;
     const annual = p.type === 'annual';
     return `<tr class="click" data-sumopen="${p.id}">
-      <td class="l stick"><b>${esc(p.code)}</b> · ${esc(p.name || '')}${p.stale ? ' <span class="sch-stale" title="Calculated on older formulas: recalc it">⚠</span>' : ''}<div class="muted" style="font-size:10.5px">${p.units ? `${xsNum(p.units)} units` : ''}</div></td>
+      <td class="l stick" title="Open the budget"><b class="plink">${esc(p.code)}</b> · <span class="plink">${esc(p.name || '')}</span>${p.stale ? ' <span class="sch-stale" title="Calculated on older formulas: recalc it">⚠</span>' : ''}<div class="muted" style="font-size:10.5px">${p.units ? `${xsNum(p.units)} units` : ''}${p.region ? ` · ${esc(p.region)}` : ''}</div></td>
       <td class="l"><b>${sm}</b> <span class="muted">${annual ? 'annual' : 'acquisition · UW Y1'}</span><div class="muted" style="font-size:10.5px">${ov ? `${ov} override${ov === 1 ? '' : 's'}` : 'no overrides'}${c.ltlMode === 'leases' ? ' · per-lease LTL' : ''}${c.savePoints ? ` · ${c.savePoints} save pt${c.savePoints === 1 ? '' : 's'}` : ''}</div></td>
       <td>${money(r.income)}</td><td>${money(r.expense)}</td><td><b>${money(r.noi)}</b></td>
       ${varCell(r.noiVar, r.kind)}${varCell(r.egiVar, r.kind)}${annual && c.guide && c.guide.kind === 'uw' ? guideDashCell(c.guide).replace('class="gdash', 'class="l gdash') : annual ? guideCell(r) : '<td class="muted">—</td>'}
@@ -6900,7 +6948,7 @@ function renderSummary(el) {
       <td>${r.coc != null ? `${(r.coc * 100).toFixed(1)}%` : '—'}</td><td></td><td></td></tr>`;
   }
   const body = regions.map((rg) => {
-    const props = d.properties.filter((p) => p.region === rg).sort((a, b) => a.code.localeCompare(b.code));
+    const props = d.properties.filter((p) => regionGroup(p.region) === rg).sort((a, b) => a.code.localeCompare(b.code));
     return props.map(propRow).join('') + subRow(`${rg} subtotal`, props, 'sub');
   }).join('') + (regions.length > 1 ? subRow('All properties', d.properties, 'grand') : '');
   const modeBtn = (m, label, tip) => `<button data-summode="${m}" class="${mode === m ? 'on' : ''}" title="${esc(tip)}">${label}</button>`;
@@ -6943,8 +6991,8 @@ function renderSummary(el) {
    year", "also high Jul"). Checked by the server (shared/review.ts) on each budget and its trailing-12. Rules are
    edited under Settings -> Budget review checklist. ---- */
 function renderReview(el, d, viewSeg) {
-  const regions = [...new Set(d.properties.map((p) => p.region))].sort();
-  const props = regions.flatMap((rg) => d.properties.filter((p) => p.region === rg).sort((a, b) => a.code.localeCompare(b.code)));
+  const regions = [...new Set(d.properties.map((p) => regionGroup(p.region)))].sort(regionSort);
+  const props = regions.flatMap((rg) => d.properties.filter((p) => regionGroup(p.region) === rg).sort((a, b) => a.code.localeCompare(b.code)));
   const rules = d.reviewRules || [];
   const sym = { y: 'Y', n: 'N', na: 'n/a', info: '·' };
   const cellHtml = (res, p, r) => {
@@ -6964,7 +7012,7 @@ function renderReview(el, d, viewSeg) {
         </div>
       </div>
       ${props.length && rules.length ? `<div class="sumwrap"><table class="sumtbl rvtbl">
-        <tr class="grp"><th class="l stick"></th>${regions.map((rg) => { const n = props.filter((p) => p.region === rg).length; return `<th class="c rvgrp" colspan="${n}">${esc(rg)}</th>`; }).join('')}</tr>
+        <tr class="grp"><th class="l stick"></th>${regions.map((rg) => { const n = props.filter((p) => regionGroup(p.region) === rg).length; return `<th class="c rvgrp" colspan="${n}">${esc(rg)}</th>`; }).join('')}</tr>
         <tr><th class="l stick">Check</th>${props.map((p) => `<th class="c" title="${esc(p.name || '')}"><span class="rvp" data-sumopen="${p.id}">${esc(String(p.code).toUpperCase())}</span><div class="muted" style="text-transform:none; font-weight:400">${p.units ? `${xsNum(p.units)} u` : ''}</div></th>`).join('')}</tr>
         ${rules.map((r, i) => `<tr><td class="l stick rvrule"><b>${esc(r.gl)}</b> ${esc(r.label)}${r.props && r.props.length ? ` <span class="muted">(${esc(r.props.join(', ').toUpperCase())})</span>` : ''}</td>${props.map((p) => cellHtml((p.review || [])[i], p, r)).join('')}</tr>`).join('')}
         <tr class="sub"><td class="l stick">To look at</td>${misses.map((n) => `<td class="c ${n ? 'rv-n' : 'rv-y'}">${n || '✓'}</td>`).join('')}</tr>

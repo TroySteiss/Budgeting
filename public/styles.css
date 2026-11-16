@@ -660,3 +660,10 @@ tr.vacpct td { background: var(--panel); }
 tr.vacpct .name { font-size: 11px; color: var(--dim); }
 tr.vacpct input.vacm { width: 52px; font-size: 11px; text-align: right; border: 1px dashed var(--line); background: transparent; color: var(--dim); }
 tr.vacpct input.vacm.typed { font-weight: 700; color: inherit; border-style: solid; }
+
+/* Budgets list by region; property names open the budget (Troy 2026-11-16) */
+table.plist tr.rgnhead td { background: var(--panel); font-weight: 700; font-size: 12px; padding-top: 10px; border-bottom: 1px solid var(--line); }
+table.plist td.popen { cursor: pointer; }
+.plink { text-decoration: underline dotted; text-underline-offset: 2px; }
+td.popen:hover .plink, tr.click:hover .plink { color: var(--accent); text-decoration-style: solid; }
+table.plist td.dpct { text-align: right; white-space: nowrap; }
