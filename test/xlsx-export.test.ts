@@ -44,7 +44,7 @@ describe('Payroll sheet → Budget sheet', () => {
   it('wage rows are inputs, burden rows are Ratio used × TOTAL WAGES, and the Budget sheet reads every payroll row from the Payroll sheet', async () => {
     const a = args('tst');
     const wb = await load(await buildReviewWorkbook(a));
-    expect(wb.worksheets.map((w) => w.name)).toEqual(['Budget Comps', 'Budget', 'Payroll', 'Summary', 'Raw Data']);   // the comps summary is the first tab
+    expect(wb.worksheets.map((w) => w.name)).toEqual(['Budget Comps', 'Budget', 'Payroll', 'Summary', 'Raw Data', 'Formulas']);   // the comps summary is the first tab
     const pay = wb.getWorksheet('Payroll')!, bud = wb.getWorksheet('Budget')!;
     const rW = rowOfCode(pay, '6402'), rB = rowOfCode(pay, '6418'), rM = rowOfCode(pay, '6404');
     expect(rW && rB && rM).toBeTruthy();
@@ -72,9 +72,9 @@ describe('Payroll sheet → Budget sheet', () => {
     expect(formulaOf(bud.getCell(bB, 9))).toBe(`Payroll!G${rB}`);
     expect(resultOf(bud.getCell(bB, 5))).toBeCloseTo(400, 1);
     expect(String(bud.getCell(bB, 4).value)).toContain('→ Payroll sheet');
-    // a non-payroll row is untouched (plain value)
+    // a non-payroll row reads its own formula's value from the Formulas sheet (2026-11-16), not the Payroll sheet
     const b6604 = rowOfCode(bud, '6604');
-    expect(formulaOf(bud.getCell(b6604, 5))).toBe('');
+    expect(formulaOf(bud.getCell(b6604, 5))).toBe(`Formulas!E${b6604}`);
     // the historicals sit below the budget block
     let histHead = 0;
     pay.eachRow((row, n) => { if (!histHead && String(row.getCell(2).value || '').startsWith('T12 actuals — by calendar month')) histHead = n; });
@@ -235,5 +235,40 @@ describe('hard-coded numbers stand out in the workbook', () => {
     const wb3 = await load(await buildReviewWorkbook(a)); const bud3 = wb3.getWorksheet('Budget')!;
     expect(!!bud3.getCell(rowOfCode(bud3, hand.gl_code), 5 + typed).font?.bold).toBe(false);
     expect(fl.color?.argb).not.toBe('FFC2185B');
+  });
+});
+
+import { parseReviewDraft } from '../src/importers.js';
+describe('export → edit → upload round trip (Troy 2026-11-16: "it needs to upload formulas back into the system, not hard coded values")', () => {
+  it('formula months link to the Formulas sheet, typed numbers are flagged bold red, and only typed cells come back as changes', async () => {
+    const a = args('tst');
+    const wb = await load(await buildReviewWorkbook(a));
+    const bud = wb.getWorksheet('Budget')!, fx = wb.getWorksheet('Formulas')!;
+    const r = rowOfCode(bud, '6604');
+    expect(formulaOf(bud.getCell(r, 5))).toBe(`Formulas!E${r}`);                         // still a formula in Excel
+    expect(Number(resultOf(bud.getCell(r, 5)))).toBeCloseTo(Number(fx.getCell(r, 5).value), 2);
+    expect(String(fx.getCell(r, 1).value)).toBe('6604');                                 // same row, GL in column A
+    // payroll rows still read the Payroll sheet
+    expect(formulaOf(bud.getCell(rowOfCode(bud, '6402'), 5))).toMatch(/^Payroll!/);
+    // the conditional format: bold red on a typed (non-formula) month
+    const cf = (bud as any).conditionalFormattings as any[];
+    expect(cf.length).toBe(1);
+    expect(cf[0].ref).toMatch(/^E7:P\d+$/);
+    expect(cf[0].rules[0].formulae[0]).toBe('AND(E7<>"",NOT(_xlfn.ISFORMULA(E7)))');
+    expect(cf[0].rules[0].style.font).toMatchObject({ bold: true, color: { argb: 'FFFF0000' } });
+    // Troy's widths
+    expect(bud.getColumn(2).width).toBe(29.86);
+    expect(bud.getColumn(10).width).toBe(7.86);
+    expect(bud.getColumn(17).width).toBe(11.57);
+    // type over two months of 6604 and save; everything else untouched
+    bud.getCell(r, 7).value = 999;
+    bud.getCell(r, 9).value = 1234;
+    const p = parseReviewDraft(Buffer.from(await wb.xlsx.writeBuffer() as ArrayBuffer));
+    expect(p.exported).not.toBeNull();
+    expect(p.glFormula['6604'][0]).toBe(true);
+    expect(p.glFormula['6604'][2]).toBe(false);
+    const detail = new Set(coaList.filter((c) => c.kind === 'detail').map((c) => c.code));
+    const typed = Object.entries(p.glMonths).filter(([gl]) => detail.has(gl)).flatMap(([gl, m]) => m.map((v, i) => ({ gl, i, v, b: p.exported![gl]?.[i] || 0 })).filter((x) => Math.abs(x.v - x.b) >= 0.01));
+    expect(typed.map((x) => `${x.gl}:${x.i}:${x.v}`)).toEqual(['6604:2:999', '6604:4:1234']);
   });
 });

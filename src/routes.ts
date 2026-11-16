@@ -7,7 +7,7 @@ import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayro
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
   acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, acqDelinquency, applyT12Adjust, FIXED_ANNUAL_GLS, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
-  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, scalePlanLines, taxFloor, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, scalePlanLines, taxFloor, uwDqBundle, fillCalMonths, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
 import { planApply, refileReviewLine, type ApplyRow, type ApplyPlan } from '../shared/reviewApply.js';
@@ -760,6 +760,9 @@ interface LoadedBudget {
   annual: boolean;
   stmtActual: StmtData | null; stmtBudget: StmtData | null; template: TemplateData | null;
   actualCal: Record<string, Months> | null; budgetCal: Record<string, Months> | null; lastMonth: number; t12Missing: string[]; t12Dead: string[]; t12Startup: string[]; t12Early: string[];
+  /** the CY budget as a REFERENCE (column, compare card, history rows): a new acquisition's part-year budget with the
+      months before closing taken from the trailing-12 (the seller's actuals by GL). The engine still reads budgetCal. */
+  budgetRefCal: Record<string, Months> | null;
   /** NOI of the T12 windows ending 2 / 1 / 0 months before the last posted month (null = not fully on file) */
   noiTrend: { back: number; label: string; noi: number | null }[]; t12End: { month: number; year: number } | null; t12Live: number;
   /** prior-year trailing-12s (windows ending 12 / 24 / 36 months before the current one) with every month on
@@ -907,7 +910,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   /* ---- annual mode: own statements + the Yardi template ---- */
   const annual = budget.budget_type === 'annual' || budget.inputs?.mode === 'annual';
   let stmtActual: StmtData | null = null, stmtBudget: StmtData | null = null, template: TemplateData | null = null;
-  let actualCal: Record<string, Months> | null = null, budgetCal: Record<string, Months> | null = null;
+  let actualCal: Record<string, Months> | null = null, budgetCal: Record<string, Months> | null = null, budgetRefCal: Record<string, Months> | null = null;
   let lastMonth = 10, ref: UwSnapshotData | null = null, refLabel = 'UW', refKey = 'uw';
   let t12Missing: string[] = [], t12Dead: string[] = [], t12Live = 12, t12Startup: string[] = [], t12Early: string[] = [];
   let t12SellerShaped: string[] = [];
@@ -1129,8 +1132,26 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     }
     if (budgetCal) {
       // spec 1.4: how many months of the CY budget carry NOI (a 2026 acquisition budget covers only the months owned)
-      const nMonths = Array.from({ length: 12 }, (_, i) => Object.entries(budgetCal!).some(([gl, m]) => feedsNoiGl(gl) && Math.abs(Number(m[i]) || 0) > 0.5)).filter(Boolean).length;
-      refs.push({ key: 'budget', label: budgetRefLabel(sb?.period), period: sb?.period || '', ...refColumn(budgetCal), nMonths });
+      const covered = (cal: Record<string, Months>) => Array.from({ length: 12 }, (_, i) => Object.entries(cal).some(([gl, m]) => feedsNoiGl(gl) && Math.abs(Number(m[i]) || 0) > 0.5));
+      const cov = covered(budgetCal);
+      /* A NEW ACQUISITION'S CY BUDGET, WHOLE YEAR (Troy 2026-11-16: "I would like for those brand new properties to have
+         Jan-Aug pulled into the 2026 budget comparison/reference per line"): the months of the CY before the budget's first
+         month are taken from the trailing-12, GL by GL (the seller's actuals before closing, split over our GLs), so the
+         column reads as a full 2026 instead of four months annualized. Only months the T12 holds for that calendar year;
+         the engine's own budgetCal is unchanged. */
+      budgetRefCal = budgetCal;
+      let fillLabel = '';
+      const first = cov.indexOf(true);
+      if (y1Plan && actualCal && t12End && t12End.year === Number(budget.year) - 1 && first > 0) {
+        const fill = Array.from({ length: Math.min(first, t12End.month) }, (_, i) => i);
+        if (fill.length) {
+          budgetRefCal = fillCalMonths(budgetCal, actualCal, fill);
+          const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+          fillLabel = `${MON[fill[0]]}–${MON[fill[fill.length - 1]]} ${t12End.year} actuals (seller before closing) + `;
+        }
+      }
+      const nMonths = covered(budgetRefCal).filter(Boolean).length;
+      refs.push({ key: 'budget', label: budgetRefLabel(sb?.period), period: `${fillLabel}${sb?.period || ''}`, ...refColumn(budgetRefCal), nMonths });
     }
     if (actualCal && t12) { const a4 = annualizedFromCal(actualCal, t12.lastMonth, 4); if (Object.keys(a4).length) refs.push({ key: 'ann4', label: '4 mo annualized', period: '', ...refColumn(a4) }); }
     // UW for the calendar year (Troy 2026-11-12, a new acquisition): each category n1/12 of the Year-1 plan plus n2/12
@@ -1149,7 +1170,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     const src = budget.inputs?.refSource || (uwCal ? 'uw' : 'actual');
     refKey = src === 'uw' && !uwCal ? 'actual' : src;
     if (src === 'uw' && uwCal) { ref = refFromCalendar(coa, uwCal, units, uwLabel); refLabel = uwLabel; }
-    else if (src === 'budget' && budgetCal) { ref = refFromCalendar(coa, budgetCal, units, 'CY budget'); refLabel = refs.find((r) => r.key === 'budget')?.label || 'CY budget'; }
+    else if (src === 'budget' && budgetCal) { ref = refFromCalendar(coa, budgetRefCal || budgetCal, units, 'CY budget'); refLabel = refs.find((r) => r.key === 'budget')?.label || 'CY budget'; }
     else if (actualCal) {
       ref = refFromCalendar(coa, actualCal, units, t12Label); refLabel = t12Label;
       if (src === 'target' && budget.inputs?.targets) {
@@ -1168,7 +1189,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   }
   const guidance = await loadGuidance();
   return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, rollMarket, sellerUtil, charges, sellerRows, defaultRules, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, uwBasisLatest, burdenSrc, burdenGlSrc, shapeGlSrc, guidance, refKey,
-           annual, stmtActual, stmtBudget, template, actualCal, budgetCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs, priorT12 };
+           annual, stmtActual, stmtBudget, template, actualCal, budgetCal, budgetRefCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs, priorT12 };
 }
 
 export async function saveLines(budgetId: number, lines: BudgetLine[], fullBuild = false): Promise<void> {
@@ -1381,7 +1402,7 @@ function budgetView(lb: LoadedBudget) {
     // laid on the budget's month order — for the per-GL history rows (Troy 2026-11-04)
     hist: lb.annual ? {
       t12: lb.actualCal ? { label: lb.refs.find((r) => r.key === 'actual')?.label || 'T12 actuals', period: lb.refs.find((r) => r.key === 'actual')?.period || '', cal: Object.fromEntries(Object.entries(lb.actualCal).map(([g, m]) => [g, rotate12(m, start)])) } : null,
-      budget: lb.budgetCal ? { label: lb.refs.find((r) => r.key === 'budget')?.label || 'CY budget', period: lb.refs.find((r) => r.key === 'budget')?.period || '', cal: Object.fromEntries(Object.entries(lb.budgetCal).map(([g, m]) => [g, rotate12(m, start)])) } : null,
+      budget: lb.budgetCal ? { label: lb.refs.find((r) => r.key === 'budget')?.label || 'CY budget', period: lb.refs.find((r) => r.key === 'budget')?.period || '', cal: Object.fromEntries(Object.entries(lb.budgetRefCal || lb.budgetCal).map(([g, m]) => [g, rotate12(m, start)])) } : null,
       // Seth's Payroll Budget Workbook sheet for this property/year: the payroll tie-out reference (Troy 2026-11-09)
       // a new acquisition: the seller T12 by UW category (Troy 2026-11-12: "I need to be able to see seller trends for
       // entire subcategories") — the seller's chart maps to ours by category only, so these sit under the subtotals
@@ -1698,6 +1719,7 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   const planRecovery = y1 ? y1.lines.filter((l) => l.gl_code === '5110').reduce((a, l) => a + sum(l.months), 0) : 0;
   const acqDq = (ls: BudgetLine[]): BudgetLine[] => (acq ? acqDelinquency(ls, lb.coa, lb.actualCal, acqLive, planRecovery, {
     dqPct: (inputs.pctGpr as any)?.['5035'] ?? null, collectPct: inputs.collectPct ?? null, recoveryPct: (inputs as any).recoveryPct ?? null, feePct: (inputs as any).collectionFeePct ?? null,
+    uwBundle: acq && y1 ? uwDqBundle(y1.uw as any, acq.y1Idx.length) : null,
   }) : ls);
   if (lb.annual) lines = clearY1Plan(lines);
   lines = acqDq(overlay(lines));
@@ -3103,10 +3125,14 @@ router.get('/export/portfolio.xlsx', h(async (req, res) => {
   res.send(buf);
 }));
 
-/* Import an EDITED review-workbook draft back into the budget: the prior
-   state is captured as a save point, then every detail-GL month that differs
-   from the workbook is written as an 'imported' override; Summary D27 updates
-   capital. Dependent passes + ties reconcile via buildLines. */
+/* Import an EDITED review-workbook draft back into the budget (Troy 2026-11-16: "it needs to upload formulas back into
+   the system, not hard coded values"). The prior state is captured as a save point. Each Budget month is compared with
+   what the file was EXPORTED with, not with the budget as it stands now (a recalc since the export would otherwise turn
+   every line into typed numbers): the file's own Formulas sheet; for an older export without one, the export save point
+   named in the file name ("… Budget Draft TS 11162026" → "exported TS 11162026"), else the latest export save point,
+   else the budget itself. Only the months that differ become hard-coded cells, exactly as if typed in the grid (the line
+   keeps its formula, flagged revised, `hard` = those months); every other line stays on its formula and is rebuilt.
+   Months closed to actuals are left alone. Summary D27 updates capital. */
 router.post('/budgets/:id/import-draft', upload.single('file'), h(async (req, res) => {
   const lb = await loadBudget(Number(req.params.id));
   if (!lb) return res.status(404).json({ error: 'Not found' });
@@ -3116,18 +3142,48 @@ router.post('/budgets/:id/import-draft', upload.single('file'), h(async (req, re
     return res.status(400).json({ error: `Draft is for ${parsed.code.toUpperCase()}, this budget is ${lb.budget.property_code.toUpperCase()}` });
   }
   const user = req.session.username || '';
+  // the baseline: what the file was exported with
+  let base: Record<string, number[]> | null = parsed.exported, baseFrom = 'the file\'s Formulas sheet';
+  if (!base) {
+    const fm = req.file.originalname.match(/Budget Draft\s+([A-Za-z]{1,6})\s+(\d{8})/i);
+    const named = fm ? (await query(`select name, lines from budget_snapshots where budget_id=$1 and name=$2 order by created_at desc limit 1`, [lb.budget.id, `exported ${fm[1].toUpperCase()} ${fm[2]}`])).rows[0] : null;
+    const snap = named || (await query(`select name, lines from budget_snapshots where budget_id=$1 and name like 'exported %' order by created_at desc limit 1`, [lb.budget.id])).rows[0];
+    if (snap) {
+      base = Object.fromEntries(((snap.lines || []) as BudgetLine[]).map((l) => [l.gl_code, (l.months || []).map((v) => Number(v) || 0)]));
+      baseFrom = `the save point "${snap.name}"`;
+    } else {
+      base = Object.fromEntries(effectiveLines(lb).map((l) => [l.gl_code, l.months.map((v) => Number(v) || 0)]));
+      baseFrom = 'the budget as it stands (no export save point found)';
+    }
+  }
+  // months closed to actuals are not plan months
+  const actIdx = new Set<number>();
+  for (const key of Object.keys(lb.budget.inputs?.actuals || {})) {
+    const { calYear, calMonth } = parseActualKey(key);
+    const ai = ownershipIndexOf(Number(lb.budget.year), lb.budget.inputs?.startMonth || 1, calYear, calMonth);
+    if (ai >= 0) actIdx.add(ai);
+  }
   await captureSnapshot(lb, `before import ${req.file.originalname.slice(0, 40)}`, user);
-  let changed = 0;
-  for (const l of lb.lines) {
-    const a = lb.coaMap.get(l.gl_code);
+  let changed = 0, cells = 0;
+  const byGl = new Map(lb.lines.map((l) => [l.gl_code, l]));
+  for (const [gl, m] of Object.entries(parsed.glMonths)) {
+    const a = lb.coaMap.get(gl);
     if (!a || a.kind !== 'detail') continue;
-    const m = parsed.glMonths[l.gl_code];
-    if (!m) continue;
-    if (l.months.every((v, i) => Math.abs(v - m[i]) < 0.01)) continue;
-    l.months = m.map((v) => r2(v)) as Months;
+    const b0 = base[gl] || [];
+    const typed = m.map((v, i) => (!actIdx.has(i) && Math.abs((Number(v) || 0) - (Number(b0[i]) || 0)) >= 0.01 ? i : -1)).filter((i) => i >= 0);
+    if (!typed.length) continue;
+    let l = byGl.get(gl);
+    if (!l) { l = { gl_code: gl, months: zero12(), driver: { method: 'manual' } as any, override: false, note: '' }; lb.lines.push(l); byGl.set(gl, l); }
+    const wasOverride = l.override;
+    const prev: any = l.driver || {};
+    const next = [...l.months] as Months;
+    for (const i of typed) next[i] = r2(Number(m[i]) || 0);
+    l.months = next;
     l.override = true;
-    l.driver = { method: 'imported', file: req.file.originalname.slice(0, 40) } as any;
-    changed++;
+    l.driver = prev.method && prev.method !== 'manual' ? { ...prev, revised: true } : { method: 'manual' } as any;
+    const smoothed = !!prev.smooth || prev.method === 'smooth';
+    if (!wasOverride || Array.isArray(prev.hard) || smoothed) (l.driver as any).hard = [...new Set<number>([...(wasOverride && Array.isArray(prev.hard) ? prev.hard : []), ...typed])].sort((x, y) => x - y);
+    changed++; cells += typed.length;
   }
   const inputs: BudgetInputs = { ...lb.budget.inputs };
   let capitalChanged = false;
@@ -3138,9 +3194,9 @@ router.post('/budgets/:id/import-draft', upload.single('file'), h(async (req, re
   await query('update budgets set inputs=$2, updated_at=now() where id=$1', [lb.budget.id, JSON.stringify(inputs)]);
   const built = buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lb.lines);
   await saveLines(lb.budget.id, built.lines, true);
-  logChange(user, 'import draft workbook', { id: lb.budget.id, file: req.file.originalname, changed, capitalChanged });
+  logChange(user, 'import draft workbook', { id: lb.budget.id, file: req.file.originalname, changed, cells, base: baseFrom, capitalChanged });
   const view: any = budgetView((await loadBudget(lb.budget.id))!);
-  view.importResult = { changed, capitalChanged, capital: parsed.capital };
+  view.importResult = { changed, cells, base: baseFrom, capitalChanged, capital: parsed.capital };
   res.json(view);
 }));
 

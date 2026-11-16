@@ -469,8 +469,18 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     properties: { tabColor: { argb: 'FF00B0F0' }, defaultRowHeight: 12 },
     views: [{ state: 'frozen', xSplit: 4, ySplit: 6 }],
   });
-  const widths = [8, 40, 16, 20, ...Array(12).fill(10.5), 1.5, 13, 1.5, 13, 13, 1.5, 1.5, 9.5, 9.5, 26];
+  // Troy's own widths from his edited CLND draft (2026-11-16: "I also would like export to have the same changes made to
+  // width of columns so that everything can actually be read") — the row-3 KPI values fit, and so does Cash on Cash in Q
+  const widths = [8, 29.86, 16, 20, 12.43, 10.43, 13.71, 10.43, 10.86, 7.86, 11.57, 11.57, 11.57, 11.57, 11.57, 11.57, 11.57, 13, 1.43, 13, 13, 1.43, 1.43, 9.43, 9.43, 26];
   widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  /* ROUND TRIP (Troy 2026-11-16: "When I export a budget, make changes, and then reupload it, it needs to upload formulas
+     back into the system, not hard coded values. Also, the conditional formatting should bold and red any value in the
+     workbook that is revised to a hard coded number"): every month a line's formula sets is written as a link to the
+     Formulas sheet (the system's value, at the same row), so it stays a FORMULA in Excel; a number typed over it is not
+     one, and the conditional format below turns it bold red. On re-upload the Formulas sheet is the baseline: only cells
+     that differ from it become hard-coded cells; every other line stays on its formula. */
+  const fxName = `${prefix}Formulas`;
+  const FQ = prefix ? `'${fxName.replace(/'/g, "''")}'!` : 'Formulas!';
 
   /* ---- Payroll sheet (annual): every payroll GL in COA order, a TOTAL WAGES
      row under the last wage GL, a TOTAL row at the end. The Budget sheet's
@@ -601,6 +611,7 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
       (ln?.months || zero12()).forEach((v, i) => {
         const cell = ws.getCell(r, C.m1 + i);
         if (payRow) cell.value = { formula: `${PQ}${payColL(i)}${payRow}`, result: v || 0 } as any;
+        else if (v && ln && !isHardCell(ln, i)) cell.value = { formula: `${FQ}${colL(C.m1 + i)}${r}`, result: v } as any;
         else if (v) cell.value = v;
         cell.numFmt = CUR;
         // hard-coded (typed / fixed by hand): bold in the one colour nothing else uses
@@ -1034,6 +1045,44 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     const list = compsByWorkbook.get(wb) || [];
     list.push({ site: args, sheet: `${prefix}Budget Comps`, t12, t4, bud, capital, units, cyBudgetNoi: cyNoi, cyBudgetMonths: cyN, cyBudgetLabel: cyb ? cyb.label : null, cyRef, trendRefs });
     compsByWorkbook.set(wb, list);
+  }
+  /* ================= Formulas sheet: the system's value of every line, row for row with the Budget sheet ================= */
+  {
+    const wsF = wb.addWorksheet(fxName, { properties: { tabColor: { argb: 'FFBFBFBF' }, defaultRowHeight: 12 }, views: [{ state: 'frozen', xSplit: 4, ySplit: 6 }] });
+    widths.forEach((w, i) => { wsF.getColumn(i + 1).width = w; });
+    wsF.getCell(1, 2).value = `${args.propertyName} — the system's formulas`;
+    wsF.getCell(1, 2).font = { size: 12, bold: true };
+    wsF.getCell(2, 2).value = 'What each line\'s formula came to when this file was exported. Budget cells that link here are still on their formula; a number typed over one on the Budget sheet turns bold red and comes back as a hard-coded cell when this file is uploaded. Leave this sheet as it is: it is what the upload compares against.';
+    wsF.getCell(2, 2).font = { size: 8, italic: true, color: { argb: 'FF505050' } };
+    for (const [col, text] of [[C.code, 'GL Code'], [C.name, 'GL Name'], [C.driver, 'Formula'], ...labels.map((m, i) => [C.m1 + i, m] as [number, string]), [C.annual, 'Total']] as [number, string][]) {
+      const cell = wsF.getCell(6, col);
+      cell.value = text; cell.font = f8b;
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD } };
+      cell.border = { bottom: { style: 'thin' } };
+    }
+    for (const a of ordered) {
+      if (a.kind !== 'detail') continue;
+      const ln = byGl.get(a.code);
+      if (!ln || !ln.months.some((v) => v)) continue;
+      const r = rowOf.get(a.code)!;
+      wsF.getCell(r, C.code).value = a.code;
+      wsF.getCell(r, C.code).font = { size: 8, color: { argb: 'FF808080' } };
+      wsF.getCell(r, C.name).value = a.name;
+      wsF.getCell(r, C.name).font = f8;
+      wsF.getCell(r, C.driver).value = driverLabel(ln.driver, { total: sum(ln.months), units, gl: a.code }) + (ln.override ? ' (manual)' : '');
+      wsF.getCell(r, C.driver).font = { size: 7.5, italic: true, color: { argb: 'FF808080' } };
+      ln.months.forEach((v, i) => { const cell = wsF.getCell(r, C.m1 + i); cell.value = v || 0; cell.numFmt = CUR; cell.font = f8; });
+      const t = wsF.getCell(r, C.annual);
+      t.value = { formula: `SUM(${colL(C.m1)}${r}:${colL(C.m1 + 11)}${r})`, result: r2(sum(ln.months)) } as any;
+      t.numFmt = CUR; t.font = f8;
+    }
+    // a typed number on the Budget month grid: bold red (a formula, the totals and blank cells are left as they are)
+    const lastRow = Math.max(7, ...[...rowOf.values()]);
+    const tl = `${colL(C.m1)}7`;
+    ws.addConditionalFormatting({
+      ref: `${tl}:${colL(C.m1 + 11)}${lastRow}`,
+      rules: [{ type: 'expression', priority: 1, formulae: [`AND(${tl}<>"",NOT(_xlfn.ISFORMULA(${tl})))`], style: { font: { bold: true, color: { argb: 'FFFF0000' } } } } as any],
+    });
   }
   return payInfo;
 }

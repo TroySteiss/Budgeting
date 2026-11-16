@@ -40,7 +40,8 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-13g';   // g: taxes at least the T12 x 1.03, never down
+export const ENGINE_VERSION = '2026-11-16a';   // a: a new acquisition's DQ defaults to the UW vacancy + DQ (Y1/Y2 by months) less vacancy
+// earlier: 2026-11-13g: taxes at least the T12 x 1.03, never down
 // earlier: f: a new acquisition's typed DQ / collection / recovery / fee % win
 // earlier: e: pest fee per occupied unit (spec §5.2)
 // earlier: d: months from another property's curve (shapeFromGl); fee off the acquisition plan
@@ -2328,8 +2329,10 @@ export const NET_RENTAL_GLS = (code: string, pcode: string | undefined): boolean
 export function acqDelinquency(lines: BudgetLine[], coaList: CoaAccount[], actual: Record<string, Months> | null | undefined, liveIdx: number[], planRecovery: number,
   /** the budget's own typed rates win over the posted ones (Troy 2026-11-13: "Why cant I change CWND's DQ assumptions at
       all"): DQ as a share of net rental (signed, as inputs.pctGpr['5035']), collections, recovery, the collection fee */
-  typed: { dqPct?: number | null; collectPct?: number | null; recoveryPct?: number | null; feePct?: number | null } = {}): BudgetLine[] {
-  const hasTyped = typed.dqPct != null || typed.collectPct != null || typed.recoveryPct != null;
+  typed: { dqPct?: number | null; collectPct?: number | null; recoveryPct?: number | null; feePct?: number | null;
+    /** the UW's vacancy + DQ share of GPR, blended Y1 / Y2 by months (uwDqBundle): DQ defaults to it less the budget's vacancy */
+    uwBundle?: { pct: number; p1: number; p2: number; n1: number } | null } = {}): BudgetLine[] {
+  const hasTyped = typed.dqPct != null || typed.collectPct != null || typed.recoveryPct != null || !!typed.uwBundle;
   if (!hasTyped && (!actual || !liveIdx.length)) return lines;
   const pc = new Map(coaList.map((a) => [a.code, a.pcode]));
   const isNet = (gl: string) => NET_RENTAL_GLS(gl, pc.get(gl) ?? undefined);
@@ -2344,13 +2347,28 @@ export function acqDelinquency(lines: BudgetLine[], coaList: CoaAccount[], actua
   const ensure = (gl: string): BudgetLine => { let l = get(gl); if (!l) { l = { gl_code: gl, months: zero12(), driver: { method: 'manual' } as Driver, override: false, note: '' }; out.push(l); } return l; };
   const strip = (d: any) => { const { y1: _y, acq: _a, ...rest } = d || {}; return rest; };
   // 5035: the posted rate on this budget's net rental
-  if (free('5035') && (typed.dqPct != null || (liveNet > 0 && liveDq < 0))) {
-    const pct = typed.dqPct != null ? -Math.abs(Number(typed.dqPct)) : liveDq / liveNet;
-    const net = zero12();
-    for (const l of out) if (isNet(l.gl_code)) l.months.forEach((v, i) => { net[i] += Number(v) || 0; });
+  /* 5035. Precedence: a typed % (of GPR) → the UW bundle less the budget's vacancy (of GPR) → the posted rate (of net
+     rental). GPR = the category-1 lines (4994 + the HAP lines); vacancy = 5031 over the year. */
+  const ub = typed.uwBundle || null;
+  if (free('5035') && (typed.dqPct != null || ub || (liveNet > 0 && liveDq < 0))) {
+    const net = zero12(), gpr = zero12();
+    for (const l of out) {
+      if (isNet(l.gl_code)) l.months.forEach((v, i) => { net[i] += Number(v) || 0; });
+      if (pc.get(l.gl_code) === '1') l.months.forEach((v, i) => { gpr[i] += Number(v) || 0; });
+    }
+    const gprY = sum(gpr), vacY = -sum((get('5031')?.months || zero12()) as Months);
+    const vac = gprY > 0 ? vacY / gprY : 0;
     const l = ensure('5035');
-    l.months = net.map((v) => r2(pct * v)) as Months;
-    l.driver = { method: 'pctGpr', pct: Math.round(pct * 100000) / 100000, of: 'net', basis: typed.dqPct != null ? 'typed' : 'posted', months: live.length } as any;
+    if (typed.dqPct != null || (ub && gprY > 0)) {
+      const pct = typed.dqPct != null ? -Math.abs(Number(typed.dqPct)) : -Math.max(0, ub!.pct - vac);
+      l.months = gpr.map((v) => r2(pct * v) || 0) as Months;
+      l.driver = { method: 'pctGpr', pct: Math.round(pct * 100000) / 100000, of: 'gpr', basis: typed.dqPct != null ? 'typed' : 'uw',
+        ...(ub ? { uwBundle: ub, vac: Math.round(vac * 100000) / 100000 } : {}), months: live.length } as any;
+    } else {
+      const pct = liveDq / liveNet;
+      l.months = net.map((v) => r2(pct * v)) as Months;
+      l.driver = { method: 'pctGpr', pct: Math.round(pct * 100000) / 100000, of: 'net', basis: 'posted', months: live.length } as any;
+    }
   }
   // 5036: what a live month collected against the previous live month's delinquency
   const lastDq = Math.abs(A('5035', live[live.length - 1]));
@@ -2378,6 +2396,37 @@ export function acqDelinquency(lines: BudgetLine[], coaList: CoaAccount[], actua
     if (free('6309')) { const f = ensure('6309'); f.driver = { method: 'collectionFee', pct: typed.feePct != null ? Math.max(0, Number(typed.feePct)) : COLLECTION_FEE_PCT } as any; }
   }
   return dqChain(out);
+}
+/* THE UW BUNDLES VACANCY AND DELINQUENCY (Troy 2026-11-16: "Vacancy and DQ are bundled in the UW, meaning that if 5%
+   was budgeted there for Y2, and I had 4% vacancy in the budget, default value for DQ should be 1%. Targets should be
+   blended based on how many months covered as well."): the UW's category 3 (vacancy, delinquency & other loss) as a share
+   of GPR, Year 1 and Year 2 — the UW basis when it says % of GPR, else category 3 $ / GPR $ of that year — blended by the
+   months of the budget year inside ownership Year 1 (n1) and after it (12 - n1). No Year-2 column: Year 1 throughout. */
+export function uwDqBundle(uw: { y1?: Record<string, number>; years?: Record<string, Record<string, number>>; basis?: Record<string, { y1?: any; y2?: any }> } | null | undefined, n1: number): { pct: number; p1: number; p2: number; n1: number } | null {
+  if (!uw) return null;
+  const of = (yr: Record<string, number> | undefined, b: any): number | null => {
+    if (b && b.kind === 'pctGpr' && Number.isFinite(Number(b.value))) return Math.abs(Number(b.value));
+    const g = Number(yr?.['1']) || 0, v = Number(yr?.['3']) || 0;
+    return g > 0 && v ? Math.abs(v) / g : null;
+  };
+  const p1 = of(uw.y1, uw.basis?.['3']?.y1);
+  if (p1 == null) return null;
+  const p2 = of(uw.years?.y2, uw.basis?.['3']?.y2) ?? p1;
+  const k = Math.min(12, Math.max(0, Math.round(n1)));
+  const pct = (k * p1 + (12 - k) * p2) / 12;
+  return { pct: Math.round(pct * 1e6) / 1e6, p1: Math.round(p1 * 1e6) / 1e6, p2: Math.round(p2 * 1e6) / 1e6, n1: k };
+}
+/** A calendar by GL with the given months taken from another (a new acquisition's part-year CY budget, its months
+    before closing from the trailing-12 — Troy 2026-11-16). Every GL of either; the other months untouched. Pure. */
+export function fillCalMonths(base: Record<string, Months>, from: Record<string, Months>, months: number[]): Record<string, Months> {
+  const out: Record<string, Months> = {};
+  for (const [gl, m] of Object.entries(base)) out[gl] = [...m] as Months;
+  for (const [gl, m] of Object.entries(from)) {
+    const row = out[gl] || (out[gl] = zero12());
+    for (const i of months) row[i] = r2(Number(m[i]) || 0);
+  }
+  for (const row of Object.values(out)) for (const i of months) if (row[i] == null) row[i] = 0;
+  return out;
 }
 export function dqChain(lines: BudgetLine[]): BudgetLine[] {
   const by = new Map(lines.map((l) => [l.gl_code, l]));

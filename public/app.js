@@ -189,7 +189,8 @@ function drvMetaBase(l) {
       const lastWarn = d.lastDev != null ? ` · ⚠ last actual month is ${d.lastDev > 0 ? '+' : ''}${Math.round(d.lastDev * 100)}% vs the T12 average — one month is setting the year (shape menu: T12 ÷ 12 flat)` : '';
       return { cls: 'drv-base', tag: d.lastDev != null ? '⚠LAST' : tag, label: `${d.src === 'budget' ? 'CY budget' : 'Own trailing-12 actual'} — ${shape} ${factor}${d.mult ? ` → MROUND $${d.mult}` : ''} · T12 ${Math.round(d.base || 0).toLocaleString()}${foldTxt}${d.drift ? ` · tilted ${(d.drift * 100).toFixed(1)}% January to December (costs drift up through the year; year total unchanged)` : ''}${d.rule ? ' · default shape and factor from the 2026 GRKS draft (not set for this property)' : ''}${lastWarn}` };
     }
-    case 'pctGpr': return { cls: 'drv-base', tag: l.driver.of === 'net' ? '%NET RENT' : l.driver.of === 'netgpr' ? '%NET GPR' : '%GPR', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.of === 'net' ? 'net rental income' : l.driver.of === 'netgpr' ? 'net GPR' : 'GPR'} (${l.driver.basis === 'last' ? 'last-month' : 'trailing-12'} ratio)${l.driver.capped ? ` — CAPPED at each month's budgeted delinquency (the ratio alone gave ${money(l.driver.uncapped || 0)} for the year; collections cannot exceed what is delinquent)` : ''}` };
+    case 'pctGpr': if (l.gl_code === '5035' && (l.driver.basis === 'uw' || l.driver.basis === 'typed' || l.driver.basis === 'posted')) { const u = l.driver.uwBundle, p2 = (v) => `${(v * 100).toFixed(2)}%`; const uwTxt = u ? `UW vacancy + DQ ${p2(u.pct)} (Year 1 ${p2(u.p1)} × ${u.n1}/12${u.n1 < 12 ? ` + Year 2 ${p2(u.p2)} × ${12 - u.n1}/12` : ''}) less this budget's vacancy ${p2(l.driver.vac || 0)} = ${p2(Math.max(0, u.pct - (l.driver.vac || 0)))} of GPR` : ''; return { cls: 'drv-base', tag: l.driver.basis === 'uw' ? 'DQ·UW−VAC' : l.driver.basis === 'typed' ? '%GPR' : '%NET RENT·POSTED', label: l.driver.basis === 'uw' ? `Current delinquency = ${uwTxt}, every month on GPR. Type a % in the box to use your own (clear the box to come back here).` : l.driver.basis === 'typed' ? `Current delinquency = ${p2(Math.abs(l.driver.pct || 0))} of GPR, typed on this budget.${uwTxt ? ` The default would be ${uwTxt}.` : ''} Clear the box to use the default.` : `Current delinquency = the posted rate since closing, ${p2(Math.abs(l.driver.pct || 0))} of net rental income, every month.` }; }
+      return { cls: 'drv-base', tag: l.driver.of === 'net' ? '%NET RENT' : l.driver.of === 'netgpr' ? '%NET GPR' : '%GPR', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.of === 'net' ? 'net rental income' : l.driver.of === 'netgpr' ? 'net GPR' : 'GPR'} (${l.driver.basis === 'last' ? 'last-month' : 'trailing-12'} ratio)${l.driver.capped ? ` — CAPPED at each month's budgeted delinquency (the ratio alone gave ${money(l.driver.uncapped || 0)} for the year; collections cannot exceed what is delinquent)` : ''}` };
     case 'badDebtRecovery': return { cls: 'drv-base', tag: 'REC·60D', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% of what is still uncollected 60 days on is recovered: each month = rate × (current delinquency two months back − prior period collections one month back). Rate = the trailing-12's recovery $${money(l.driver.t12 || 0)} ÷ its uncollected $${money(l.driver.t12Uncollected || 0)} (delinquency − collections). Follows 5035 / 5036 whatever formula they are on.` };
     case 'perOccupiedUnit': return { cls: 'drv-base', tag: `$${l.driver.rate}/OCC`, label: `$${l.driver.rate} per occupied unit per month: $${l.driver.rate} × ${l.driver.units} units × each month's occupancy (1 − the budgeted vacancy %)${l.driver.share ? ' × the share of leases on the flat-fee package' : ''}. Its own line, never folded into utility reimbursement.` };
     case 'collectionFee': return { cls: 'drv-base', tag: `${Math.round((l.driver.pct || 0) * 100)}% REC`, label: `Collection fees = ${Math.round((l.driver.pct || 0) * 100)}% of bad debt recovery (5110), month by month.` };
@@ -1410,13 +1411,13 @@ function renderEditor(el) {
   document.getElementById('imp-file').addEventListener('change', async (e) => {
     const f = e.target.files[0];
     if (!f) return;
-    if (!confirm(`Import "${f.name}" into this budget?\n\nThe current state is saved as its own iteration first; every month that differs in the workbook becomes an imported override.`)) return;
+    if (!confirm(`Import "${f.name}" into this budget?\n\nThe current state is saved as its own iteration first. Only the months you changed in the workbook (compared with what it was exported with) come back as hard-coded cells; every other line stays on its formula.`)) return;
     const fd = new FormData();
     fd.append('file', f);
     try {
       S.bv = await POST(`/budgets/${b.id}/import-draft`, fd);
       const ir = S.bv.importResult || {};
-      alert(`Imported: ${ir.changed || 0} line(s) updated${ir.capitalChanged ? ` · capital set to ${money(ir.capital)}` : ''}.\nPrior iteration saved under ⎘ Save points.`);
+      alert(`Imported: ${ir.cells || 0} changed cell(s) on ${ir.changed || 0} line(s), now hard-coded (bold); every other line stays on its formula${ir.capitalChanged ? ` · capital set to ${money(ir.capital)}` : ''}.\nCompared with ${ir.base || 'the export'}.\nPrior iteration saved under ⎘ Save points.`);
       render();
     } catch (e2) { alert('Import failed: ' + e2.message); }
     e.target.value = '';
@@ -1689,6 +1690,7 @@ function renderEditor(el) {
       const line = S.bv.lines.find((l) => l.gl_code === gl);
       const p = paramFor(gl, line, S.bv.budget.inputs || {});
       if (!p || p.multi || p.steps) return;
+      if (String(box.value).trim() === '' && p.clear) { pushUndo(); S.bv = await PUT(`/budgets/${b.id}`, { inputs: p.clear() }); render(); if (goNext) focusFxpAfter(gl); return; }
       const v = parseFloat(String(box.value).replace(/[$,%\s]/g, ''));
       if (!Number.isFinite(v)) return;
       pushUndo();
@@ -2357,6 +2359,11 @@ function paramFor(gl, line, inp) {
   if (m === 'baseline') {
     const bl = inp.baseline || {};
     return { label: 'increase factor %', value: pct(line.driver.pct || 0), patch: (v) => ({ baseline: { ...bl, glGrowth: { ...(bl.glGrowth || {}), [gl]: v / 100 } } }) };
+  }
+  if (gl === '5035' && m === 'pctGpr' && acqRuns()) {
+    const { ['5035']: _drop, ...restPg } = inp.pctGpr || {};
+    return { label: line.driver.basis === 'posted' ? '% of net rent (posted) — type a % of GPR' : `% of GPR${line.driver.basis === 'uw' ? ' (UW vacancy + DQ less vacancy; type to override)' : ' (typed; clear for the UW default)'}`,
+      value: +(Math.abs(line.driver.pct || 0) * 100).toFixed(3), patch: (v) => ({ pctGpr: { ...(inp.pctGpr || {}), '5035': Math.abs(v) / 100 } }), clear: () => ({ pctGpr: restPg }) };
   }
   if (m === 'pctGpr' || m === 'recapture') {
     return { label: m === 'recapture' ? 'recapture %' : `% of ${line.driver.of === 'net' ? 'net rent' : line.driver.of === 'netgpr' ? 'net GPR' : 'GPR'}`, value: +((line.driver.pct || 0) * 100).toFixed(3), patch: (v) => ({ pctGpr: { ...(inp.pctGpr || {}), [gl]: v / 100 } }) };
@@ -3803,7 +3810,11 @@ function uwBasisParts(bv, key, r, opts = {}) {
   const p1 = (v) => `${+(v * 100).toFixed(2)}%`;
   const fmt = (b, y2) => !b ? '' : b.kind === 'estimate' ? 'Ryan est.' : b.kind === 'perUnit' ? `$${money(b.value)}/u` : b.kind === 'pctGpr' ? `${p1(b.value)} GPR` : b.kind === 'pctEgi' ? `${p1(b.value)} EGI` : `${b.value >= 0 ? '+' : ''}${p1(b.value)}${y2 ? '' : ' on T12'}`;
   const y1t = B ? fmt(B.y1, false) : '', y2t = B && U.yearSplit && U.yearSplit.y1 < 12 ? fmt(B.y2, true) : '';
-  const label = y1t || y2t ? `<div class="uwb" title="How the UW built this category${y2t ? ': Year 1, then Year 2' : ''}${B && B.t12 ? ` · seller T12 ${money(B.t12)}` : ''}">UW ${esc(y1t)}${y2t ? ` → ${esc(y2t)}` : ''}</div>` : '';
+  // blended for the budget year by the months in each UW year (Troy 2026-11-16: "Targets should be blended based on how many months covered")
+  const n1 = U.yearSplit ? U.yearSplit.y1 : 12;
+  const bl = B && B.y1 && B.y2 && y2t && B.y1.kind === B.y2.kind && ['pctGpr', 'pctEgi', 'perUnit'].includes(B.y1.kind) ? (n1 * B.y1.value + (12 - n1) * B.y2.value) / 12 : null;
+  const blT = bl == null ? '' : B.y1.kind === 'perUnit' ? `$${money(bl)}/u` : `${p1(bl)} ${B.y1.kind === 'pctGpr' ? 'GPR' : 'EGI'}`;
+  const label = y1t || y2t ? `<div class="uwb" title="How the UW built this category${y2t ? `: Year 1, then Year 2${blT ? `; this budget year = ${n1}/12 of Year 1 + ${12 - n1}/12 of Year 2 = ${blT}` : ''}` : ''}${B && B.t12 ? ` · seller T12 ${money(B.t12)}` : ''}">UW ${esc(y1t)}${y2t ? ` → ${esc(y2t)}` : ''}${blT ? ` · ${esc(blT)} for ${S.bv && S.bv.budget ? S.bv.budget.year : 'the year'}` : ''}</div>` : '';
   if (!U.posted) return { label, cell: '' };
   if (opts.noPosted) return { label, cell: '<td class="muted">—</td>' };
   // posted, annualized, for a category or a subtotal; NOI = income less expenses

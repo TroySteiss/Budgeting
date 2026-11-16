@@ -689,7 +689,11 @@ function parseYardiLeaseCharges(g: Grid, h: number, asOf: string | null): RentPa
     the Budget tab's detail-GL month cells (E..P; SheetJS returns cached
     values for formula cells, so hand-typed AND formula edits both come
     through) plus the Summary's Capital Contributions (D27). */
-export function parseReviewDraft(buf: Buffer): { code: string | null; year: number | null; glMonths: Record<string, number[]>; capital: number | null } {
+export function parseReviewDraft(buf: Buffer): { code: string | null; year: number | null; glMonths: Record<string, number[]>; capital: number | null;
+  /** per GL, per month: the Budget cell is a formula (Troy 2026-11-16: formulas come back as formulas) */
+  glFormula: Record<string, boolean[]>;
+  /** the Formulas sheet: what each line's formula came to when the file was exported (null = an older export without it) */
+  exported: Record<string, number[]> | null } {
   const all = grids(buf);
   const bSheet = all.find((x) => x.name.trim().toLowerCase() === 'budget')
     || all.find((x) => / budget$/i.test(x.name.trim()));
@@ -701,6 +705,7 @@ export function parseReviewDraft(buf: Buffer): { code: string | null; year: numb
   const ym = s(g[0]?.[4]).match(/[A-Za-z]{3}-(\d{2})\b/);
   const year = ym ? 2000 + Number(ym[1]) : null;
   const glMonths: Record<string, number[]> = {};
+  const glFormula: Record<string, boolean[]> = {};
   for (let r = 6; r < g.length; r++) {
     const gl = s(g[r]?.[0]);
     if (!/^\d{4}$/.test(gl)) continue;
@@ -708,6 +713,19 @@ export function parseReviewDraft(buf: Buffer): { code: string | null; year: numb
       const v = g[r]?.[4 + i];
       return typeof v === 'number' ? Math.round(v * 100) / 100 : num(v);
     });
+    glFormula[gl] = Array.from({ length: 12 }, (_, i) => cellIsFormula(bSheet.ws, r, 4 + i));
+  }
+  // the Formulas sheet beside this Budget sheet (same prefix in an all-sites workbook)
+  const prefix = bSheet.name.replace(/budget\s*$/i, '');
+  const fSheet = all.find((x) => x.name.trim().toLowerCase() === `${prefix}formulas`.trim().toLowerCase());
+  let exported: Record<string, number[]> | null = null;
+  if (fSheet) {
+    exported = {};
+    for (let r = 6; r < fSheet.g.length; r++) {
+      const gl = s(fSheet.g[r]?.[0]);
+      if (!/^\d{4}$/.test(gl)) continue;
+      exported[gl] = Array.from({ length: 12 }, (_, i) => { const v = fSheet.g[r]?.[4 + i]; return typeof v === 'number' ? Math.round(v * 100) / 100 : num(v); });
+    }
   }
   if (!Object.keys(glMonths).length) throw new Error('Budget tab has no GL rows');
   const sSheet = all.find((x) => x.name.trim().toLowerCase() === 'summary') || all.find((x) => / summary$/i.test(x.name.trim()));
@@ -716,7 +734,7 @@ export function parseReviewDraft(buf: Buffer): { code: string | null; year: numb
     const v = sSheet.g[26]?.[3];   // Summary D27 = Capital Contributions
     if (typeof v === 'number' && v > 0) capital = Math.round(v * 100) / 100;
   }
-  return { code, year, glMonths, capital };
+  return { code, year, glMonths, capital, glFormula, exported };
 }
 
 /* ========================= ND PAYROLL MODEL ========================= */

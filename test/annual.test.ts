@@ -2164,7 +2164,7 @@ describe('a new acquisition\'s delinquency from what has posted (Troy 2026-11-13
     const dq = out.get('5035')!.months, ppc = out.get('5036')!.months, rec = out.get('5110')!.months, fee = out.get('6309')!.months;
     expect((out.get('5035')!.driver as any).pct).toBe(-0.02);                        // typed as a positive %, still a loss
     expect((out.get('5035')!.driver as any).basis).toBe('typed');
-    expect(dq[0]).toBeCloseTo(-0.02 * (432000 - 26000 - 14000), 0);
+    expect(dq[0]).toBeCloseTo(-0.02 * 432000, 0);                                     // a typed % is of GPR, as the box says
     expect((out.get('5036')!.driver as any).pct).toBe(0.4);
     expect(ppc[1]).toBeCloseTo(0.4 * Math.abs(dq[0]), 0);                              // still on the month before
     expect((out.get('5110')!.driver as any).pct).toBe(0.3);
@@ -2172,7 +2172,59 @@ describe('a new acquisition\'s delinquency from what has posted (Troy 2026-11-13
     expect(fee.map((v) => Math.round(v))).toEqual(rec.map((v) => Math.round(v * 0.25)));
     // a typed rate works with nothing posted yet
     const none = new Map(acqDelinquency(lines(), coaD, actual, [], 6000, { dqPct: 0.015 }).map((l) => [l.gl_code, l]));
-    expect(none.get('5035')!.months[0]).toBeCloseTo(-0.015 * (432000 - 26000 - 14000), 0);
+    expect(none.get('5035')!.months[0]).toBeCloseTo(-0.015 * 432000, 0);
+  });
+});
+
+import { uwDqBundle, fillCalMonths } from '../shared/annual.js';
+describe('a new acquisition\'s CY budget reference carries the months before closing (Troy 2026-11-16: "Jan-Aug pulled into the 2026 budget comparison")', () => {
+  it('months before the budget start come from the T12 by GL; the budget\'s own months stay; GLs only on one side are kept', () => {
+    const at = (vals: Record<number, number>) => Array.from({ length: 12 }, (_, i) => vals[i] || 0) as Months;
+    const bud = { '4994': at({ 8: 430000, 9: 431000, 10: 432000, 11: 433000 }), '6601': at({ 9: 500 }) };
+    const t12 = { '4994': at({ 0: 410000, 7: 420000, 8: 999, 10: 1 }), '6116': at({ 0: 20000, 7: 20000 }) };
+    const out = fillCalMonths(bud, t12, [0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(out['4994'][0]).toBe(410000);
+    expect(out['4994'][7]).toBe(420000);
+    expect(out['4994'][8]).toBe(430000);                                              // the budget's own month
+    expect(out['4994'][10]).toBe(432000);
+    expect(out['6116'][0]).toBe(20000);                                               // a GL only the T12 has
+    expect(out['6116'][9]).toBe(0);
+    expect(out['6601'][9]).toBe(500);
+    expect(bud['4994'][0]).toBe(0);                                                   // the engine's own calendar untouched
+  });
+});
+describe('a new acquisition\'s DQ defaults to the UW vacancy + DQ less the budget\'s vacancy (Troy 2026-11-16)', () => {
+  const coaD = [{ code: '4994', pcode: '1' }, { code: '4996', pcode: '1' }, { code: '5003', pcode: 'loss' }, { code: '5031', pcode: '3' }, { code: '5035', pcode: '3' }, { code: '5036', pcode: '3' }, { code: '5110', pcode: '5' }, { code: '6309', pcode: '9' }]
+    .map((a) => ({ ...a, name: a.code, kind: 'detail', curve: 'flat', active: true })) as unknown as CoaAccount[];
+  const at = (vals: Record<number, number>) => Array.from({ length: 12 }, (_, i) => vals[i] || 0) as Months;
+  const actual = { '4994': at({ 8: 430000, 9: 430000 }), '5031': at({ 8: -15487, 9: -12149 }), '5035': at({ 8: -6371, 9: -7125 }), '5036': at({ 8: 263, 9: 4806 }) };
+  const ln = (gl: string, months: Months, driver: any = { method: 'manual' }): BudgetLine => ({ gl_code: gl, months, driver, override: false, note: '' });
+  // GPR 400k + HAP 20k a month; vacancy 4% of that
+  const lines = () => [ln('4994', Array(12).fill(400000) as Months), ln('4996', Array(12).fill(20000) as Months), ln('5003', Array(12).fill(-26000) as Months),
+    ln('5031', Array(12).fill(-16800) as Months), ln('5035', zero12(), { method: 'pctGpr', acq: {} }), ln('5036', zero12(), { method: 'collections', pct: 0.6, acq: {} })];
+  it('the UW share blends Year 1 and Year 2 by the months in each (basis first, else category 3 / GPR)', () => {
+    const uw = { y1: { '1': 1000000, '3': -60000 }, years: { y2: { '1': 1030000, '3': -51500 } } };
+    expect(uwDqBundle(uw, 12)!.pct).toBeCloseTo(0.06, 6);
+    expect(uwDqBundle(uw, 0)!.pct).toBeCloseTo(0.05, 6);
+    expect(uwDqBundle(uw, 3)!.pct).toBeCloseTo((3 * 0.06 + 9 * 0.05) / 12, 6);     // CWND-style: Jan–Mar in Year 1
+    expect(uwDqBundle({ ...uw, basis: { '3': { y1: { kind: 'pctGpr', value: 0.055 }, y2: { kind: 'pctGpr', value: 0.05 } } } } as any, 6)!.pct).toBeCloseTo(0.0525, 6);
+    expect(uwDqBundle({ y1: { '1': 1000000, '3': -50000 } }, 4)!.pct).toBeCloseTo(0.05, 6);   // no Year 2: Year 1 throughout
+    expect(uwDqBundle({ y1: {} }, 4)).toBeNull();
+  });
+  it('5% UW less 4% vacancy = 1% DQ of GPR (HAP included) every month, and collections follow it every month', () => {
+    const out = new Map(acqDelinquency(lines(), coaD, actual, [8, 9], 0, { uwBundle: { pct: 0.05, p1: 0.05, p2: 0.05, n1: 12 } }).map((l) => [l.gl_code, l]));
+    const dq = out.get('5035')!.months, ppc = out.get('5036')!.months;
+    expect(dq.every((v) => Math.abs(v + 4200) < 0.01)).toBe(true);                  // 1% × 420,000
+    expect((out.get('5035')!.driver as any)).toMatchObject({ basis: 'uw', of: 'gpr', vac: 0.04, pct: -0.01 });
+    expect(ppc.slice(1).every((v) => v > 0)).toBe(true);                             // not only January
+    expect(ppc[1]).toBeCloseTo((4806 / 6371) * 4200, 0);
+  });
+  it('a typed % wins over the UW default; vacancy at or above the UW share = no DQ', () => {
+    const typed = new Map(acqDelinquency(lines(), coaD, actual, [8, 9], 0, { dqPct: 0.02, uwBundle: { pct: 0.05, p1: 0.05, p2: 0.05, n1: 12 } }).map((l) => [l.gl_code, l]));
+    expect(typed.get('5035')!.months[0]).toBeCloseTo(-0.02 * 420000, 0);
+    expect((typed.get('5035')!.driver as any).basis).toBe('typed');
+    const high = new Map(acqDelinquency(lines(), coaD, actual, [8, 9], 0, { uwBundle: { pct: 0.03, p1: 0.03, p2: 0.03, n1: 12 } }).map((l) => [l.gl_code, l]));
+    expect(high.get('5035')!.months.every((v) => v === 0)).toBe(true);
   });
 });
 
