@@ -1759,7 +1759,7 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
     lines = fillDeadMonths(lines, { posted: lb.actualCal, liveIdx: acqLive.length ? acqLive : acqHistoryOf(lb.y1Plan, lb.actualCal, lb.t12End, lb.acquisition?.start).history.ownedIdx || [],
       filledIdx: lb.y1Plan.t12Filled, pcodeOf: (gl) => String(lb.coaMap.get(gl)?.pcode || ''), curveOf: (gl) => (lb.coaMap.get(gl) as any)?.curve || null });
   }
-  if (lb.annual && !flatFeeBilling(inputs as any, lb.budget.property_code)) lines = capUtilityRecovery(lines).lines;
+  if (lb.annual) lines = capUtilityRecovery(lines, { flatFee: flatFeeBilling(inputs as any, lb.budget.property_code) }).lines;
   // the fee on the final income (Troy 2026-11-16: "Management fee needs to be adjusted to prior month income"): the plan,
   // the DQ chain and the ties above all move income after the generator built the fee
   if (lb.annual) {

@@ -1580,8 +1580,11 @@ export function fillDeadMonths(lines: BudgetLine[], o: { posted: Record<string, 
    test is on groups: water 5174 ÷ 6622, sewer 5167 ÷ 6614, trash 5169 ÷ 6620, gas 5171 ÷ (6608 + 6604 + 6606). The
    unallocated utilities reim (5170) and street reim (5172) are tested with the whole: every reim ÷ every group's expense.
    A group over 100% has its unlocked reimbursement lines scaled (month pattern kept) so the group recovers 90% of its
-   expense; the lines carry `recoveryCap`. Locked lines are never moved (a group that is all locked is only flagged). A
-   flat-fee billing property (its utility income is a fee per occupied unit, not a recovery) is not tested. Pure. */
+   expense; the lines carry `recoveryCap`. Locked lines are never moved (a group that is all locked is only flagged).
+   A FLAT-FEE property (Troy 2026-11-16: "if property has flat fees, that may not apply. All would be bundled into Util Reim,
+   and we can make money on trash and pest, hence why they are broken out. The rest is compared to aggregated expense for
+   remaining utilities"): one group — every utility reim but trash (5169) and pest (5158), which are left out (they may
+   earn a margin) — against the remaining utilities together (water, sewer, gas, electric common and vacants). Pure. */
 export const RECOVERY_GROUPS: { key: string; reims: string[]; expenses: string[] }[] = [
   { key: 'water', reims: ['5174'], expenses: ['6622'] },
   { key: 'sewer', reims: ['5167'], expenses: ['6614'] },
@@ -1589,12 +1592,15 @@ export const RECOVERY_GROUPS: { key: string; reims: string[]; expenses: string[]
   { key: 'gas', reims: ['5171'], expenses: ['6608', '6604', '6606'] },
   { key: 'all', reims: ['5174', '5167', '5169', '5171', '5170', '5172'], expenses: ['6622', '6614', '6620', '6608', '6604', '6606'] },
 ];
+export const RECOVERY_GROUPS_FLAT_FEE: { key: string; reims: string[]; expenses: string[] }[] = [
+  { key: 'flat fee (all but trash and pest)', reims: ['5170', '5174', '5167', '5171', '5172'], expenses: ['6622', '6614', '6608', '6604', '6606'] },
+];
 export const RECOVERY_CAP = 1, RECOVERY_RESET = 0.9;
-export function capUtilityRecovery(lines: BudgetLine[]): { lines: BudgetLine[]; groups: { key: string; reim: number; expense: number; ratio: number | null; reset: boolean; locked: boolean }[] } {
+export function capUtilityRecovery(lines: BudgetLine[], opts: { flatFee?: boolean } = {}): { lines: BudgetLine[]; groups: { key: string; reim: number; expense: number; ratio: number | null; reset: boolean; locked: boolean }[] } {
   let out = lines;
   const groups: { key: string; reim: number; expense: number; ratio: number | null; reset: boolean; locked: boolean }[] = [];
   const tot = (ls: BudgetLine[], gls: string[]) => ls.filter((l) => gls.includes(l.gl_code)).reduce((a, l) => a + Math.abs(sum(l.months)), 0);
-  for (const g of RECOVERY_GROUPS) {
+  for (const g of opts.flatFee ? RECOVERY_GROUPS_FLAT_FEE : RECOVERY_GROUPS) {
     const R = tot(out, g.reims), E = tot(out, g.expenses);
     const ratio = E > 0 ? R / E : null;
     if (ratio == null || ratio <= RECOVERY_CAP + 1e-9) { groups.push({ key: g.key, reim: r2(R), expense: r2(E), ratio, reset: false, locked: false }); continue; }

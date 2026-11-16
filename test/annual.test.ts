@@ -2536,3 +2536,18 @@ describe('utility recovery by group, never over 100% (Troy 2026-11-16, audit rul
     expect(capUtilityRecovery([ln('5167', 500)]).groups.find((x) => x.key === 'sewer')!.ratio).toBeNull();
   });
 });
+
+describe('flat-fee properties: one recovery group, trash and pest left out (Troy 2026-11-16)', () => {
+  const flat = (v: number) => Array(12).fill(v) as Months;
+  const ln = (gl: string, v: number): BudgetLine => ({ gl_code: gl, months: flat(v), driver: { method: 'flatFee' } as any, override: false, note: '' });
+  it('trash and pest may earn a margin; the bundled util reim is tested against the remaining utilities together', () => {
+    // 5170 bundles water / sewer / gas: 4,300 against 2,000 + 1,500 + 800 = 4,300 (100%); trash reim far above trash expense
+    const ok = capUtilityRecovery([ln('5170', 4300), ln('6622', 2000), ln('6614', 1500), ln('6608', 800), ln('5169', 3000), ln('6620', 1000), ln('5158', 900)], { flatFee: true });
+    expect(ok.groups).toHaveLength(1);
+    expect(ok.groups[0].reset).toBe(false);
+    expect(ok.lines.find((l) => l.gl_code === '5169')!.months[0]).toBe(3000);       // trash untouched at 300%
+    const over = capUtilityRecovery([ln('5170', 5000), ln('6622', 2000), ln('6614', 1500), ln('6608', 800), ln('5169', 3000), ln('6620', 1000)], { flatFee: true });
+    expect(sum(over.lines.find((l) => l.gl_code === '5170')!.months)).toBeCloseTo(0.9 * 4300 * 12, 0);
+    expect(over.lines.find((l) => l.gl_code === '5169')!.months[0]).toBe(3000);
+  });
+});

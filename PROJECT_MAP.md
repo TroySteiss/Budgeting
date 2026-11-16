@@ -394,8 +394,11 @@ stays on the plan (it already leans plan months); typed cells and row tools (WAV
   Chip FILLED n MO. RRND 6606 was Sep / Oct only.
 - Rule 1, `capUtilityRecovery`: groups water 5174 ÷ 6622, sewer 5167 ÷ 6614, trash 5169 ÷ 6620, gas 5171 ÷ (6608 + 6604
   + 6606), and the whole (every reim incl. 5170 / 5172 ÷ every group's expense). A group over 100% has its unlocked reim
-  lines scaled (months kept) to 90% of the expense; locked lines never move (an all-locked group is only flagged). Not on
-  flat-fee billing properties (`flatFeeBilling`). Chip RECOVERY 90%. Both run before the fee rebuild (reims are income).
+  lines scaled (months kept) to 90% of the expense; locked lines never move (an all-locked group is only flagged). A
+  flat-fee billing property (`flatFeeBilling`) has ONE group (`RECOVERY_GROUPS_FLAT_FEE`, Troy 2026-11-16: "All would be
+  bundled into Util Reim, and we can make money on trash and pest, hence why they are broken out. The rest is compared to
+  aggregated expense for remaining utilities"): 5170 + 5174 + 5167 + 5171 + 5172 against 6622 + 6614 + 6608 + 6604 + 6606;
+  trash (5169) and pest (5158) are not tested. Chip RECOVERY 90%. Both run before the fee rebuild (reims are income).
   ENGINE_VERSION 2026-11-16e.
 
 **Budgets page and Summary by region, %s not dollars (Troy 2026-11-16: "Organize the budget page to be sorted by region.
