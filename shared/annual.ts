@@ -40,7 +40,8 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-16d';   // d: a vacancy % typed for a month overrides the formula
+export const ENGINE_VERSION = '2026-11-16e';   // e: no $0 month on a recurring line (acquisitions); utility recovery capped by group
+// earlier: 2026-11-16d: a vacancy % typed for a month overrides the formula
 // earlier: 2026-11-16c: the % of income fee rebuilt on the final prior-month income
 // earlier: 2026-11-16b: a new acquisition's collection rate falls back to the T12 / plan when nothing posted
 // earlier: 2026-11-16a:   // a: a new acquisition's DQ defaults to the UW vacancy + DQ (Y1/Y2 by months) less vacancy
@@ -1504,6 +1505,117 @@ export function vacancyMonthOverride(lines: BudgetLine[], pcodeOf: (gl: string) 
   const out = [...lines];
   if (i5031 >= 0) out[i5031] = next; else out.push(next);
   return out;
+}
+/* NO $0 MONTH ON A LINE THAT POSTS EVERY MONTH (Troy 2026-11-16, audit rule 7: "No account may be budgeted at zero in a
+   month where it has live activity ... where PY months are missing, distribute on a seasonal index from a comparable
+   account (electric-common for vacant electric), never zero"). A new acquisition's trailing-12 before closing is the
+   seller's category dollars split over our GLs by the 2026 budget's mix, so a GL that mix lacked reads $0 there and a
+   "same month" formula budgets $0 (RRND 6606 electric-vacants: Sep / Oct only, $0 Nov–Apr).
+   Only on a budget whose T12 has months filled from before closing (`filledIdx`). A line is RECURRING when it posted in
+   every month since closing (two at least); a recurring line with $0 budget months gets them filled on a seasonal index:
+   its comparable GL (`DEAD_FILL_COMPARABLE`: vacants / corp / commercial on the common line), else its chart curve, else
+   its category's budget pattern, else flat. A history line keeps its own months and adds the missing ones at its own
+   level (the year rises: those months were missing, not zero). A line on the acquisition plan keeps its year total and is
+   re-spread over all 12 months on the index. Lines posted once or twice (repairs, legal) are not recurring and are left
+   alone; so are locked lines, contracts, zero-outs, a line budgeted $0 for the whole year, and every engine-built line
+   (GPR, loss to lease, rental loss, the fee, taxes, payroll). Pure. */
+export const DEAD_FILL_PCODES = new Set(['4', '5', '9', '11', '12', '13', '14']);
+export const DEAD_FILL_COMPARABLE: Record<string, string> = {
+  '6605': '6604', '6606': '6604', '6607': '6604', '6609': '6608', '6610': '6608', '6611': '6608', '6615': '6614',
+  '6617': '6618', '6621': '6620', '6623': '6622', '6630': '6619', '6601': '6602',
+};
+const DEAD_FILL_SKIP = new Set(['contract', 'zero', 'dropped', 'review', 'manual', 'setTotal', 'debtService', 'interest', 'mgmtPct', 'collections', 'badDebtRecovery', 'collectionFee', 'vacancy', 'pctGpr', 'ltl', 'gpr', 'corpRate', 'suggested', 'flatFee', 'recovery']);
+export function fillDeadMonths(lines: BudgetLine[], o: { posted: Record<string, Months> | null | undefined; liveIdx: number[]; filledIdx: number[]; pcodeOf: (gl: string) => string; curveOf: (gl: string) => string | null | undefined }): BudgetLine[] {
+  if (!o.posted || !o.filledIdx.length || o.liveIdx.length < 2) return lines;
+  const byGl = new Map(lines.map((l) => [l.gl_code, l]));
+  const full = (m: number[] | undefined) => !!m && m.length === 12 && m.every((v) => Math.abs(Number(v) || 0) > 0);
+  const indexFor = (gl: string): { w: number[]; from: string } => {
+    const cg = DEAD_FILL_COMPARABLE[gl];
+    if (cg) {
+      const bm = byGl.get(cg)?.months;
+      if (full(bm)) return { w: bm!.map((v) => Math.abs(v)), from: cg };
+      const pm = o.posted![cg];
+      if (full(pm)) return { w: pm.map((v) => Math.abs(v)), from: `${cg} T12` };
+    }
+    const cv = o.curveOf(gl);
+    if (cv && cv !== 'flat' && CURVES[cv]) return { w: [...CURVES[cv]], from: `${cv} curve` };
+    const p = o.pcodeOf(gl);
+    const cat = zero12();
+    for (const l of lines) if (o.pcodeOf(l.gl_code) === p) l.months.forEach((v, i) => { cat[i] += Math.abs(Number(v) || 0); });
+    if (full(cat)) return { w: cat, from: `category ${p}` };
+    return { w: Array(12).fill(1), from: 'flat' };
+  };
+  return lines.map((l) => {
+    const d: any = l.driver || {};
+    if (l.override || DEAD_FILL_SKIP.has(d.method) || !DEAD_FILL_PCODES.has(o.pcodeOf(l.gl_code))) return l;
+    const pm = o.posted![l.gl_code] || zero12();
+    if (!o.liveIdx.every((i) => Math.abs(Number(pm[i]) || 0) > 0)) return l;          // not posted every month since closing
+    const zero = l.months.map((v, i) => (Math.abs(Number(v) || 0) < 0.005 ? i : -1)).filter((i) => i >= 0);
+    if (!zero.length || zero.length === 12) return l;
+    const { w, from } = indexFor(l.gl_code);
+    const mult = Number(l.round) || Number(d.mult) || 0;
+    const rnd = (v: number) => (mult > 0 ? Math.round(v / mult) * mult : Math.round(v * 100) / 100);
+    const sign = Math.sign(sum(l.months)) || 1;
+    let months: Months;
+    if (d.acq) {
+      // on the acquisition plan: the plan's year total, re-spread on the index
+      const tot = sum(l.months), ws = w.reduce((a, v) => a + v, 0);
+      if (!(ws > 0)) return l;
+      let cum = 0, prev = 0;
+      months = w.map((v) => { cum += (tot * v) / ws; const r = rnd(cum); const out = r - prev; prev = r; return out; }) as Months;
+    } else {
+      // a history line: its own months stay; the missing ones at its own level on the index
+      const keep = l.months.map((_, i) => i).filter((i) => !zero.includes(i));
+      const wk = keep.reduce((a, i) => a + w[i], 0);
+      if (!(wk > 0)) return l;
+      const level = keep.reduce((a, i) => a + Math.abs(Number(l.months[i]) || 0), 0) / wk;
+      months = l.months.map((v, i) => (zero.includes(i) ? sign * Math.abs(rnd(level * w[i])) : v)) as Months;
+    }
+    return { ...l, months, driver: { ...d, deadFill: { months: zero, from, keptTotal: !!d.acq } } as any };
+  });
+}
+
+/* UTILITY RECOVERY BY GROUP, NEVER OVER 100% (Troy 2026-11-16, audit rule 1: "test by recovery group, cap at 100%, default
+   90% ... Flag only when a group exceeds 100%; reset to 90%"). Some reimbursements carry more than one expense, so the
+   test is on groups: water 5174 ÷ 6622, sewer 5167 ÷ 6614, trash 5169 ÷ 6620, gas 5171 ÷ (6608 + 6604 + 6606). The
+   unallocated utilities reim (5170) and street reim (5172) are tested with the whole: every reim ÷ every group's expense.
+   A group over 100% has its unlocked reimbursement lines scaled (month pattern kept) so the group recovers 90% of its
+   expense; the lines carry `recoveryCap`. Locked lines are never moved (a group that is all locked is only flagged). A
+   flat-fee billing property (its utility income is a fee per occupied unit, not a recovery) is not tested. Pure. */
+export const RECOVERY_GROUPS: { key: string; reims: string[]; expenses: string[] }[] = [
+  { key: 'water', reims: ['5174'], expenses: ['6622'] },
+  { key: 'sewer', reims: ['5167'], expenses: ['6614'] },
+  { key: 'trash', reims: ['5169'], expenses: ['6620'] },
+  { key: 'gas', reims: ['5171'], expenses: ['6608', '6604', '6606'] },
+  { key: 'all', reims: ['5174', '5167', '5169', '5171', '5170', '5172'], expenses: ['6622', '6614', '6620', '6608', '6604', '6606'] },
+];
+export const RECOVERY_CAP = 1, RECOVERY_RESET = 0.9;
+export function capUtilityRecovery(lines: BudgetLine[]): { lines: BudgetLine[]; groups: { key: string; reim: number; expense: number; ratio: number | null; reset: boolean; locked: boolean }[] } {
+  let out = lines;
+  const groups: { key: string; reim: number; expense: number; ratio: number | null; reset: boolean; locked: boolean }[] = [];
+  const tot = (ls: BudgetLine[], gls: string[]) => ls.filter((l) => gls.includes(l.gl_code)).reduce((a, l) => a + Math.abs(sum(l.months)), 0);
+  for (const g of RECOVERY_GROUPS) {
+    const R = tot(out, g.reims), E = tot(out, g.expenses);
+    const ratio = E > 0 ? R / E : null;
+    if (ratio == null || ratio <= RECOVERY_CAP + 1e-9) { groups.push({ key: g.key, reim: r2(R), expense: r2(E), ratio, reset: false, locked: false }); continue; }
+    const free = out.filter((l) => g.reims.includes(l.gl_code) && !l.override && Math.abs(sum(l.months)) > 0);
+    const lockedR = R - free.reduce((a, l) => a + Math.abs(sum(l.months)), 0);
+    const want = RECOVERY_RESET * E - lockedR;
+    const freeR = R - lockedR;
+    if (!free.length || !(freeR > 0) || want <= 0) { groups.push({ key: g.key, reim: r2(R), expense: r2(E), ratio, reset: false, locked: true }); continue; }
+    const k = want / freeR;
+    const ids = new Set(free.map((l) => l.gl_code));
+    out = out.map((l) => {
+      if (!ids.has(l.gl_code)) return l;
+      const d: any = l.driver || {};
+      const mult = Number(l.round) || Number(d.mult) || 0;
+      let cum = 0, prev = 0;
+      const months = l.months.map((v) => { cum += v * k; const r = mult > 0 ? Math.round(cum / mult) * mult : Math.round(cum * 100) / 100; const x = r - prev; prev = r; return x; }) as Months;
+      return { ...l, months, driver: { ...d, recoveryCap: { group: g.key, ratio: Math.round(ratio * 10000) / 10000, to: RECOVERY_RESET, expense: r2(E), was: r2(Math.abs(sum(l.months))) } } as any };
+    });
+    groups.push({ key: g.key, reim: r2(R), expense: r2(E), ratio, reset: true, locked: false });
+  }
+  return { lines: out, groups };
 }
 export const QSHIFT_SKIP_METHODS = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest', 'mgmtPct', 'corpRate', 'suggested']);
 export function qShiftLeverOk(gl: string, acc: CoaAccount | undefined, method: string | undefined): boolean {

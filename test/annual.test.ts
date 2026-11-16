@@ -2475,3 +2475,64 @@ describe('a vacancy % typed for a month overrides the formula (Troy 2026-11-16: 
     expect(vacancyMonthOverride(same, pc, Array(12).fill(null))).toBe(same);
   });
 });
+
+import { fillDeadMonths, capUtilityRecovery } from '../shared/annual.js';
+describe('no $0 month on a line that posts every month (Troy 2026-11-16, audit rule 7)', () => {
+  const pcode: Record<string, string> = { '6604': '12', '6606': '12', '6802': '13', '6112': '7', '5110': '5' };
+  const at = (vals: Record<number, number>) => Array.from({ length: 12 }, (_, i) => vals[i] || 0) as Months;
+  const ln = (gl: string, months: Months, driver: any = { method: 'baseline', shape: 'actual' }, extra: Partial<BudgetLine> = {}): BudgetLine => ({ gl_code: gl, months, driver, override: false, note: '', ...extra });
+  // RRND-like: closed in September; Sep / Oct posted; the T12's Nov–Aug are filled from the seller's categories
+  const posted = { '6604': at({ 0: 2000, 1: 1900, 2: 1500, 3: 1200, 4: 900, 5: 800, 6: 800, 7: 800, 8: 900, 9: 1100, 10: 1500, 11: 1900 }), '6606': at({ 8: 700, 9: 960 }), '6802': at({ 8: 4000 }) };
+  const opts = { posted, liveIdx: [8, 9], filledIdx: [0, 1, 2, 3, 4, 5, 6, 7, 10, 11], pcodeOf: (gl: string) => pcode[gl] || '', curveOf: () => null };
+  const elec = () => ln('6604', posted['6604'].map((v) => v * 1.05) as Months);
+  it('electric-vacants: the missing months filled on electric-common\'s pattern at its own level', () => {
+    const out = new Map(fillDeadMonths([elec(), ln('6606', at({ 8: 735, 9: 1008 }))], opts).map((l) => [l.gl_code, l]));
+    const v = out.get('6606')!.months;
+    expect(v.every((x) => x > 0)).toBe(true);                                          // never $0
+    expect(v[8]).toBe(735); expect(v[9]).toBe(1008);                                   // its own months stay
+    const level = (735 + 1008) / (900 * 1.05 + 1100 * 1.05);
+    expect(v[0]).toBeCloseTo(level * 2000 * 1.05, 0);                                 // January on electric-common's January
+    expect(v[0]).toBeGreaterThan(v[6]);                                               // winter vacants draw the most
+    expect((out.get('6606')!.driver as any).deadFill).toMatchObject({ from: '6604', keptTotal: false });
+  });
+  it('a plan line keeps its year total; one-off, locked and whole-year-zero lines and a mature budget are left alone', () => {
+    const plan = ln('6606', at({ 8: 1000, 9: 1000 }), { method: 'manual', acq: {} });
+    plan.driver = { method: 'baseline', acq: {} } as any;
+    const p = fillDeadMonths([elec(), plan], opts).find((l) => l.gl_code === '6606')!;
+    expect(sum(p.months)).toBeCloseTo(2000, 0);
+    expect(p.months.every((x) => x > 0)).toBe(true);
+    const oneOff = ln('6802', at({ 8: 4200 }));                                        // concrete: posted once, not recurring
+    expect(fillDeadMonths([oneOff], opts)[0]).toBe(oneOff);
+    const locked = ln('6606', at({ 8: 735 }), undefined, { override: true });
+    expect(fillDeadMonths([locked], opts)[0]).toBe(locked);
+    const zero = ln('6606', zero12());
+    expect(fillDeadMonths([zero], opts)[0]).toBe(zero);
+    const mature = [elec(), ln('6606', at({ 8: 735, 9: 1008 }))];
+    expect(fillDeadMonths(mature, { ...opts, filledIdx: [] })).toBe(mature);
+  });
+});
+
+describe('utility recovery by group, never over 100% (Troy 2026-11-16, audit rule 1)', () => {
+  const flat = (v: number) => Array(12).fill(v) as Months;
+  const ln = (gl: string, v: number, extra: Partial<BudgetLine> = {}): BudgetLine => ({ gl_code: gl, months: flat(v), driver: { method: 'baseline', acq: {} } as any, override: false, note: '', ...extra });
+  // RRND-like: water 90%, trash 81.8%, gas group 52.9%, sewer 105.8%
+  const lines = () => [ln('6622', 2000), ln('5174', 1800), ln('6620', 1100), ln('5169', 900), ln('6608', 1000), ln('6604', 600), ln('6606', 100), ln('5171', 900), ln('6614', 1925), ln('5167', 2036.65)];
+  it('a group over 100% is reset to 90% of its expense; the rest are untouched', () => {
+    const r = capUtilityRecovery(lines());
+    const g = Object.fromEntries(r.groups.map((x) => [x.key, x]));
+    expect(g.sewer.reset).toBe(true);
+    expect(g.sewer.ratio).toBeCloseTo(1.058, 3);
+    expect(g.water.reset).toBe(false); expect(g.trash.reset).toBe(false); expect(g.gas.reset).toBe(false);
+    const sewer = r.lines.find((l) => l.gl_code === '5167')!;
+    expect(sum(sewer.months)).toBeCloseTo(0.9 * 1925 * 12, 0);
+    expect((sewer.driver as any).recoveryCap).toMatchObject({ group: 'sewer', to: 0.9 });
+    expect(r.lines.find((l) => l.gl_code === '5174')!.months[0]).toBe(1800);
+  });
+  it('a locked reimbursement is never moved; no expense = no test', () => {
+    const ls = lines().map((l) => (l.gl_code === '5167' ? { ...l, override: true } : l));
+    const r = capUtilityRecovery(ls);
+    expect(r.groups.find((x) => x.key === 'sewer')!.locked).toBe(true);
+    expect(r.lines.find((l) => l.gl_code === '5167')!.months[0]).toBe(2036.65);
+    expect(capUtilityRecovery([ln('5167', 500)]).groups.find((x) => x.key === 'sewer')!.ratio).toBeNull();
+  });
+});

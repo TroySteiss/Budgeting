@@ -7,7 +7,7 @@ import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayro
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
   acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, acqDelinquency, applyT12Adjust, FIXED_ANNUAL_GLS, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
-  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, scalePlanLines, taxFloor, uwDqBundle, fillCalMonths, mgmtFeeOnIncome, mgmtFeeRates, vacancyMonthOverride, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, scalePlanLines, taxFloor, uwDqBundle, fillCalMonths, mgmtFeeOnIncome, mgmtFeeRates, vacancyMonthOverride, fillDeadMonths, capUtilityRecovery, flatFeeBilling, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
 import { planApply, refileReviewLine, type ApplyRow, type ApplyPlan } from '../shared/reviewApply.js';
@@ -1754,6 +1754,12 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   lines = vacOv(lines);   // the fit above leans months; a typed month stays typed
   // the acquisition plan is laid over every month above: re-tie the delinquency chain to the 5035 it left
   if (acq) lines = dqChain(lines);
+  // no $0 month on a recurring line of a new acquisition (audit rule 7), then utility recovery by group (audit rule 1)
+  if (lb.annual && lb.y1Plan?.t12Filled?.length) {
+    lines = fillDeadMonths(lines, { posted: lb.actualCal, liveIdx: acqLive.length ? acqLive : acqHistoryOf(lb.y1Plan, lb.actualCal, lb.t12End, lb.acquisition?.start).history.ownedIdx || [],
+      filledIdx: lb.y1Plan.t12Filled, pcodeOf: (gl) => String(lb.coaMap.get(gl)?.pcode || ''), curveOf: (gl) => (lb.coaMap.get(gl) as any)?.curve || null });
+  }
+  if (lb.annual && !flatFeeBilling(inputs as any, lb.budget.property_code)) lines = capUtilityRecovery(lines).lines;
   // the fee on the final income (Troy 2026-11-16: "Management fee needs to be adjusted to prior month income"): the plan,
   // the DQ chain and the ties above all move income after the generator built the fee
   if (lb.annual) {
