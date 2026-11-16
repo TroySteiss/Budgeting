@@ -2399,3 +2399,79 @@ describe('a category tied to UW on the acquisition plan (Troy 2026-11-13: "or ti
     expect(out.get('6601')!.months[0]).toBe(100);
   });
 });
+
+import { mgmtFeeOnIncome } from '../shared/annual.js';
+describe('the fee on the final prior-month income (Troy 2026-11-16: "Management fee needs to be adjusted to prior month income")', () => {
+  const coaF = [{ code: '4994', pcode: '1' }, { code: '5035', pcode: '3' }, { code: '6112', pcode: '7' }]
+    .map((a) => ({ ...a, name: a.code, kind: 'detail', curve: 'flat', active: true })) as unknown as CoaAccount[];
+  void coaF;
+  const ln = (gl: string, months: Months, extra: Partial<BudgetLine> = {}): BudgetLine => ({ gl_code: gl, months, driver: { method: 'manual' } as any, override: false, note: '', ...extra });
+  const inc = Array.from({ length: 12 }, (_, i) => 100000 + i * 1000) as Months;
+  const fee = (extra: Partial<BudgetLine> = {}) => ln('6112', Array(12).fill(1) as Months, { driver: { method: 'mgmtPct', pct: 0.04, priorMonth: true } as any, ...extra });
+  it('each month = its rate x the month before\'s income; the first month on the CY budget\'s December', () => {
+    const out = mgmtFeeOnIncome([ln('4994', inc), fee()], Array(12).fill(0.04), 98000).find((l) => l.gl_code === '6112')!;
+    expect(out.months[0]).toBe(3920);                                                 // 4% of December's 98,000
+    expect(out.months[1]).toBe(4000);                                                 // 4% of January's 100,000
+    expect(out.months[11]).toBe(Math.round(0.04 * 110000));
+  });
+  it('a first-year rate per month, a standing MROUND, no December = its own January; locked or non-% fees untouched', () => {
+    const rates = [0.03, 0.03, 0.03, ...Array(9).fill(0.04)];
+    const out = mgmtFeeOnIncome([ln('4994', inc), fee({ round: 50 })], rates, null).find((l) => l.gl_code === '6112')!;
+    expect(out.months[0]).toBe(3000);                                                 // 3% of its own 100,000
+    expect(out.months[3]).toBe(Math.round(0.04 * 102000 / 50) * 50);
+    const locked = [ln('4994', inc), fee({ override: true })];
+    expect(mgmtFeeOnIncome(locked, rates, null)).toBe(locked);
+    const flat = [ln('4994', inc), ln('6112', Array(12).fill(5) as Months)];
+    expect(mgmtFeeOnIncome(flat, rates, null)).toBe(flat);
+  });
+});
+
+describe('a new acquisition\'s collection rate with nothing collected since closing (Troy 2026-11-16: "NRND now just has 1.7% DQ w no budgeted collections")', () => {
+  const coaD = [{ code: '4994', pcode: '1' }, { code: '5031', pcode: '3' }, { code: '5035', pcode: '3' }, { code: '5036', pcode: '3' }]
+    .map((a) => ({ ...a, name: a.code, kind: 'detail', curve: 'flat', active: true })) as unknown as CoaAccount[];
+  const at = (vals: Record<number, number>) => Array.from({ length: 12 }, (_, i) => vals[i] || 0) as Months;
+  const ln = (gl: string, months: Months, driver: any = { method: 'manual' }): BudgetLine => ({ gl_code: gl, months, driver, override: false, note: '' });
+  const lines = () => [ln('4994', Array(12).fill(100000) as Months), ln('5031', Array(12).fill(-3000) as Months), ln('5035', zero12(), { method: 'pctGpr', acq: {} }), ln('5036', zero12(), { method: 'collections', acq: {} })];
+  const ub = { uwBundle: { pct: 0.047, p1: 0.047, p2: 0.047, n1: 12 } };
+  it('posted months with no DQ and no collections: the T12 rate (seller months included), then the plan\'s', () => {
+    // seller months Jan-Aug carry DQ and collections; Sep / Oct posted nothing in 5035 / 5036
+    const actual = { '4994': at({ 8: 100000, 9: 100000 }), '5035': at({ 0: -2000, 1: -2000, 2: -2000 }), '5036': at({ 1: 1500, 2: 1500, 3: 1500 }) };
+    const out = new Map(acqDelinquency(lines(), coaD, actual, [8, 9], 0, ub).map((l) => [l.gl_code, l]));
+    const d = out.get('5036')!.driver as any;
+    expect(d.basis).toBe('t12');
+    expect(d.pct).toBe(0.75);
+    expect(out.get('5036')!.months.slice(1).every((v) => v > 0)).toBe(true);        // collections every month
+    expect(out.get('5036')!.months[0]).toBeCloseTo(0.75 * Math.abs(out.get('5035')!.months[0]), 0);   // January on the budget's own DQ
+    const none = { '4994': at({ 8: 100000, 9: 100000 }) };
+    const plan = new Map(acqDelinquency(lines(), coaD, none, [8, 9], 0, { ...ub, planCollect: 0.6 }).map((l) => [l.gl_code, l]));
+    expect((plan.get('5036')!.driver as any)).toMatchObject({ basis: 'plan', pct: 0.6 });
+    const nothing = new Map(acqDelinquency(lines(), coaD, none, [8, 9], 0, ub).map((l) => [l.gl_code, l]));
+    expect((nothing.get('5036')!.driver as any).basis).toBe('none');
+  });
+});
+
+import { vacancyMonthOverride } from '../shared/annual.js';
+describe('a vacancy % typed for a month overrides the formula (Troy 2026-11-16: "I would like an option to input a % for any given month")', () => {
+  const pc = (gl: string) => (gl === '4994' || gl === '4996' ? '1' : gl === '5031' ? '3' : '');
+  const ln = (gl: string, months: Months, extra: Partial<BudgetLine> = {}): BudgetLine => ({ gl_code: gl, months, driver: { method: 'vacancy', avg: 0.05 } as any, override: false, note: '', ...extra });
+  const base = () => [ln('4994', Array(12).fill(95000) as Months, { driver: { method: 'manual' } as any }), ln('4996', Array(12).fill(5000) as Months, { driver: { method: 'manual' } as any }), ln('5031', Array(12).fill(-5000) as Months)];
+  it('only the typed months move, to % x GPR (HAP included); the rest stay as built', () => {
+    const pcts: (number | null)[] = Array(12).fill(null); pcts[2] = 0.03; pcts[7] = 0.065;
+    const v = vacancyMonthOverride(base(), pc, pcts).find((l) => l.gl_code === '5031')!;
+    expect(v.months[2]).toBe(-3000);
+    expect(v.months[7]).toBe(-6500);
+    expect(v.months[0]).toBe(-5000);
+    expect((v.driver as any).vacMonths).toEqual({ 2: 0.03, 7: 0.065 });
+    expect((v.driver as any).method).toBe('vacancy');                                 // the formula stays the line's formula
+  });
+  it('wins on a hand-typed line too (that month leaves the hard list); nothing typed = the lines as they were', () => {
+    const ls = base(); ls[2] = { ...ls[2], override: true, driver: { method: 'vacancy', revised: true, hard: [2, 3] } as any };
+    const pcts: (number | null)[] = Array(12).fill(null); pcts[2] = 0.04;
+    const v = vacancyMonthOverride(ls, pc, pcts).find((l) => l.gl_code === '5031')!;
+    expect(v.months[2]).toBe(-4000);
+    expect((v.driver as any).hard).toEqual([3]);
+    const same = base();
+    expect(vacancyMonthOverride(same, pc, null)).toBe(same);
+    expect(vacancyMonthOverride(same, pc, Array(12).fill(null))).toBe(same);
+  });
+});

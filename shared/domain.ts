@@ -158,6 +158,9 @@ export interface BudgetInputs {
   /** a budget run off the acquisition plan: per category (pcode), the factor its plan lines are scaled by so the category
       ties to UW ("tie" on the compare card) — Troy 2026-11-13 */
   acqTie?: Record<string, number>;
+  /** vacancy % of GPR typed for single months (budget month order, null = the formula) — overrides whatever built the
+      month (Troy 2026-11-16) */
+  vacancyMonthPct?: (number | null)[];
   /** annual: share of the previous month's delinquency (5035) collected as prior-period collections (5036); unset = the trailing-12 rate, capped at 100% */
   collectPct?: number;
   /** annual budgets: the per-GL formula rules this budget runs on — a COPY of the saved formula

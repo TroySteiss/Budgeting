@@ -7,7 +7,7 @@ import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayro
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
   acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, acqDelinquency, applyT12Adjust, FIXED_ANNUAL_GLS, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
-  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, scalePlanLines, taxFloor, uwDqBundle, fillCalMonths, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, scalePlanLines, taxFloor, uwDqBundle, fillCalMonths, mgmtFeeOnIncome, mgmtFeeRates, vacancyMonthOverride, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
 import { planApply, refileReviewLine, type ApplyRow, type ApplyPlan } from '../shared/reviewApply.js';
@@ -1720,9 +1720,12 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   const acqDq = (ls: BudgetLine[]): BudgetLine[] => (acq ? acqDelinquency(ls, lb.coa, lb.actualCal, acqLive, planRecovery, {
     dqPct: (inputs.pctGpr as any)?.['5035'] ?? null, collectPct: inputs.collectPct ?? null, recoveryPct: (inputs as any).recoveryPct ?? null, feePct: (inputs as any).collectionFeePct ?? null,
     uwBundle: acq && y1 ? uwDqBundle(y1.uw as any, acq.y1Idx.length) : null,
+    planCollect: y1 ? (() => { const s = (gl: string) => y1.lines.filter((l) => l.gl_code === gl).reduce((a, l) => a + sum(l.months), 0); const dq = Math.abs(s('5035')), c = s('5036'); return dq > 0 && c > 0 ? c / dq : null; })() : null,
   }) : ls);
+  // a vacancy % typed for a month wins over every formula (Troy 2026-11-16)
+  const vacOv = (ls: BudgetLine[]): BudgetLine[] => vacancyMonthOverride(ls, (gl) => String(lb.coaMap.get(gl)?.pcode || ''), (inputs as any).vacancyMonthPct);
   if (lb.annual) lines = clearY1Plan(lines);
-  lines = acqDq(overlay(lines));
+  lines = acqDq(vacOv(overlay(lines)));
   lines = applyDependentPasses(lb, lines, inputs);
   const ref = refOf(lb);
   if (ref) {
@@ -1732,7 +1735,7 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   }
   // standing per-line MROUND re-applies as the final step (not a lock)
   lines = applyRounding(lines);
-  lines = acqDq(overlay(lines));
+  lines = acqDq(vacOv(overlay(lines)));
   /* FIT TO T12 ON THE PLAN (Troy 2026-11-12: "Need to still be able to fit to curve, smooth, etc"): a line the plan
      laid over and given a fit % (FIT chip / row menu / section box) leans its months toward its own trailing-12 months —
      the seller's actuals before closing, posted after — with the plan's year total kept. */
@@ -1748,8 +1751,22 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
       return out ? { ...l, months: out, driver: { ...d, fitT12: Math.round(f * 1000) / 1000 } as any } : l;
     });
   }
+  lines = vacOv(lines);   // the fit above leans months; a typed month stays typed
   // the acquisition plan is laid over every month above: re-tie the delinquency chain to the 5035 it left
   if (acq) lines = dqChain(lines);
+  // the fee on the final income (Troy 2026-11-16: "Management fee needs to be adjusted to prior month income"): the plan,
+  // the DQ chain and the ties above all move income after the generator built the fee
+  if (lb.annual) {
+    const startMonth = Number(inputs.startMonth) || 1;
+    const feePct = inputs.mgmtPct || (lb.template as any)?.mgmtFee?.actualPct || 0;
+    if (feePct) {
+      const fy = { pct: inputs.mgmtFirstYear?.pct !== undefined ? inputs.mgmtFirstYear.pct : lb.acquisition?.firstYearPct, start: inputs.mgmtFirstYear?.start || lb.acquisition?.start };
+      const rates = mgmtFeeRates(Number(inputs.year), startMonth, feePct, fy).rates;
+      const budInc = lb.budgetCal && Object.keys(lb.budgetCal).length ? rollup(new Map(Object.entries(lb.budgetCal) as [string, Months][])).get('5500') : null;
+      const prevCal = (startMonth + 10) % 12;
+      lines = mgmtFeeOnIncome(lines, rates, budInc && budInc[prevCal] ? budInc[prevCal] : null);
+    }
+  }
   // taxes never go down: at least the trailing-12 x 1.03 on every tax line (Troy 2026-11-13), the last step
   if (lb.annual) lines = taxFloor(lines, lb.actualCal);
   // HAP stays on its own lines (4995 / 4996): Troy 2026-11-12 asked for the separate HAP line back after the fold

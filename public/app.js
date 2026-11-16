@@ -136,6 +136,7 @@ function drvMetaBase(l) {
       const d = l.driver;
       if (d.shaped === 'expirations') return { cls: 'drv-rr', tag: 'VAC·EXP', label: `Vacancy averages ${(d.avg * 100).toFixed(2)}% of GPR for the year. Month by month it carries over: ${d.startPct != null ? `it starts from the last actual month (${(d.startPct * 100).toFixed(1)}%), ` : ''}move-outs land the month after a lease expires and empty units fill gradually (slowest in winter) — ${(Math.min(...d.pcts) * 100).toFixed(1)}% to ${(Math.max(...d.pcts) * 100).toFixed(1)}%${d.weight != null && d.weight < 1 ? ` (${Math.round(d.weight * 100)}% weight on expirations)` : ''}` };
       if (d.shaped === 'typed') return { cls: 'drv-rr', tag: '%GPR', label: `Vacancy % of GPR typed month by month (averages ${(d.avg * 100).toFixed(2)}%)` };
+      if (d.vacMonths && Object.keys(d.vacMonths).length) return { cls: 'drv-rr', tag: `VAC·${Object.keys(d.vacMonths).length} TYPED`, label: `Vacancy typed for ${Object.entries(d.vacMonths).map(([i, p]) => `${MONTHS[Number(i)]} ${(p * 100).toFixed(2)}%`).join(', ')} of GPR (the row under this line); the other months on the formula${d.avg != null ? ` (averages ${(d.avg * 100).toFixed(2)}%)` : ''}` };
       return { cls: 'drv-rr', tag: '%GPR', label: d.avg != null ? `Vacancy ${(d.avg * 100).toFixed(2)}% of GPR every month (set flat, or the lease expirations on file cover fewer than nine months)` : '% of GPR' };
     }
     case 'contract': {
@@ -194,7 +195,7 @@ function drvMetaBase(l) {
     case 'badDebtRecovery': return { cls: 'drv-base', tag: 'REC·60D', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% of what is still uncollected 60 days on is recovered: each month = rate × (current delinquency two months back − prior period collections one month back). Rate = the trailing-12's recovery $${money(l.driver.t12 || 0)} ÷ its uncollected $${money(l.driver.t12Uncollected || 0)} (delinquency − collections). Follows 5035 / 5036 whatever formula they are on.` };
     case 'perOccupiedUnit': return { cls: 'drv-base', tag: `$${l.driver.rate}/OCC`, label: `$${l.driver.rate} per occupied unit per month: $${l.driver.rate} × ${l.driver.units} units × each month's occupancy (1 − the budgeted vacancy %)${l.driver.share ? ' × the share of leases on the flat-fee package' : ''}. Its own line, never folded into utility reimbursement.` };
     case 'collectionFee': return { cls: 'drv-base', tag: `${Math.round((l.driver.pct || 0) * 100)}% REC`, label: `Collection fees = ${Math.round((l.driver.pct || 0) * 100)}% of bad debt recovery (5110), month by month.` };
-    case 'collections': return { cls: 'drv-base', tag: '%PRIOR DQ', label: `Follows current delinquency (5035) whatever formula it is on. ${((l.driver.pct || 0) * 100).toFixed(1)}% of the PREVIOUS month's delinquency is collected (January collects against the last actual month's $${money(l.driver.startDq || 0)}). Higher delinquency one month means higher collections the next; it can never exceed that delinquency${l.driver.capped ? ` — the trailing-12 collected ${((l.driver.t12Rate || 0) * 100).toFixed(0)}% of its delinquency (older balances), capped here at 100%` : ''}` };
+    case 'collections': return { cls: 'drv-base', tag: '%PRIOR DQ', label: `Follows current delinquency (5035) whatever formula it is on. ${((l.driver.pct || 0) * 100).toFixed(1)}% of the PREVIOUS month's delinquency is collected${l.driver.basis === 't12' ? ` (the trailing-12's collections ÷ its delinquency${l.driver.postedRate != null ? '; nothing was collected in the months posted since closing' : ''})` : l.driver.basis === 'plan' ? ' (the acquisition plan\'s own collections ÷ delinquency; nothing posted or in the T12 to measure)' : l.driver.basis === 'posted' ? ' (what the months posted since closing collected against the month before)' : l.driver.basis === 'typed' ? ' (typed on this budget)' : l.driver.basis === 'none' ? ' — NO RATE: nothing collected in the posted months, the T12 or the plan; type a % in the box' : ''} (January collects against the last actual month's $${money(l.driver.startDq || 0)}). Higher delinquency one month means higher collections the next; it can never exceed that delinquency${l.driver.capped ? ` — the trailing-12 collected ${((l.driver.t12Rate || 0) * 100).toFixed(0)}% of its delinquency (older balances), capped here at 100%` : ''}` };
     case 'recapture': return { cls: 'drv-base', tag: 'RECAP', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% recapture of the other concession lines (T12 ratio)` };
     case 'perTurn': return { cls: 'drv-base', tag: 'T12·TURNS', label: `Last year's dollars placed on the months with projected move-ins (${money(l.driver.turns)} of them, $${money(l.driver.amount)} each). The YEAR total stays at the trailing-12 unless a $ per move-in is typed — it does not move with the renewal %` };
     case 'suggested': return { cls: 'drv-corp', tag: 'CORP', label: `Corporate budget suggestion${l.driver.note ? ` — ${l.driver.note}` : ''}` };
@@ -1601,6 +1602,20 @@ function renderEditor(el) {
       S.bv = await PUT(`/budgets/${b.id}/lines/${box.dataset.gl}`, { note: box.value });
     });
   });
+  el.querySelectorAll('tr.vacpct input.vacm').forEach((box) => {
+    box.addEventListener('focus', () => box.select());
+    box.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); box.blur(); } });
+    box.addEventListener('change', async () => {
+      const i = Number(box.dataset.vm);
+      const cur = [...(((S.bv.budget.inputs || {}).vacancyMonthPct) || Array(12).fill(null))];
+      while (cur.length < 12) cur.push(null);
+      const raw = String(box.value).replace(/[%\s]/g, '');
+      if (raw === '') cur[i] = null;
+      else { const v = parseFloat(raw); if (!Number.isFinite(v) || v < 0 || v > 100) { alert('Type a vacancy % between 0 and 100, or clear the box'); render(); return; } cur[i] = Math.round(v * 1000) / 100000; }
+      pushUndo();
+      try { S.bv = await PUT(`/budgets/${b.id}`, { inputs: { vacancyMonthPct: cur.some((v) => v != null) ? cur : null } }); render(); } catch (err) { alert(err.message); }
+    });
+  });
   /* Year-1 total editing: type a new annual total and the months rescale
      proportionally — the line's distribution flows backwards from the total. */
   el.querySelectorAll('td.ann input').forEach((box) => {
@@ -2128,6 +2143,22 @@ function gridHtml(bv, totals) {
         ${monthIdx.map((i) => `<td class="${h.months[i] < 0 ? 'neg' : ''}">${h.months[i] ? money(h.months[i]) : ''}</td>`).join('')}
         ${cols.annual ? `<td class="${hs < 0 ? 'neg' : ''}">${money(hs)}</td>` : ''}${refBlank}
         ${cols.punit ? `<td>${money(hs / units)}</td>` : ''}${cols.note ? '<td></td>' : ''}</tr>`);
+    }
+    // VACANCY % OF GPR, a box per month (Troy 2026-11-16: "I would like an option to input a % for any given month, and
+    // have it override the formula"): shows each month's vacancy ÷ GPR; a typed % (bold) overrides the formula for that
+    // month only (inputs.vacancyMonthPct); clearing the box puts the month back on the formula
+    if (a.code === '5031' && bv.annual && linesByGl.get('5031')) {
+      const vm = (linesByGl.get('5031') || {}).months || [];
+      const gm = Array(12).fill(0);
+      for (const l of bv.lines) { const ac = (S.state.coa || []).find((x) => x.code === l.gl_code); if (ac && ac.pcode === '1') l.months.forEach((v, i) => { gm[i] += Number(v) || 0; }); }
+      const typedV = (bv.budget.inputs || {}).vacancyMonthPct || [];
+      const pv = (i) => (gm[i] ? Math.abs(vm[i] || 0) / gm[i] : 0);
+      const yr = gm.reduce((x, v) => x + v, 0), vy = vm.reduce((x, v) => x + Math.abs(v || 0), 0);
+      rows.push(`<tr class="vacpct" title="Vacancy as a % of GPR (4994 + HAP) each month. Type a % in a month to set that month's vacancy to it — it overrides the formula, the T12 fit and the acquisition plan for that month only (bold). Clear the box to put the month back on the formula.">
+        <td class="code"></td><td class="name">VACANCY % OF GPR <span class="muted">(type to set a month)</span></td>${cols.fx ? '<td></td>' : ''}
+        ${monthIdx.map((i) => `<td><input class="vacm${typedV[i] != null ? ' typed' : ''}" data-vm="${i}" value="${(pv(i) * 100).toFixed(2)}" title="${typedV[i] != null ? `Typed: ${(typedV[i] * 100).toFixed(2)}% of GPR — clear to go back to the formula` : 'From the formula — type a % to set this month'}"></td>`).join('')}
+        ${cols.annual ? `<td>${yr ? ((vy / yr) * 100).toFixed(2) + '%' : ''}</td>` : ''}${cols.overall ? '<td></td>' : ''}${cols.refpct ? '<td></td>' : ''}${cols.ref1 ? '<td></td>' : ''}${cols.ref3 ? '<td></td>' : ''}${cols.ref2 ? '<td></td>' : ''}
+        ${cols.punit ? '<td></td>' : ''}${cols.note ? '<td></td>' : ''}</tr>`);
     }
     // NET DELINQUENCY (Troy 2026-11-12: "Need subtotal line for combined Current DQ and Prior Period Collections"):
     // 5035 + 5036, right under prior period collections — what is still uncollected each month

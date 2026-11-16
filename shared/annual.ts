@@ -40,7 +40,10 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-16a';   // a: a new acquisition's DQ defaults to the UW vacancy + DQ (Y1/Y2 by months) less vacancy
+export const ENGINE_VERSION = '2026-11-16d';   // d: a vacancy % typed for a month overrides the formula
+// earlier: 2026-11-16c: the % of income fee rebuilt on the final prior-month income
+// earlier: 2026-11-16b: a new acquisition's collection rate falls back to the T12 / plan when nothing posted
+// earlier: 2026-11-16a:   // a: a new acquisition's DQ defaults to the UW vacancy + DQ (Y1/Y2 by months) less vacancy
 // earlier: 2026-11-13g: taxes at least the T12 x 1.03, never down
 // earlier: f: a new acquisition's typed DQ / collection / recovery / fee % win
 // earlier: e: pest fee per occupied unit (spec §5.2)
@@ -1459,6 +1462,49 @@ export function refollowMgmtFee(fee: Months, oldIncome: Months, newIncome: Month
   }) as Months;
 }
 
+/* THE FEE ON THE FINAL INCOME (Troy 2026-11-16: "Management fee needs to be adjusted to prior month income"): the fee is
+   built inside the generator on the income as it stood there; on a budget run off the acquisition plan the plan, the
+   delinquency chain and any tie change income afterwards, so the fee billed income that was no longer in the budget.
+   As the last step of a build, a % of income fee (not locked) is rebuilt on the final lines: each month = that month's
+   rate × the PRIOR month's total income (5500); the first month on `before` (the CY budget's month before the year),
+   else its own income. Whole dollars, as the generator. Pure. */
+export function mgmtFeeOnIncome(lines: BudgetLine[], rates: number[], before: number | null): BudgetLine[] {
+  const i6112 = lines.findIndex((l) => l.gl_code === '6112');
+  if (i6112 < 0) return lines;
+  const fee = lines[i6112], d = fee.driver as any;
+  if (fee.override || d?.method !== 'mgmtPct' || !d.priorMonth) return lines;
+  const inc = rollup(new Map(lines.map((l) => [l.gl_code, l.months]))).get('5500') || zero12();
+  const basis = inc.map((_, i) => (i === 0 ? (before ? before : inc[0]) : inc[i - 1]));
+  const mr = Number(fee.round) || 0;   // a standing MROUND on the fee still applies
+  const months = basis.map((v, i) => { const x = Math.round(v * (Number(rates[i]) || 0)); return (mr > 0 ? Math.round(x / mr) * mr : x) || 0; }) as Months;
+  if (months.every((v, i) => v === fee.months[i])) return lines;
+  const out = [...lines];
+  out[i6112] = { ...fee, months };
+  return out;
+}
+/* VACANCY % TYPED FOR A MONTH (Troy 2026-11-16: "Vacancy is just messed up. The 'historicals' make it so that I basically
+   need to hard code. I would like an option to input a % for any given month, and have it override the formula."):
+   `inputs.vacancyMonthPct[i]` (budget month order; null = the formula) sets that month's vacancy (5031) to the % × that
+   month's GPR (the category-1 lines: 4994 + HAP), whatever built the line — the expiration curve, a T12 fit, the
+   acquisition plan, a hand-typed line. Other months are left as built. The driver records the typed months (`vacMonths`).
+   Pure. */
+export function vacancyMonthOverride(lines: BudgetLine[], pcodeOf: (gl: string) => string, pcts: (number | null | undefined)[] | null | undefined): BudgetLine[] {
+  const typed = (pcts || []).map((v, i) => (v != null && Number.isFinite(Number(v)) ? i : -1)).filter((i) => i >= 0 && i < 12);
+  if (!typed.length) return lines;
+  const gpr = zero12();
+  for (const l of lines) if (pcodeOf(l.gl_code) === '1') l.months.forEach((v, i) => { gpr[i] += Number(v) || 0; });
+  const i5031 = lines.findIndex((l) => l.gl_code === '5031');
+  const base: BudgetLine = i5031 >= 0 ? lines[i5031] : { gl_code: '5031', months: zero12(), driver: { method: 'vacancy' } as any, override: false, note: '' };
+  const months = [...base.months] as Months;
+  const vm: Record<number, number> = {};
+  for (const i of typed) { const p = Math.abs(Number(pcts![i])); months[i] = r2(-p * gpr[i]) || 0; vm[i] = p; }
+  const d: any = base.driver || {};
+  const hard = Array.isArray(d.hard) ? d.hard.filter((i: number) => !typed.includes(i)) : d.hard;
+  const next: BudgetLine = { ...base, months, driver: { ...d, vacMonths: vm, ...(hard !== undefined ? { hard } : {}) } as any };
+  const out = [...lines];
+  if (i5031 >= 0) out[i5031] = next; else out.push(next);
+  return out;
+}
 export const QSHIFT_SKIP_METHODS = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest', 'mgmtPct', 'corpRate', 'suggested']);
 export function qShiftLeverOk(gl: string, acc: CoaAccount | undefined, method: string | undefined): boolean {
   const n = parseInt(gl, 10);
@@ -2331,7 +2377,9 @@ export function acqDelinquency(lines: BudgetLine[], coaList: CoaAccount[], actua
       all"): DQ as a share of net rental (signed, as inputs.pctGpr['5035']), collections, recovery, the collection fee */
   typed: { dqPct?: number | null; collectPct?: number | null; recoveryPct?: number | null; feePct?: number | null;
     /** the UW's vacancy + DQ share of GPR, blended Y1 / Y2 by months (uwDqBundle): DQ defaults to it less the budget's vacancy */
-    uwBundle?: { pct: number; p1: number; p2: number; n1: number } | null } = {}): BudgetLine[] {
+    uwBundle?: { pct: number; p1: number; p2: number; n1: number } | null;
+    /** the acquisition plan's own collections ÷ its delinquency (the last fallback for the collection rate) */
+    planCollect?: number | null } = {}): BudgetLine[] {
   const hasTyped = typed.dqPct != null || typed.collectPct != null || typed.recoveryPct != null || !!typed.uwBundle;
   if (!hasTyped && (!actual || !liveIdx.length)) return lines;
   const pc = new Map(coaList.map((a) => [a.code, a.pcode]));
@@ -2372,12 +2420,21 @@ export function acqDelinquency(lines: BudgetLine[], coaList: CoaAccount[], actua
   }
   // 5036: what a live month collected against the previous live month's delinquency
   const lastDq = Math.abs(A('5035', live[live.length - 1]));
+  /* THE COLLECTION RATE (Troy 2026-11-16: "NRND now just has 1.7% DQ w no budgeted collections"): typed → what the posted
+     months collected against the month before (only when that is above zero: one or two months with nothing collected is
+     not a rate) → the trailing-12's collections ÷ its delinquency (the seller's months before closing included) → the
+     acquisition plan's own ratio. Capped at 100%. A zero last posted DQ leaves January on the budget's own first DQ. */
   if (free('5036')) {
     let col = 0, prior = 0;
     for (const i of live) if (live.includes(i - 1)) { col += A('5036', i); prior += Math.abs(A('5035', i - 1)); }
-    const rate = typed.collectPct != null ? Number(typed.collectPct) : prior > 0 ? col / prior : Math.abs(liveDq) > 0 ? live.reduce((x, i) => x + A('5036', i), 0) / Math.abs(liveDq) : 0;
+    const posted = prior > 0 ? col / prior : Math.abs(liveDq) > 0 ? live.reduce((x, i) => x + A('5036', i), 0) / Math.abs(liveDq) : 0;
+    const t12Dq = Math.abs(sum(((actual || {})['5035'] || zero12()) as Months)), t12Col = sum(((actual || {})['5036'] || zero12()) as Months);
+    const t12 = t12Dq > 0 && t12Col > 0 ? t12Col / t12Dq : 0;
+    const plan = Number(typed.planCollect) > 0 ? Number(typed.planCollect) : 0;
+    const [rate, basis] = typed.collectPct != null ? [Number(typed.collectPct), 'typed'] : posted > 0 ? [posted, 'posted'] : t12 > 0 ? [t12, 't12'] : plan > 0 ? [plan, 'plan'] : [0, 'none'];
     const l = ensure('5036');
-    l.driver = { ...strip(l.driver), method: 'collections', pct: Math.round(Math.min(1, Math.max(0, rate)) * 100000) / 100000, startDq: r2(lastDq), basis: 'posted' } as any;
+    l.driver = { ...strip(l.driver), method: 'collections', pct: Math.round(Math.min(1, Math.max(0, rate)) * 100000) / 100000, startDq: r2(lastDq), basis,
+      ...(basis !== 'posted' && basis !== 'typed' && live.length ? { postedRate: Math.round(posted * 100000) / 100000 } : {}) } as any;
   }
   // 5110 / 6309: recovery on the 60-day uncollected, collection fee on the recovery
   if (free('5110')) {
