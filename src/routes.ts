@@ -1,4 +1,6 @@
 import { rosterWagesFor, rosterCoverage, type RosterLink } from './payroll-data.js';
+import { contractsFor, contractsForYear, contractYears, saveContract, deleteContract, syncContractList, getContract } from './contracts.js';
+import { contractMonths as contractMonthsOf } from '../shared/annual.js';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import multer from 'multer';
 import { query, tx, inRegion, regionOfRequest, currentRegion } from './db.js';
@@ -333,6 +335,7 @@ router.post('/review-apply/refile', h(async (req, res) => {
     await captureSnapshot(lb, `Before re-filing review contracts (${st.filename})`, user);
     await saveLines(lb.budget.id, lines);
     await query('update budgets set inputs=$2, updated_at=now() where id=$1', [lb.budget.id, JSON.stringify({ ...(lb.budget.inputs || {}), contracts })]);
+    await syncContractList(String(lb.budget.property_code), Number(lb.budget.year), contracts, user, 'review');
     logChange(user, 'ND review re-file contracts', { id: lb.budget.id, site, file: st.filename, changes: entries });
     log.push({ budgetId: id, site, changes: entries });
   }
@@ -386,7 +389,10 @@ async function applyReviewToBudget(lb: LoadedBudget, rows: ApplyRow[], filename:
     entries.push({ gl: c.gl, old: r2(old), new: r2(sum(ln.months)), rows: c.rowIds, kinds: c.kinds, flags: c.flags });
   }
   await saveLines(lb.budget.id, lines);
-  if (conGls.size) await query('update budgets set inputs=$2 where id=$1', [lb.budget.id, JSON.stringify({ ...(lb.budget.inputs || {}), contracts })]);
+  if (conGls.size) {
+    await query('update budgets set inputs=$2 where id=$1', [lb.budget.id, JSON.stringify({ ...(lb.budget.inputs || {}), contracts })]);
+    await syncContractList(String(lb.budget.property_code), Number(lb.budget.year), contracts, user, 'review');
+  }
   await query('update budgets set updated_at=now() where id=$1', [lb.budget.id]);
   logChange(user, 'ND review apply', { id: lb.budget.id, site: lb.budget.property_code, file: filename, changes: entries });
   return entries;
@@ -819,6 +825,9 @@ const refOf = (lb: LoadedBudget): UwSnapshotData | null => (lb.annual ? lb.ref :
 export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   const budget = (await query('select * from budgets where id=$1', [id])).rows[0];
   if (!budget) return null;
+  // contracts come from the register (migration 019, Troy 2026-11-17), not the budget's own copy
+  try { budget.inputs = { ...(budget.inputs || {}), contracts: await contractsFor(String(budget.property_code), Number(budget.year)) }; }
+  catch (e) { console.warn('[contracts] register unavailable, using the budget\'s own list', (e as Error).message); }
   const [lineRows, coa] = await Promise.all([
     query('select gl_code, months, driver, override, note, round from budget_lines where budget_id=$1', [id]),
     loadCoa(),
@@ -1932,6 +1941,13 @@ router.put('/budgets/:id', h(async (req, res) => {
     );
     logChange(req.session.username || '', 'relink budget snapshots', { id });
   }
+  if (inputs && Array.isArray((inputs as any).contracts)) {
+    // the per-budget Contracts dialog saves the property's list for this year into the register (Troy 2026-11-17)
+    const b0 = (await query('select property_code, year from budgets where id=$1', [id])).rows[0];
+    if (b0) await syncContractList(String(b0.property_code), Number(b0.year), (inputs as any).contracts, req.session.username || '', 'ui');
+    delete (inputs as any).contracts;
+    await recalcContractBudgets([{ property: String(b0?.property_code || ''), year: Number(b0?.year) }], id);
+  }
   if (inputs) {
     const lb1 = (await loadBudget(id))!;   // reload — snapshots may have been relinked above
     const merged: BudgetInputs = { ...lb1.budget.inputs, ...inputs };
@@ -2180,6 +2196,93 @@ router.post('/budgets-recalc', h(async (req, res) => {
   }
   if (!dryRun) logChange(req.session.username || '', 'recalculate many', { ids });
   res.json({ ok: true, dryRun, budgets: out });
+}));
+
+/* ---------------- the contracts register (Troy 2026-11-17: "I need a significantly better way to alter contract expenses
+   per year that you can push data directly into, as can I without doing a whole upload and overwrite") ----------------
+   One row at a time: GET /contracts?year= lists the year (every property, with each row's year total and months);
+   POST /contracts adds one; PUT /contracts/:id changes one; DELETE /contracts/:id removes one; POST /contracts/bulk
+   adds / changes several (by id). Each change recalculates the budgets of that property and year (and of the old ones
+   when a row moves), so the grid shows it at once. The repo file data/contracts/<region>/<year>.csv loads on deploy. */
+export async function recalcContractBudgets(pairs: { property: string; year: number }[], skipId?: number): Promise<number[]> {
+  const done: number[] = [];
+  const seen = new Set<string>();
+  for (const p of pairs) {
+    const k = `${String(p.property).toLowerCase()}:${p.year}`;
+    if (!p.property || !p.year || seen.has(k)) continue;
+    seen.add(k);
+    const ids = (await query('select id from budgets where lower(property_code)=lower($1) and year=$2', [p.property, p.year])).rows.map((r: any) => Number(r.id));
+    for (const bid of ids) {
+      if (bid === skipId) continue;
+      const lb = await loadBudget(bid);
+      if (!lb) continue;
+      await saveLines(bid, buildLines(lb, lb.budget.inputs, lb.lines).lines, true);
+      await query('update budgets set updated_at=now() where id=$1', [bid]);
+      done.push(bid);
+    }
+  }
+  return done;
+}
+async function contractsPayload(year: number) {
+  const rows = await contractsForYear(year);
+  const props = (await query('select code, name, units, market from properties order by code')).rows as any[];
+  const unitsOf = new Map(props.map((p) => [String(p.code).toLowerCase(), Number(p.units) || 0]));
+  const coa = await loadCoa();
+  const nameOf = new Map(coa.map((a: any) => [a.code, a.name]));
+  const budgeted = (await query('select distinct lower(property_code) as c from budgets where year=$1', [year])).rows.map((r: any) => r.c);
+  return {
+    year, years: [...new Set([year, ...(await contractYears())])].sort((a, b) => b - a),
+    properties: props.map((p) => ({ code: String(p.code).toLowerCase(), name: p.name, units: Number(p.units) || 0, market: p.market || '', budgeted: budgeted.includes(String(p.code).toLowerCase()) })),
+    rows: rows.map((r) => {
+      const m = contractMonthsOf({ ...r.data }, unitsOf.get(String(r.property_code).toLowerCase()) || 0, 1);
+      return { id: r.id, property: String(r.property_code).toLowerCase(), year: r.year, gl: r.gl, glName: nameOf.get(r.gl) || '', contract: r.data, origin: r.origin, uiEdited: r.ui_edited, updatedBy: r.updated_by, updatedAt: r.updated_at, months: m, annual: r2(sum(m)) };
+    }),
+  };
+}
+router.get('/contracts', h(async (req, res) => {
+  const year = Number(req.query.year) || new Date().getFullYear() + 1;
+  res.json(await contractsPayload(year));
+}));
+router.post('/contracts', h(async (req, res) => {
+  const user = req.session.username || '';
+  const row = await saveContract({ property: req.body?.property, year: Number(req.body?.year), contract: req.body?.contract || req.body }, user);
+  const ids = await recalcContractBudgets([{ property: row.property_code, year: row.year }]);
+  logChange(user, 'contract added', { id: row.id, property: row.property_code, year: row.year, gl: row.gl, vendor: row.vendor, budgets: ids });
+  res.json({ ...(await contractsPayload(row.year)), saved: row.id, recalculated: ids });
+}));
+router.put('/contracts/:id', h(async (req, res) => {
+  const user = req.session.username || '';
+  const before = await getContract(String(req.params.id));
+  if (!before) return res.status(404).json({ error: 'That contract no longer exists' });
+  const row = await saveContract({ id: before.id, property: req.body?.property || before.property_code, year: Number(req.body?.year) || before.year, contract: { ...before.data, ...(req.body?.contract || {}) } }, user);
+  const ids = await recalcContractBudgets([{ property: before.property_code, year: before.year }, { property: row.property_code, year: row.year }]);
+  logChange(user, 'contract changed', { id: row.id, property: row.property_code, year: row.year, gl: row.gl, vendor: row.vendor, budgets: ids });
+  res.json({ ...(await contractsPayload(row.year)), saved: row.id, recalculated: ids });
+}));
+router.delete('/contracts/:id', h(async (req, res) => {
+  const user = req.session.username || '';
+  const row = await deleteContract(String(req.params.id));
+  if (!row) return res.status(404).json({ error: 'That contract no longer exists' });
+  const ids = await recalcContractBudgets([{ property: row.property_code, year: row.year }]);
+  logChange(user, 'contract removed', { id: row.id, property: row.property_code, year: row.year, gl: row.gl, vendor: row.vendor, budgets: ids });
+  res.json({ ...(await contractsPayload(row.year)), recalculated: ids });
+}));
+router.post('/contracts/bulk', h(async (req, res) => {
+  const user = req.session.username || '';
+  const list: any[] = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  if (!list.length) return res.status(400).json({ error: 'rows: [] is empty' });
+  const pairs: { property: string; year: number }[] = [];
+  const saved: string[] = [];
+  for (const r of list) {
+    const before = r.id ? await getContract(String(r.id)) : null;
+    const row = await saveContract({ id: before ? before.id : null, property: r.property || before?.property_code, year: Number(r.year) || before?.year || 0, contract: { ...(before?.data || {}), ...(r.contract || r) } }, user);
+    if (before) pairs.push({ property: before.property_code, year: before.year });
+    pairs.push({ property: row.property_code, year: row.year });
+    saved.push(row.id);
+  }
+  const ids = await recalcContractBudgets(pairs);
+  logChange(user, 'contracts saved (bulk)', { rows: saved.length, budgets: ids });
+  res.json({ ok: true, saved, recalculated: ids });
 }));
 
 router.post('/budgets/:id/recalc', h(async (req, res) => {

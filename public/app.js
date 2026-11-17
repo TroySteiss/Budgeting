@@ -370,6 +370,7 @@ function render() {
         <button data-v="dash" class="${S.view === 'dash' ? 'on' : ''}">Budgets</button>
         ${S.view === 'editor' && S.bv ? `<span class="crumb">›</span><button data-v="editor" class="on">${esc(S.bv.budget.property_code)} ${S.bv.budget.year}</button>` : ''}
         <button data-v="summary" class="${S.view === 'summary' ? 'on' : ''}" title="Every budget for the year, by region, in the budget-comps layout">Summary</button>
+        <button data-v="contracts" class="${S.view === 'contracts' ? 'on' : ''}" title="Every property's contracts for a budget year, changed row by row">Contracts</button>
         <button data-v="uploads" class="${S.view === 'uploads' ? 'on' : ''}">Data</button>
         <button data-v="payroll" class="${S.view === 'payroll' ? 'on' : ''}">Payroll</button>
         <button data-v="settings" class="${S.view === 'settings' ? 'on' : ''}">Settings</button>
@@ -378,9 +379,9 @@ function render() {
       <button class="theme" id="theme-toggle" title="Toggle dark mode">${S.theme === 'dark' ? '☀' : '🌙'}</button>
       <span class="who">${esc(S.auth.username)}${S.auth.isAdmin ? ' · admin' : ''}<button id="logout">Sign out</button></span>
     </div>
-    <div class="wrap${S.view === 'editor' || S.view === 'payroll' || S.view === 'summary' ? ' wide' : ''}" id="main"></div>`;
+    <div class="wrap${S.view === 'editor' || S.view === 'payroll' || S.view === 'summary' || S.view === 'contracts' ? ' wide' : ''}" id="main"></div>`;
   document.querySelectorAll('.topbar nav button').forEach((b) =>
-    b.addEventListener('click', () => { S.view = b.dataset.v; if (S.view === 'summary') S.sum = null;   /* always reload: budgets may have changed */ render(); }));
+    b.addEventListener('click', () => { S.view = b.dataset.v; if (S.view === 'summary') S.sum = null;   /* always reload: budgets may have changed */ if (S.view === 'contracts' && S.ct) S.ct.data = null; render(); }));
   document.getElementById('logout').addEventListener('click', async () => { await POST('/logout'); location.reload(); });
   document.querySelectorAll('.region-toggle button').forEach((b) => b.addEventListener('click', () => switchRegion(b.dataset.region)));
   document.getElementById('theme-toggle').addEventListener('click', () => { S.theme = S.theme === 'dark' ? 'light' : 'dark'; applyTheme(); render(); });
@@ -391,6 +392,7 @@ function render() {
   else if (S.view === 'editor') { renderEditor(main); editorViewToggle(main); }
   else if (S.view === 'payroll') renderPayroll(main);
   else if (S.view === 'settings') renderSettings(main);
+  else if (S.view === 'contracts') renderContracts(main);
 }
 
 /* ---------------- login ---------------- */
@@ -3433,7 +3435,7 @@ function openContracts(b) {
   const blank = () => ({ id: String(Date.now()), vendor: '', gl: '', kind: 'monthly', amount: 0, per: 'month', months: [], billMonth: 12, stepMonth: null, stepPct: null, mode: 'replace', source: '' });
   const monthsBox = (r, i) => `<span class="mbox">${MONTHS.map((m, k) => `<label title="${m}"><input type="checkbox" data-mo="${i}:${k + 1}" ${(r.months || []).includes(k + 1) ? 'checked' : ''}>${m[0]}</label>`).join('')}</span>`;
   const draw = () => {
-    dlg.innerHTML = `<h2>Contracts & known costs</h2>
+    dlg.innerHTML = `<h2>Contracts & known costs <span class="muted" style="font-size:13px; font-weight:400">· ${esc(b.property_code.toUpperCase())} ${b.year} — the same list as the Contracts page</span></h2>
       <p class="muted" style="font-size:12px; margin:0 0 8px">A GL with a contract takes the contract amounts instead of its history (<b>replace</b>), or the contract on top of its formula (<b>add</b>). Amounts are positive for income and expense. No months ticked = every month. Snow: <b>monthly</b>, <b>season total</b>, Nov–Apr ticked. Months still inside an acquisition's Year 1 keep the Year-1 plan.</p>
       ${glDatalist()}
       <div style="max-height:60vh; overflow:auto"><table class="list contracts">
@@ -3483,6 +3485,168 @@ function openContracts(b) {
   };
   draw();
   dlg.showModal();
+}
+
+/* ---------------- Contracts page (Troy 2026-11-17: "I need a significantly better way to alter contract expenses per year
+   that you can push data directly into, as can I without doing a whole upload and overwrite") ----------------
+   The contracts register for a budget year, every property: one row per contract, changed in place — each change saves
+   that row alone and recalculates the budgets of that property and year. Rows can also come from the repo file
+   data/contracts/<region>/<year>.csv (loaded on deploy) and from the review workbook; a row changed here keeps this
+   version. "Download CSV" gives the year in the repo file's columns. */
+async function loadContracts(year) {
+  S.ct = { ...(S.ct || {}), year, loading: true, err: null };
+  render();
+  try { S.ct.data = await GET(`/contracts?year=${year}`); } catch (e) { S.ct.err = e.message; }
+  S.ct.loading = false;
+  render();
+}
+function renderContracts(el) {
+  const year0 = (S.ct && S.ct.year) || S.dashYear || new Date().getFullYear() + 1;
+  if (!S.ct || (!S.ct.data && !S.ct.loading && !S.ct.err) || S.ct.year !== year0) { loadContracts(year0); el.innerHTML = '<div class="card"><p class="muted">Loading…</p></div>'; return; }
+  if (S.ct.loading && !S.ct.data) { el.innerHTML = '<div class="card"><p class="muted">Loading…</p></div>'; return; }
+  if (S.ct.err) { el.innerHTML = `<div class="card"><p class="err">${esc(S.ct.err)}</p></div>`; return; }
+  const d = S.ct.data;
+  const props = d.properties || [];
+  const propOf = new Map(props.map((p) => [p.code, p]));
+  const flt = S.ct.prop || '';
+  const q = String(S.ct.q || '').toLowerCase();
+  const drafts = S.ct.drafts || (S.ct.drafts = []);
+  const match = (r) => (!flt || r.property === flt) && (!q || `${r.property} ${r.gl} ${r.glName} ${r.contract.vendor} ${r.contract.note || ''}`.toLowerCase().includes(q));
+  const rows = d.rows.filter(match);
+  const origin = { ui: 'page', repo: 'repo file', review: 'review workbook', migrated: 'from the budget' };
+  const mo = (m) => MONTHS[m - 1] || '';
+  const monthsCell = (r, key) => {
+    const c = r.contract;
+    if (c.kind === 'annual') return `<select data-ct="${key}" data-f="billMonth">${MONTHS.map((m, k) => `<option value="${k + 1}" ${Number(c.billMonth) === k + 1 ? 'selected' : ''}>${m}</option>`).join('')}</select>${isGutter(r) ? '<div class="muted" style="font-size:10.5px">gutters bill in Mar · Nov</div>' : ''}`;
+    return `<span class="mbox">${MONTHS.map((m, k) => `<label title="${m}"><input type="checkbox" data-ct="${key}" data-mo="${k + 1}" ${(c.months || []).includes(k + 1) ? 'checked' : ''}>${m[0]}</label>`).join('')}</span>${isGutter(r) ? '<div class="muted" style="font-size:10.5px">gutters bill in Mar · Nov</div>' : ''}`;
+  };
+  function isGutter(r) { return String(r.contract.gl) === '6808' || /gutter/i.test(String(r.contract.vendor || '')); }
+  const row = (r, key, isDraft) => {
+    const c = r.contract;
+    const p = propOf.get(r.property) || {};
+    return `<tr data-row="${esc(key)}" class="${isDraft ? 'draft' : ''}">
+      <td>${isDraft ? `<select data-ct="${key}" data-f="property"><option value="">property…</option>${props.map((x) => `<option value="${esc(x.code)}" ${x.code === r.property ? 'selected' : ''}>${esc(x.code.toUpperCase())}</option>`).join('')}</select>` : `<b>${esc(r.property.toUpperCase())}</b>`}</td>
+      <td><input data-ct="${key}" data-f="gl" value="${esc(c.gl || '')}" list="gl-dl" style="width:58px"><div class="muted" style="font-size:10.5px; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">${esc(glName(c.gl) || r.glName || '')}</div></td>
+      <td><input data-ct="${key}" data-f="vendor" value="${esc(c.vendor || '')}" style="width:150px"></td>
+      <td><select data-ct="${key}" data-f="kind"><option value="monthly" ${c.kind === 'monthly' ? 'selected' : ''}>monthly</option><option value="annual" ${c.kind === 'annual' ? 'selected' : ''}>annual invoice</option><option value="perUnit" ${c.kind === 'perUnit' ? 'selected' : ''}>per unit</option></select>
+        ${c.kind === 'monthly' ? `<select data-ct="${key}" data-f="per"><option value="month" ${c.per !== 'total' ? 'selected' : ''}>per month</option><option value="total" ${c.per === 'total' ? 'selected' : ''}>season total</option></select>` : ''}</td>
+      <td><input data-ct="${key}" data-f="amount" value="${c.amount || ''}" style="width:84px; text-align:right"></td>
+      <td>${monthsCell(r, key)}</td>
+      <td><select data-ct="${key}" data-f="stepMonth"><option value="">—</option>${MONTHS.map((m, k) => `<option value="${k + 1}" ${Number(c.stepMonth) === k + 1 ? 'selected' : ''}>${m}</option>`).join('')}</select>
+        <input data-ct="${key}" data-f="stepPct" value="${c.stepPct != null && c.stepPct !== '' ? +(c.stepPct * 100).toFixed(3) : ''}" placeholder="%" style="width:40px"></td>
+      <td><select data-ct="${key}" data-f="mode"><option value="replace" ${c.mode !== 'add' ? 'selected' : ''}>replace</option><option value="add" ${c.mode === 'add' ? 'selected' : ''}>add</option></select></td>
+      <td><input data-ct="${key}" data-f="note" value="${esc(c.note || '')}" placeholder="note" style="width:140px"></td>
+      <td class="num" title="${isDraft ? '' : esc((r.months || []).map((v, i) => (v ? `${mo(i + 1)} ${money(v)}` : '')).filter(Boolean).join(' · '))}">${isDraft ? '' : `<b>${money(r.annual)}</b>`}</td>
+      <td class="muted" style="font-size:11px" title="${isDraft ? '' : esc(`${r.updatedBy || ''} ${r.updatedAt ? new Date(r.updatedAt).toLocaleString() : ''}`)}">${isDraft ? 'new' : `${esc(origin[r.origin] || r.origin)}${r.uiEdited && r.origin !== 'ui' ? ' · edited' : ''}`}${c.review ? ` <span class="pill rec" title="${esc(`${c.review.rowId} · ${c.review.item || ''}`)}">${esc(c.review.rowId)}</span>` : ''}</td>
+      <td>${isDraft ? `<button class="btn sm" data-ct-add="${key}">Add</button> ` : ''}<button class="btn sub sm" data-ct-del="${key}" title="${isDraft ? 'Discard' : 'Remove this contract'}">✕</button></td></tr>`;
+  };
+  // by region, then property (Troy's order), with each property's total
+  const byProp = new Map();
+  for (const r of rows) { if (!byProp.has(r.property)) byProp.set(r.property, []); byProp.get(r.property).push(r); }
+  const order = [...byProp.keys()].sort((a, b) => regionSort(regionGroup((propOf.get(a) || {}).market), regionGroup((propOf.get(b) || {}).market)) || a.localeCompare(b));
+  let lastRg = null;
+  const body = order.map((code) => {
+    const p = propOf.get(code) || {};
+    const rg = regionGroup(p.market);
+    const head = rg !== lastRg ? `<tr class="rgnhead"><td colspan="12">${esc(rg)}</td></tr>` : '';
+    lastRg = rg;
+    const list = byProp.get(code);
+    const tot = list.reduce((a, r) => a + (r.annual || 0), 0);
+    return `${head}<tr class="ctprop"><td colspan="9"><b>${esc(code.toUpperCase())}</b> · ${esc(p.name || '')} <span class="muted">${p.units ? `${p.units} units` : ''}${p.budgeted ? '' : ` · no ${d.year} budget yet (it picks these up when made)`}</span></td><td class="num"><b>${money(tot)}</b></td><td colspan="2"></td></tr>`
+      + list.map((r) => row(r, r.id, false)).join('');
+  }).join('');
+  const nAll = d.rows.length;
+  el.innerHTML = `
+    <div class="card">
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:8px; gap:8px; flex-wrap:wrap">
+        <h2 style="margin:0">Contracts <span class="badge">${nAll} for ${d.year}</span></h2>
+        <div class="row" style="align-items:center; gap:8px; flex-wrap:wrap">
+          <input id="ct-q" value="${esc(S.ct.q || '')}" placeholder="search vendor, GL, note" style="width:180px">
+          <select id="ct-prop"><option value="">all properties</option>${props.filter((p) => p.budgeted || d.rows.some((r) => r.property === p.code)).map((p) => `<option value="${esc(p.code)}" ${p.code === flt ? 'selected' : ''}>${esc(p.code.toUpperCase())} · ${esc(p.name || '')}</option>`).join('')}</select>
+          <label class="muted" style="font-size:12px">Budget year</label><select id="ct-year">${d.years.map((y) => `<option value="${y}" ${y === d.year ? 'selected' : ''}>${y}</option>`).join('')}</select>
+          <button class="btn sub" id="ct-csv" title="This year's contracts in the repo file's columns (data/contracts/&lt;region&gt;/${d.year}.csv)">⬇ CSV</button>
+          <button class="btn" id="ct-new">+ Contract</button>
+        </div>
+      </div>
+      <p class="muted" style="font-size:12px; margin:0 0 8px">One row per contract. A change saves that row only and recalculates that property's ${d.year} budget. A GL with a contract takes the contract amounts instead of its formula (<b>replace</b>) or the contract on top of it (<b>add</b>). Rows also come from the review workbook and from the repo file (<code>data/contracts/…/${d.year}.csv</code>, loaded on each deploy); a row changed here keeps this version. Gutter contracts always bill in March and November.</p>
+      ${glDatalist()}
+      <div style="overflow:auto"><table class="list contracts ctreg">
+        <tr><th>Property</th><th>GL</th><th>Vendor</th><th>How it bills</th><th>Amount</th><th>Months billed / invoice month</th><th>Step from · %</th><th>Line</th><th>Note</th><th class="num">${d.year}</th><th>From</th><th></th></tr>
+        ${drafts.map((r, i) => row(r, `draft-${i}`, true)).join('')}
+        ${body || (drafts.length ? '' : `<tr><td colspan="12" class="muted">No contracts${flt || q ? ' match' : ` for ${d.year} yet`}.</td></tr>`)}
+      </table></div>
+    </div>`;
+  const findRow = (key) => (key.startsWith('draft-') ? drafts[Number(key.slice(6))] : d.rows.find((r) => r.id === key));
+  const busy = (on) => el.querySelectorAll('input, select, button').forEach((x) => { x.disabled = on; });
+  const saveRow = async (key) => {
+    const r = findRow(key);
+    if (!r || key.startsWith('draft-')) return;
+    busy(true);
+    try { S.ct.data = await PUT(`/contracts/${encodeURIComponent(r.id)}`, { property: r.property, year: d.year, contract: r.contract }); }
+    catch (e) { alert(e.message); }
+    render();
+  };
+  el.querySelectorAll('[data-ct][data-f]').forEach((x) => x.addEventListener('change', () => {
+    const key = x.dataset.ct, f = x.dataset.f, r = findRow(key);
+    if (!r) return;
+    const c = r.contract;
+    if (f === 'property') r.property = x.value;
+    else if (f === 'amount') c.amount = Number(String(x.value).replace(/[$,]/g, '')) || 0;
+    else if (f === 'stepPct') c.stepPct = x.value === '' ? null : (Number(x.value) || 0) / 100;
+    else if (f === 'stepMonth' || f === 'billMonth') c[f] = x.value === '' ? null : Number(x.value);
+    else if (f === 'kind') { c.kind = x.value; if (c.kind === 'annual' && !c.billMonth) c.billMonth = 12; }
+    else c[f] = String(x.value).trim();
+    if (key.startsWith('draft-')) { render(); return; }
+    saveRow(key);
+  }));
+  el.querySelectorAll('[data-ct][data-mo]').forEach((x) => x.addEventListener('change', () => {
+    const key = x.dataset.ct, r = findRow(key);
+    if (!r) return;
+    const set = new Set(r.contract.months || []);
+    const m = Number(x.dataset.mo);
+    if (x.checked) set.add(m); else set.delete(m);
+    r.contract.months = [...set].sort((a, b) => a - b);
+    if (key.startsWith('draft-')) { render(); return; }
+    saveRow(key);
+  }));
+  el.querySelectorAll('[data-ct-add]').forEach((b) => b.addEventListener('click', async () => {
+    const i = Number(b.dataset.ctAdd.slice(6)), r = drafts[i];
+    if (!r.property) { alert('Pick the property'); return; }
+    if (!glName(r.contract.gl)) { alert('Pick a GL on the chart'); return; }
+    if (!(Number(r.contract.amount) > 0)) { alert('Type an amount above zero'); return; }
+    busy(true);
+    try { S.ct.data = await POST('/contracts', { property: r.property, year: d.year, contract: r.contract }); drafts.splice(i, 1); }
+    catch (e) { alert(e.message); }
+    render();
+  }));
+  el.querySelectorAll('[data-ct-del]').forEach((b) => b.addEventListener('click', async () => {
+    const key = b.dataset.ctDel;
+    if (key.startsWith('draft-')) { drafts.splice(Number(key.slice(6)), 1); render(); return; }
+    const r = findRow(key);
+    if (!r || !confirm(`Remove ${r.property.toUpperCase()} ${r.gl} ${r.contract.vendor || 'contract'} (${money(r.annual)} in ${d.year})? Its budget is recalculated.`)) return;
+    busy(true);
+    try { S.ct.data = await DEL(`/contracts/${encodeURIComponent(r.id)}`); } catch (e) { alert(e.message); }
+    render();
+  }));
+  el.querySelector('#ct-new').addEventListener('click', () => {
+    drafts.unshift({ property: flt || '', contract: { vendor: '', gl: '', kind: 'monthly', per: 'month', amount: 0, months: [], billMonth: 12, stepMonth: null, stepPct: null, mode: 'replace', note: '' } });
+    render();
+  });
+  el.querySelector('#ct-year').addEventListener('change', (e) => { S.ct.drafts = []; loadContracts(Number(e.target.value)); });
+  el.querySelector('#ct-prop').addEventListener('change', (e) => { S.ct.prop = e.target.value; render(); });
+  { const qb = el.querySelector('#ct-q'); qb.addEventListener('change', () => { S.ct.q = qb.value; render(); }); qb.addEventListener('keydown', (e) => { if (e.key === 'Enter') { S.ct.q = qb.value; render(); } }); }
+  el.querySelector('#ct-csv').addEventListener('click', () => {
+    const cell = (v) => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+    const lines = ['property,gl,vendor,kind,amount,per,months,bill_month,step_month,step_pct,mode,note'];
+    for (const r of d.rows) {
+      const c = r.contract;
+      lines.push([r.property, c.gl, c.vendor, c.kind, c.amount, c.kind === 'monthly' ? (c.per || 'month') : '', c.kind === 'annual' ? '' : (c.months || []).join(';'), c.kind === 'annual' ? c.billMonth : '', c.stepMonth || '', c.stepPct != null && c.stepPct !== '' ? +(c.stepPct * 100).toFixed(4) : '', c.mode || 'replace', c.note || ''].map(cell).join(','));
+    }
+    const blob = new Blob([lines.join('\r\n') + '\r\n'], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = `contracts ${d.year}.csv`; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  });
 }
 
 /* One-time items out of the trailing-12: GL, calendar month, amount removed, note. */

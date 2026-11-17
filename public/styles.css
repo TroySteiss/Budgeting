@@ -723,3 +723,8 @@ table.grid tr.header td.secname { box-shadow: none; }
   .editor .sidegrip { display: none; }
   .editor .side { position: static; max-height: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 10px; align-items: start; }
 }
+
+/* Contracts page (Troy 2026-11-17) */
+table.ctreg tr.rgnhead td { background: var(--panel); font-weight: 700; font-size: 12px; padding-top: 10px; border-bottom: 1px solid var(--line); }
+table.ctreg tr.ctprop td { background: var(--soft2); font-size: 12px; }
+table.ctreg tr.draft td { background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }

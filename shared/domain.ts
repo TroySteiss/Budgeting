@@ -91,6 +91,8 @@ export interface Contract {
   months?: number[] | null; billMonth?: number | null;
   stepMonth?: number | null; stepPct?: number | null;
   mode?: 'replace' | 'add'; source?: string;
+  /** free text, shown on the Contracts page (Troy 2026-11-17) */
+  note?: string;
   /** set when the contract came from the ND budget review workbook's Apply tab: the row behind it, for the bold teal
       cells and their hover (what the number is tied to) */
   review?: { rowId: string; item: string; action: string; firmness: string; basis: string; source: string; contractsRow: string; file?: string };
