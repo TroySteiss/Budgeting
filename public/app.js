@@ -2019,7 +2019,7 @@ function gridHtml(bv, totals) {
   })();
   const histOpen = (code) => S.histAll || S.histOpenSet.has(code);
   const rows = [];
-  rows.push(`<tr><th class="l">GL</th><th class="l" style="min-width:200px">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th${actIdx.has(i) ? ' class="actcol" title="Locked to posted actuals — an edit here corrects the posted figure"' : ''}>${labels[i]}${actIdx.has(i) ? ' ✓' : ''}</th>`).join('')}${cols.annual ? `<th>${bv.annual ? bv.budget.year : 'Year 1'}</th>` : ''}${cols.overall ? `<th title="What each line comes to over the year as it stands, hand-typed cells included: a ratio line as its % of what its formula is tied to (vacancy of GPR, delinquency of net rental, collections of the prior month's delinquency, the fee of income, burden of wages…), every other line as its growth over ${acqOn ? 'UW' : 'the T12'}. Hover a cell for its basis.">Overall</th>` : ''}${cols.refpct ? `<th title="Blended increase: the ${bv.budget.year} total vs ${acqOn ? 'UW for the year (' + esc(refA.period) + ')' : 'the trailing-12 actual (' + esc(refA.period) + ')'}">Δ% ${acqOn ? 'UW' : 'T12'}</th>` : ''}${cols.ref1 ? `<th title="${esc(refA.period)}">${acqOn ? 'UW' : 'T12'}</th>` : ''}${cols.ref3 ? `<th title="T3 annualized — ${esc(refT3.period)}">T3 ann</th>` : ''}${cols.ref2 ? `<th title="${esc(refB.period)}">${esc(refB.label.replace(/^budget /i, 'Bud ').replace(/ budget$/i, ' bud'))}</th>` : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
+  rows.push(`<tr><th class="l">GL</th><th class="l acct">Account</th>${cols.fx ? '<th>Fx</th>' : ''}${monthIdx.map((i) => `<th${actIdx.has(i) ? ' class="actcol" title="Locked to posted actuals — an edit here corrects the posted figure"' : ''}>${labels[i]}${actIdx.has(i) ? ' ✓' : ''}</th>`).join('')}${cols.annual ? `<th>${bv.annual ? bv.budget.year : 'Year 1'}</th>` : ''}${cols.overall ? `<th title="What each line comes to over the year as it stands, hand-typed cells included: a ratio line as its % of what its formula is tied to (vacancy of GPR, delinquency of net rental, collections of the prior month's delinquency, the fee of income, burden of wages…), every other line as its growth over ${acqOn ? 'UW' : 'the T12'}. Hover a cell for its basis.">Overall</th>` : ''}${cols.refpct ? `<th title="Blended increase: the ${bv.budget.year} total vs ${acqOn ? 'UW for the year (' + esc(refA.period) + ')' : 'the trailing-12 actual (' + esc(refA.period) + ')'}">Δ% ${acqOn ? 'UW' : 'T12'}</th>` : ''}${cols.ref1 ? `<th title="${esc(refA.period)}">${acqOn ? 'UW' : 'T12'}</th>` : ''}${cols.ref3 ? `<th title="T3 annualized — ${esc(refT3.period)}">T3 ann</th>` : ''}${cols.ref2 ? `<th title="${esc(refB.period)}">${esc(refB.label.replace(/^budget /i, 'Bud ').replace(/ budget$/i, ' bud'))}</th>` : ''}${cols.punit ? '<th>$/Unit</th>' : ''}${cols.note ? '<th class="l">Note</th>' : ''}</tr>`);
   const units = Number(bv.budget.inputs?.units) || 1;
   const GRAND = new Set(['5500', '7279', '7280', '8200', '9000']);
   // condensed (collapsed) sections — locked via localStorage across renders
@@ -2038,7 +2038,7 @@ function gridHtml(bv, totals) {
     if (a.kind === 'header') {
       secCollapsed = S.gridCollapsed.has(a.code);
       rows.push(`<tr class="header${sp ? ' sp' : ''}" data-sec="${a.code}" style="cursor:pointer" title="Click to condense / expand this section — stays condensed until you reopen it">
-        <td class="code">${a.code}</td><td class="name" colspan="${span - 1}">${secCollapsed ? '▸' : '▾'} ${esc(a.name)}${secCollapsed ? ' <span class="badge">condensed — totals still shown</span>' : ''}${secPctBoxHtml(bv, a, linesByGl)}</td></tr>`);
+        <td class="code">${a.code}</td><td class="name secname" colspan="${span - 1}"><div class="secstick">${secCollapsed ? '▸' : '▾'} ${esc(a.name)}${secCollapsed ? ' <span class="badge">condensed — totals still shown</span>' : ''}${secPctBoxHtml(bv, a, linesByGl)}</div></td></tr>`);
       continue;
     }
     if (a.kind === 'total') {
@@ -2096,7 +2096,7 @@ function gridHtml(bv, totals) {
             <td class="code"></td><td class="name"><span class="histtag">seller</span>${esc(sh.label)} · ${ps.map((p) => PCODE_NAMES[p] || 'cat ' + p).join(' + ')} <span class="muted">${esc(sh.period || '')}</span></td>
             ${cols.fx ? '<td></td>' : ''}${monthIdx.map((i) => `<td class="${sm[i] < 0 ? 'neg' : ''}">${money(sm[i])}</td>`).join('')}
             ${cols.annual ? `<td class="${st < 0 ? 'neg' : ''}">${money(st)}</td>` : ''}${refBlank}${cols.punit ? `<td>${money(st / units)}</td>` : ''}${cols.note ? '<td></td>' : ''}</tr>`);
-          if (st) rows.push(`<tr class="dist seller"><td></td><td class="name"><span class="histtag">seller</span>% of the seller's year</td>
+          if (st) rows.push(`<tr class="dist seller"><td class="code"></td><td class="name"><span class="histtag">seller</span>% of the seller's year</td>
             ${cols.fx ? '<td></td>' : ''}${monthIdx.map((i) => `<td>${((sm[i] / st) * 100).toFixed(1)}%</td>`).join('')}
             ${cols.annual ? '<td>100%</td>' : ''}${refBlank}${cols.punit ? '<td></td>' : ''}${cols.note ? '<td></td>' : ''}</tr>`);
         }
@@ -2113,7 +2113,7 @@ function gridHtml(bv, totals) {
           ${cols.annual ? `<td class="${d < 0 ? 'neg' : ''}"><b>${money(d)}</b></td>` : ''}${refBlank}${cols.punit ? `<td>${money(d / units)}</td>` : ''}${cols.note ? '<td></td>' : ''}</tr>`);
       }
       if (S.showDist && ann) {
-        rows.push(`<tr class="dist"><td></td><td class="name">% of ${bv.annual ? bv.budget.year : 'Year 1'}</td>
+        rows.push(`<tr class="dist"><td class="code"></td><td class="name">% of ${bv.annual ? bv.budget.year : 'Year 1'}</td>
           ${cols.fx ? '<td></td>' : ''}
           ${monthIdx.map((i) => `<td>${((m[i] / ann) * 100).toFixed(1)}%</td>`).join('')}
           ${cols.annual ? '<td>100%</td>' : ''}${refBlank}${cols.punit ? '<td></td>' : ''}${cols.note ? '<td></td>' : ''}</tr>`);
@@ -2125,7 +2125,7 @@ function gridHtml(bv, totals) {
         // NOI (annual): each quarter's share is a box — type the share it should carry, then "shift…"
         const noiQ = a.code === '7280' && bv.annual;
         const qsT = noiQ ? (((bv.budget.inputs || {}).qShift || {}).targets || []) : [];
-        rows.push(`<tr class="dist qdist${noiQ ? ' qshift' : ''}"><td></td><td class="name">% of ${bv.annual ? bv.budget.year : 'Year 1'} by quarter${noiQ ? ` <button class="rb" id="qs-open" title="Move NOI share between quarters on the lines you pick; the year's NOI stays the same">${(bv.budget.inputs || {}).qShift ? 'shift ✓…' : 'shift…'}</button>` : ''}</td>
+        rows.push(`<tr class="dist qdist${noiQ ? ' qshift' : ''}"><td class="code"></td><td class="name">% of ${bv.annual ? bv.budget.year : 'Year 1'} by quarter${noiQ ? ` <button class="rb" id="qs-open" title="Move NOI share between quarters on the lines you pick; the year's NOI stays the same">${(bv.budget.inputs || {}).qShift ? 'shift ✓…' : 'shift…'}</button>` : ''}</td>
           ${cols.fx ? '<td></td>' : ''}
           ${[0, 1, 2, 3].map((q) => {
             const vis = monthIdx.filter((i) => Math.floor(i / 3) === q).length;

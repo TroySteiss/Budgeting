@@ -667,3 +667,59 @@ table.plist td.popen { cursor: pointer; }
 .plink { text-decoration: underline dotted; text-underline-offset: 2px; }
 td.popen:hover .plink, tr.click:hover .plink { color: var(--accent); text-decoration-style: solid; }
 table.plist td.dpct { text-align: right; white-space: nowrap; }
+
+/* ---------- grid scrolling + zoom (Troy 2026-11-17: "it is impossible to zoom in and still see all pertinant info/columns.
+   The summary tiles also do not show everything needed when zoomed in, and need to be scrolled. ... the coloring showing
+   behind GL name cells as it is scrolled, and category headers not being locked") ---------- */
+/* every sticky cell is opaque and covers its column exactly: the code column is exactly 52px wide (border-box, padding
+   included) — it was 44px, so an 8px strip of the scrolled months showed between the GL code and the pinned name */
+table.grid td.code, table.grid th.l:first-child { width: 52px; min-width: 52px; max-width: 52px; padding-left: 4px; padding-right: 4px; overflow: hidden; text-overflow: ellipsis; }
+table.grid tr.dist td.code, table.grid tr.dist td.name { background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
+table.grid tr.vacpct td.code, table.grid tr.vacpct td.name { background: var(--panel); }
+table.grid tr.returns td.code, table.grid tr.returns td.name { background: color-mix(in srgb, var(--good) 14%, var(--panel)); }
+/* section headers: the full-width cell scrolls, the label inside it stays beside the code column */
+table.grid tr.header td.secname { position: static; max-width: none; overflow: visible; box-shadow: none; }
+table.grid tr.header .secstick { position: sticky; left: 52px; display: inline-flex; align-items: center; gap: 4px; padding-right: 8px; background: var(--soft2); z-index: 4; white-space: nowrap; }
+table.grid tr.header.sp .secstick { background: inherit; }
+/* the grid fills the window once scrolled to (one scrollbar for the rows, not two stacked) */
+.gridwrap { max-height: calc(100vh - 78px); }
+/* side pane: a card wider than the pane scrolls sideways instead of being cut off */
+.editor .side .card { overflow-x: auto; overflow-y: visible; }
+/* KPI tiles share one row and shrink with the window before they wrap */
+.kpis .kpi { flex: 1 1 0; min-width: 104px; }
+/* smaller windows — and every zoom level above 100% makes the window "smaller" — get a tighter grid, tiles and side */
+table.grid th.acct { min-width: 200px; }
+@media (max-width: 1600px) {
+  table.grid th.acct { min-width: 160px; }
+  table.grid { font-size: 11.6px; min-width: 0; }
+  table.grid td { padding: 2px 3px; }
+  table.grid td.m input { width: 58px; }
+  table.grid td.ann input { width: 76px; }
+  table.grid td.name { max-width: 150px; }
+  table.grid th { padding: 4px 4px; }
+  .kpi { padding: 6px 10px; }
+  .kpi .val { font-size: 15px; }
+  .kpi .lbl { font-size: 10px; }
+  .editor:not(.noside) { grid-template-columns: minmax(0, 1fr) 10px min(var(--side-w, 400px), 34vw); }
+}
+@media (max-width: 1350px) {
+  table.grid th.acct { min-width: 130px; }
+  table.grid { font-size: 11px; }
+  table.grid td.m input { width: 52px; padding: 1px 2px; }
+  table.grid td.ann input { width: 68px; }
+  table.grid td.name { max-width: 120px; }
+  table.grid td.note input { width: 72px; }
+  .kpis { gap: 6px; }
+  .kpi { padding: 5px 8px; min-width: 92px; }
+  .kpi .val { font-size: 14px; }
+  .kpi .sub { font-size: 10.5px; }
+}
+/* the pinned columns end with a visible edge, so a half-scrolled month reads as scrolled, not as part of the name */
+table.grid td.name, table.grid th.l:nth-child(2) { box-shadow: 4px 0 5px -3px rgba(0, 0, 0, .28); }
+table.grid tr.header td.secname { box-shadow: none; }
+/* zoomed past ~135% on a 1920 screen: the side pane moves under the grid so every grid column fits */
+@media (max-width: 1450px) {
+  .editor:not(.noside), .editor { grid-template-columns: minmax(0, 1fr); }
+  .editor .sidegrip { display: none; }
+  .editor .side { position: static; max-height: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 10px; align-items: start; }
+}
