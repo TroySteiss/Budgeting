@@ -40,7 +40,9 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-16e';   // e: no $0 month on a recurring line (acquisitions); utility recovery capped by group
+export const ENGINE_VERSION = '2026-11-17b';   // b: gutter contracts bill in March and November
+// earlier: 2026-11-17a:   // a: another property's curve on every formula (applied again at the end of a build)
+// earlier: 2026-11-16e:   // e: no $0 month on a recurring line (acquisitions); utility recovery capped by group
 // earlier: 2026-11-16d: a vacancy % typed for a month overrides the formula
 // earlier: 2026-11-16c: the % of income fee rebuilt on the final prior-month income
 // earlier: 2026-11-16b: a new acquisition's collection rate falls back to the T12 / plan when nothing posted
@@ -887,6 +889,8 @@ export interface FormulaSet {
   /** Row choices (shape, increase %, MROUND) on the GLs whose builders read only these, not the rules:
       payroll (64xx: raises, burden shapes) and 6350. A set that dropped them reset those lines. */
   row?: { glShape?: Record<string, BaselineShape>; glGrowth?: Record<string, number>; glMround?: Record<string, number>; secGrowth?: Record<string, number> };
+  /** per GL, the properties whose curve the months follow (inputs.shapeFromGl) — Troy 2026-11-17 */
+  shapeFromGl?: Record<string, string[]>;
   /** A set saved from a budget run off the acquisition plan: the lines it took off the plan (inputs.offPlan). On a
       receiving budget that also runs off the plan, those lines show their copied formula instead of the UW level —
       without it a set from CWND changed almost nothing on NRND (Troy 2026-11-13: "Fairly sure not everything is being
@@ -958,7 +962,8 @@ export function formulaSetFromBudget(lines: BudgetLine[], inputs: BudgetInputs):
   if (Object.keys(rg).length) row.glGrowth = rg as any;
   if (Object.keys(rm).length) row.glMround = rm as any;
   const off = ((inputs as any).offPlan || []).map(String).filter((gl: string) => formula.has(gl));
-  return { rules, settings, ...(Object.keys(fit).length ? { fit } : {}), ...(Object.keys(row).length ? { row } : {}), ...(off.length ? { offPlan: off.sort() } : {}) };
+  const sfg = Object.fromEntries(Object.entries((inputs as any).shapeFromGl || {}).filter(([gl, v]) => formula.has(gl) && Array.isArray(v) && (v as any[]).length)) as Record<string, string[]>;
+  return { rules, settings, ...(Object.keys(fit).length ? { fit } : {}), ...(Object.keys(row).length ? { row } : {}), ...(off.length ? { offPlan: off.sort() } : {}), ...(Object.keys(sfg).length ? { shapeFromGl: sfg } : {}) };
 }
 /** Give a budget a formula set: the set's rules and settings replace the budget's own per-GL
     shape / factor / MROUND choices. Dollars, GPR, vacancy average, expirations and every
@@ -980,6 +985,8 @@ export function applyFormulaSet(inputs: BudgetInputs, set: FormulaSet, from: { i
     ...(st.payrollRaisePct != null ? { payrollRaisePct: st.payrollRaisePct } : {}),
     // the source's off-plan lines come with it (a plan-run source only); a set without them leaves the budget's own
     ...(Array.isArray(set.offPlan) ? { offPlan: [...set.offPlan] } : {}),
+    // the set's curve picks replace the budget's own (a set without any leaves them)
+    ...(set.shapeFromGl ? { shapeFromGl: JSON.parse(JSON.stringify(set.shapeFromGl)) } : {}),
   } as BudgetInputs;
 }
 
@@ -1160,8 +1167,25 @@ export function applyT12Adjust(actual: Record<string, Months> | null | undefined
   return { actual: out, byGl };
 }
 
+/* GUTTERS IN MARCH AND NOVEMBER (Troy 2026-11-17: "March and November for gutters"): a gutter contract (GL 6808 GUTTERS /
+   DOWN SPOUTS, or "gutter" in its vendor or review item) bills its spring cleaning in March and its fall cleaning in
+   November, on every budget, whatever months it was entered with. A bill month in January–June is spring, July–December
+   fall; a contract billed in both seasons keeps its split, one payment each. A gutter contract billed every month (no
+   months set) is left as it is. */
+export const GUTTER_SPRING = 3, GUTTER_FALL = 11;
+export function isGutterContract(c: Contract): boolean {
+  return String(c.gl) === '6808' || /gutter/i.test(String(c.vendor || '')) || /gutter/i.test(String(c.review?.item || ''));
+}
+export function gutterSchedule(c: Contract): Contract {
+  if (!isGutterContract(c)) return c;
+  const season = (m: number) => (m >= 1 && m <= 6 ? GUTTER_SPRING : GUTTER_FALL);
+  if (c.kind === 'annual') return { ...c, billMonth: season(Number(c.billMonth) || 1) };
+  if (!c.months || !c.months.length) return c;
+  return { ...c, months: [...new Set(c.months.map((m) => season(Math.round(Number(m)))))].sort((a, b) => a - b) };
+}
 /** A contract's amounts in BUDGET-month order (index 0 = the budget's start month). */
-export function contractMonths(c: Contract, units: number, startMonth = 1): Months {
+export function contractMonths(c0: Contract, units: number, startMonth = 1): Months {
+  const c = gutterSchedule(c0);
   const out = zero12();
   const billed = (c.months && c.months.length ? c.months : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
     .map((m) => Math.round(Number(m))).filter((m) => m >= 1 && m <= 12);
@@ -2307,15 +2331,8 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   };
   for (const gl of [...lines.keys()]) if (gl !== '6112') fitLine(gl);
   // another property's monthly curve on the line's own total (inputs.shapeFromGl, spec §4): after the line's formula and
-  // its fit, before the fee and the quarter shift; never a locked line, a contract or a zeroed / dropped line
-  for (const [gl, sh] of Object.entries(src.shapeGl || {})) {
-    const ln = lines.get(gl); const d: any = ln?.driver || {};
-    if (!ln || ln.override || ['contract', 'zero', 'dropped', 'manual', 'review'].includes(d.method) || !ln.months.some((v) => v)) continue;
-    const out = reshapeToCurve(ln.months, sh.months, startMonth, d.mult || 0);
-    if (!out) continue;
-    ln.months = out;
-    ln.driver = { ...d, shapeFrom: sh.code } as any;
-  }
+  // its fit, before the fee and the quarter shift. buildLines applies it again as one of its last steps (applyShapeFrom).
+  for (const l of applyShapeFrom([...lines.values()], src.shapeGl || {}, startMonth)) lines.set(l.gl_code, l);
 
   /* ---- the delinquency chain (Troy 2026-11-12: "Collection fee is 50% of bad debt recovery. Bad debt recovery is
      based on uncollected debt over 60 days, which stems from Current DQ and Prior Period Collections"): 5110 BAD DEBT
@@ -2462,6 +2479,70 @@ export function perOccupiedMonths(rate: number, units: number, vacPct: Months, s
    what its own formula made; only the months move: month m = total × the donor's share of its year in calendar month m.
    Whole-dollar (or the line's MROUND) months, December absorbing the rounding so the year is exact. `curve` is calendar
    Jan..Dec; the result is in the budget's month order. Null when the donor has nothing to shape with. */
+/* ANOTHER PROPERTY'S CURVE ON EVERY FORMULA (Troy 2026-11-17: "Half the formulas break it. The shape is needed mostly for
+   PHND and FHND, and it is meant to account for seasonality for the 7 months we do not have"). The shape used to be laid
+   on once, in the middle of the generator: anything rebuilt after it (utility recovery, the acquisition plan, the
+   dependent passes) lost it, and every locked line (a row tool, a typed cell, smoothing) was skipped. Now it is one pure
+   pass, applied in the generator and again near the end of buildLines:
+   - a formula line: its year total, re-spread on the donors' curve;
+   - a locked line with a record of its typed months (driver.hard): those months stay as typed, the rest of the year is
+     re-spread on the curve over the other months; a smoothed line counts as nothing typed;
+   - left alone: a locked line with no record of what was typed, contracts, review lines, zero-outs, the delinquency chain,
+     the fee, debt service / interest, and a line carrying a quarter shift (the shift would be undone).
+   A BUDGET WITH MONTHS IT DOES NOT HAVE (`liveIdx`, the months of the T12 the property really posted — PHND / FHND were
+   bought in April, so the T12's other months are fills): its own months stay; the missing months follow the curve at the
+   property's own level — level = its own months' total ÷ the curve's share of those months — so a winter month comes out
+   winter-sized, not the average of the summer it does have. The year total moves with it (the fills were placeholders).
+   The driver records `shapeFrom` and, then, `shapeMissing` (the months filled). Pure. */
+const SHAPE_SKIP = new Set(['contract', 'zero', 'dropped', 'review', 'collections', 'badDebtRecovery', 'collectionFee', 'mgmtPct', 'debtService', 'interest']);
+export function applyShapeFrom(lines: BudgetLine[], shapeGl: Record<string, { code: string; months: Months }>, startMonth: number, opts: { liveIdx?: number[] | null } = {}): BudgetLine[] {
+  if (!shapeGl || !Object.keys(shapeGl).length) return lines;
+  const live = (opts.liveIdx || []).filter((i) => i >= 0 && i < 12);
+  const partial = live.length > 0 && live.length < 12;
+  return lines.map((l) => {
+    const sh = shapeGl[l.gl_code];
+    const d: any = l.driver || {};
+    if (!sh || SHAPE_SKIP.has(d.method) || d.qShift || !l.months.some((v) => v)) return l;
+    let hard: number[] = [];
+    if (l.override) {
+      if (Array.isArray(d.hard)) hard = d.hard;
+      else if (!(d.smooth || d.method === 'smooth')) return l;           // typed, but which months is unknown
+    }
+    if (hard.length >= 12) return l;
+    const mult = Number(d.mult) || Number(l.round) || 0;
+    const cw = (i: number) => Math.max(0, Number(sh.months[(startMonth - 1 + i) % 12]) || 0);
+    if (partial) {
+      // only the months the property does not have; its own months (and any typed month) stay
+      const keep = new Set([...live, ...hard]);
+      const own = live.filter((i) => !hard.includes(i));
+      const wOwn = own.reduce((a, i) => a + cw(i), 0);
+      if (!(wOwn > 0)) return l;
+      const level = own.reduce((a, i) => a + (Number(l.months[i]) || 0), 0) / wOwn;
+      const miss = l.months.map((_, i) => i).filter((i) => !keep.has(i));
+      if (!miss.length) return l;
+      const rnd = (v: number) => (mult ? Math.round(v / mult) * mult : Math.round(v * 100) / 100);
+      const out2 = [...l.months] as Months;
+      for (const i of miss) out2[i] = r2(rnd(level * cw(i))) || 0;
+      return { ...l, months: out2, driver: { ...d, shapeFrom: sh.code, shapeMissing: miss } as any };
+    }
+    let out: Months | null;
+    if (!hard.length) out = reshapeToCurve(l.months, sh.months, startMonth, mult);
+    else {
+      // the typed months stay; the rest of the year goes on the curve over the other months
+      const free = l.months.map((_, i) => i).filter((i) => !hard.includes(i));
+      const rest = r2(free.reduce((a, i) => a + (Number(l.months[i]) || 0), 0));
+      const w = free.map((i) => Math.max(0, Number(sh.months[(startMonth - 1 + i) % 12]) || 0));
+      const ws = w.reduce((a, v) => a + v, 0);
+      if (!(ws > 0)) return l;
+      out = [...l.months] as Months;
+      let cum = 0, prev = 0;
+      free.forEach((i, k) => { cum += (rest * w[k]) / ws; const r = mult ? Math.round(cum / mult) * mult : Math.round(cum * 100) / 100; out![i] = r2(r - prev); prev = r; });
+      out[free[free.length - 1]] = r2(out[free[free.length - 1]] + (rest - prev));
+    }
+    if (!out) return l;
+    return { ...l, months: out, driver: { ...d, shapeFrom: sh.code } as any };
+  });
+}
 export function reshapeToCurve(months: Months, curve: Months, startMonth: number, mult = 0): Months | null {
   const tot = curve.reduce((a, v) => a + Math.max(0, Number(v) || 0), 0);
   if (!(tot > 0)) return null;

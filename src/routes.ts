@@ -7,7 +7,7 @@ import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayro
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
   acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, acqDelinquency, applyT12Adjust, FIXED_ANNUAL_GLS, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
-  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, scalePlanLines, taxFloor, uwDqBundle, fillCalMonths, mgmtFeeOnIncome, mgmtFeeRates, vacancyMonthOverride, fillDeadMonths, capUtilityRecovery, flatFeeBilling, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, scalePlanLines, taxFloor, uwDqBundle, fillCalMonths, mgmtFeeOnIncome, mgmtFeeRates, vacancyMonthOverride, fillDeadMonths, capUtilityRecovery, flatFeeBilling, applyShapeFrom, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
 import { planApply, refileReviewLine, type ApplyRow, type ApplyPlan } from '../shared/reviewApply.js';
@@ -1645,7 +1645,8 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
     // ANNUAL: the property's own statements + the Yardi template rules (shared/annual.ts)
     const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: effectiveRules(inputs, loadAnnualRules() as any, lb.defaultRules) as any, comps: lb.comps, payrollWages: wages, wagesLive: live ? { label: live.label, effective: live.effective, draft: live.draft, monthly: live.monthly as Record<string, Months> } : null, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code, acquisition: lb.acquisition,
       burdenSrc: lb.burdenSrc && lb.burdenSrc.found && String(inputs.burdenFrom || '').toLowerCase() === lb.burdenSrc.code ? { code: lb.burdenSrc.code, actual: lb.burdenSrc.actual, budget: lb.burdenSrc.budget } : null,
-      shapeGl: Object.fromEntries(Object.entries(lb.shapeGlSrc || {}).filter(([gl, d]) => d.codes.length && (inputs.shapeFromGl || {})[gl]?.length).map(([gl, d]) => [gl, { code: d.code, months: d.months }])),
+      // the borrowed curve is laid on once, at the end of buildLines (applyShapeFrom), on the final months
+      shapeGl: {},
       burdenGl: Object.fromEntries(Object.entries(lb.burdenGlSrc || {}).filter(([gl, d]) => d.actual && (inputs.burdenFromGl || {})[gl]?.length).map(([gl, d]) => [gl, { code: d.code, actual: d.actual, budget: d.budget }])) };
     lines = existing ? regenerateAnnual(existing, lb.coa, inputs, src) : generateAnnualLines(lb.coa, inputs, src);
   } else {
@@ -1750,6 +1751,16 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
       const out = fitToT12(l.months, rotate12(lb.actualCal[l.gl_code], Number(inputs.startMonth) || 1), f, l.round || 0);
       return out ? { ...l, months: out, driver: { ...d, fitT12: Math.round(f * 1000) / 1000 } as any } : l;
     });
+  }
+  // another property's curve again, after every pass that rebuilds months (Troy 2026-11-17: "Half the formulas break it")
+  if (lb.annual) {
+    const sg = Object.fromEntries(Object.entries(lb.shapeGlSrc || {}).filter(([gl, d]) => d.codes.length && ((inputs as any).shapeFromGl || {})[gl]?.length).map(([gl, d]) => [gl, { code: d.code, months: d.months }]));
+    // the months the property really has: the T12's months that are not fills from before it was owned (dead / start-up)
+    const MON3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const fillCal = new Set([...(lb.t12Dead || []), ...(lb.t12Startup || [])].map((n) => MON3.indexOf(String(n).slice(0, 3))).filter((i) => i >= 0));
+    const sm = Number(inputs.startMonth) || 1;
+    const liveIdx = fillCal.size ? Array.from({ length: 12 }, (_, i) => i).filter((i) => !fillCal.has((sm - 1 + i) % 12)) : null;
+    lines = applyShapeFrom(lines, sg, sm, { liveIdx });
   }
   lines = vacOv(lines);   // the fit above leans months; a typed month stays typed
   // the acquisition plan is laid over every month above: re-tie the delinquency chain to the 5035 it left
@@ -2309,6 +2320,19 @@ router.post('/budgets/:id/copy-formulas', h(async (req, res) => {
     const row: any = { id: bid, code: String(t.budget.property_code).toUpperCase(), year: Number(t.budget.year), label: t.budget.label || '' };
     if (!t.annual) { budgets.push({ ...row, skipped: 'not an annual budget' }); continue; }
     const { inputs, changed } = copyFormulas(t.budget.inputs || {}, { rules: srcF.rules, secGrowth: srcSec }, gls, sections, { pct, fallbackRules: loadAnnualRules() as any, fill: srcF.fill, fit: srcFit });
+    // the source's curve picks in the copied sections travel too (Troy 2026-11-17)
+    {
+      const srcSh: Record<string, string[]> = (lb.budget.inputs as any)?.shapeFromGl || {};
+      const tgtSh: Record<string, string[]> = { ...((t.budget.inputs as any)?.shapeFromGl || {}) };
+      let moved = false;
+      for (const gl of secGls) {
+        const want = srcSh[gl] && srcSh[gl].length ? srcSh[gl] : null;
+        if (JSON.stringify(want) === JSON.stringify(tgtSh[gl] || null)) continue;
+        if (want) tgtSh[gl] = [...want]; else delete tgtSh[gl];
+        moved = true; if (!changed.includes(gl)) changed.push(gl);
+      }
+      if (moved) (inputs as any).shapeFromGl = tgtSh;
+    }
     if (srcPlan) {
       const before0 = JSON.stringify([...((t.budget.inputs as any)?.offPlan || [])].map(String).sort());
       (inputs as any).offPlan = withOff((t.budget.inputs as any)?.offPlan);

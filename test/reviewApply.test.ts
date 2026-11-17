@@ -119,7 +119,8 @@ describe('re-filing applied REVIEW lines under Contracts & known costs (Troy 202
     const rows = [row({ rowId: 'A047', months: at(3, 2678) }), row({ rowId: 'A048', item: 'Gutter cleaning – Ken\'s Gutters, fall (Oct)', months: at(9, 2678) })];
     const line = [0, 0, 0, 2678, 0, 0, 0, 0, 0, 2678, 0, 0];
     const r = refileReviewLine('6808', line, { rows: { A047: {}, A048: {} }, file: 'ND 2027 Budget Review_2.xlsx' }, rows, [], 1)!;
-    expect(r.months).toEqual(line);
+    // gutters bill in March and November (Troy 2026-11-17: "March and November for gutters"), whatever the row said
+    expect(r.months).toEqual([0, 0, 2678, 0, 0, 0, 0, 0, 0, 0, 2678, 0]);
     expect(r.contracts.map((c) => c.id)).toEqual(['rv-A047', 'rv-A048']);
     expect(r.contracts[0].review!.file).toBe('ND 2027 Budget Review_2.xlsx');
     expect(r.driver.method).toBe('contract');

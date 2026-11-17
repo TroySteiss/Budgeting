@@ -68,7 +68,7 @@ function drvMeta(l) {
   if (l && l.driver && l.driver.deadFill) { const f = l.driver.deadFill; extra.push({ cls: 'drv-t12', tag: `FILLED ${f.months.length} MO`, label: `This line posts every month since closing, but its formula left ${f.months.map((i) => MONTHS[i]).join(', ')} at $0 (the months before closing come from the seller's category totals, which did not carry this GL). ${f.keptTotal ? 'Its year total stays; the months are re-spread' : 'Those months are filled at the line\'s own level'} on ${f.from.match(/^\d{4}/) ? `${f.from} (a comparable line)` : f.from}. Type over a month to set it by hand.` }); }
   if (l && l.driver && l.driver.recoveryCap) { const c = l.driver.recoveryCap; extra.push({ cls: 'drv-man', tag: 'RECOVERY 90%', label: `Utility recovery test (${c.group}${c.group.startsWith('flat fee') ? ' — a flat-fee property: every utility reim but trash and pest, against water, sewer, gas and electric together' : ''}): the reimbursements came to ${(c.ratio * 100).toFixed(1)}% of their expense ($${money(c.expense)}) — over 100% — so this group was reset to ${Math.round(c.to * 100)}% of the expense. This line was $${money(c.was)}.` }); }
   if (l && l.driver && l.driver.taxFloor) { const f = l.driver.taxFloor; extra.push({ cls: 'drv-man', tag: 'FLOOR T12+3%', label: `Taxes never go down: this line's formula came to $${money(f.was)}, under the trailing-12 $${money(f.t12)} × ${(1 + (f.pct || 0.03)).toFixed(2)} = $${money(f.floor)}, so it is raised to that (its monthly pattern kept). Type over the line to set it by hand.` }); }
-  if (l && l.driver && l.driver.shapeFrom) extra.push({ cls: 'drv-base', tag: `SHAPE·${String(l.driver.shapeFrom).toUpperCase()}`, label: `Months on the ${String(l.driver.shapeFrom).toUpperCase()} curve; the year total is this line's own formula (row menu → Monthly shape from another property…)` });
+  if (l && l.driver && l.driver.shapeFrom) extra.push({ cls: 'drv-base', tag: `SHAPE·${String(l.driver.shapeFrom).toUpperCase()}`, label: l.driver.shapeMissing ? `The months this property does not have (${l.driver.shapeMissing.map((i) => (S.bv.monthLabels || MONTHS)[i]).join(', ')}) follow the ${String(l.driver.shapeFrom).toUpperCase()} curve at this property's own level (its own months stay as its formula made them). Row menu → Monthly shape from another property…, or More → Seasonality from another property…` : `Months on the ${String(l.driver.shapeFrom).toUpperCase()} curve; the year total is this line's own formula (row menu → Monthly shape from another property…)` });
   if (l && l.driver && l.driver.fitT12) extra.push({ fit: true, cls: 'drv-t12', tag: `FIT ${Math.round(l.driver.fitT12 * 100)}%`, label: `Months lean ${Math.round(l.driver.fitT12 * 100)}% toward this GL's own trailing-12 months (year total unchanged) — row menu or section header "fit to T12"` });
   // one-time items taken out of this GL's trailing-12 before the formula read it (More → One-time items)
   if (l && l.driver && l.driver.oneTime) extra.push({ cls: 'drv-t12', tag: '−1X', label: `$${money(l.driver.oneTime)} of one-time items taken out of the trailing-12 before this formula read it (More → One-time items out of the T12…)` });
@@ -1424,7 +1424,8 @@ function renderEditor(el) {
       <button data-x="fapply" title="Give this budget a saved formula set. Its own per-line shape / factor choices are replaced by the set's; overrides, dollars, GPR and the vacancy average stay.">☆ Apply a saved formula set…</button>` : ''}
       ${bv.annual ? `<div class="rm-head" style="margin-top:4px">Known costs</div>
       <button data-x="contracts" title="Signed contracts and recurring costs (snow, elevators, SmartRent, annual invoices, a commercial lease…). A line with a contract on it takes the contract amounts instead of its history.">✎ Contracts & known costs…${((bv.budget.inputs || {}).contracts || []).length ? ` (${bv.budget.inputs.contracts.length})` : ''}</button>
-      <button data-x="onetime" title="Take one-time items (an unreversed accrual, a one-off repair, a catch-up bill) out of the trailing-12 before the formulas read it">✂ One-time items out of the T12…${((bv.budget.inputs || {}).t12Adjust || []).length ? ` (${bv.budget.inputs.t12Adjust.length})` : ''}</button>
+      ${bv.annual ? `<button data-x="shapeall" title="Spread every seasonal line (other income, utilities, R&M, admin, marketing…) on another property's monthly curve in one step — e.g. ECND for PHND / FHND's months before they were owned. Each line keeps its own year total.">〰 Seasonality from another property…${Object.keys((bv.budget.inputs || {}).shapeFromGl || {}).length ? ` (${Object.keys(bv.budget.inputs.shapeFromGl).length} lines)` : ''}</button>` : ''}
+      <button data-x="onetime" title=""Take one-time items (an unreversed accrual, a one-off repair, a catch-up bill) out of the trailing-12 before the formulas read it">✂ One-time items out of the T12…${((bv.budget.inputs || {}).t12Adjust || []).length ? ` (${bv.budget.inputs.t12Adjust.length})` : ''}</button>
       <button data-x="feesched" title="Flat-fee utility package by bedroom count: reimbursement income from fee × occupied units, with RUBS leases switching at expiration">⌂ Flat-fee package schedule…</button>
       <button data-x="split" title="Recurring journal split to a companion property (TPND → TPNDC 41.11%)">⇄ Journal split to another property…</button>
       <button data-x="qshift" title="Move NOI share between quarters on the lines you pick (aggressive Q4, conservative Q1…); the year's NOI stays the same. Also on the NOI row's % by quarter.">◫ Shift NOI between quarters…${(bv.budget.inputs || {}).qShift ? ' ✓' : ''}</button>` : ''}
@@ -1447,6 +1448,7 @@ function renderEditor(el) {
       { const fs3 = menu.querySelector('[data-x="fpush"]'); if (fs3) fs3.addEventListener('click', () => openCopyFormulasOut(b)); }
       { const c1 = menu.querySelector('[data-x="contracts"]'); if (c1) c1.addEventListener('click', () => openContracts(b)); }
       { const c2 = menu.querySelector('[data-x="onetime"]'); if (c2) c2.addEventListener('click', () => openOneTime(b)); }
+      { const c3 = menu.querySelector('[data-x="shapeall"]'); if (c3) c3.addEventListener('click', () => openShapeFrom(b, null, null)); }
       { const c3 = menu.querySelector('[data-x="feesched"]'); if (c3) c3.addEventListener('click', () => openFeeSchedule(b)); }
       { const c4 = menu.querySelector('[data-x="split"]'); if (c4) c4.addEventListener('click', () => openAllocSplit(b)); }
       { const c5 = menu.querySelector('[data-x="qshift"]'); if (c5) c5.addEventListener('click', () => openQShift(b, (((bv.budget.inputs || {}).qShift) || {}).targets || [null, null, null, null])); }
@@ -3341,41 +3343,74 @@ function openBurdenFrom(b, gl, acc) {
 }
 /* MONTHLY SHAPE FROM ANOTHER PROPERTY (change spec 2026-11-13 §4, Troy: "ECND curve is generally safe. Please note i said curve,
    not value"): the line keeps its own year total; its months follow the picked properties' trailing-12 curve for this GL. */
+/* MONTHLY SHAPE FROM ANOTHER PROPERTY (change spec §4; Troy 2026-11-17: "I need to be able to apply the curve from other
+   properties more quickly"): for this line, every line in its section, or every seasonal line in the budget in one step.
+   Seasonal lines = other income, concessions, utility income and every expense category but insurance, the fee, taxes and
+   payroll; contracts, review lines, zero-outs and the delinquency chain are left out (their months are their own). */
+const SHAPE_PCODES = new Set(['2', '4', '5', '9', '11', '12', '13', '14']);
+const SHAPE_SKIP_M = new Set(['contract', 'zero', 'dropped', 'review', 'collections', 'badDebtRecovery', 'collectionFee', 'mgmtPct', 'debtService', 'interest']);
+function shapeEligible(scope, section) {
+  const coa = new Map((S.state.coa || []).map((a) => [a.code, a]));
+  return S.bv.lines.filter((l) => {
+    const a = coa.get(l.gl_code);
+    if (!a || a.kind !== 'detail' || !SHAPE_PCODES.has(String(a.pcode)) || !l.months.some((v) => v)) return false;
+    if (SHAPE_SKIP_M.has((l.driver || {}).method)) return false;
+    return scope === 'budget' || (scope === 'section' && a.section === section);
+  }).map((l) => l.gl_code);
+}
 function openShapeFrom(b, gl, acc) {
   const dlg = ensureDlg('sfrom-dlg');
   const inp = S.bv.budget.inputs || {};
   const own = String(b.property_code).toLowerCase();
-  const cur = new Set(((inp.shapeFromGl || {})[gl] || []).map((c) => String(c).toLowerCase()));
+  const sec = acc ? acc.section : null;
+  const secLabel = sec ? String(sec).replace(/_/g, ' ') : '';
+  const cur = new Set(((gl ? (inp.shapeFromGl || {})[gl] : Object.values(inp.shapeFromGl || {})[0]) || []).map((c) => String(c).toLowerCase()));
+  // the usual pick (Troy: "ECND curve is generally safe") when nothing is set yet
+  if (!cur.size && !gl) cur.add('ecnd');
   const withStmt = new Set((S.state.stmtSnapshots || []).filter((x) => x.kind === 'actual').map((x) => String(x.property_code).toLowerCase()));
   const props = (S.state.properties || []).filter((p) => String(p.code).toLowerCase() !== own);
-  const regions = [...new Set(props.map((p) => p.market || 'Other'))].sort();
-  const src = (S.bv.shapeGlSrc || {})[gl];
-  dlg.innerHTML = `<h2>${esc(gl)} ${esc(acc.name || '')}: monthly shape from another property</h2>
-    <p class="muted" style="font-size:12px; margin:0 0 8px">The line's year total stays what its own formula makes. Only the months move: each month = the total × the picked properties' share of their trailing-12 ${esc(gl)} in that calendar month (several are pooled). December takes the rounding. A typed or contract line is never re-spread.</p>
+  const regions = [...new Set(props.map((p) => regionGroup(p.market)))].sort(regionSort);
+  const src = gl ? (S.bv.shapeGlSrc || {})[gl] : null;
+  const nSec = sec ? shapeEligible('section', sec).length : 0, nAll = shapeEligible('budget').length;
+  const nSet = Object.keys(inp.shapeFromGl || {}).length;
+  dlg.innerHTML = `<h2>${gl ? `${esc(gl)} ${esc(acc.name || '')}: monthly shape from another property` : 'Seasonality from another property'}</h2>
+    <p class="muted" style="font-size:12px; margin:0 0 8px">Each line's year total stays what its own formula makes. Only the months move: each month = the total × the picked properties' share of their trailing-12 on the same GL in that calendar month (several are pooled; a property with nothing on that GL is left out). Typed months on a locked line stay as typed; contracts, review lines and the delinquency chain are never re-spread.</p>
     ${src && src.missing && src.missing.length ? `<p class="err" style="font-size:12px">No ${esc(gl)} history on file for ${esc(src.missing.join(', ').toUpperCase())} — left out.</p>` : ''}
-    <div style="max-height:52vh; overflow:auto; border:1px solid var(--line); border-radius:6px; padding:6px 10px">
+    <div class="row" style="gap:14px; margin:0 0 8px; font-size:12.5px">
+      ${gl ? `<label><input type="radio" name="sf-scope" value="line" checked> this line</label>` : ''}
+      ${gl && sec ? `<label><input type="radio" name="sf-scope" value="section"> every line in ${esc(secLabel)} (${nSec})</label>` : ''}
+      <label><input type="radio" name="sf-scope" value="budget" ${gl ? '' : 'checked'}> every seasonal line in the budget (${nAll})</label>
+    </div>
+    <div style="max-height:46vh; overflow:auto; border:1px solid var(--line); border-radius:6px; padding:6px 10px">
       ${regions.map((rg) => {
-        const ps = props.filter((p) => (p.market || 'Other') === rg);
+        const ps = props.filter((p) => regionGroup(p.market) === rg);
         return `<div style="margin:6px 0"><div style="font-weight:700">${esc(rg)}</div>
-          <div style="display:flex; flex-wrap:wrap; gap:4px 14px; margin:3px 0 0 22px">${ps.map((p) => { const c = String(p.code).toLowerCase(), ok = withStmt.has(c); return `<label title="${ok ? '' : 'no actual statement on file'}" class="${ok ? '' : 'muted'}"><input type="checkbox" data-sfp="${esc(c)}" ${cur.has(c) ? 'checked' : ''} ${ok ? '' : 'disabled'}> ${esc(c.toUpperCase())}${p.name && p.name.toLowerCase() !== c ? ` · ${esc(p.name)}` : ''}</label>`; }).join('')}</div></div>`;
+          <div style="display:flex; flex-wrap:wrap; gap:4px 14px; margin:3px 0 0 22px">${ps.map((p) => { const c = String(p.code).toLowerCase(), ok = withStmt.has(c); return `<label title="${ok ? '' : 'no actual statement on file'}" class="${ok ? '' : 'muted'}"><input type="checkbox" data-sfp="${esc(c)}" ${cur.has(c) && ok ? 'checked' : ''} ${ok ? '' : 'disabled'}> ${esc(c.toUpperCase())}${p.name && p.name.toLowerCase() !== c ? ` · ${esc(p.name)}` : ''}</label>`; }).join('')}</div></div>`;
       }).join('')}
     </div>
     <div class="row" style="justify-content:space-between; margin-top:10px">
-      <span>${cur.size ? '<button class="btn sub" id="sf-own">Back to its own months</button>' : ''}</span>
+      <span>${gl && (inp.shapeFromGl || {})[gl] ? '<button class="btn sub" id="sf-own">Back to its own months</button>' : ''}${nSet ? ` <button class="btn sub" id="sf-own-scope" title="Clear the borrowed curve on every line in the chosen scope">Clear for the scope</button>` : ''}</span>
       <span><button class="btn sub" id="sf-x">Cancel</button> <button class="btn" id="sf-save">Save &amp; recalculate</button></span>
     </div>`;
-  const save = async (codes) => {
+  const scopeGls = () => {
+    const sc = (dlg.querySelector('input[name="sf-scope"]:checked') || {}).value || 'line';
+    return sc === 'line' ? [gl] : shapeEligible(sc, sec);
+  };
+  const save = async (codes, gls) => {
     const map = { ...(inp.shapeFromGl || {}) };
-    if (codes.length) map[gl] = codes; else delete map[gl];
+    for (const g of gls) { if (codes.length) map[g] = codes; else delete map[g]; }
     dlg.close();
     try { await saveInputs(b, { shapeFromGl: map }); } catch (e) { alert(e.message); }
   };
   dlg.querySelector('#sf-x').addEventListener('click', () => dlg.close());
-  { const o = dlg.querySelector('#sf-own'); if (o) o.addEventListener('click', () => save([])); }
+  { const o = dlg.querySelector('#sf-own'); if (o) o.addEventListener('click', () => save([], [gl])); }
+  { const o = dlg.querySelector('#sf-own-scope'); if (o) o.addEventListener('click', () => { const gls = scopeGls(); if (confirm(`Put ${gls.length} line(s) back on their own months?`)) save([], gls); }); }
   dlg.querySelector('#sf-save').addEventListener('click', () => {
     const codes = [...dlg.querySelectorAll('[data-sfp]:checked')].map((c) => c.dataset.sfp);
     if (!codes.length) { alert('Tick at least one property, or go back to its own months.'); return; }
-    save(codes);
+    const gls = scopeGls();
+    if (!gls.length) { alert('No seasonal lines in that scope.'); return; }
+    save(codes, gls);
   });
   dlg.showModal();
 }

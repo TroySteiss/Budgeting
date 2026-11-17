@@ -2551,3 +2551,68 @@ describe('flat-fee properties: one recovery group, trash and pest left out (Troy
     expect(over.lines.find((l) => l.gl_code === '5169')!.months[0]).toBe(3000);
   });
 });
+
+import { applyShapeFrom } from '../shared/annual.js';
+describe('another property\'s curve on every formula (Troy 2026-11-17: "Half the formulas break it")', () => {
+  const curve = [12, 11, 10, 8, 6, 5, 5, 5, 6, 8, 10, 14] as Months;               // winter-heavy donor (sums to 100)
+  const sg = { '6604': { code: 'ECND', months: curve } };
+  const ln = (driver: any, extra: Partial<BudgetLine> = {}): BudgetLine => ({ gl_code: '6604', months: Array(12).fill(1000) as Months, driver, override: false, note: '', ...extra });
+  it('a formula line keeps its total on the curve; a locked line keeps its typed months and spreads the rest', () => {
+    const f = applyShapeFrom([ln({ method: 'baseline', shape: 'flat' })], sg, 1)[0];
+    expect(sum(f.months)).toBeCloseTo(12000, 2);
+    expect(f.months[0]).toBeCloseTo(1440, 0);                                         // 12% of the year in January
+    expect((f.driver as any).shapeFrom).toBe('ECND');
+    const typed = applyShapeFrom([ln({ method: 'baseline', revised: true, hard: [6] }, { override: true, months: [1000, 1000, 1000, 1000, 1000, 1000, 2500, 1000, 1000, 1000, 1000, 1000] as Months })], sg, 1)[0];
+    expect(typed.months[6]).toBe(2500);                                               // the typed July stays
+    expect(sum(typed.months)).toBeCloseTo(13500, 2);
+    expect(typed.months[0]).toBeGreaterThan(typed.months[5]);                         // the rest follows the curve
+    const smooth = applyShapeFrom([ln({ method: 'baseline', smooth: { passes: 1 } }, { override: true })], sg, 1)[0];
+    expect((smooth.driver as any).shapeFrom).toBe('ECND');
+  });
+  it('left alone: a locked line with no record of what was typed, contracts, the chain, a quarter shift', () => {
+    for (const l of [ln({ method: 'baseline' }, { override: true }), ln({ method: 'contract' }), ln({ method: 'collections' }), ln({ method: 'baseline', qShift: { targets: [] } })]) {
+      expect(applyShapeFrom([l], sg, 1)[0]).toBe(l);
+    }
+  });
+  it('a formula set carries the curve picks and gives them to the budget it is applied to', () => {
+    const set = formulaSetFromBudget([ln({ method: 'baseline', shape: 'actual', pct: 0.03 })], { shapeFromGl: { '6604': ['ecnd'], '9999': ['ecnd'] } } as any);
+    expect(set.shapeFromGl).toEqual({ '6604': ['ecnd'] });
+    expect((applyFormulaSet({} as any, set, { id: 1, name: 'x' }) as any).shapeFromGl).toEqual({ '6604': ['ecnd'] });
+    expect((applyFormulaSet({ shapeFromGl: { '6620': ['bcnd'] } } as any, { rules: {}, settings: {} }, { id: 2, name: 'y' }) as any).shapeFromGl).toEqual({ '6620': ['bcnd'] });
+  });
+});
+
+describe('the borrowed curve fills only the months a newly bought property does not have (Troy 2026-11-17: "seasonality for the 7 months we do not have")', () => {
+  const curve = [12, 11, 10, 8, 6, 5, 5, 5, 6, 8, 10, 14] as Months;
+  const sg = { '6604': { code: 'ECND', months: curve } };
+  // PHND-like: owned from May; Jan–Apr and Nov–Dec are fills at the summer average
+  const own = [4, 5, 6, 7, 8, 9];
+  const months = [800, 800, 800, 800, 600, 500, 500, 500, 600, 800, 800, 800] as Months;
+  it('own months stay; the missing months follow the curve at the property\'s own level', () => {
+    const out = applyShapeFrom([{ gl_code: '6604', months, driver: { method: 'baseline' } as any, override: false, note: '' }], sg, 1, { liveIdx: own })[0];
+    expect(own.map((i) => out.months[i])).toEqual([600, 500, 500, 500, 600, 800]);
+    const level = (600 + 500 + 500 + 500 + 600 + 800) / (6 + 5 + 5 + 5 + 6 + 8);
+    expect(out.months[0]).toBeCloseTo(level * 12, 1);                                // a winter-sized January
+    expect(out.months[11]).toBeCloseTo(level * 14, 1);
+    expect((out.driver as any).shapeMissing).toEqual([0, 1, 2, 3, 10, 11]);
+  });
+  it('a full year of its own: the whole year re-spread as before', () => {
+    const out = applyShapeFrom([{ gl_code: '6604', months, driver: { method: 'baseline' } as any, override: false, note: '' }], sg, 1, { liveIdx: null })[0];
+    expect(sum(out.months)).toBeCloseTo(sum(months), 2);
+    expect((out.driver as any).shapeMissing).toBeUndefined();
+  });
+});
+
+describe('gutter contracts bill in March and November (Troy 2026-11-17: "March and November for gutters")', () => {
+  it('spring goes to March, fall to November, whatever months were entered; other contracts untouched', () => {
+    const spring = contractMonths({ vendor: "Ken's Gutters, spring", gl: '6808', kind: 'annual', amount: 4463, billMonth: 4 } as any, 0, 1);
+    expect(spring[2]).toBe(4463); expect(spring[3]).toBe(0);
+    const fall = contractMonths({ vendor: "Ken's Gutters, fall", gl: '6808', kind: 'annual', amount: 4463, billMonth: 10 } as any, 0, 1);
+    expect(fall[10]).toBe(4463); expect(fall[9]).toBe(0);
+    const both = contractMonths({ vendor: 'Gutter cleaning', gl: '6965', kind: 'monthly', per: 'total', amount: 9000, months: [4, 10] } as any, 0, 1);
+    expect(both.map((v, i) => (v ? i + 1 : 0)).filter(Boolean)).toEqual([3, 11]);
+    expect(both[2]).toBe(4500);
+    const snow = contractMonths({ vendor: 'Snow removal', gl: '6818', kind: 'annual', amount: 1000, billMonth: 4 } as any, 0, 1);
+    expect(snow[3]).toBe(1000);
+  });
+});
