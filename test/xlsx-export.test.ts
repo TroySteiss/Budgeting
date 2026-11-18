@@ -44,8 +44,9 @@ describe('Payroll sheet → Budget sheet', () => {
   it('wage rows are inputs, burden rows are Ratio used × TOTAL WAGES, and the Budget sheet reads every payroll row from the Payroll sheet', async () => {
     const a = args('tst');
     const wb = await load(await buildReviewWorkbook(a));
-    expect(wb.worksheets.map((w) => w.name)).toEqual(['Budget Comps', 'Budget', 'Payroll', 'T12', 'Summary', 'Raw Data', 'Formulas']);   // the comps summary is the first tab
-    const pay = wb.getWorksheet('Payroll')!, bud = wb.getWorksheet('Budget')!;
+    // the Yardi budget file's tabs (Troy 2026-11-18: "way too many extra tabs"), Raw Data (org rule), Formulas hidden
+    expect(wb.worksheets.map((w) => w.name)).toEqual(['Budget Worksheet', 'Payroll', 'Summary', 'Raw Data', 'Formulas']);
+    const pay = wb.getWorksheet('Payroll')!, bud = wb.getWorksheet('Budget Worksheet')!;
     const rW = rowOfCode(pay, '6402'), rB = rowOfCode(pay, '6418'), rM = rowOfCode(pay, '6404');
     expect(rW && rB && rM).toBeTruthy();
     // roster wages flat, no March step: 36,000 / 12
@@ -74,7 +75,7 @@ describe('Payroll sheet → Budget sheet', () => {
     expect(String(bud.getCell(bB, 3).value)).toContain('→ Payroll sheet');
     // a non-payroll row shows its own arithmetic on the T12 sheet and its increase factor (2026-11-18), not the Payroll sheet
     const b6604 = rowOfCode(bud, '6604');
-    expect(formulaOf(bud.getCell(b6604, 5))).toContain(`'T12'!E${b6604}*(1+$D${b6604})`);
+    expect(formulaOf(bud.getCell(b6604, 5))).toContain(`'Raw Data'!J${b6604}*(1+$D${b6604})`);
     // the historicals sit below the budget block
     let histHead = 0;
     pay.eachRow((row, n) => { if (!histHead && String(row.getCell(2).value || '').startsWith('T12 actuals — by calendar month')) histHead = n; });
@@ -120,28 +121,35 @@ describe('Budget Comps sheet (the budget-comps summary panel) and the Schedule',
       refs: [...(a.refs || []), { key: 'ann4', label: '4 mo annualized', period: '', ...refColumn(Object.fromEntries(Object.entries(actual).map(([g, m]) => [g, m[0] * 12 * k]))) }],
       noiTrend: [{ label: 'Aug.', noi: null }, { label: 'Sep.', noi: Math.round(noi * 0.98) }, { label: 'Oct.', noi }] };
   };
-  it('every line is a live formula into the Budget sheet / Raw Data and its cached result matches the budget', async () => {
+  it('a property workbook has no Budget Comps tab; its Summary is the Yardi file\'s account summary off the Budget Worksheet', async () => {
     const a = withTrend('tst', 'Minot ND', 1.02);
-    const wb = await load(await buildReviewWorkbook(a));
-    const x = wb.getWorksheet('Budget Comps')!, bud = wb.getWorksheet('Budget')!;
-    expect(String(x.getCell('C3').value)).toBe('Oct. 25 T12');
-    const r5070 = rowOfCode(bud, '5070'), r6116 = rowOfCode(bud, '6116'), r6470 = rowOfCode(bud, '6470');
-    expect(formulaOf(x.getCell('C8'))).toBe(`+Budget!T${r5070}`);          // T12 actuals column
-    expect(formulaOf(x.getCell('E8'))).toBe(`+Budget!R${r5070}`);          // the budget's annual column
-    expect(formulaOf(x.getCell('E13'))).toBe(`+Budget!R${r6116}`);
-    expect(formulaOf(x.getCell('E16'))).toBe(`+Budget!R${r6470}`);
-    expect(formulaOf(x.getCell('D8'))).toMatch(/^\+'Raw Data'!B\d+$/);     // four months annualized
-    expect(resultOf(x.getCell('C8'))).toBeCloseTo(resultOf(bud.getCell(r5070, 20)), 2);
-    expect(resultOf(x.getCell('E8'))).toBeCloseTo(resultOf(bud.getCell(r5070, 18)), 2);
-    // NOI = income - expense, and it equals the budget's own NOI line
-    expect(formulaOf(x.getCell('E26'))).toBe('E10-E23');
-    expect(resultOf(x.getCell('E26'))).toBeCloseTo(resultOf(bud.getCell(rowOfCode(bud, '7280'), 18)), 0);
-    expect(resultOf(x.getCell('C26'))).toBeCloseTo(refColumn(actual).totals['7280'], 0);
-    // the workbook's fills: blue T12, green T4
-    expect((x.getCell('C8').fill as any).fgColor.argb).toBe('FFDDEBF7');
-    expect((x.getCell('D8').fill as any).fgColor.argb).toBe('FFE2EFDA');
-    // the import of an edited draft still finds the Budget sheet, not this one
-    expect(/(^| )budget$/i.test('Budget Comps')).toBe(false);
+    const wb = await load(await buildReviewWorkbook({ ...a, inputs: { ...a.inputs, capital: 1000000 } }));
+    expect(wb.getWorksheet('Budget Comps')).toBeUndefined();
+    const sm = wb.getWorksheet('Summary')!, bud = wb.getWorksheet('Budget Worksheet')!;
+    const r5070 = rowOfCode(bud, '5070'), r7280 = rowOfCode(bud, '7280'), r6370 = rowOfCode(bud, '6370'), r6399 = rowOfCode(bud, '6399');
+    expect(String(sm.getCell('B9').value)).toBe('Total Rental Income');
+    expect(formulaOf(sm.getCell('G9'))).toBe(`'Budget Worksheet'!R${r5070}`);
+    expect(formulaOf(sm.getCell('G19'))).toBe(`'Budget Worksheet'!R${r6370}+'Budget Worksheet'!R${r6399}`);   // admin & corporate events
+    expect(resultOf(sm.getCell('E9'))).toBeCloseTo(refColumn(actual).totals['5070'], 0);                     // the trailing 12
+    // NOI = income - total expense, and it equals the budget's own NOI line
+    expect(formulaOf(sm.getCell('G38'))).toBe('G13-G35');
+    expect(resultOf(sm.getCell('G38'))).toBeCloseTo(resultOf(bud.getCell(r7280, 18)), 0);
+    // capital sits at C51 and the Budget Worksheet's C4 reads it; cash on cash off the cash flow
+    expect(sm.getCell('C51').value).toBe(1000000);
+    expect(formulaOf(bud.getCell(4, 3))).toBe('Summary!C51');
+    expect(resultOf(sm.getCell('G52'))).toBeCloseTo(resultOf(sm.getCell('G50')) / 1000000, 6);
+    // goal amounts and expected returns by quarter on the side
+    expect(String(sm.getCell('K8').value)).toBe('GOAL AMOUNTS');
+    expect(resultOf(sm.getCell('L52'))).toBeCloseTo(resultOf(sm.getCell('G50')), 0);
+  });
+  it('TPND: cash on cash counts the companion NOI typed on the journal split (Troy 2026-11-18)', async () => {
+    const a = args('tst');
+    const wb = await load(await buildReviewWorkbook({ ...a, inputs: { ...a.inputs, capital: 1000000, allocOut: { to: 'tpndc', pct: 0.4111, gls: ['6112'], cocNoi: 120000 } } }));
+    const sm = wb.getWorksheet('Summary')!, bud = wb.getWorksheet('Budget Worksheet')!;
+    expect(bud.getCell(4, 20).value).toBe(120000);
+    expect(resultOf(bud.getCell(3, 17))).toBeCloseTo((resultOf(bud.getCell(3, 15)) + 120000) / 1000000, 6);
+    expect(resultOf(sm.getCell('G52'))).toBeCloseTo((resultOf(sm.getCell('G50')) + 120000) / 1000000, 6);
+    expect(resultOf(sm.getCell('E52'))).toBeCloseTo(resultOf(sm.getCell('E50')) / 1000000, 6);   // history: own cash flow
   });
   it('portfolio: a panel per property, a summed Portfolio Comps panel and a Schedule per region with the colour scale', async () => {
     const wb = await load(await buildPortfolioWorkbook([withTrend('aaa', 'Minot ND', 1.02), withTrend('bbb', 'Minot ND', 1.05), withTrend('ccc', 'Williston ND', 1)], 'Test'));
@@ -218,7 +226,7 @@ describe('hard-coded numbers stand out in the workbook', () => {
     const typed = hand.months.findIndex((v) => v), other = hand.months.findIndex((v, i) => v && i !== typed);
     hand.driver = { ...(hand.driver as any), hard: [typed] };
     const wb = await load(await buildReviewWorkbook(a));
-    const bud = wb.getWorksheet('Budget')!;
+    const bud = wb.getWorksheet('Budget Worksheet')!;
     const firstMonth = (gl: string, months: number[]) => bud.getCell(rowOfCode(bud, gl), 5 + months.findIndex((v) => v));
     const fh = firstMonth(hand.gl_code, hand.months).font!, fl = firstMonth(live.gl_code, live.months).font!;
     expect(fh.bold).toBe(true);
@@ -228,11 +236,11 @@ describe('hard-coded numbers stand out in the workbook', () => {
     if (other >= 0) expect(!!bud.getCell(rowOfCode(bud, hand.gl_code), 5 + other).font?.bold).toBe(false);
     // a hand-fixed line with no record of cells (a typed total, Smooth, an import): every month is marked
     delete (hand.driver as any).hard;
-    const wb2 = await load(await buildReviewWorkbook(a)); const bud2 = wb2.getWorksheet('Budget')!;
+    const wb2 = await load(await buildReviewWorkbook(a)); const bud2 = wb2.getWorksheet('Budget Worksheet')!;
     if (other >= 0) expect(bud2.getCell(rowOfCode(bud2, hand.gl_code), 5 + other).font?.bold).toBe(true);
     // a smoothed line is formula-driven, not hard-coded: nothing marked
     hand.driver = { ...(hand.driver as any), smooth: { passes: 2, mult: 5 } };
-    const wb3 = await load(await buildReviewWorkbook(a)); const bud3 = wb3.getWorksheet('Budget')!;
+    const wb3 = await load(await buildReviewWorkbook(a)); const bud3 = wb3.getWorksheet('Budget Worksheet')!;
     expect(!!bud3.getCell(rowOfCode(bud3, hand.gl_code), 5 + typed).font?.bold).toBe(false);
     expect(fl.color?.argb).not.toBe('FFC2185B');
   });
@@ -243,19 +251,19 @@ describe('export → edit → upload round trip (Troy 2026-11-16: "it needs to u
   it('month cells show their math on visible cells; the Formulas sheet is hidden and no cell reads it; changed months are flagged bold red', async () => {
     const a = args('tst');
     const wb = await load(await buildReviewWorkbook(a));
-    const bud = wb.getWorksheet('Budget')!, fx = wb.getWorksheet('Formulas')!, t12 = wb.getWorksheet('T12')!;
+    const bud = wb.getWorksheet('Budget Worksheet')!, fx = wb.getWorksheet('Formulas')!, t12 = wb.getWorksheet('Raw Data')!;
     expect(fx.state).toBe('hidden');
     expect(t12.state).not.toBe('hidden');
     const r = rowOfCode(bud, '6604');
     // the T12 history and the increase factor, both on view: no link to the Formulas sheet anywhere on the Budget sheet
     const f = formulaOf(bud.getCell(r, 5));
-    expect(f).toContain(`'T12'!E${r}*(1+$D${r})`);
+    expect(f).toContain(`'Raw Data'!J${r}*(1+$D${r})`);
     let linksToFormulas = 0;
     bud.eachRow((row) => row.eachCell((c) => { if (/Formulas/i.test(formulaOf(c))) linksToFormulas++; }));
     expect(linksToFormulas).toBe(0);
     expect(Number(resultOf(bud.getCell(r, 5)))).toBeCloseTo(Number(fx.getCell(r, 5).value), 2);   // the tool's number, to the cent
     expect(String(fx.getCell(r, 1).value)).toBe('6604');                                 // same row, GL in column A
-    expect(String(t12.getCell(r, 1).value)).toBe('6604');                                // the T12 sheet lines up row for row
+    expect(String(t12.getCell(r, 8).value)).toBe('6604');                                // the Raw Data T12 block lines up row for row
     // the increase factor is an input: blue
     expect(bud.getCell(6, 4).value).toBe('Increase Factor');
     expect(typeof bud.getCell(r, 4).value).toBe('number');

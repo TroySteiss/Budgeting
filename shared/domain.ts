@@ -117,6 +117,14 @@ export interface AllocOut {
   pct: number;
   gls: string[];
   feeIncome?: { monthly: number; stepMonth?: number | null; stepTo?: number | null; note?: string } | null;
+  /** the companion's NOI for the year, added to this property's cash flow for CASH ON CASH only (Troy 2026-11-18:
+      "TPND COC return needs to reflect commercial income" — the capital bought both, TPNDC's budget is not built here) */
+  cocNoi?: number | null;
+}
+/** The companion NOI a budget's cash on cash counts (TPNDC on TPND), 0 when none is typed. */
+export function companionNoiOf(inputs: { allocOut?: AllocOut | null } | null | undefined): number {
+  const v = Number(inputs?.allocOut?.cocNoi);
+  return Number.isFinite(v) ? v : 0;
 }
 
 export interface BudgetInputs {
@@ -971,10 +979,12 @@ export function rollup(lines: Map<string, Months>): Map<string, Months> {
 export interface Kpis {
   income: number; expense: number; noi: number; interest: number; sp: number;
   principal: number; cashFlow: number; coc: number | null; cocAfterSP: number | null;
+  /** a companion's NOI counted in cash on cash (TPNDC on TPND); the property's own cash flow leaves it out */
+  companionNoi: number;
   monthly: { income: Months; expense: Months; noi: Months; cashFlow: Months };
 }
 
-export function kpis(lines: Map<string, Months>, capital: number): Kpis {
+export function kpis(lines: Map<string, Months>, capital: number, companionNoi = 0): Kpis {
   const t = rollup(lines);
   const g = (c: string): Months => t.get(c) || zero12();
   let principal = zero12();
@@ -987,9 +997,9 @@ export function kpis(lines: Map<string, Months>, capital: number): Kpis {
   const cfM = g('7280').map((v, i) => r2(v - g('7315')[i] - Math.abs(principal[i])));
   return {
     income: sum(g('5500')), expense: sum(g('7279')), noi, interest, sp,
-    principal: principalAbs, cashFlow,
-    coc: capital ? r2((cashFlow / capital) * 10000) / 10000 : null,
-    cocAfterSP: capital ? r2(((cashFlow - sp) / capital) * 10000) / 10000 : null,
+    principal: principalAbs, cashFlow, companionNoi: r2(companionNoi || 0),
+    coc: capital ? r2(((cashFlow + (companionNoi || 0)) / capital) * 10000) / 10000 : null,
+    cocAfterSP: capital ? r2(((cashFlow + (companionNoi || 0) - sp) / capital) * 10000) / 10000 : null,
     monthly: { income: g('5500'), expense: g('7279'), noi: g('7280'), cashFlow: cfM },
   };
 }

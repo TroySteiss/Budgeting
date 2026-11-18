@@ -477,7 +477,14 @@ export async function buildPortfolioWorkbook(sites: ReviewArgs[], portfolioLabel
 function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string): PayrollSheetInfo | null {
   const { coa, lines, inputs, uw, units } = args;
   // cross-sheet reference prefixes — prefixed tab names contain spaces, so quote
-  const BQ = prefix ? `'${prefix}Budget'!` : 'Budget!';
+  /* THE YARDI TEMPLATE LAYOUT (Troy 2026-11-18: "way too many extra tabs ... make it closer to the budget export
+     workbook. Add the summary items"): a property's own Budget Draft has the 2027 Yardi budget file's tabs — Budget
+     Worksheet, Summary (its account summary, goal amounts, management fee, financing, expected returns), Payroll —
+     plus Raw Data (org rule) and the hidden Formulas sheet. No Budget Comps or T12 tab. The all-sites workbook
+     (prefixed tabs, no longer offered in the app) keeps the older layout its Portfolio tab reads. */
+  const template = !prefix && !!args.annual;
+  const budName = template ? 'Budget Worksheet' : `${prefix}Budget`;
+  const BQ = `'${budName}'!`;
   const SQ = prefix ? `'${prefix}Summary'!` : 'Summary!';
   const byGl = new Map(lines.map((l) => [l.gl_code, l]));
   const ordered = [...coa].filter((a) => a.active).sort((a, b) => a.display_order - b.display_order);
@@ -505,10 +512,10 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
 
   // the budget-comps summary (annual budgets): created first so it is the property's first tab;
   // filled at the end, once the Budget rows and the Raw Data sheet it reads exist
-  const wsX = args.annual ? wb.addWorksheet(`${prefix}Budget Comps`, { properties: { tabColor: { argb: 'FF70AD47' } } }) : null;
+  const wsX = args.annual && !template ? wb.addWorksheet(`${prefix}Budget Comps`, { properties: { tabColor: { argb: 'FF70AD47' } } }) : null;
 
   /* ================= Budget sheet ================= */
-  const ws = wb.addWorksheet(`${prefix}Budget`, {
+  const ws = wb.addWorksheet(budName, {
     properties: { tabColor: { argb: 'FF00B0F0' }, defaultRowHeight: 12 },
     views: [{ state: 'frozen', xSplit: 4, ySplit: 6 }],
   });
@@ -578,12 +585,31 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
   kpi(10, 'Interest -', `R${rowOf.get('7315')}`);
   kpi(12, 'Principal -', principalRows.length ? `ABS(${principalRows.map((r) => `R${r}`).join('+')})` : '0');
   kpi(14, 'Cash Flow -', 'I3-K3-M3');
-  kpi(16, 'Cash on Cash -', 'IF($C$4>0,O3/$C$4,"")', PCT);
+  kpi(16, 'Cash on Cash -', 'IF($C$4>0,(O3+$T$4)/$C$4,"")', PCT);
+  {
+    // the template's "Cash on Cash (w SP)", and a companion's NOI counted in cash on cash (TPNDC on TPND, Troy 2026-11-18)
+    const rSP = rowOf.get('7500');
+    const lab = ws.getCell(3, 18); lab.value = 'CoC after SP -'; lab.font = { size: 9, bold: true }; lab.alignment = { horizontal: 'right' };
+    const v = ws.getCell(3, 20); v.value = { formula: `IF($C$4>0,(O3+$T$4-${rSP ? `R${rSP}` : '0'})/$C$4,"")` } as any; v.font = { size: 11, bold: true }; v.numFmt = PCT;
+    const coNoi = Number((inputs as any).allocOut?.cocNoi) || 0;
+    if (coNoi) {
+      const to = String((inputs as any).allocOut?.to || 'companion').toUpperCase();
+      const l4 = ws.getCell(4, 18); l4.value = `${to} NOI -`; l4.font = { size: 8, bold: true }; l4.alignment = { horizontal: 'right' };
+      (l4 as any).note = `${to}'s NOI for the year, counted in cash on cash (the capital bought both). Typed under Journal split in the tool.`;
+      const v4 = ws.getCell(4, 20); v4.value = coNoi; v4.numFmt = CUR; v4.font = INPUT_FONT;
+    }
+    // row 4: monthly averages under each KPI (the template's "monthly av ->")
+    for (const [col, label] of [[4, 'monthly av ->'], [6, 'monthly av ->'], [8, 'monthly av ->'], [10, 'monthly av ->'], [12, 'monthly av ->'], [14, 'Monthly Av -->']] as [number, string][]) {
+      const l = ws.getCell(4, col); l.value = label; l.font = { size: 8, italic: true, color: { argb: 'FF808080' } }; l.alignment = { horizontal: 'right' };
+      const c4 = ws.getCell(4, col + 1); const L3 = ws.getColumn(col + 1).letter;
+      c4.value = { formula: `${L3}3/12` } as any; c4.numFmt = CUR; c4.font = { size: 8 };
+    }
+  }
   ws.getCell(4, 2).value = 'Capital:';
   ws.getCell(4, 2).font = { size: 8, bold: true, color: { argb: 'FF505050' } };
   // capital lives on the Summary (D27 Capital Contributions) — single source
   // of truth, per Troy's edited draft
-  ws.getCell(4, 3).value = { formula: `${SQ}D${S_CAP_ROW}` } as any;
+  ws.getCell(4, 3).value = { formula: template ? `${SQ}C${TS.cap}` : `${SQ}D${S_CAP_ROW}` } as any;
   ws.getCell(4, 3).font = f8b;
   ws.getCell(4, 3).numFmt = CUR;
   // row 5: formula-colour legend (mirrors the app's fills)
@@ -638,8 +664,11 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
   /* ---- the T12 sheet the month formulas read (annual): the history the tool built from, one-time items taken out,
      in the budget's month order, row for row with this sheet ---- */
   const startM = inputs.startMonth || 1;   // also read further down
-  const t12Name = `${prefix}T12`;
-  const TQ = `'${t12Name.replace(/'/g, "''")}'!`;
+  const rawName = `${prefix}Raw Data`;
+  const TQ = `'${rawName.replace(/'/g, "''")}'!`;
+  const T12C = { code: 8, name: 9, m1: 10, total: 22 };   // Raw Data H code, I name, J..U months, V total
+  const t12L = (i: number): string => colLetter(T12C.m1 + ((i + 12) % 12));
+  const t12Tot = colLetter(T12C.total);
   const t12Cal = args.annual && args.payrollHist?.t12 ? applyT12Adjust(args.payrollHist.t12, inputs.t12Adjust).actual : null;
   const hasT12 = (gl: string): boolean => !!t12Cal?.[gl]?.some((v) => v);
   const lastIdx = args.t12End?.month ? ((args.t12End.month - 1) - (startM - 1) + 12) % 12 : null;
@@ -667,12 +696,12 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
         if (!hasT12(a.code) || d.pcts || d.src === 'budget' || d.accrual || d.reTax || d.folded) return null;
         const mult = Number(d.mult) || 0;
         let base: (i: number) => string;
-        if (d.shape === 'flat') base = () => `${TQ}$${colL(C.annual)}${r}/12`;
-        else if (d.shape === 'last') { if (lastIdx == null) return null; const L = colL(C.m1 + lastIdx); base = () => `${TQ}$${L}${r}`; }
-        else if (!d.shape || d.shape === 'actual') base = (i) => `${TQ}${colL(C.m1 + i)}${r}`;
+        if (d.shape === 'flat') base = () => `${TQ}$${t12Tot}${r}/12`;
+        else if (d.shape === 'last') { if (lastIdx == null) return null; const L = t12L(lastIdx); base = () => `${TQ}$${L}${r}`; }
+        else if (!d.shape || d.shape === 'actual') base = (i) => `${TQ}${t12L(i)}${r}`;
         else if (d.shape === 'wavg') {
           // 1-2-1 weighted: twice the month plus the months either side, over 4 (the year wraps)
-          const cell = (i: number) => `${TQ}${colL(C.m1 + ((i + 12) % 12))}${r}`;
+          const cell = (i: number) => `${TQ}${t12L(i)}${r}`;
           base = (i) => `(2*${cell(i)}+${cell(i - 1)}+${cell(i + 1)})/4`;
         } else return null;
         // RMC's Excel weighted average could not wrap: on a January-start budget its January and December are the
@@ -683,8 +712,8 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
         return {
           factor: { value: Number(d.pct) || 0, fmt: '0.0%' },
           month: (i) => {
-            const f = wavgEdge && (i === 0 || i === 11) ? `ROUND(${TQ}${colL(C.m1 + i)}${r}*(1+${D})/10,0)*10` : rnd(`${base(i)}*(1+${D})`, mult);
-            return drift ? rnd(`${f}*${colL(C.m1 + i)}$4`, mult) : f;
+            const f = wavgEdge && (i === 0 || i === 11) ? `ROUND(${TQ}${t12L(i)}${r}*(1+${D})/10,0)*10` : rnd(`${base(i)}*(1+${D})`, mult);
+            return drift ? rnd(`${f}*${colL(C.m1 + i)}$2`, mult) : f;
           },
         };
       }
@@ -726,7 +755,7 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
         // the rate: a typed % as typed, else the T12 ratio worked out on the T12 sheet (the line's T12 over GPR's)
         const typed = inputs.pctGpr?.[a.code];
         const factor = typed != null ? { value: Number(typed), fmt: '0.000%' }
-          : hasT12(a.code) && hasT12('4994') ? { value: 0, formula: `${TQ}$${colL(C.annual)}${r}/${TQ}$${colL(C.annual)}${rG}`, fmt: '0.000%' } : null;
+          : hasT12(a.code) && hasT12('4994') ? { value: 0, formula: `${TQ}$${t12Tot}${r}/${TQ}$${t12Tot}${rG}`, fmt: '0.000%' } : null;
         if (!factor) return null;
         return { factor, month: (i) => `ROUND(${colL(C.m1 + i)}${rG}*${D},2)` };
       }
@@ -881,59 +910,22 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
   // within-year cost drift (history-based expense lines cost a little more late in the year): the month factors
   // the drifted lines' formulas multiply by, off the one input in D4
   if (driftUsed) {
-    const d4 = ws.getCell(4, C.factor);
+    const d4 = ws.getCell(2, C.factor);
     d4.value = driftUsed; d4.numFmt = '"drift "0.0%'; d4.font = { ...INPUT_FONT, size: 8 }; d4.alignment = { horizontal: 'right' };
-    (d4 as any).note = 'Within-year cost drift: the drifted expense lines cost (1 + drift × (month position − ½)) of their level, so late months a little more than early ones. The month factors are in E4:P4.';
+    (d4 as any).note = 'Within-year cost drift: the drifted expense lines cost (1 + drift × (month position − ½)) of their level, so late months a little more than early ones. The month factors are in E2:P2.';
     for (let i = 0; i < 12; i++) {
-      const c4 = ws.getCell(4, C.m1 + i);
-      c4.value = { formula: `1+$D$4*(${i}/11-0.5)`, result: 1 + driftUsed * (i / 11 - 0.5) } as any;
+      const c4 = ws.getCell(2, C.m1 + i);
+      c4.value = { formula: `1+$D$2*(${i}/11-0.5)`, result: 1 + driftUsed * (i / 11 - 0.5) } as any;
       c4.numFmt = '0.0000'; c4.font = { size: 7, color: { argb: 'FF808080' } };
-    }
-  }
-
-  /* ---- T12 sheet: what the month formulas read ---- */
-  if (t12Cal) {
-    const wsT = wb.addWorksheet(t12Name, { properties: { tabColor: { argb: 'FFF4B183' }, defaultRowHeight: 12 }, views: [{ state: 'frozen', xSplit: 2, ySplit: 6 }] });
-    widths.forEach((w, i) => { wsT.getColumn(i + 1).width = w; });
-    wsT.getCell(1, 2).value = `${args.propertyName} — trailing-12 actuals by month`;
-    wsT.getCell(1, 2).font = { size: 12, bold: true };
-    wsT.getCell(2, 2).value = `The history the budget is built from${refA?.period ? ` (${refA.period})` : ''}, in the budget's month order and row for row with the Budget sheet, so a Budget formula such as ='${t12Name}'!E20*(1+$D20) reads the same month here.${(inputs.t12Adjust || []).length ? ' One-time items taken out of the T12 in the tool are taken out here too.' : ''}`;
-    wsT.getCell(2, 2).font = { size: 8, italic: true, color: { argb: 'FF505050' } };
-    const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const end = args.t12End || null;
-    const heads2: [number, string][] = [[C.code, 'GL Code'], [C.name, 'GL Name'], [C.annual, 'T12 Total']];
-    for (let i = 0; i < 12; i++) {
-      const c = (startM - 1 + i) % 12;
-      const yr = end ? (c <= end.month - 1 ? end.year : end.year - 1) : null;
-      heads2.push([C.m1 + i, yr ? `${MON[c]}-${String(yr).slice(2)}` : MON[c]]);
-    }
-    for (const [col, text] of heads2) {
-      const cell = wsT.getCell(6, col);
-      cell.value = text; cell.font = f8b;
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD } };
-      cell.border = { bottom: { style: 'thin' } };
-      cell.alignment = { horizontal: col >= C.m1 ? 'right' : 'left' };
-    }
-    for (const a of ordered) {
-      const r = rowOf.get(a.code)!;
-      wsT.getCell(r, C.code).value = a.code;
-      wsT.getCell(r, C.code).font = { size: 8, color: { argb: 'FF808080' } };
-      wsT.getCell(r, C.name).value = (a.kind === 'detail' ? '    ' : a.kind === 'total' ? '  ' : ' ') + a.name;
-      wsT.getCell(r, C.name).font = a.kind === 'detail' ? f8 : f8b;
-      if (a.kind !== 'detail') continue;
-      const cal = t12Cal[a.code];
-      if (!cal || !cal.some((v) => v)) { wsT.getRow(r).hidden = true; continue; }
-      rotate12(cal, startM).forEach((v, i) => { const cell = wsT.getCell(r, C.m1 + i); cell.value = v || 0; cell.numFmt = CUR; cell.font = f8; });
-      const t = wsT.getCell(r, C.annual);
-      t.value = { formula: `SUM(${colL(C.m1)}${r}:${colL(C.m1 + 11)}${r})`, result: r2(sum(cal)) } as any;
-      t.numFmt = CUR; t.font = f8b;
     }
   }
 
   const payInfo = wsPay ? fillPayrollSheet(wsPay, payName, args, payGls, payRowOf, payWagesRow, payTotalRow, byGl, labels, refA, refB) : null;
 
   /* ================= Summary sheet ================= */
-  const wsS = wb.addWorksheet(`${prefix}Summary`, { properties: { tabColor: { argb: 'FF92D050' } }, views: [{ state: 'frozen', ySplit: 4 }] });
+  const wsS = wb.addWorksheet(`${prefix}Summary`, { properties: { tabColor: { argb: 'FF92D050' } }, views: [{ state: 'frozen', ySplit: template ? 8 : 4 }] });
+  if (template) fillTemplateSummary(wsS, { args, BQ, rowOf, principalRows, budName, colL, monthCol: (i: number) => colL(C.m1 + i) });
+  else {
   [3, 34, 2, 15, 15, 13, 11, 13, 11.6].forEach((w, i) => { wsS.getColumn(i + 1).width = w; });
   wsS.getCell(1, 2).value = args.annual ? `${args.propertyName} FY ${args.year} Budget Analysis` : `${args.propertyName} Year 1 Budget Analysis (${labels[0]} – ${labels[11]})`;
   wsS.getCell(1, 2).font = { size: 12, bold: true };
@@ -1089,10 +1081,47 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
   wsS.getCell(S_FOOT, 8).value = 'Y1 CoC';
   wsS.getCell(S_FOOT, 8).font = { size: 11, bold: true, color: { argb: RED } };
   wsS.getCell(S_FOOT, 8).border = { bottom: { style: 'medium' } };
+  }
 
   /* ================= Raw Data sheet ================= */
-  const wsR = wb.addWorksheet(`${prefix}Raw Data`);
+  const wsR = wb.addWorksheet(rawName);
   [26, 42, 12, 60].forEach((w, i) => { wsR.getColumn(i + 1).width = w; });
+  /* the trailing-12 by month, row for row with the Budget Worksheet (columns H..V): what its month formulas read */
+  if (t12Cal) {
+    wsR.getColumn(T12C.code).width = 8; wsR.getColumn(T12C.name).width = 30;
+    for (let i = 0; i < 12; i++) wsR.getColumn(T12C.m1 + i).width = 11;
+    wsR.getColumn(T12C.total).width = 12;
+    const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const end = args.t12End || null;
+    const t = wsR.getCell(1, T12C.code); t.value = `Trailing-12 actuals by month${refA?.period ? ` (${refA.period})` : ''}`; t.font = { size: 10, bold: true };
+    const n2 = wsR.getCell(2, T12C.code);
+    n2.value = `In the budget's month order, row for row with the ${budName} sheet: a formula such as =${TQ}J20*(1+$D20) there reads this block.${(inputs.t12Adjust || []).length ? ' One-time items taken out of the T12 in the tool are out here too.' : ''}`;
+    n2.font = { size: 8, italic: true, color: { argb: 'FF505050' } };
+    const heads2: [number, string][] = [[T12C.code, 'GL Code'], [T12C.name, 'GL Name'], [T12C.total, 'T12 Total']];
+    for (let i = 0; i < 12; i++) {
+      const c = (startM - 1 + i) % 12;
+      const yr = end ? (c <= end.month - 1 ? end.year : end.year - 1) : null;
+      heads2.push([T12C.m1 + i, yr ? `${MON[c]}-${String(yr).slice(2)}` : MON[c]]);
+    }
+    for (const [col, text] of heads2) {
+      const cell = wsR.getCell(6, col);
+      cell.value = text; cell.font = { size: 8.5, bold: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD } };
+      cell.border = { bottom: { style: 'thin' } };
+    }
+    for (const a of ordered) {
+      if (a.kind !== 'detail') continue;
+      const cal = t12Cal[a.code];
+      if (!cal || !cal.some((v) => v)) continue;
+      const r = rowOf.get(a.code)!;
+      wsR.getCell(r, T12C.code).value = a.code; wsR.getCell(r, T12C.code).font = { size: 8, color: { argb: 'FF808080' } };
+      wsR.getCell(r, T12C.name).value = a.name; wsR.getCell(r, T12C.name).font = { size: 8 };
+      rotate12(cal, startM).forEach((v, i) => { const cell = wsR.getCell(r, T12C.m1 + i); cell.value = v || 0; cell.numFmt = CUR; cell.font = { size: 8 }; });
+      const tc = wsR.getCell(r, T12C.total);
+      tc.value = { formula: `SUM(${colLetter(T12C.m1)}${r}:${colLetter(T12C.m1 + 11)}${r})`, result: r2(sum(cal)) } as any;
+      tc.numFmt = CUR; tc.font = { size: 8, bold: true };
+    }
+  }
   let rrw = 1;
   const rawRow = (vals: any[], bold = false) => {
     vals.forEach((v, i) => { const cell = wsR.getCell(rrw, i + 1); cell.value = v; cell.font = { size: 8.5, bold }; });
@@ -1297,6 +1326,183 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
   }
   return payInfo;
 }
+/* The Summary tab in the 2027 Yardi budget file's layout (Troy 2026-11-18): the account summary by category with the
+   4 months annualized, the trailing 12, the current-year budget and this budget, the increase over the trailing 12
+   (per month and per unit per month) and % change rows; debt service, cash flow, capital and cash on cash (before
+   and after special projects, a companion's NOI counted when one is typed); and the side panel — goal amounts, the
+   management fee, financing and the expected returns by quarter. Every budget figure reads the Budget Worksheet. */
+const TS = { head: 8, cap: 51 };
+function fillTemplateSummary(ws: ExcelJS.Worksheet, o: { args: ReviewArgs; BQ: string; rowOf: Map<string, number>; principalRows: number[]; budName: string; colL: (n: number) => string; monthCol: (i: number) => string }): void {
+  const { args, BQ, rowOf } = o;
+  const refs = args.refs || [];
+  const t4 = refs.find((r) => r.key === 'ann4') || null;
+  const t12 = refs.find((r) => r.key === 'actual') || null;
+  const cy = refs.find((r) => r.key === 'budget') || null;
+  const inputs: any = args.inputs || {};
+  [3, 36, 14, 14, 16, 14, 14, 14, 13, 2, 26, 14, 10].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  const f85 = { size: 8.5 }, f85b = { size: 8.5, bold: true };
+  const fill = (c: ExcelJS.Cell, argb: string) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb } }; };
+  ws.getCell(3, 2).value = `${args.propertyName} FY ${args.year} Budget Analysis`;
+  ws.getCell(3, 2).font = { size: 12, bold: true };
+  ws.getCell(3, 8).value = 'Unit Count:'; ws.getCell(3, 8).font = f85b; ws.getCell(3, 8).alignment = { horizontal: 'right' };
+  ws.getCell(3, 9).value = args.units || 0; ws.getCell(3, 9).font = { size: 10, bold: true };
+  ws.getCell(5, 2).value = args.year; ws.getCell(5, 2).font = f85b;
+  const heads: [number, string][] = [
+    [2, 'Account Summary'],
+    [4, t4 ? `${t4.nMonths || 4} Months Annualized${t4.period ? `\n(${t4.period})` : ''}` : '4 Months Annualized'],
+    [5, `Trailing 12${t12?.period ? `\n(${t12.period})` : ''}`],
+    [6, cy ? cy.label.replace(/^(\d{4}) budget$/i, '$1 Budget') : 'CY Budget'],
+    [7, `${args.year} Budget`],
+    [8, 'Increase over trailing 12 (per month)'],
+    [9, 'Increase -- per unit / per month'],
+  ];
+  for (const [col, t] of heads) {
+    const c = ws.getCell(TS.head, col);
+    c.value = t; c.font = f85b; fill(c, HEAD);
+    c.border = { bottom: { style: 'thin' } };
+    c.alignment = { horizontal: col >= 4 ? 'right' : 'left', wrapText: true, vertical: 'bottom' };
+  }
+  ws.getRow(TS.head).height = 36;
+  const refOf = (ref: RefCol | null, codes: string[]): number | null => (ref ? r2(codes.reduce((a, c) => a + (ref.totals[c] ?? ref.byGl[c] ?? 0), 0)) : null);
+  const budOf = (codes: string[]): string => codes.map((c) => (rowOf.get(c) ? `${BQ}R${rowOf.get(c)}` : '0')).join('+');
+  const rowsAt: Record<string, number> = {};
+  // one account row (+ its % change row under it)
+  const account = (r: number, codes: string[], label: string, opts: { bold?: boolean; pctRow?: boolean; perUnit?: boolean; incr?: boolean } = {}) => {
+    rowsAt[codes[0]] = r;
+    ws.getCell(r, 1).value = codes[0]; ws.getCell(r, 1).font = { size: 8, color: { argb: 'FF808080' } };
+    ws.getCell(r, 2).value = label; ws.getCell(r, 2).font = opts.bold ? f85b : f85;
+    const vals: [number, number | null][] = [[4, refOf(t4, codes)], [5, refOf(t12, codes)], [6, refOf(cy, codes)]];
+    for (const [col, v] of vals) { const c = ws.getCell(r, col); if (v != null) c.value = v; c.numFmt = ACCT; c.font = opts.bold ? f85b : f85; }
+    fill(ws.getCell(r, 5), UWFILL); fill(ws.getCell(r, 6), COMPFILL);
+    const g = ws.getCell(r, 7); g.value = { formula: budOf(codes) } as any; g.numFmt = ACCT; g.font = { ...(opts.bold ? f85b : f85), bold: true };
+    if (opts.incr !== false) {
+      const h = ws.getCell(r, 8); h.value = { formula: `(G${r}-E${r})/12` } as any; h.numFmt = ACCT; h.font = f85;
+      const i = ws.getCell(r, 9); i.value = { formula: `IF($I$3>0,H${r}/$I$3,"")` } as any; i.numFmt = PU; i.font = f85;
+    }
+    if (opts.perUnit) { const h = ws.getCell(r, 8); h.value = { formula: `IF($I$3>0,G${r}/$I$3,"")` } as any; h.numFmt = PU; }
+    if (opts.pctRow !== false) {
+      ws.getCell(r + 1, 2).value = '          % Change'; ws.getCell(r + 1, 2).font = { size: 8, italic: true, color: { argb: 'FF808080' } };
+      for (const col of [4, 5, 6]) {
+        const L = String.fromCharCode(64 + col);
+        const c = ws.getCell(r + 1, col);
+        c.value = { formula: `IF(${L}${r}=0,"",(G${r}-${L}${r})/ABS(${L}${r}))` } as any; c.numFmt = PCT; c.font = { size: 8, italic: true };
+      }
+    }
+  };
+  account(9, ['5070'], 'Total Rental Income');
+  account(11, ['5190'], 'Total Other Income');
+  account(13, ['5500'], 'Total Income', { bold: true });
+  ws.getCell(16, 2).value = 'EXPENSES:'; ws.getCell(16, 2).font = f85b;
+  ws.getCell(16, 8).value = 'Per unit'; ws.getCell(16, 8).font = f85b; ws.getCell(16, 8).alignment = { horizontal: 'right' };
+  const exp: [number, string[], string][] = [
+    [17, ['6170'], 'Fixed Administrative'], [19, ['6370', '6399'], 'Administrative & Corporate Events'], [21, ['6470'], 'Payroll'],
+    [23, ['6570'], 'Marketing'], [25, ['6670'], 'Utilities'], [27, ['6770'], 'In House Maintenance'], [29, ['6870'], 'Exterior/CAM Maintenance'],
+    [31, ['6970'], 'Contract Services'], [33, ['7070'], 'Rehab / Replacement'],
+  ];
+  for (const [r, codes, label] of exp) account(r, codes, label, { perUnit: true, incr: false });
+  // total expense = the category rows (the template's own sum)
+  {
+    const r = 35;
+    ws.getCell(r, 2).value = ' Total Expense'; ws.getCell(r, 2).font = f85b;
+    for (const col of [4, 5, 6, 7]) {
+      const L = String.fromCharCode(64 + col);
+      const c = ws.getCell(r, col);
+      c.value = { formula: exp.map(([er]) => `${L}${er}`).join('+') } as any; c.numFmt = ACCT; c.font = f85b; c.border = { top: { style: 'thin' } };
+    }
+    const h = ws.getCell(r, 8); h.value = { formula: `IF($I$3>0,G${r}/$I$3,"")` } as any; h.numFmt = PU; h.font = f85b;
+    ws.getCell(r + 1, 2).value = '          % Change'; ws.getCell(r + 1, 2).font = { size: 8, italic: true, color: { argb: 'FF808080' } };
+    for (const col of [4, 5, 6]) { const L = String.fromCharCode(64 + col); const c = ws.getCell(r + 1, col); c.value = { formula: `IF(${L}${r}=0,"",($G$${r}-${L}${r})/ABS(${L}${r}))` } as any; c.numFmt = PCT; c.font = { size: 8, italic: true }; }
+  }
+  // NOI
+  {
+    const r = 38;
+    ws.getCell(r, 1).value = '7280'; ws.getCell(r, 1).font = { size: 8, color: { argb: 'FF808080' } };
+    ws.getCell(r, 2).value = 'NOI'; ws.getCell(r, 2).font = { size: 9, bold: true };
+    for (const col of [4, 5, 6, 7]) { const L = String.fromCharCode(64 + col); const c = ws.getCell(r, col); c.value = { formula: `${L}13-${L}35` } as any; c.numFmt = ACCT; c.font = { size: 9, bold: true }; c.border = { top: { style: 'thin' }, bottom: { style: 'thin' } }; fill(c, GRAND); }
+    ws.getCell(r + 1, 2).value = '          % Change'; ws.getCell(r + 1, 2).font = { size: 8, italic: true, color: { argb: 'FF808080' } };
+    for (const col of [4, 5, 6]) { const L = String.fromCharCode(64 + col); const c = ws.getCell(r + 1, col); c.value = { formula: `IF(${L}${r}=0,"",($G$${r}-${L}${r})/ABS(${L}${r}))` } as any; c.numFmt = PCT; c.font = { size: 8, italic: true }; }
+  }
+  // special projects, asset management fee, debt service
+  account(41, ['7500'], 'Special Projects', { pctRow: false, incr: false });
+  if (rowOf.has('8930')) account(42, ['8930'], 'Asset Management Fee', { pctRow: false, incr: false });
+  ws.getCell(44, 2).value = 'Annual Debt Service'; ws.getCell(44, 2).font = f85b;
+  account(45, ['7315'], 'Interest', { pctRow: false, incr: false });
+  // principal: the mortgage lines, shown as paid (negative), as the template
+  const mort: [number, string, string][] = [[46, '3080', 'Mortgage 1'], [47, '3090', 'Mortgage 2'], [48, '3091', 'Mortgage 3']];
+  for (const [r, code, label] of mort) {
+    ws.getCell(r, 1).value = code; ws.getCell(r, 1).font = { size: 8, color: { argb: 'FF808080' } };
+    ws.getCell(r, 2).value = label; ws.getCell(r, 2).font = f85;
+    const val = (ref: RefCol | null): number | null => (ref ? -Math.abs(ref.byGl[code] || 0) : null);
+    for (const [col, v] of [[4, val(t4)], [5, val(t12)], [6, val(cy)]] as [number, number | null][]) { const c = ws.getCell(r, col); if (v != null) c.value = v; c.numFmt = ACCT; c.font = f85; }
+    const g = ws.getCell(r, 7); g.value = { formula: rowOf.get(code) ? `-ABS(${BQ}R${rowOf.get(code)})` : '0' } as any; g.numFmt = ACCT; g.font = f85b;
+  }
+  // cash flow, capital, cash on cash (a companion's NOI counted: TPNDC on TPND)
+  const coNoi = Number(inputs.allocOut?.cocNoi) || 0;
+  const coTo = String(inputs.allocOut?.to || 'companion').toUpperCase();
+  {
+    const r = 50;
+    ws.getCell(r, 2).value = 'Cash Flow'; ws.getCell(r, 2).font = f85b;
+    for (const col of [4, 5, 6, 7]) { const L = String.fromCharCode(64 + col); const c = ws.getCell(r, col); c.value = { formula: `${L}38-${L}45+${L}46+${L}47+${L}48` } as any; c.numFmt = ACCT; c.font = f85b; c.border = { top: { style: 'thin' } }; }
+  }
+  ws.getCell(TS.cap, 2).value = 'Capital Contributions'; ws.getCell(TS.cap, 2).font = f85;
+  ws.getCell(TS.cap, 3).value = Number(inputs.capital) || 0; ws.getCell(TS.cap, 3).numFmt = CUR; ws.getCell(TS.cap, 3).font = INPUT_FONT;
+  ws.getCell(TS.cap - 1, 3).value = coNoi ? `${coTo} NOI in CoC:` : null;
+  if (coNoi) {
+    ws.getCell(TS.cap - 1, 3).font = { size: 8, italic: true }; ws.getCell(TS.cap - 1, 3).alignment = { horizontal: 'right' };
+    // the companion NOI for the budget year, beside capital (the Budget Worksheet's T4 holds the same input)
+    ws.getCell(TS.cap + 3, 2).value = `${coTo} NOI (counted in cash on cash)`; ws.getCell(TS.cap + 3, 2).font = f85;
+    const c = ws.getCell(TS.cap + 3, 7); c.value = { formula: `${BQ}T4` } as any; c.numFmt = ACCT; c.font = f85b;
+  }
+  const coRef = coNoi ? `+${BQ}$T$4` : '';
+  for (const [r, label, sp] of [[52, 'COC Return', false], [53, 'COC after SP', true]] as [number, string, boolean][]) {
+    ws.getCell(r, 2).value = label; ws.getCell(r, 2).font = f85b;
+    for (const col of [4, 5, 6, 7]) {
+      const L = String.fromCharCode(64 + col);
+      const c = ws.getCell(r, col);
+      // the companion's NOI goes on the budget column only (its history is not in this workbook)
+      c.value = { formula: `IF($C$${TS.cap}>0,(${L}50${col === 7 ? coRef : ''}${sp ? `-${L}41` : ''})/$C$${TS.cap},"")` } as any;
+      c.numFmt = PCT; c.font = col === 7 ? { size: 10, bold: true, color: { argb: RED } } : f85b;
+    }
+  }
+
+  /* ---- the side panel ---- */
+  const side = (r: number, label: string, formula: string | number | null, fmt = ACCT, opts: { bold?: boolean; pct?: string } = {}) => {
+    const l = ws.getCell(r, 11); l.value = label; l.font = opts.bold ? f85b : f85;
+    if (formula != null) { const c = ws.getCell(r, 12); c.value = typeof formula === 'number' ? formula : ({ formula } as any); c.numFmt = fmt; c.font = opts.bold ? f85b : f85; }
+    if (opts.pct) { const c = ws.getCell(r, 13); c.value = { formula: opts.pct } as any; c.numFmt = PCT; c.font = f85b; }
+  };
+  const headS = (r: number, t: string) => { const c = ws.getCell(r, 11); c.value = t; c.font = { size: 9, bold: true }; fill(c, HEAD); fill(ws.getCell(r, 12), HEAD); fill(ws.getCell(r, 13), HEAD); };
+  headS(8, 'GOAL AMOUNTS'); ws.getCell(8, 13).value = '% increase'; ws.getCell(8, 13).font = f85b;
+  side(9, 'Trailing 12 Income', 'E13'); side(10, `${args.year} Budget`, 'G13', ACCT, { pct: 'IF(L9=0,"",(L10-L9)/ABS(L9))' });
+  side(12, 'Trailing 12 Expenses', 'E35'); side(13, `${args.year} Budget`, 'G35', ACCT, { pct: 'IF(L12=0,"",(L13-L12)/ABS(L12))' });
+  headS(15, 'NOI');
+  side(16, 'T12 NOI', 'E38'); side(17, `${args.year} Budget`, 'G38', ACCT, { pct: 'IF(L16=0,"",(L17-L16)/ABS(L16))' });
+  side(19, 'T12 (Minus SP)', 'L16-E41'); side(20, `${args.year} Budget (Minus SP)`, 'L17-G41', ACCT, { pct: 'IF(L19=0,"",(L20-L19)/ABS(L19))' });
+  headS(22, 'MANAGEMENT FEE');
+  const feeRow = rowOf.get('6112');
+  side(23, 'Fee % of prior-month income', Number(inputs.mgmtPct) || 0, '0.00%');
+  side(24, `${args.year} management fee`, feeRow ? `${BQ}R${feeRow}` : null);
+  side(25, 'Fee % of budgeted income', feeRow && rowOf.get('5500') ? `IF(${BQ}R${rowOf.get('5500')}=0,"",${BQ}R${feeRow}/${BQ}R${rowOf.get('5500')})` : null, '0.00%');
+  const fi = inputs.allocOut?.feeIncome;
+  if (fi && Number(fi.monthly) > 0) side(26, `${coTo} income in the fee basis`, `${Number(fi.monthly)}*12`, ACCT);
+  headS(33, 'FINANCING');
+  side(34, 'Loan amount', Number(inputs.loan) || null, CUR);
+  side(35, 'Interest rate', Number(inputs.rate) || null, '0.000%');
+  side(36, 'Annual D.S. (interest + principal)', 'G45-G46-G47-G48');
+  headS(47, `Expected Returns (${args.year} Budget)`);
+  ws.getCell(47, 13).value = 'annualized'; ws.getCell(47, 13).font = f85b;
+  const noiR = rowOf.get('7280'), intR = rowOf.get('7315');
+  const sumQ = (rowN: number | undefined, q: number) => (rowN ? `SUM(${BQ}${o.monthCol(q * 3)}${rowN}:${BQ}${o.monthCol(q * 3 + 2)}${rowN})` : '0');
+  const prinQ = (q: number) => o.principalRows.length ? o.principalRows.map((pr) => `ABS(${sumQ(pr, q)})`).join('+') : '0';
+  for (let q = 0; q < 4; q++) {
+    const r = 48 + q;
+    const co = coNoi ? `+${BQ}$T$4/4` : '';
+    side(r, `Q${q + 1} ${args.year}`, `${sumQ(noiR, q)}-${sumQ(intR, q)}-(${prinQ(q)})${co}`, ACCT, { pct: `IF($C$${TS.cap}>0,L${r}/($C$${TS.cap}/4),"")` });
+  }
+  side(52, `${args.year} Avg/Total`, 'SUM(L48:L51)', ACCT, { bold: true, pct: `IF($C$${TS.cap}>0,L52/$C$${TS.cap},"")` });
+  if (coNoi) { ws.getCell(53, 11).value = `Quarters include ${coTo} NOI ÷ 4`; ws.getCell(53, 11).font = { size: 7.5, italic: true, color: { argb: 'FF808080' } }; }
+}
+
 const colLetter = (n: number): string => { let s = ''; while (n > 0) { s = String.fromCharCode(65 + ((n - 1) % 26)) + s; n = Math.floor((n - 1) / 26); } return s; };
 
 /* ================= Payroll sheet =================

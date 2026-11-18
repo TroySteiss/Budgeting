@@ -2757,3 +2757,16 @@ describe('corporate guidance lines stay off the acquisition plan (Troy 2026-11-1
     expect(out.get('6702')!.months).toEqual(Array(12).fill(50));
   });
 });
+
+import { kpis, companionNoiOf } from '../shared/domain.js';
+describe('cash on cash with a companion NOI (Troy 2026-11-18: "TPND COC return needs to reflect commercial income")', () => {
+  it('the companion NOI goes into cash on cash only; the property\'s own cash flow leaves it out', () => {
+    const lines = new Map<string, Months>([['5101', Array(12).fill(10000) as Months], ['6302', Array(12).fill(4000) as Months]]);
+    const own = kpis(lines, 1000000);
+    const both = kpis(lines, 1000000, companionNoiOf({ allocOut: { to: 'tpndc', pct: 0.4111, gls: [], cocNoi: 100000 } }));
+    expect(both.cashFlow).toBe(own.cashFlow);
+    expect(both.companionNoi).toBe(100000);
+    expect(both.coc!).toBeCloseTo(own.coc! + 0.1, 6);
+    expect(companionNoiOf({})).toBe(0);
+  });
+});

@@ -695,7 +695,9 @@ export function parseReviewDraft(buf: Buffer): { code: string | null; year: numb
   /** the Formulas sheet: what each line's formula came to when the file was exported (null = an older export without it) */
   exported: Record<string, number[]> | null } {
   const all = grids(buf);
-  const bSheet = all.find((x) => x.name.trim().toLowerCase() === 'budget')
+  // "Budget Worksheet" (the Yardi-template layout, 2026-11-18), "Budget" (earlier exports), "CWND Budget" (all-sites)
+  const bSheet = all.find((x) => x.name.trim().toLowerCase() === 'budget worksheet')
+    || all.find((x) => x.name.trim().toLowerCase() === 'budget')
     || all.find((x) => / budget$/i.test(x.name.trim()));
   if (!bSheet) throw new Error('No "Budget" tab found — is this a review-workbook draft?');
   const g = bSheet.g;
@@ -716,7 +718,7 @@ export function parseReviewDraft(buf: Buffer): { code: string | null; year: numb
     glFormula[gl] = Array.from({ length: 12 }, (_, i) => cellIsFormula(bSheet.ws, r, 4 + i));
   }
   // the Formulas sheet beside this Budget sheet (same prefix in an all-sites workbook)
-  const prefix = bSheet.name.replace(/budget\s*$/i, '');
+  const prefix = bSheet.name.replace(/budget(\s+worksheet)?\s*$/i, '');
   const fSheet = all.find((x) => x.name.trim().toLowerCase() === `${prefix}formulas`.trim().toLowerCase());
   let exported: Record<string, number[]> | null = null;
   if (fSheet) {
@@ -731,8 +733,11 @@ export function parseReviewDraft(buf: Buffer): { code: string | null; year: numb
   const sSheet = all.find((x) => x.name.trim().toLowerCase() === 'summary') || all.find((x) => / summary$/i.test(x.name.trim()));
   let capital: number | null = null;
   if (sSheet) {
-    const v = sSheet.g[26]?.[3];   // Summary D27 = Capital Contributions
-    if (typeof v === 'number' && v > 0) capital = Math.round(v * 100) / 100;
+    // the Capital Contributions row (template layout: C51; earlier exports: D27): the first number right of its label
+    const r = sSheet.g.findIndex((row) => /capital contributions/i.test(s(row?.[1])));
+    const row = r >= 0 ? sSheet.g[r] : sSheet.g[26];
+    const v = [2, 3, 4].map((c) => row?.[c]).find((x) => typeof x === 'number' && x > 0);
+    if (typeof v === 'number') capital = Math.round(v * 100) / 100;
   }
   return { code, year, glMonths, capital, glFormula, exported };
 }

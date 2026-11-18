@@ -623,12 +623,17 @@ function renderDash(el) {
     const n = selectedIds().length;
     popMenu(e.currentTarget, `
       <div class="rm-head">${n ? `${n} ticked budget${n === 1 ? '' : 's'}` : `All ${yearBudgets.length} of ${year}'s budgets`}</div>
-      <button data-x="pf" title="One workbook: each site's Budget / Summary / Raw Data tabs plus a live Portfolio rollup tab — tick the 4 Bismarck sites for a Bismarck WB, the 2 Jamestown for a JT WB">⬇ Portfolio workbook</button>
+      <button data-x="pf" title="One Budget Draft workbook per property — the same file each budget's own export gives. One budget downloads as its workbook; several come as a zip of separate files (never one combined workbook)">⬇ Budget Draft workbooks (one per property)</button>
       <button data-x="zip" title="ZIP of every export, sorted by report type: Yardi Uploads per year + Budget Drafts — each budget saved as an iteration">⬇ All exports (zip)</button>
       <button data-x="recalc" title="Re-run every formula on the ticked budgets (all of the year's when none is ticked), so a changed default or formula reaches each one. Shows NOI before and after per budget first; hand-typed lines stay; each budget gets a save point.">↻ Recalculate…</button>
       <button data-x="act" title="Partial-month rule off the budget as it sits in Yardi: upload the month-end Property Comparison (Cash) + each property's budget CSV — every CSV comes back with the closed month set 1:1 to what posted">✓ Actualize from Yardi CSVs…</button>`, (menu) => {
       menu.querySelector('[data-x="recalc"]').addEventListener('click', () => { const ids = selectedIds(); openRecalcMany(ids.length ? ids.map(Number) : shownIds()); });
-      menu.querySelector('[data-x="pf"]').addEventListener('click', () => { const ids = selectedIds().length ? selectedIds() : shownIds(); window.open(rUrl(`/api/export/portfolio.xlsx${ids.length ? `?ids=${ids.join(',')}` : ''}`), '_blank'); });
+      // one workbook per property (Troy 2026-11-18: "I do not want conjoined budgets like this")
+      menu.querySelector('[data-x="pf"]').addEventListener('click', () => {
+        const ids = selectedIds().length ? selectedIds() : shownIds();
+        if (!ids.length) return;
+        window.open(rUrl(ids.length === 1 ? `/api/budgets/${ids[0]}/export.xlsx` : `/api/export/drafts.zip?ids=${ids.join(',')}`), '_blank');
+      });
       menu.querySelector('[data-x="zip"]').addEventListener('click', () => { const ids = selectedIds(); const all = ids.length ? ids : shownIds(); if (all.length) window.open(rUrl(`/api/export/bundle.zip?ids=${all.join(',')}`), '_blank'); });
       menu.querySelector('[data-x="act"]').addEventListener('click', () => openActualizeCsv());
     });
@@ -1337,7 +1342,7 @@ function renderEditor(el) {
       ${kpiCard('NOI', k.noi, prop.units)}
       ${kpiCard('Interest', k.interest, prop.units)}
       ${kpiCard(k.sp ? 'Cash flow before SP' : 'Cash flow · no SP budgeted', k.cashFlow, prop.units)}
-      <div class="kpi" title="(NOI − interest − principal) ÷ capital. Special projects are NOT deducted${k.sp ? '' : ' and none are budgeted yet'}${k.principal ? '' : '; no principal is budgeted'}."><div class="lbl">Cash on cash${k.sp ? ' before SP' : ''}</div><div class="val">${k.coc != null ? pctf(k.coc) : '—'}</div><div class="sub">${inp.capital ? 'on ' + money(inp.capital) : 'set capital'}</div></div>
+      <div class="kpi" title="(NOI − interest − principal${k.companionNoi ? ` + ${String((S.bv.allocOut || {}).to || 'companion').toUpperCase()} NOI $${money(k.companionNoi)}` : ''}) ÷ capital. Special projects are NOT deducted${k.sp ? '' : ' and none are budgeted yet'}${k.principal ? '' : '; no principal is budgeted'}."><div class="lbl">Cash on cash${k.sp ? ' before SP' : ''}</div><div class="val">${k.coc != null ? pctf(k.coc) : '—'}</div><div class="sub">${inp.capital ? 'on ' + money(inp.capital) : 'set capital'}</div></div>
     </div>
     <div class="editor${localStorage.getItem('bt-side') === '0' ? ' noside' : ''}" style="--side-w:${sideWidth()}px">
       <div>
@@ -2092,12 +2097,14 @@ function gridHtml(bv, totals) {
         const m = totals.get('7280') || Array(12).fill(0);   // NOI, whichever row this sits under
         const prinM = Array(12).fill(0);
         for (const l of bv.lines || []) { const n = Number(l.gl_code); if (n >= 3080 && n <= 3091) l.months.forEach((v, i) => { prinM[i] += Math.abs(v || 0); }); }
-        const cf = m.map((v, i) => (v || 0) - (intM[i] || 0) - prinM[i]);
+        // a companion's NOI counted in cash on cash (TPNDC on TPND), a twelfth a month
+        const coNoi = Number((bv.allocOut || {}).cocNoi) || 0;
+        const cf = m.map((v, i) => (v || 0) - (intM[i] || 0) - prinM[i] + coNoi / 12);
         const cfY = sumM(cf);
         const pct = (v) => `${(v * 100).toFixed(2)}%`;
         const byQ = S.cocView === 'q';
         const toggle = `<span class="cocview">${['m', 'q'].map((k) => `<button class="rb${(byQ ? 'q' : 'm') === k ? ' on' : ''}" data-cocview="${k}" title="${k === 'm' ? 'By month: each month × 12' : 'By quarter: each quarter × 4'}">${k === 'm' ? 'mo' : 'qtr'}</button>`).join('')}</span>`;
-        const capTxt = cap ? `$${money(cap)} capital${bv.returnsCapital.from === 'uw' ? ' (UW capital to close)' : ''}` : '';
+        const capTxt = cap ? `$${money(cap)} capital${bv.returnsCapital.from === 'uw' ? ' (UW capital to close)' : ''}${coNoi ? `; includes ${String(bv.allocOut.to || 'companion').toUpperCase()} NOI $${money(coNoi)}/yr` : ''}` : '';
         const cells = !cap ? `<td colspan="${monthIdx.length}" class="l muted">no capital on file — set Capital under Assumptions</td>`
           : byQ ? [0, 1, 2, 3].map((q) => {
             const vis = monthIdx.filter((i) => Math.floor(i / 3) === q).length;
@@ -3922,6 +3929,11 @@ function openAllocSplit(b) {
       <div class="fld"><label>to $/mo</label><input id="sp-fto" value="${nv(fi.stepTo)}" style="width:110px"></div>
       <div class="fld"><label>Fee % (of combined income)</label><input id="sp-fee" value="${((inp.mgmtPct || 0) * 100).toFixed(2)}" style="width:70px"></div>
     </div>
+    <h3 style="font-size:13px; margin:12px 0 4px">Companion NOI in cash on cash</h3>
+    <p class="muted" style="font-size:12px; margin:0 0 8px">The capital bought both (TPND + TPNDC), so cash on cash counts the companion's NOI for the year on top of this property's cash flow. Blank = this property only.</p>
+    <div class="row" style="gap:12px">
+      <div class="fld"><label>Companion NOI $/yr</label><input id="sp-coc" value="${nv(cur.cocNoi)}" style="width:120px"></div>
+    </div>
     <p class="muted" id="sp-fee-warn" style="font-size:12px; margin:4px 0 0; color:var(--warn, #b45309)"></p>
     <div class="row" style="justify-content:space-between; margin-top:10px">
       <span>${inp.allocOut !== undefined ? '<button class="btn sub" id="sp-def" title="Forget this budget\'s own setting">Use site default</button>' : ''} <button class="btn sub" id="sp-off">Turn off</button></span>
@@ -3943,7 +3955,8 @@ function openAllocSplit(b) {
     if (!to || !(pct > 0 && pct < 1) || !gls.length) { alert('Enter a property, a share between 0 and 100%, and at least one GL.'); return; }
     const monthly = num$('#sp-fi'), stepMonth = Math.round(num$('#sp-fsm')), stepTo = num$('#sp-fto');
     if (stepTo && !(stepMonth >= 1 && stepMonth <= 12)) { alert('Enter the month (1–12) the companion income steps up.'); return; }
-    const allocOut = { to, pct, gls, ...(monthly > 0 ? { feeIncome: { monthly, ...(stepTo > 0 ? { stepMonth, stepTo } : {}) } } : {}) };
+    const cocNoi = num$('#sp-coc');
+    const allocOut = { to, pct, gls, ...(monthly > 0 ? { feeIncome: { monthly, ...(stepTo > 0 ? { stepMonth, stepTo } : {}) } } : {}), ...(cocNoi ? { cocNoi } : {}) };
     const patch = { allocOut };
     const fee = num$('#sp-fee') / 100;
     if (Math.abs(fee - (inp.mgmtPct || 0)) > 1e-7) patch.mgmtPct = fee;   // only when it was changed here

@@ -22,6 +22,7 @@ import {
   calendarSlice, monthLabels, applyRounding, zero12, r2, sum, rollup, rotate12, CURVES, WAGE_GLS, type Lease, type SellerUtilRow,
   actualizeFromComparison, applyActuals, injectPreStartActuals, ownershipIndexOf, actualKey, parseActualKey, type ActualizedMonth,
   calYearOf, calMonthOf,
+ companionNoiOf,
 } from '../shared/domain.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -110,7 +111,7 @@ router.get('/state', h(async (_req, res) => {
   for (const b of budgets.rows as any[]) {
     const ls = byBudget.get(b.id) || [];
     const monthsMap = new Map(ls.map((l: any) => [l.gl_code, l.months]));
-    const k = kpis(monthsMap as any, Number(b.inputs?.capital) || 0);
+    const k = kpis(monthsMap as any, Number(b.inputs?.capital) || 0, companionNoiOf(b.inputs));
     let uw: any = b.uw_snapshot_id ? uwById.get(b.uw_snapshot_id) : null;
     let refLabel = 'UW';
     let guide: any = null;
@@ -1352,7 +1353,7 @@ function compareOf(lb: LoadedBudget, lines: BudgetLine[]) {
   cat.egi = { ref: t.egi.uw, bud: t.egi.budget };
   cat.toe = { ref: t.toe.uw, bud: t.toe.budget };
   cat.noi = { ref: t.noi.uw, bud: t.noi.budget };
-  const k = kpis(new Map(lines.map((l) => [l.gl_code, l.months])), Number(lb.budget.inputs?.capital) || 0);
+  const k = kpis(new Map(lines.map((l) => [l.gl_code, l.months])), Number(lb.budget.inputs?.capital) || 0, companionNoiOf(lb.budget.inputs));
   const gr = uwOn && lb.y1Plan ? uwGuide(lb, lines) : lb.annual && lb.actualCal ? guidanceCheck({ lines, coaList: lb.coa, t12: lb.actualCal, cyBudget: lb.budgetCal, lastMonth: lb.lastMonth || 10,
     startMonth: Number(lb.budget.inputs?.startMonth) || 1, units, capital: Number(lb.budget.inputs?.capital) || 0, guidance: lb.guidance, insurancePerUnit: uwInsuranceRate(lb) }) : null;
   const ovF = lb.lines.filter((l: any) => l.override && l.driver?.method && !['manual', 'setTotal', 'zero'].includes(l.driver.method)).length;
@@ -1395,7 +1396,7 @@ function budgetView(lb: LoadedBudget) {
     actualMonths,
     tieout: computeTieout(lines, lb.coaMap, refOf(lb)),
     monthLabels: monthLabels(lb.budget.year, start),
-    kpis: kpis(monthsMap, Number(lb.budget.inputs?.capital) || 0),
+    kpis: kpis(monthsMap, Number(lb.budget.inputs?.capital) || 0, companionNoiOf(lb.budget.inputs)),
     // the capital the returns row under NOI divides by: the budget's own, else (a new acquisition) the UW capital to close
     returnsCapital: Number(lb.budget.inputs?.capital) > 0 ? { capital: Number(lb.budget.inputs.capital), from: 'budget' }
       : lb.y1Plan?.uw?.capital ? { capital: Number(lb.y1Plan.uw.capital), from: 'uw' }
@@ -3245,6 +3246,37 @@ router.get('/budgets/:id/export.xlsx', h(async (req, res) => {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   // Troy's naming convention: "CWND 2026 Budget Draft TS 08212026.xlsx"
   res.setHeader('Content-Disposition', `attachment; filename="${lb.budget.property_code.toUpperCase()} ${lb.budget.year} Budget Draft ${initialsOf(req.session.username || '')} ${mmddyyyy()}.xlsx"`);
+  res.send(buf);
+}));
+
+/* One Budget Draft workbook PER PROPERTY for the ticked budgets (Troy 2026-11-18, on the Williston portfolio
+   workbook: "I do not want conjoined budgets like this"): a zip of the same file each budget's own export gives,
+   under its own name ("ECND 2027 Budget Draft TS 11182026.xlsx"); each budget is captured as a save point. */
+router.get('/export/drafts.zip', h(async (req, res) => {
+  const ids = String(req.query.ids || '').split(',').map(Number).filter(Boolean);
+  if (!ids.length) return res.status(400).json({ error: 'ids required (comma-separated budget ids)' });
+  const user = req.session.username || '';
+  const ini = initialsOf(user);
+  const stamp = mmddyyyy();
+  const { default: JSZip } = await import('jszip');
+  const zip = new JSZip();
+  let n = 0;
+  for (const id of ids) {
+    const lb = await loadBudget(id);
+    if (!lb) continue;
+    const prop = (await query('select * from properties where code=$1', [lb.budget.property_code])).rows[0];
+    let compName = '';
+    if (lb.budget.comp_set_id) compName = (await query('select name from comp_sets where id=$1', [lb.budget.comp_set_id])).rows[0]?.name || '';
+    const wbBuf = await buildReviewWorkbook(reviewArgs(lb, prop, compName));
+    zip.file(`${lb.budget.property_code.toUpperCase()} ${lb.budget.year} Budget Draft ${ini} ${stamp}.xlsx`, wbBuf);
+    await captureExportPoint(lb, user);
+    n++;
+  }
+  if (!n) return res.status(404).json({ error: 'No budgets to export' });
+  const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  logChange(user, 'budget drafts export', { ids });
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="Budget Drafts ${ini} ${stamp}.zip"`);
   res.send(buf);
 }));
 
