@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, formulaOverride, acqTieKeysOf, mgmtFeeRates, summaryColumn, sumSummaryCols, summaryLabels, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
+  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, formulaOverride, acqTieKeysOf, corpGuidanceLine, mgmtFeeRates, summaryColumn, sumSummaryCols, summaryLabels, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
   refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, contractMonths, flatFeeFromSchedule, guidanceCheck, elevatedInsuranceRate, fitToT12, noiQuarters, qShiftTargets, normalizeGuidance, type TemplateData, type AnnualSources,
   refollowMgmtFee,
 } from '../shared/annual.js';
@@ -2679,5 +2679,32 @@ describe('formula sets carry everything a budget was built with (Troy 2026-11-18
     expect(acqTieKeysOf({ ...base, acqTie: { '9': 0.9, '11': 1 }, growthTargets: { '9': -0.02 } } as any)).toEqual([{ key: '9', pct: -0.02 }]);
     expect(acqTieKeysOf(base)).toEqual([]);
     expect(formulaSetFromBudget(built, { ...srcInputs, acqTieKeys: { '13': 0 } }).ties).toEqual([{ key: '13', pct: 0 }]);
+  });
+});
+
+describe('corporate guidance lines stay off the acquisition plan (Troy 2026-11-18: accounting fees overwritten)', () => {
+  const L = (gl: string, method: string, extra: Record<string, any> = {}) => ({ gl_code: gl, months: Array(12).fill(100) as Months, driver: { method }, override: false, note: '', ...extra } as any);
+  it('corporate rates, BudgetSuggestions lines and template zero-outs are guidance; plan / formula lines are not', () => {
+    expect(corpGuidanceLine(L('6102', 'suggested'))).toBe(true);        // accounting
+    expect(corpGuidanceLine(L('6310', 'corpRate'))).toBe(true);         // IT allocations
+    expect(corpGuidanceLine(L('6451', 'zero'))).toBe(true);             // folded into 6310
+    expect(corpGuidanceLine(L('6720', 'zero'))).toBe(false);            // a zero-out on the row is not guidance
+    expect(corpGuidanceLine(L('6702', 'baseline'))).toBe(false);
+    expect(corpGuidanceLine(L('6102', 'suggested', { override: true }))).toBe(false);
+  });
+  it('insurance is guidance at a normal site; an elevated UW rate (CWND / RRND) stays on the plan', () => {
+    expect(corpGuidanceLine(L('6108', 'corpRate'))).toBe(true);
+    expect(corpGuidanceLine(L('6108', 'corpRate'), { elevatedInsurance: true })).toBe(false);
+    expect(corpGuidanceLine(L('6310', 'corpRate'), { elevatedInsurance: true })).toBe(true);
+  });
+  it('on the skip list, the plan leaves the guidance months alone and lays over the rest', () => {
+    const coaX = [{ code: '6102', pcode: '9', kind: 'detail' }, { code: '6702', pcode: '9', kind: 'detail' }] as any;
+    const slice = new Map<string, Months>([['6102', Array(12).fill(900) as Months], ['6702', Array(12).fill(50) as Months]]);
+    const ls = [L('6102', 'suggested'), L('6702', 'baseline')];
+    const skip = new Set(ls.filter((l) => corpGuidanceLine(l)).map((l) => l.gl_code));
+    const out = new Map(applyPlanSlice(ls, coaX, slice, [...Array(12).keys()], () => ({}), skip).map((l) => [l.gl_code, l]));
+    expect(out.get('6102')!.months).toEqual(Array(12).fill(100));
+    expect((out.get('6102')!.driver as any).acq).toBeUndefined();
+    expect(out.get('6702')!.months).toEqual(Array(12).fill(50));
   });
 });

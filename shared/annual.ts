@@ -706,6 +706,18 @@ export function tiltMonths(months: Months, drift: number, mult = 0): Months {
 export const AVG_NZ_GLS = new Set(['5110']);
 /** Template zeroes these (corporate allocation credits; one-time concessions). */
 export const TEMPLATE_ZERO_GLS = new Set(['6451']);
+/** CORPORATE GUIDANCE LINES (Troy 2026-11-18: "A lot of Corp guidance lines are being overwritten in UW heavy templates.
+    For example, accounting fees"): the corporate per-unit / flat rates (insurance, IT, legal, marketing allocations), the
+    corporate BudgetSuggestions amounts (accounting, third-party billing, donations, the software fixed cost) and the
+    template's zero-outs. A budget run off the acquisition plan never lays the plan over them; their gap to UW shows on
+    the compare card. Insurance only at a normal site: an ELEVATED UW rate (CWND / RRND, `elevatedInsuranceRate`) stays on
+    the plan, which carries it. A line edited on the row is not a guidance line (it keeps its own numbers anyway). */
+export function corpGuidanceLine(l: BudgetLine, opts: { elevatedInsurance?: boolean } = {}): boolean {
+  const d = (l.driver || {}) as any;
+  if (l.override) return false;
+  if (l.gl_code === '6108' && opts.elevatedInsurance) return false;
+  return d.method === 'corpRate' || d.method === 'suggested' || (d.method === 'zero' && TEMPLATE_ZERO_GLS.has(l.gl_code));
+}
 /** GLs that take the corporate BudgetSuggestions amounts by default:
     accounting (Yardi + CPA bills), third-party billing, donations (added to
     PY actuals). Other suggestions stay on file for the row tool. */

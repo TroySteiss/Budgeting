@@ -9,7 +9,7 @@ import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayro
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
   acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, acqDelinquency, applyT12Adjust, FIXED_ANNUAL_GLS, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
-  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, formulaOverride, formulaSetGls, scalePlanLines, taxFloor, uwDqBundle, fillCalMonths, mgmtFeeOnIncome, mgmtFeeRates, vacancyMonthOverride, fillDeadMonths, capUtilityRecovery, flatFeeBilling, applyShapeFrom, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, formulaOverride, formulaSetGls, corpGuidanceLine, scalePlanLines, taxFloor, uwDqBundle, fillCalMonths, mgmtFeeOnIncome, mgmtFeeRates, vacancyMonthOverride, fillDeadMonths, capUtilityRecovery, flatFeeBilling, applyShapeFrom, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
 import { planApply, refileReviewLine, type ApplyRow, type ApplyPlan } from '../shared/reviewApply.js';
@@ -1709,6 +1709,10 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
        fee (+38%, the UW's 3% → 4% step), so Sep–Dec 2027 billed ~3.94% of prior-month income under a "3%" label. The fee
        is its own formula: the first-year rate for the 12 months from closing, then the regular rate, on prior-month income. */
     for (const l of ls) if (l.gl_code === '6112' && (l.driver as any)?.method === 'mgmtPct' && !l.override) out.add(l.gl_code);
+    // corporate guidance (accounting, IT, legal, marketing allocations, third-party billing, donations, software, and
+    // insurance at a normal site) is never laid over (Troy 2026-11-18); an elevated UW insurance rate stays on the plan
+    const elevatedInsurance = uwInsuranceRate(lb) != null;
+    for (const l of ls) if (corpGuidanceLine(l, { elevatedInsurance })) out.add(l.gl_code);
     for (const [gl, v] of Object.entries(inputs.burdenFromGl || {})) if ((v || []).length) out.add(gl);
     const own = String(lb.budget.property_code || '').toLowerCase();
     const borrowAll = !!inputs.burdenFrom && String(inputs.burdenFrom).toLowerCase() !== own;
