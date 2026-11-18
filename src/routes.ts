@@ -1365,6 +1365,8 @@ function compareOf(lb: LoadedBudget, lines: BudgetLine[]) {
     ins6108: lb.annual && t12 ? Number(t12.byGl['6108'] || 0) : 0,
     uwInsurance: uwInsuranceRate(lb),
     income: k.income, expense: k.expense, noi: k.noi, coc: k.coc, capital: Number(lb.budget.inputs?.capital) || 0,
+    // special projects (7321-7499): the budget's total, and what the T12 posted (Troy 2026-11-18: SP on the Summary)
+    sp: k.sp, spRef: lb.annual && t12 ? Object.entries(t12.byGl || {}).reduce((a, [gl, v]) => (+gl > 7320 && +gl < 7500 ? a + (Number(v) || 0) : a), 0) : null,
     startMonth: Number(lb.budget.inputs?.startMonth) || 1,
     overrides: lb.lines.filter((l) => l.override).length, overridesFormula: ovF,
     savePoints: (lb.savePoints || []).length,

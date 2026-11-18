@@ -6,7 +6,7 @@ const REGIONS_UI = { nd: 'North Dakota', kc: 'KC East' };   // keys mirror REGIO
 const S = {
   auth: null,          // {authed, username, isAdmin, appTitle}
   state: null,         // {coa, portfolios, properties, budgets, uwSnapshots, compSets, rentSnapshots}
-  view: 'dash',        // dash | uploads | editor | settings
+  view: 'summary',     // summary (the main page, Troy 2026-11-18) | dash | uploads | editor | settings
   bv: null,            // budget view payload {budget, lines, tieout, kpis, uw, compWeights}
   showZero: false,
   // the seller T12 rows under the grid's subtotals (a new acquisition), remembered per browser
@@ -304,7 +304,7 @@ async function switchRegion(r) {
   S.region = r;
   try { localStorage.setItem('bt-region', r); } catch {}
   document.body.dataset.region = r;
-  S.view = 'dash'; S.bv = null; S.pendingRow = null; S.sum = null; S.revRules = null; S.err = '';
+  S.view = 'summary'; S.bv = null; S.pendingRow = null; S.sum = null; S.revRules = null; S.err = '';
   S.undo = { budgetId: null, stack: [] };
   S.upload = { kind: 'yardi_template', files: [], parsed: null, busy: false, msg: '', err: '' };
   S.pay = { st: null, cycle: null, cycleId: null, region: '*', iterId: null, compare: true, loading: false, err: '', msg: '', newCycle: false };
@@ -367,9 +367,9 @@ function render() {
         ${Object.entries(REGIONS_UI).map(([k, label]) => `<button data-region="${k}" class="${S.region === k ? 'on' : ''}" aria-pressed="${S.region === k}">${esc(label)}</button>`).join('')}
       </span>
       <nav>
+        <button data-v="summary" class="${S.view === 'summary' ? 'on' : ''}" title="The main page: every budget for the year, by region, against the T12 / UW and the guidance">Summary</button>
         <button data-v="dash" class="${S.view === 'dash' ? 'on' : ''}">Budgets</button>
         ${S.view === 'editor' && S.bv ? `<span class="crumb">›</span><button data-v="editor" class="on">${esc(S.bv.budget.property_code)} ${S.bv.budget.year}</button>` : ''}
-        <button data-v="summary" class="${S.view === 'summary' ? 'on' : ''}" title="Every budget for the year, by region, in the budget-comps layout">Summary</button>
         <button data-v="contracts" class="${S.view === 'contracts' ? 'on' : ''}" title="Every property's contracts for a budget year, changed row by row">Contracts</button>
         <button data-v="uploads" class="${S.view === 'uploads' ? 'on' : ''}">Data</button>
         <button data-v="payroll" class="${S.view === 'payroll' ? 'on' : ''}">Payroll</button>
@@ -6990,17 +6990,26 @@ const SUM_COLS = [
   { k: '5', h: 'Other inc', t: 'Other Income', d: true },
   { k: 'oth', h: 'Other + util', t: 'Total Other + Utility Income', of: ['4', '5'] },
   { k: 'egi', h: 'Total inc', t: 'Total Income (EGI)', big: true },
-  { k: '6', h: 'Insur.', t: 'Insurance' },
-  { k: '7', h: 'Mgmt fee', t: 'Management Fee' },
-  { k: '8', h: 'RE tax', t: 'RE & PP Taxes' },
+  /* condensed groups (Troy 2026-11-18: "Condense sections ... with an option to break out, such as for MGMT fee,
+     Insurance, and RE tax into fixed admin w option to expand into those categories. Same w Maint line items"):
+     a group column (`grp` = its own key) always shows; its members (`in`) show when the group is opened */
+  { k: 'fixed', h: 'Fixed', t: 'Fixed: Insurance + Management Fee + RE & PP Taxes', of: ['6', '7', '8'], grp: 'fixed' },
+  { k: '6', h: 'Insur.', t: 'Insurance', in: 'fixed' },
+  { k: '7', h: 'Mgmt fee', t: 'Management Fee', in: 'fixed' },
+  { k: '8', h: 'RE tax', t: 'RE & PP Taxes', in: 'fixed' },
   { k: '9', h: 'Admin', t: 'Admin & Acct' },
   { k: '10', h: 'Payroll', t: 'Payroll' },
   { k: '11', h: 'Mktg', t: 'Marketing' },
   { k: '12', h: 'Utilities', t: 'Utilities' },
-  { k: '13', h: 'R&M', t: 'R&M' },
-  { k: '14', h: 'Rehab', t: 'Rehab / Reserves' },
+  { k: 'maint', h: 'Maint', t: 'Maintenance: R&M + Rehab / Reserves', of: ['13', '14'], grp: 'maint' },
+  { k: '13', h: 'R&M', t: 'R&M', in: 'maint' },
+  { k: '14', h: 'Rehab', t: 'Rehab / Reserves', in: 'maint' },
   { k: 'toe', h: 'OpEx', t: 'Total OpEx', big: true },
   { k: 'noi', h: 'NOI', t: 'NOI', big: true },
+  // NOI net of the fixed lines (Troy 2026-11-18: "NOI growth net of MGMT fee, RE taxes, and Insurance"): NOI with
+  // insurance, the fee and RE taxes added back (expenses are positive, NOI = EGI - OpEx), so it moves only with what
+  // the site controls. No guidance colour of its own.
+  { k: 'noix', h: 'NOI x-Fix', t: 'NOI before Insurance, Management Fee and RE & PP Taxes (net of the fixed lines)', of: ['noi', '6', '7', '8'], big: true },
 ];
 function sumVal(cat, c) {
   if (!cat) return null;
@@ -7029,6 +7038,14 @@ function sumGuide(G, key, v, r) {
   const g = (v.bud - v.ref) / Math.abs(v.ref);
   const floor = (t, why) => ({ ok: g >= t - GUIDE_EPS, text: `${P(t)} or better (${why})` });
   const ceil = (t, why) => ({ ok: g <= t + GUIDE_EPS, text: `${P(t)} or less (${why})` });
+  // a group: green when every member meets its own guidance
+  const grpCol = SUM_COLS.find((c) => c.grp === key);
+  if (grpCol) {
+    const parts = SUM_COLS.filter((c) => c.in === key).map((c) => ({ c, g: sumGuide(G, c.k, sumVal(cat, c), r) })).filter((x) => x.g);
+    if (!parts.length) return null;
+    const miss = parts.filter((x) => !x.g.ok);
+    return { ok: !miss.length, text: miss.length ? `missed on ${miss.map((x) => x.c.t).join(', ')} (open the group to see each)` : `each of ${parts.map((x) => x.c.t).join(', ')} meets its own` };
+  }
   switch (key) {
     case 'noi': return floor(G.noiPct, 'NOI over the October T12');
     case 'rental': return floor(G.incomePct, 'rental income over the October T12');
@@ -7073,7 +7090,8 @@ function renderSummary(el) {
   if (!S.sumMode) S.sumMode = store('bt-summode') || 'pct';
   if (S.sumDetail == null) S.sumDetail = store('bt-sumdetail') === '1';
   const mode = S.sumMode;
-  const cols = SUM_COLS.filter((c) => S.sumDetail || !c.d);
+  if (!S.sumOpen) { try { S.sumOpen = new Set(JSON.parse(store('bt-sumopen') || '[]')); } catch (e) { S.sumOpen = new Set(); } }
+  const cols = SUM_COLS.filter((c) => (S.sumDetail || !c.d) && (!c.in || S.sumOpen.has(c.in)));
   const pct = (v, dp = 1) => (v == null || !Number.isFinite(v) ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(dp)}%`);
   // growth of the SIGNED reference, as on the compare card: a contra line whose loss grows reads +, like its card row
   const gr = (bud, ref) => (ref ? (bud - ref) / ref : null);
@@ -7111,10 +7129,12 @@ function renderSummary(el) {
       const inn = rg ? rg.ok : null;
       const shown = mode === 'pct' ? pct(g) : mode === 'dlr' ? money(v.bud - v.ref) : mode === 'bud' ? money(v.bud) : money(v.ref);
       const tip = `${c.t}: ${r.kind === 'T12' ? 'T12' : 'UW Y1'} ${money(v.ref)} → budget ${money(v.bud)} (Δ ${money(v.bud - v.ref)}, ${pct(g)})${rg ? ` · guidance: ${rg.text}, ${inn ? 'met' : 'missed'}` : ''}`;
-      return `<td class="${i === 0 ? 'cmp1' : ''} ${c.big ? 'big' : ''} ${inn == null ? '' : inn ? 'gin' : 'gout'}" title="${esc(tip)}">${shown}</td>`;
+      return `<td class="${i === 0 ? 'cmp1' : ''} ${c.big ? 'big' : ''} ${c.grp ? 'sgrp' : ''} ${c.in ? 'sin' : ''} ${inn == null ? '' : inn ? 'gin' : 'gout'}" title="${esc(tip)}">${shown}</td>`;
     }).join('');
   }
   const varCell = (v, kind) => (v == null ? '<td class="muted">—</td>' : `<td class="${Math.abs(v) < 1 ? 'tied' : v < 0 ? 'neg' : ''}" title="vs ${kind === 'T12' ? 'the T12' : 'UW Year 1'}">${Math.abs(v) < 1 ? 'tied' : money(v)}</td>`);
+  // special projects: the budget's dollars in every view; the T12's posted SP on hover
+  const spCell = (sp, spRef) => (sp == null ? '<td class="muted">—</td>' : `<td title="Special projects (7321-7499) budgeted${spRef != null ? `; the T12 posted ${money(spRef)}` : ''}. Cash flow and cash-on-cash are before SP.">${sp ? money(sp) : '<span class="muted">$0</span>'}</td>`);
   const cyCell = (v) => (v == null ? '<td class="muted">—</td>' : `<td class="${v < -GUIDE_EPS ? 'gout' : 'gin'}" title="${v < -GUIDE_EPS ? 'Below the current-year budget NOI (the memo: budgets set lower than the 2026 budget are unlikely to be approved)' : 'NOI at or above the current-year budget'}">${pct(v)}</td>`);
   const guideCell = (r) => {
     if (r.kind !== 'T12' || !r.cat) return '<td class="muted">—</td>';
@@ -7128,11 +7148,11 @@ function renderSummary(el) {
     const ov = c.overrides || 0;
     const annual = p.type === 'annual';
     return `<tr class="click" data-sumopen="${p.id}">
-      <td class="l stick" title="Open the budget"><b class="plink">${esc(p.code)}</b> · <span class="plink">${esc(p.name || '')}</span>${p.stale ? ' <span class="sch-stale" title="Calculated on older formulas: recalc it">⚠</span>' : ''}<div class="muted" style="font-size:10.5px">${p.units ? `${xsNum(p.units)} units` : ''}${p.region ? ` · ${esc(p.region)}` : ''}</div></td>
-      <td class="l"><b>${sm}</b> <span class="muted">${annual ? 'annual' : 'acquisition · UW Y1'}</span><div class="muted" style="font-size:10.5px">${ov ? `${ov} override${ov === 1 ? '' : 's'}` : 'no overrides'}${c.ltlMode === 'leases' ? ' · per-lease LTL' : ''}${c.savePoints ? ` · ${c.savePoints} save pt${c.savePoints === 1 ? '' : 's'}` : ''}</div></td>
+      <td class="l stick" title="Open the budget · ${esc(sm)} ${annual ? 'annual' : 'acquisition (UW Y1)'} · ${ov ? `${ov} override${ov === 1 ? '' : 's'}` : 'no overrides'}${c.savePoints ? ` · ${c.savePoints} save pt${c.savePoints === 1 ? '' : 's'}` : ''}"><b class="plink">${esc(p.code)}</b> · <span class="plink">${esc(p.name || '')}</span>${p.stale ? ' <span class="sch-stale" title="Calculated on older formulas: recalc it">⚠</span>' : ''}<div class="muted" style="font-size:10.5px">${p.units ? `${xsNum(p.units)} units` : ''}${p.region ? ` · ${esc(p.region)}` : ''}${annual ? '' : ' · acquisition'}</div></td>
       <td>${money(r.income)}</td><td>${money(r.expense)}</td><td><b>${money(r.noi)}</b></td>
       ${varCell(r.noiVar, r.kind)}${varCell(r.egiVar, r.kind)}${annual && c.guide && c.guide.kind === 'uw' ? guideDashCell(c.guide).replace('class="gdash', 'class="l gdash') : annual ? guideCell(r) : '<td class="muted">—</td>'}
       ${cmpCells(r, annual && r.kind === 'T12')}
+      ${spCell(c.sp, c.spRef)}
       ${cyCell(r.overCy)}
       <td>${c.coc != null && c.capital ? `${(c.coc * 100).toFixed(1)}%<div class="muted" style="font-size:10.5px">on ${money(c.capital)}</div>` : '—'}</td>
       <td class="l">${esc(p.status || '')}</td><td class="muted">${p.updatedAt ? new Date(p.updatedAt).toLocaleDateString() : ''}</td></tr>`;
@@ -7140,11 +7160,11 @@ function renderSummary(el) {
   function subRow(label, props, cls) {
     const r = rowData(props);
     return `<tr class="${cls}">
-      <td class="l stick">${esc(label)} <span class="muted" style="font-weight:400">· ${props.length} budget${props.length === 1 ? '' : 's'}</span><div class="muted" style="font-size:10.5px; font-weight:400">${xsNum(r.units)} units</div></td>
-      <td class="l muted" style="font-weight:400; font-size:11px">${r.cat && r.nRef < r.n ? `compare columns: ${r.nRef} of ${r.n} (${r.kind === 'T12' ? 'T12-based' : 'UW-based'})` : ''}</td>
+      <td class="l stick">${esc(label)} <span class="muted" style="font-weight:400">· ${props.length} budget${props.length === 1 ? '' : 's'}</span><div class="muted" style="font-size:10.5px; font-weight:400">${xsNum(r.units)} units${r.cat && r.nRef < r.n ? ` · compare: ${r.nRef} of ${r.n} (${r.kind === 'T12' ? 'T12-based' : 'UW-based'})` : ''}</div></td>
       <td>${money(r.income)}</td><td>${money(r.expense)}</td><td>${money(r.noi)}</td>
       ${varCell(r.noiVar, r.kind)}${varCell(r.egiVar, r.kind)}${guideCell(r)}
       ${cmpCells(r, r.kind === 'T12')}
+      ${spCell(props.reduce((a, p) => a + ((p.cmp && p.cmp.sp) || 0), 0), props.some((p) => p.cmp && p.cmp.spRef != null) ? props.reduce((a, p) => a + ((p.cmp && p.cmp.spRef) || 0), 0) : null)}
       ${cyCell(r.overCy)}
       <td>${r.coc != null ? `${(r.coc * 100).toFixed(1)}%` : '—'}</td><td></td><td></td></tr>`;
   }
@@ -7169,9 +7189,12 @@ function renderSummary(el) {
         </div>
       </div>
       ${d.properties.length ? `<div class="sumwrap"><table class="sumtbl">
-        <tr class="grp"><th class="l stick"></th><th colspan="7"></th><th class="cmp1 c" colspan="${cols.length}">Compare to T12 <span style="text-transform:none; font-weight:400">(acquisitions: UW Year 1) · ${modeName}</span></th><th colspan="4"></th></tr>
-        <tr><th class="l stick">Property</th><th class="l">Budget</th><th>Income</th><th>OpEx</th><th>NOI</th><th title="NOI vs the T12 (UW Year 1 for acquisitions)">Δ NOI</th><th title="Total income vs the T12 (UW Year 1 for acquisitions)">Δ EGI</th><th class="l" title="Exec-team guidance: growth over the T12">Guidance</th>
-          ${cols.map((c, i) => `<th class="${i === 0 ? 'cmp1' : ''}" title="${esc(c.t)}">${esc(c.h)}</th>`).join('')}
+        <tr class="grp"><th class="l stick"></th><th colspan="6"></th><th class="cmp1 c" colspan="${cols.length}">Compare to T12 <span style="text-transform:none; font-weight:400">(acquisitions: UW Year 1) · ${modeName}</span></th><th colspan="5"></th></tr>
+        <tr><th class="l stick">Property</th><th>Income</th><th>OpEx</th><th>NOI</th><th title="NOI vs the T12 (UW Year 1 for acquisitions)">Δ NOI</th><th title="Total income vs the T12 (UW Year 1 for acquisitions)">Δ EGI</th><th class="l" title="Exec-team guidance: growth over the T12">Guidance</th>
+          ${cols.map((c, i) => c.grp
+            ? `<th class="${i === 0 ? 'cmp1' : ''} sgrp sgrph" data-sumgrp="${c.grp}" title="${esc(c.t)} · click to ${S.sumOpen.has(c.grp) ? 'condense' : 'break out'}">${S.sumOpen.has(c.grp) ? '▾' : '▸'} ${esc(c.h)}</th>`
+            : `<th class="${i === 0 ? 'cmp1' : ''} ${c.in ? 'sin' : ''}" title="${esc(c.t)}">${esc(c.h)}</th>`).join('')}
+          <th title="Special projects budgeted (7321-7499), in dollars in every view; hover for the T12's posted SP">SP $</th>
           <th title="NOI over the current-year budget (the guidance: never below it)">NOI vs CY bud</th><th>CoC</th><th class="l">Status</th><th class="l">Updated</th></tr>
         ${body}
       </table></div>
@@ -7181,6 +7204,11 @@ function renderSummary(el) {
   el.querySelector('#sum-year').addEventListener('change', (e) => loadSummary(Number(e.target.value)));
   el.querySelector('#sum-refresh').addEventListener('click', () => loadSummary(d.year));
   el.querySelector('#sum-detail').addEventListener('click', () => { S.sumDetail = !S.sumDetail; store('bt-sumdetail', S.sumDetail ? '1' : '0'); render(); });
+  el.querySelectorAll('[data-sumgrp]').forEach((th) => th.addEventListener('click', () => {
+    const g = th.dataset.sumgrp;
+    if (S.sumOpen.has(g)) S.sumOpen.delete(g); else S.sumOpen.add(g);
+    store('bt-sumopen', JSON.stringify([...S.sumOpen])); render();
+  }));
   el.querySelectorAll('[data-summode]').forEach((b) => b.addEventListener('click', () => { S.sumMode = b.dataset.summode; store('bt-summode', S.sumMode); render(); }));
   el.querySelectorAll('[data-sumopen]').forEach((tr) => tr.addEventListener('click', async () => { await openBudget(Number(tr.dataset.sumopen)); }));
   wireView();

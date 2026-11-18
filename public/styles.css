@@ -728,3 +728,9 @@ table.grid tr.header td.secname { box-shadow: none; }
 table.ctreg tr.rgnhead td { background: var(--panel); font-weight: 700; font-size: 12px; padding-top: 10px; border-bottom: 1px solid var(--line); }
 table.ctreg tr.ctprop td { background: var(--soft2); font-size: 12px; }
 table.ctreg tr.draft td { background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+
+/* Summary: condensed groups (Fixed, Maint) and their broken-out members */
+.sumtbl th.sgrph { cursor: pointer; white-space: nowrap; }
+.sumtbl th.sgrph:hover { text-decoration: underline; }
+.sumtbl td.sgrp, .sumtbl th.sgrp { font-weight: 600; }
+.sumtbl td.sin, .sumtbl th.sin { font-size: 11px; opacity: .85; }
