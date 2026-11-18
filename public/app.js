@@ -48,8 +48,17 @@ function acqChip(l, m) {
   const cat = ACQ_CAT[acc.pcode] || ('cat ' + (acc.pcode || '?'));
   const pace = a.pace != null && Math.abs(a.pace - 1) >= 0.005 ? a.pace : null;
   const how = a.turns ? 'the turn curve (lease expirations + 1 month)' : a.hist ? `the property's own history (${a.hist === 'posted+seller' ? 'months posted since closing + the seller T12' : a.hist === 'posted' ? 'posted months' : 'the seller T12'})` : "the Year-1 budget's own monthly pattern";
-  const tag = `UW${a.turns ? '·TURNS' : a.hist ? '·HIST' : ''}${pace && a.fit ? `·${pace > 1 ? '+' : '−'}${Math.round(Math.abs(pace - 1) * a.fit * 100)}%` : ''}${a.tie != null ? '·TIED' : ''}`;
-  const label = `From the acquisition plan, tied to UW: ${cat} = ${n1}/12 of its Year 1${n2 ? ` + ${n2}/12 of it on the UW Year-2 trend (${(((a.trend || 0)) * 100).toFixed(1)}%)` : ''}${pace ? `; level moved ${Math.round((a.fit || 0) * 100)}% toward its pace since closing (${pace > 1 ? '+' : ''}${((pace - 1) * 100).toFixed(1)}% vs UW)` : ''}${a.fit ? `; this GL's share of ${cat} fitted ${Math.round(a.fit * 100)}% to what posted` : ''}. Months on ${how}.${a.tie != null ? ` ${cat} is tied on the compare card: its plan lines ×${Number(a.tie).toFixed(4)} (untie there).` : ''}`;
+  // the chip says WHERE the number comes from, nothing else (Troy 2026-11-18: "The UW-Hist- -13% type chips are massively
+  // confusing and the % makes no sense"). The old % was the pace gap × the fit share, a blend nobody could read. The
+  // hover spells out the level against UW in dollars and the months' pattern.
+  const tag = `UW PLAN${a.tie != null ? ' · TIED' : ''}`;
+  const lvl = pace && a.fit ? (pace - 1) * a.fit : 0;
+  const label = `From the acquisition (UW) plan.
+• Level: ${cat} for the year = ${n1} month${n1 === 1 ? '' : 's'} of UW Year 1${n2 ? ` + ${n2} month${n2 === 1 ? '' : 's'} of Year 1 grown at the UW Year-2 trend (${(((a.trend || 0)) * 100).toFixed(1)}%)` : ''}.${pace ? `
+• Since closing, ${cat} has posted at ${(pace * 100).toFixed(0)}% of the UW pace. With the plan fit at ${Math.round((a.fit || 0) * 100)}%, the level was moved ${lvl >= 0 ? 'up' : 'down'} ${Math.abs(lvl * 100).toFixed(1)}% from UW toward that pace.` : ''}${a.fit ? `
+• This GL's share of ${cat} leans ${Math.round(a.fit * 100)}% toward what actually posted.` : ''}
+• Months follow ${how}.${a.tie != null ? `
+• ${cat} is tied on the compare card: its plan lines ×${Number(a.tie).toFixed(4)} (untie there).` : ''}`;
   return { cls: 'drv-fee', tag, label };
 }
 function drvMeta(l) {
@@ -961,6 +970,18 @@ function newBudgetDialog() {
       dlg.close(); S.nb = null;
       await refreshState();
       S.bv = bv; S.view = 'editor'; render();
+      // a saved set's row-tool lines, smoothing and ties are rebuilt on the new budget's own data (Troy 2026-11-18)
+      if (fset && /^\d+$/.test(String(fset))) {
+        try {
+          const meta = await GET(`/formula-sets/${fset}`);
+          const rp = meta.replay;
+          if (rp && (Object.keys(rp.lines || {}).length || (rp.ties || []).length)) {
+            const out = await replayFormulaSet(bv.budget, rp);
+            render();
+            if (out.skipped.length) alert(`Formula set "${meta.name}": ${out.lines.length} line(s) rebuilt, ${out.smooth.length} smoothed, ${out.ties.length} tie(s).\nNot carried:\n- ${out.skipped.join('\n- ')}`);
+          }
+        } catch (e) { alert(`The budget was made, but replaying the formula set's lines failed: ${e.message}`); }
+      }
     } catch (e) { $('nb-err').textContent = e.message; }
   });
   if (!dlg.open) dlg.showModal();
@@ -2657,8 +2678,10 @@ function openApplyFormulaSet(b) {
   const cur = (S.bv.budget.inputs || {}).rulesFrom || null;
   const sets = (S.state && S.state.formulaSets) || [];
   dlg.innerHTML = `<h2>Apply a saved formula set</h2>
-    <p class="muted" style="font-size:12px; margin:0 0 8px">This budget is on: <b>${cur ? esc(cur.name) : 'no chosen set (the old GRKS default)'}</b>. Applying a set replaces this budget's per-line shape / increase factor / rounding choices and its formula settings with the set's, then recalculates. <b>Kept:</b> hand-typed lines, dollars, GPR, the vacancy average, expirations. One Undo reverses it.</p>
+    <p class="muted" style="font-size:12px; margin:0 0 8px">This budget is on: <b>${cur ? esc(cur.name) : 'no chosen set (the old GRKS default)'}</b>. Applying a set gives this budget the set's line formulas, fits, increase %s, seasonality picks and formula settings, rebuilds the lines a row tool made on the source (WAVG, T3, seller line, Minot $/unit, T12 curve, links to another GL) on <b>this</b> property's own data, smooths the lines the source smoothed, and re-ties the compare-card categories the source tied to this budget's own UW. <b>Kept:</b> hand-typed lines and dollars, GPR, expirations. One Undo reverses it.</p>
     <select id="fs-pick" style="width:100%">${formulaSetOptions('')}</select>
+    <label style="display:block; margin-top:8px; font-size:12.5px" title="Vacancy % (average and single months), the % of GPR lines (DQ, concessions…), prior-period collections, bad debt recovery, collection fee, utility recovery, the acquisition-plan fit and the compare-card targets, as the source had them"><input type="checkbox" id="fs-assume" checked> Also the assumption %s: vacancy, DQ, collections, recovery, fee, plan fit, targets</label>
+    <div id="fs-out" style="margin-top:8px"></div>
     ${S.auth && S.auth.isAdmin && sets.length ? `<div style="margin-top:8px; font-size:12px" class="muted">Saved sets: ${sets.map((x) => `${esc(x.name)} <button class="rb" data-fsdel="${x.id}" title="Delete this saved set — budgets already on it keep their copy">🗑</button>`).join(' · ')}</div>` : ''}
     <div class="err" id="fs-err"></div>
     <div class="row" style="justify-content:flex-end; margin-top:10px"><button class="btn sub" id="fs-x">Cancel</button> <button class="btn" id="fs-go">Apply &amp; recalculate</button></div>`;
@@ -2670,8 +2693,19 @@ function openApplyFormulaSet(b) {
   dlg.querySelector('#fs-go').addEventListener('click', async () => {
     const v = dlg.querySelector('#fs-pick').value;
     if (!v) { dlg.querySelector('#fs-err').textContent = 'Pick a formula set.'; return; }
-    try { pushUndo(); S.bv = await POST(`/budgets/${b.id}/formula-set`, { formulaSet: v }); dlg.close(); render(); }
-    catch (e) { dlg.querySelector('#fs-err').textContent = e.message; }
+    const go = dlg.querySelector('#fs-go');
+    go.disabled = true; go.textContent = 'Applying…';
+    try {
+      pushUndo();
+      const r = await POST(`/budgets/${b.id}/formula-set`, { formulaSet: v, assume: dlg.querySelector('#fs-assume').checked });
+      const rp = r.setReplay; delete r.setReplay; S.bv = r;
+      go.textContent = 'Rebuilding lines…';
+      const out = await replayFormulaSet(b, rp);
+      render();
+      dlg.querySelector('#fs-out').innerHTML = replayReportHtml(rp, out);
+      go.remove(); dlg.querySelector('#fs-x').textContent = 'Close';
+      dlg.querySelector('#fs-pick').disabled = true; dlg.querySelector('#fs-assume').disabled = true;
+    } catch (e) { dlg.querySelector('#fs-err').textContent = e.message; go.disabled = false; go.textContent = 'Apply & recalculate'; }
   });
   dlg.showModal();
 }
@@ -5425,6 +5459,116 @@ function openOverridesAudit(b) {
    data (its seller statement, comps scaled to its units), so nothing from the
    source property carries over. Fixed values (manual edits, typed totals,
    flats, zeros) are listed but never copied. */
+/* Re-evaluate one row-tool formula (its saved driver) against a budget view's OWN data: its seller T12, its comps at
+   its unit count, its own lines. Shared by "Copy formulas from another budget" and the formula-set replay (Troy
+   2026-11-18: sets now carry these lines). Returns { res: { months, driver } | null, why }. */
+function fcReplay(bv, gl, d) {
+  const tinp = bv.budget.inputs || {};
+  const acc = (S.state.coa || []).find((a) => a.code === gl) || {};
+  let res = null, why = '';
+  if (d.method === 'perUnitComp') {
+    res = fcMinot(bv, tinp, gl, d.pcode || acc.pcode);
+    if (!res) why = 'no Minot comp data for this GL on this budget';
+  } else if (d.method === 't3avg') {
+    res = fcT3avg(bv, tinp, d.src || gl, d.pct || 0);
+    if (!res) why = 'no Minot comp shape for the source GL on this budget';
+  } else if (d.method === 'sellerLine') {
+    const row = d.basis === 'budget' ? fcBudgetRow(bv, gl) : fcFindSeller(bv, d.name);
+    if (row) res = fcSellerLine(bv, tinp, row, d.pct || 0);
+    else why = d.basis === 'budget' ? 'no current-year budget for this GL on this budget' : `no seller line named "${d.name || '?'}" on this budget's T12`;
+  } else if (d.method === 't12curve') {
+    const row = d.basis === 'budget' ? fcBudgetRow(bv, gl) : fcFindSeller(bv, d.name);
+    if (row) res = fcT12Curve(bv, tinp, row, d.pct || 0, d.shape, gl, d.mult || 0, d.weights || null);
+    else why = `no seller line named "${d.name || '?'}" on this budget's T12`;
+  } else if (d.method === 'linkLine') {
+    // live on the server: seed the months from this budget's own source line
+    const src = (bv.lines || []).find((x) => x.gl_code === d.src);
+    if (src) res = { months: src.months.map((v) => Math.round(v * (d.weight || 1) * 100) / 100), driver: { method: 'linkLine', src: d.src, srcName: d.srcName || '', weight: d.weight ?? 1 } };
+    else why = `no line ${d.src || '?'} on this budget`;
+  } else if (d.method === 'wavg') {
+    const rows = fcWavgRows(bv, tinp, gl);
+    let row = null;
+    if (d.basis === 'budget') {
+      const bud = fcBudgetRow(bv, gl);
+      if (bud) row = { srcType: 'seller', basis: 'budget', name: bud.name, pcode: bud.pcode, cal: fcSellerCal(bud), scale: 1, total: bud.total, own: true };
+      else why = 'no current-year budget for this GL on this budget';
+    } else if (d.srcType === 'seller') {
+      const want = String(d.srcName || '').trim().toLowerCase();
+      row = rows.find((r) => r.srcType === 'seller' && r.name.trim().toLowerCase() === want)
+         || rows.find((r) => r.srcType === 'seller' && r.name.trim().toLowerCase().startsWith(want));
+      if (!row) why = `no seller line named "${d.srcName || '?'}" on this budget's T12`;
+    } else {
+      const glCode = String(d.srcName || '').match(/^(\S+)/)?.[1];
+      row = rows.find((r) => r.srcType === 'comp' && r.glCode === glCode);
+      if (!row) why = `no Minot comp line ${glCode || '?'} on this budget`;
+    }
+    if (row) res = fcWavg(bv, tinp, row, d.pct || 0, d.mult || 0);
+  } else why = `unknown formula ${d.method || '?'}`;
+  return { res, why };
+}
+
+/* After a formula set is given to a budget (Troy 2026-11-18: "I just saved CWND, but it is not transferring over
+   properly to RRND ... ties to other budgets, fits, smoothing, ties to other GL's"): the parts that need THIS budget's
+   own data are replayed here, in order — the row-tool lines and links, then smoothing on top of the formulas, then the
+   compare-card ties (re-solved against this budget's UW). A line typed by hand on this budget is never touched.
+   Returns what happened, for the report. */
+async function replayFormulaSet(b, rp) {
+  const out = { lines: [], smooth: [], ties: [], skipped: [] };
+  if (!rp) return out;
+  const coaName = (gl) => `${gl} ${(((S.state.coa || []).find((a) => a.code === gl)) || {}).name || ''}`.trim();
+  const lineOf = (gl) => (S.bv.lines || []).find((x) => x.gl_code === gl);
+  const RECIPE = new Set(['wavg', 't3avg', 'sellerLine', 'perUnitComp', 't12curve', 'linkLine']);
+  const entries = Object.entries(rp.lines || {});
+  for (const [gl, r] of entries) {
+    if (!r.recipe && !r.link) continue;
+    const l = lineOf(gl);
+    if (l && l.override && !(l.driver && RECIPE.has(l.driver.method))) { out.skipped.push(`${coaName(gl)}: typed by hand on this budget`); continue; }
+    const { res, why } = fcReplay(S.bv, gl, r.link ? { method: 'linkLine', ...r.link } : r.recipe);
+    if (!res) { out.skipped.push(`${coaName(gl)}: ${why}`); continue; }
+    try {
+      S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { months: res.months, driver: res.driver });
+      out.lines.push(`${coaName(gl)} · ${drvMeta({ gl_code: gl, months: res.months, driver: res.driver, override: true }).tag}`);
+    } catch (e) { out.skipped.push(`${coaName(gl)}: ${e.message}`); }
+  }
+  for (const [gl, r] of entries) {
+    if (!r.smooth) continue;
+    const l = lineOf(gl);
+    if (!l || !l.months.some((v) => v)) { out.skipped.push(`${coaName(gl)}: nothing on this line to smooth`); continue; }
+    const d = l.driver || {};
+    if (d.method === 'linkLine') { out.skipped.push(`${coaName(gl)}: follows another line, so it is not smoothed`); continue; }
+    if (l.override && !RECIPE.has(d.method) && !d.smooth) { out.skipped.push(`${coaName(gl)}: typed by hand on this budget`); continue; }
+    const sm = smoothMonths(l.months, { gl, round: 5 });
+    const { hard: _typed, ...p2 } = d;
+    try {
+      S.bv = await PUT(`/budgets/${b.id}/lines/${gl}`, { months: sm.months, driver: { ...p2, smooth: { passes: r.smooth, mult: 5 } } });
+      out.smooth.push(coaName(gl));
+    } catch (e) { out.skipped.push(`${coaName(gl)}: ${e.message}`); }
+  }
+  if ((rp.ties || []).length) {
+    const TIE_NAME = { rental: 'Total rental income', income: 'Total income', opex: 'OpEx', noi: 'NOI' };
+    if (!acqRuns()) out.skipped.push(`compare-card ties (${rp.ties.map((t) => TIE_NAME[t.key] || ACQ_CAT[t.key] || t.key).join(', ')}): this budget does not run off the acquisition plan, so they were not re-tied`);
+    else for (const t of rp.ties) {
+      const nm = TIE_NAME[t.key] || ACQ_CAT[t.key] || t.key;
+      try { S.bv = await POST(`/budgets/${b.id}/tie-growth`, { pcode: t.key, pct: t.pct }); out.ties.push(`${nm} at ${t.pct >= 0 ? '+' : ''}${(t.pct * 100).toFixed(2)}% vs UW`); }
+      catch (e) { out.skipped.push(`tie ${nm}: ${e.message}`); }
+    }
+  }
+  return out;
+}
+function replayReportHtml(rp, out) {
+  const li = (xs) => xs.map((x) => `<li>${esc(x)}</li>`).join('');
+  const c = (rp && rp.carried) || {};
+  const A = { vacancyPct: 'vacancy %', vacancyMonthPct: 'vacancy % by month', vacancyExpWeight: 'vacancy curve weight', pctGpr: '% of GPR lines (DQ, concessions…)', collectPct: 'prior-period collections %', recoveryPct: 'bad debt recovery %', collectionFeePct: 'collection fee %', utilRecoveryPct: 'utility recovery %', acqFit: 'plan fit %', growthTargets: 'compare-card targets', growthTargetsT3: 'T3 targets', tieBasis: 'tie basis' };
+  const assume = rp && rp.assume !== false ? (c.assume || []).map((k) => A[k] || k) : [];
+  return `<div style="font-size:12.5px">
+    <p style="margin:0 0 6px"><b>Applied.</b> ${c.rules || 0} line formulas${c.fits ? `, ${c.fits} fits` : ''}${c.curves ? `, ${c.curves} seasonality picks` : ''}${assume.length ? `; assumptions: ${esc(assume.join(', '))}` : ''}.${rp && rp.released && rp.released.length ? ` ${rp.released.length} line${rp.released.length === 1 ? '' : 's'} built by a row tool here were put back on the set's formula.` : ''}</p>
+    ${out.lines.length ? `<p style="margin:6px 0 2px"><b>Rebuilt on this property's own data</b> (${out.lines.length})</p><ul style="margin:0 0 0 18px">${li(out.lines)}</ul>` : ''}
+    ${out.smooth.length ? `<p style="margin:6px 0 2px"><b>Smoothed</b> (${out.smooth.length})</p><ul style="margin:0 0 0 18px">${li(out.smooth)}</ul>` : ''}
+    ${out.ties.length ? `<p style="margin:6px 0 2px"><b>Re-tied to this budget's UW</b></p><ul style="margin:0 0 0 18px">${li(out.ties)}</ul>` : ''}
+    ${out.skipped.length ? `<p style="margin:6px 0 2px"><b>Not carried</b> (${out.skipped.length})</p><ul style="margin:0 0 0 18px" class="muted">${li(out.skipped)}</ul>` : ''}
+  </div>`;
+}
+
 function openCopyFormulas(b) {
   const dlg = document.getElementById('copy-dlg');
   const coaByCode = new Map(S.state.coa.map((a) => [a.code, a]));
@@ -5461,45 +5605,7 @@ function openCopyFormulas(b) {
         }
         continue;
       }
-      let res = null, why = '';
-      if (d.method === 'perUnitComp') {
-        res = fcMinot(S.bv, tinp, l.gl_code, d.pcode || acc.pcode);
-        if (!res) why = 'no Minot comp data for this GL on this budget';
-      } else if (d.method === 't3avg') {
-        res = fcT3avg(S.bv, tinp, d.src || l.gl_code, d.pct || 0);
-        if (!res) why = 'no Minot comp shape for the source GL on this budget';
-      } else if (d.method === 'sellerLine') {
-        const row = d.basis === 'budget' ? fcBudgetRow(S.bv, l.gl_code) : fcFindSeller(S.bv, d.name);
-        if (row) res = fcSellerLine(S.bv, tinp, row, d.pct || 0);
-        else why = d.basis === 'budget' ? 'no current-year budget for this GL on this budget' : `no seller line named "${d.name || '?'}" on this budget's T12`;
-      } else if (d.method === 't12curve') {
-        const row = d.basis === 'budget' ? fcBudgetRow(S.bv, l.gl_code) : fcFindSeller(S.bv, d.name);
-        if (row) res = fcT12Curve(S.bv, tinp, row, d.pct || 0, d.shape, l.gl_code, d.mult || 0, d.weights || null);
-        else why = `no seller line named "${d.name || '?'}" on this budget's T12`;
-      } else if (d.method === 'linkLine') {
-        // live on the server — seed months from the TARGET's own source line
-        const src = S.bv.lines.find((x) => x.gl_code === d.src);
-        if (src) res = { months: src.months.map((v) => Math.round(v * (d.weight || 1) * 100) / 100), driver: { method: 'linkLine', src: d.src, srcName: d.srcName || '', weight: d.weight ?? 1 } };
-        else why = `no line ${d.src || '?'} on this budget`;
-      } else if (d.method === 'wavg') {
-        const rows = fcWavgRows(S.bv, tinp, l.gl_code);
-        let row = null;
-        if (d.basis === 'budget') {
-          const bud = fcBudgetRow(S.bv, l.gl_code);
-          if (bud) row = { srcType: 'seller', basis: 'budget', name: bud.name, pcode: bud.pcode, cal: fcSellerCal(bud), scale: 1, total: bud.total, own: true };
-          else why = 'no current-year budget for this GL on this budget';
-        } else if (d.srcType === 'seller') {
-          const want = String(d.srcName || '').trim().toLowerCase();
-          row = rows.find((r) => r.srcType === 'seller' && r.name.trim().toLowerCase() === want)
-             || rows.find((r) => r.srcType === 'seller' && r.name.trim().toLowerCase().startsWith(want));
-          if (!row) why = `no seller line named "${d.srcName || '?'}" on this budget's T12`;
-        } else {
-          const glCode = String(d.srcName || '').match(/^(\S+)/)?.[1];
-          row = rows.find((r) => r.srcType === 'comp' && r.glCode === glCode);
-          if (!row) why = `no Minot comp line ${glCode || '?'} on this budget`;
-        }
-        if (row) res = fcWavg(S.bv, tinp, row, d.pct || 0, d.mult || 0);
-      }
+      const { res, why } = fcReplay(S.bv, l.gl_code, d);
       if (res) {
         const tl = S.bv.lines.find((x) => x.gl_code === l.gl_code);
         items.push({

@@ -897,6 +897,56 @@ export interface FormulaSet {
       copied from UW models formula sets"). A set from a budget not on the plan carries none, so it never pulls lines
       off a receiving budget's plan. */
   offPlan?: string[];
+  /* EVERYTHING ELSE A BUDGET WAS BUILT WITH (Troy 2026-11-18: "I just saved CWND, but it is not transferring over properly
+     to RRND ... ties to other budgets, fits, smoothing, ties to other GL's" / "Vacancy messed up too" / "No DQ carried
+     over"). Before this a set held only the per-GL rules: every line a row tool built (WAVG, T3, seller line, Minot
+     $/unit, T12 curve, a link to another GL) and every smoothed line was an override, so it was skipped as a hard code,
+     and the typed vacancy / DQ / collection / recovery / fee %s and the compare-card ties never travelled. */
+  /** the assumption %s the source typed: vacancy (average and single months), % of GPR lines (DQ, concessions…),
+      collections, bad debt recovery, collection fee, utility recovery, the acquisition-plan fit, and the compare
+      card's targets */
+  assume?: {
+    vacancyPct?: number[]; vacancyMonthPct?: (number | null)[]; vacancyExpWeight?: number;
+    pctGpr?: Record<string, number>; collectPct?: number; recoveryPct?: number; collectionFeePct?: number;
+    utilRecoveryPct?: number; acqFit?: number;
+    growthTargets?: Record<string, number>; growthTargetsT3?: Record<string, number>; tieBasis?: 't12' | 't3';
+  };
+  /** per GL, how a line the rules cannot describe was built — replayed on the receiving budget against ITS OWN data:
+      `recipe` = a row tool's driver (wavg, t3avg, sellerLine, perUnitComp, t12curve), `link` = another GL × weight,
+      `smooth` = missed-bill smoothing on top of the line's formula (its formula is in the rules / fit as usual) */
+  lines?: Record<string, { recipe?: Record<string, any>; link?: { src: string; weight: number; srcName?: string }; smooth?: number }>;
+  /** compare-card ties on a budget run off the acquisition plan: re-solved on the receiving budget (its own UW), never
+      the source's factors. key = a category (pcode) or rental / income / opex / noi; pct = the target over UW */
+  ties?: { key: string; pct: number }[];
+}
+/** Row-tool methods a formula set replays on the receiving budget (the browser re-evaluates them on its own data). */
+export const SET_RECIPE_METHODS = new Set(['wavg', 't3avg', 'sellerLine', 'perUnitComp', 't12curve']);
+/** An override that is a FORMULA, not a number typed by hand: a row-tool line, a link, a zero-out, or a smoothed
+    formula line, with no cell typed over it since. A formula set may replace these; hand-typed lines stay. */
+export function formulaOverride(l: BudgetLine): boolean {
+  const d = (l.driver || {}) as any;
+  if (!l.override || d.revised || (Array.isArray(d.hard) && d.hard.length)) return false;
+  return SET_RECIPE_METHODS.has(d.method) || d.method === 'linkLine' || d.method === 'zero' || (!!d.smooth && d.method !== 'manual' && d.method !== 'smooth');
+}
+/** The categories tied on a plan-run budget's compare card, as the tie keys to re-solve elsewhere. The tie route records
+    them (`acqTieKeys`); a budget tied before that is read from its factors: a whole-OpEx / NOI tie scales every expense
+    category by the same factor, otherwise each tied category is its own key. */
+export function acqTieKeysOf(inputs: BudgetInputs): { key: string; pct: number }[] {
+  const keys = (inputs as any).acqTieKeys as Record<string, number> | undefined;
+  const tie = ((inputs as any).acqTie || {}) as Record<string, number>;
+  const gt = (inputs.growthTargets || {}) as Record<string, number>;
+  if (keys && Object.keys(keys).length) return Object.entries(keys).map(([key, pct]) => ({ key, pct: Number(pct) || 0 }));
+  const tied = Object.entries(tie).filter(([, f]) => Number.isFinite(Number(f)) && Math.abs(Number(f) - 1) > 1e-9);
+  if (!tied.length) return [];
+  const EXP = ['6', '8', '9', '10', '11', '12', '13', '14'];
+  const f0 = tie[EXP[0]];
+  for (const k of ['noi', 'opex']) {
+    if (gt[k] != null && EXP.every((p) => tie[p] != null && Math.abs(Number(tie[p]) - Number(f0)) < 1e-9)) {
+      const rest = tied.filter(([p]) => !EXP.includes(p));
+      return [{ key: k, pct: Number(gt[k]) || 0 }, ...rest.map(([p]) => ({ key: p, pct: Number(gt[p]) || 0 }))];
+    }
+  }
+  return tied.map(([p]) => ({ key: p, pct: Number(gt[p]) || 0 }));
 }
 /** Methods whose months never take a T12 fit (mirrors the generator's FIT_SKIP). */
 const FIT_NEVER = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest']);
@@ -906,6 +956,8 @@ const SHAPE_RULE: Partial<Record<BaselineShape, AnnualRule['method']>> = { actua
 export function formulaSetFromBudget(lines: BudgetLine[], inputs: BudgetInputs): FormulaSet {
   const rules: Record<string, AnnualRule> = {};
   const fit: Record<string, number> = {};
+  const lineRec: NonNullable<FormulaSet['lines']> = {};
+  const smoothedFormula = new Set<string>();
   const bl = inputs.baseline || ({} as NonNullable<BudgetInputs['baseline']>);
   for (const l of lines) {
     const d = (l.driver || {}) as any;
@@ -913,7 +965,19 @@ export function formulaSetFromBudget(lines: BudgetLine[], inputs: BudgetInputs):
     // hand-typed skip (Troy 2026-11-12: "zeroing rows is not applied from saved formula set"). A zeroed line
     // later typed over (revised, or any month non-zero) is a hard code like any other.
     if (d.method === 'zero' && !d.revised && (l.months || []).every((v) => !Number(v))) { rules[l.gl_code] = { method: 'zero' }; continue; }
-    if (l.override) continue;                                        // a hand-typed line is a hard code
+    if (l.override) {
+      // a line a row tool built, a link to another GL, a smoothed formula line: its recipe travels (Troy 2026-11-18).
+      // A line typed over since (revised / typed cells) is a hard code like any other.
+      if (!formulaOverride(l)) continue;
+      const rec: NonNullable<FormulaSet['lines']>[string] = {};
+      if (d.smooth) rec.smooth = Math.max(1, Number(d.smooth.passes) || 1);
+      if (d.method === 'linkLine' && d.src) rec.link = { src: String(d.src), weight: Number(d.weight) || 1, ...(d.srcName ? { srcName: String(d.srcName) } : {}) };
+      else if (SET_RECIPE_METHODS.has(d.method)) { const { smooth: _s, hard: _h, revised: _r, ...r } = d; rec.recipe = r; }
+      if (Object.keys(rec).length) lineRec[l.gl_code] = rec;
+      // only a smoothed FORMULA line goes on to have its formula recorded like any other line
+      if (rec.link || rec.recipe || !rec.smooth) continue;
+      smoothedFormula.add(l.gl_code);
+    }
     if (d.method !== 'baseline') {                                   // engine-driven lines (GPR, LTL, payroll, fee…) carry no per-GL rule…
       const f = Number(bl.glFit?.[l.gl_code] ?? d.fitT12 ?? 0) || 0;  // …but a FIT picked on the row travels with the set
       if (f > 0 && !FIT_NEVER.has(d.method)) fit[l.gl_code] = Math.round(Math.min(1, f) * 1000) / 1000;
@@ -950,7 +1014,7 @@ export function formulaSetFromBudget(lines: BudgetLine[], inputs: BudgetInputs):
   // category %. Carrying the row %s (glGrowth) and section %s (secGrowth) makes the receiving budget
   // resolve every line's % exactly as the source did.
   const rowOnly = (gl: string) => /^64\d\d$/.test(gl) || gl === '6350';
-  const formula = new Set(lines.filter((l) => !l.override).map((l) => l.gl_code));
+  const formula = new Set(lines.filter((l) => !l.override || smoothedFormula.has(l.gl_code)).map((l) => l.gl_code));
   const live = new Set([...formula].filter(rowOnly));
   const keepIn = <T>(o: Record<string, T> | undefined, set: Set<string>): Record<string, T> => Object.fromEntries(Object.entries(o || {}).filter(([gl, v]) => set.has(gl) && v != null));
   const keep = <T>(o: Record<string, T> | undefined) => keepIn(o, live);
@@ -963,14 +1027,49 @@ export function formulaSetFromBudget(lines: BudgetLine[], inputs: BudgetInputs):
   if (Object.keys(rm).length) row.glMround = rm as any;
   const off = ((inputs as any).offPlan || []).map(String).filter((gl: string) => formula.has(gl));
   const sfg = Object.fromEntries(Object.entries((inputs as any).shapeFromGl || {}).filter(([gl, v]) => formula.has(gl) && Array.isArray(v) && (v as any[]).length)) as Record<string, string[]>;
-  return { rules, settings, ...(Object.keys(fit).length ? { fit } : {}), ...(Object.keys(row).length ? { row } : {}), ...(off.length ? { offPlan: off.sort() } : {}), ...(Object.keys(sfg).length ? { shapeFromGl: sfg } : {}) };
+  // the assumption %s (Troy 2026-11-18: "Vacancy messed up too" / "No DQ carried over")
+  const ip = inputs as any;
+  const num = (v: any) => (v != null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : undefined);
+  const assume: NonNullable<FormulaSet['assume']> = {};
+  if (Array.isArray(inputs.vacancyPct) && inputs.vacancyPct.length === 12) assume.vacancyPct = inputs.vacancyPct.map((v) => Number(v) || 0);
+  if (Array.isArray(ip.vacancyMonthPct) && ip.vacancyMonthPct.some((v: any) => v != null)) assume.vacancyMonthPct = ip.vacancyMonthPct.map((v: any) => (v == null ? null : Number(v)));
+  if (num(inputs.vacancyExpWeight) != null) assume.vacancyExpWeight = num(inputs.vacancyExpWeight);
+  if (inputs.pctGpr && Object.keys(inputs.pctGpr).length) assume.pctGpr = { ...inputs.pctGpr };
+  for (const k of ['collectPct', 'recoveryPct', 'collectionFeePct', 'acqFit'] as const) { const v = num(ip[k]); if (v != null) (assume as any)[k] = v; }
+  if (num(inputs.utilities?.recoveryPct) != null) assume.utilRecoveryPct = num(inputs.utilities?.recoveryPct);
+  if (inputs.growthTargets && Object.keys(inputs.growthTargets).length) assume.growthTargets = { ...inputs.growthTargets };
+  if (ip.growthTargetsT3 && Object.keys(ip.growthTargetsT3).length) assume.growthTargetsT3 = { ...ip.growthTargetsT3 };
+  if (inputs.tieBasis) assume.tieBasis = inputs.tieBasis;
+  const ties = acqTieKeysOf(inputs);
+  return { rules, settings, ...(Object.keys(fit).length ? { fit } : {}), ...(Object.keys(row).length ? { row } : {}), ...(off.length ? { offPlan: off.sort() } : {}), ...(Object.keys(sfg).length ? { shapeFromGl: sfg } : {}),
+    ...(Object.keys(assume).length ? { assume } : {}), ...(Object.keys(lineRec).length ? { lines: lineRec } : {}), ...(ties.length ? { ties } : {}) };
+}
+/** The GLs a set says something about (rules, fits, row picks, line recipes): a formula override on one of these on the
+    receiving budget is released so the set's formula governs. */
+export function formulaSetGls(set: FormulaSet): Set<string> {
+  return new Set([...Object.keys(set.rules || {}), ...Object.keys(set.fit || {}), ...Object.keys(set.lines || {}), ...Object.keys(set.row?.glShape || {}), ...Object.keys(set.row?.glGrowth || {}), ...Object.keys(set.shapeFromGl || {})]);
 }
 /** Give a budget a formula set: the set's rules and settings replace the budget's own per-GL
     shape / factor / MROUND choices. Dollars, GPR, vacancy average, expirations and every
     override on the budget are untouched. Pure — the caller regenerates. */
-export function applyFormulaSet(inputs: BudgetInputs, set: FormulaSet, from: { id: number | string | null; name: string }): BudgetInputs {
+export function applyFormulaSet(inputs: BudgetInputs, set: FormulaSet, from: { id: number | string | null; name: string }, opts: { assume?: boolean } = {}): BudgetInputs {
   const st = set.settings || {};
   const clean = <T extends object>(o: T | undefined): Partial<T> => Object.fromEntries(Object.entries(o || {}).filter(([, v]) => v !== undefined)) as Partial<T>;
+  // the source's assumption %s (vacancy, DQ / collections / recovery / fee, plan fit, compare-card targets) unless the
+  // caller says not to; a % the set does not have leaves the budget's own
+  const a = opts.assume === false ? null : set.assume || null;
+  const assumed: Record<string, any> = {};
+  if (a) {
+    if (Array.isArray(a.vacancyPct) && a.vacancyPct.length === 12) assumed.vacancyPct = [...a.vacancyPct];
+    if (Array.isArray(a.vacancyMonthPct)) assumed.vacancyMonthPct = [...a.vacancyMonthPct];
+    if (a.vacancyExpWeight != null) assumed.vacancyExpWeight = a.vacancyExpWeight;
+    if (a.pctGpr) assumed.pctGpr = { ...(inputs.pctGpr || {}), ...a.pctGpr };
+    for (const k of ['collectPct', 'recoveryPct', 'collectionFeePct', 'acqFit'] as const) if (a[k] != null) assumed[k] = a[k];
+    if (a.utilRecoveryPct != null) assumed.utilities = { ...(inputs.utilities || {}), recoveryPct: a.utilRecoveryPct };
+    if (a.growthTargets) assumed.growthTargets = { ...(inputs.growthTargets || {}), ...a.growthTargets };
+    if (a.growthTargetsT3) assumed.growthTargetsT3 = { ...((inputs as any).growthTargetsT3 || {}), ...a.growthTargetsT3 };
+    if (a.tieBasis) assumed.tieBasis = a.tieBasis;
+  }
   return {
     ...inputs,
     rules: { ...(set.rules || {}) },
@@ -987,6 +1086,7 @@ export function applyFormulaSet(inputs: BudgetInputs, set: FormulaSet, from: { i
     ...(Array.isArray(set.offPlan) ? { offPlan: [...set.offPlan] } : {}),
     // the set's curve picks replace the budget's own (a set without any leaves them)
     ...(set.shapeFromGl ? { shapeFromGl: JSON.parse(JSON.stringify(set.shapeFromGl)) } : {}),
+    ...assumed,
   } as BudgetInputs;
 }
 

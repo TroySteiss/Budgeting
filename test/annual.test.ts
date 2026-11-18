@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, mgmtFeeRates, summaryColumn, sumSummaryCols, summaryLabels, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
+  generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, formulaOverride, acqTieKeysOf, mgmtFeeRates, summaryColumn, sumSummaryCols, summaryLabels, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
   refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, contractMonths, flatFeeFromSchedule, guidanceCheck, elevatedInsuranceRate, fitToT12, noiQuarters, qShiftTargets, normalizeGuidance, type TemplateData, type AnnualSources,
   refollowMgmtFee,
 } from '../shared/annual.js';
@@ -1002,18 +1002,20 @@ describe('saved formula sets (Troy 2026-11-09): the recipe of a budget, without 
     expect(set.settings.baseline).toMatchObject({ costDrift: 0.02, growthPct: { '13': 0.08 } });
     expect(set.settings.ltl).toMatchObject({ renewalPct: 0.9, burnoffRenew: 0.2 });
   });
-  it('leaves out the hard codes: hand-typed lines, dollars, GPR, the vacancy average, expirations', () => {
+  it('leaves out the hard codes: hand-typed lines, dollars, GPR, expirations (the vacancy % travels as an assumption since 2026-11-18)', () => {
     expect(set.rules['6736']).toBeUndefined();                       // typed by hand
+    expect(set.lines?.['6736']).toBeUndefined();
     expect(set.rules['4994']).toBeUndefined();                       // engine lines carry no rule
     const flat = JSON.stringify(set);
-    for (const k of ['baseMonthly', 'startMonthly', 'vacancyPct', 'expirations', 'corpRates', 'turnFees', 'units', 'capital', 'glShape']) expect(flat).not.toContain(k);
+    for (const k of ['baseMonthly', 'startMonthly', 'expirations', 'corpRates', 'turnFees', 'units', 'capital', 'glShape']) expect(flat).not.toContain(k);
+    expect(set.assume?.vacancyPct).toHaveLength(12);
   });
   it('applied to another budget it reproduces the formulas on THAT property\'s history and keeps its own data', () => {
     const other = { ...actual, '6332': cal(Array(12).fill(1000)), '6622': cal(Array(12).fill(5000)) };
     const tBase = defaultAnnualInputs(2026, 20, other, null, coaList, null, 10);
-    const target = applyFormulaSet({ ...tBase, vacancyPct: Array(12).fill(0.07) as Months, baseline: { ...tBase.baseline!, glShape: { '6920': 'last' as const } } }, set, { id: 7, name: 'CLND 2027' });
+    const target = applyFormulaSet({ ...tBase, vacancyPct: Array(12).fill(0.07) as Months, baseline: { ...tBase.baseline!, glShape: { '6920': 'last' as const } } }, set, { id: 7, name: 'CLND 2027' }, { assume: false });
     expect(target.rulesFrom).toMatchObject({ id: 7, name: 'CLND 2027' });
-    expect(target.vacancyPct![0]).toBe(0.07);                        // the target's own assumption stays
+    expect(target.vacancyPct![0]).toBe(0.07);                        // assumptions not asked for: the target's own stays
     expect(target.units).toBe(20);
     expect(target.baseline!.glShape).toEqual({});                    // its old per-line choices are replaced by the set
     expect(target.ltl!.renewalPct).toBe(0.9);
@@ -2614,5 +2616,68 @@ describe('gutter contracts bill in March and November (Troy 2026-11-17: "March a
     expect(both[2]).toBe(4500);
     const snow = contractMonths({ vendor: 'Snow removal', gl: '6818', kind: 'annual', amount: 1000, billMonth: 4 } as any, 0, 1);
     expect(snow[3]).toBe(1000);
+  });
+});
+
+describe('formula sets carry everything a budget was built with (Troy 2026-11-18: CWND to RRND)', () => {
+  const actual = { ...synthetic(), '6332': cal(Array(12).fill(400)), '6622': cal(Array(12).fill(3000)), '6920': cal(Array(12).fill(2000)) };
+  const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
+  const base = defaultAnnualInputs(2026, 10, actual, null, coaList, null, 10);
+  const srcInputs: any = { ...base, rules: {}, baseline: { ...base.baseline!, glShape: { '6332': 'flat' as const }, glGrowth: { '6332': 0.04 } },
+    vacancyPct: Array(12).fill(0.06), vacancyMonthPct: [null, 0.09, ...Array(10).fill(null)], pctGpr: { '5035': 0.012 }, collectPct: 0.4, recoveryPct: 0.2, collectionFeePct: 0.5, acqFit: 0.25,
+    growthTargets: { noi: 0.02, '9': 0.01 } };
+  const built = generateAnnualLines(coaList, srcInputs, src).map((l) => {
+    if (l.gl_code === '6332') return { ...l, override: true, months: cal(Array(12).fill(410)), driver: { ...(l.driver as any), smooth: { passes: 1, mult: 5 } } };
+    if (l.gl_code === '6622') return { ...l, override: true, driver: { method: 'wavg', pct: 0.03, mult: 0, srcType: 'comp', srcName: '6622 Minot', hard: [] } as any };
+    if (l.gl_code === '6920') return { ...l, override: true, driver: { method: 'linkLine', src: '6622', srcName: 'x', weight: 0.5 } as any };
+    return l;
+  });
+  const set = formulaSetFromBudget(built, srcInputs);
+
+  it('a smoothed formula line keeps its formula AND its smoothing', () => {
+    expect(set.rules['6332']).toMatchObject({ method: 'flatT12', factor: 0.04 });
+    expect(set.lines?.['6332']).toEqual({ smooth: 1 });
+    expect(set.row?.glGrowth?.['6332']).toBe(0.04);
+  });
+  it('row-tool lines and links to another GL travel as recipes (no months, no typed cells)', () => {
+    expect(set.lines?.['6622']).toEqual({ recipe: { method: 'wavg', pct: 0.03, mult: 0, srcType: 'comp', srcName: '6622 Minot' } });
+    expect(set.lines?.['6920']).toEqual({ link: { src: '6622', weight: 0.5, srcName: 'x' } });
+    expect(set.rules['6622']).toBeUndefined();
+  });
+  it('a line typed over since is a hard code: nothing travels', () => {
+    const typed = built.map((l) => (l.gl_code === '6622' ? { ...l, driver: { ...(l.driver as any), revised: true } } : l.gl_code === '6332' ? { ...l, driver: { ...(l.driver as any), hard: [3] } } : l));
+    const s2 = formulaSetFromBudget(typed, srcInputs);
+    expect(s2.lines?.['6622']).toBeUndefined();
+    expect(s2.lines?.['6332']).toBeUndefined();
+    expect(s2.rules['6332']).toBeUndefined();
+  });
+  it('vacancy, DQ, collections, recovery, fee, plan fit and targets travel and are applied', () => {
+    expect(set.assume).toMatchObject({ pctGpr: { '5035': 0.012 }, collectPct: 0.4, recoveryPct: 0.2, collectionFeePct: 0.5, acqFit: 0.25, growthTargets: { noi: 0.02, '9': 0.01 } });
+    const t: any = applyFormulaSet({ ...base, pctGpr: { '5002': 0.01 } } as any, set, { id: 1, name: 'CWND' });
+    expect(t.vacancyPct[0]).toBe(0.06);
+    expect(t.vacancyMonthPct[1]).toBe(0.09);
+    expect(t.pctGpr).toEqual({ '5002': 0.01, '5035': 0.012 });
+    expect([t.collectPct, t.recoveryPct, t.collectionFeePct, t.acqFit]).toEqual([0.4, 0.2, 0.5, 0.25]);
+    const off: any = applyFormulaSet({ ...base } as any, set, { id: 1, name: 'CWND' }, { assume: false });
+    expect(off.collectPct).toBe((base as any).collectPct);
+    expect(off.pctGpr).toEqual(base.pctGpr);
+  });
+  it('formulaOverride: row tools, links, zeros and smoothed formula lines yes; hand-typed no', () => {
+    const L0 = { gl_code: '6622', months: zero12(), override: true, note: '' } as any;
+    expect(formulaOverride({ ...L0, driver: { method: 'wavg' } })).toBe(true);
+    expect(formulaOverride({ ...L0, driver: { method: 'linkLine', src: '1' } })).toBe(true);
+    expect(formulaOverride({ ...L0, driver: { method: 'baseline', smooth: { passes: 1 } } })).toBe(true);
+    expect(formulaOverride({ ...L0, driver: { method: 'manual' } })).toBe(false);
+    expect(formulaOverride({ ...L0, driver: { method: 'wavg', hard: [2] } })).toBe(false);
+    expect(formulaOverride({ ...L0, driver: { method: 'smooth', passes: 1 } })).toBe(false);
+    expect(formulaOverride({ ...L0, override: false, driver: { method: 'wavg' } })).toBe(false);
+  });
+  it("compare-card ties travel as tie keys, never as the source's factors", () => {
+    expect(acqTieKeysOf({ ...base, acqTieKeys: { '9': 0.01, opex: 0 } } as any)).toEqual([{ key: '9', pct: 0.01 }, { key: 'opex', pct: 0 }]);
+    const all = Object.fromEntries(['6', '8', '9', '10', '11', '12', '13', '14'].map((p) => [p, 0.97]));
+    expect(acqTieKeysOf({ ...base, acqTie: { ...all, '3': 1.1 }, growthTargets: { opex: 0.01 } } as any)).toEqual([{ key: 'opex', pct: 0.01 }, { key: '3', pct: 0 }]);
+    expect(acqTieKeysOf({ ...base, acqTie: { '9': 0.9, '11': 1 }, growthTargets: { '9': -0.02 } } as any)).toEqual([{ key: '9', pct: -0.02 }]);
+    expect(acqTieKeysOf(base)).toEqual([]);
+    expect(formulaSetFromBudget(built, { ...srcInputs, acqTieKeys: { '13': 0 } }).ties).toEqual([{ key: '13', pct: 0 }]);
   });
 });

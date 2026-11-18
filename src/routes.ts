@@ -9,7 +9,7 @@ import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayro
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
   acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, acqDelinquency, applyT12Adjust, FIXED_ANNUAL_GLS, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
-  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, scalePlanLines, taxFloor, uwDqBundle, fillCalMonths, mgmtFeeOnIncome, mgmtFeeRates, vacancyMonthOverride, fillDeadMonths, capUtilityRecovery, flatFeeBilling, applyShapeFrom, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, formulaOverride, formulaSetGls, scalePlanLines, taxFloor, uwDqBundle, fillCalMonths, mgmtFeeOnIncome, mgmtFeeRates, vacancyMonthOverride, fillDeadMonths, capUtilityRecovery, flatFeeBilling, applyShapeFrom, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
 import { planApply, refileReviewLine, type ApplyRow, type ApplyPlan } from '../shared/reviewApply.js';
@@ -2343,13 +2343,31 @@ router.put('/default-formulas', requireAdmin, h(async (req, res) => {
 
 /* ---------------- saved formula sets ----------------
    A named recipe saved from a budget (formulaSetFromBudget) and given to another one. */
-async function withFormulaSet(inputs: BudgetInputs, pick: any): Promise<BudgetInputs> {
-  if (pick === 'template') return applyFormulaSet(inputs, { rules: {}, settings: {} }, { id: null, name: 'Template defaults (no saved set)' });
-  if (pick === 'grks') return applyFormulaSet(inputs, { rules: loadAnnualRules() as any, settings: {} }, { id: 'grks', name: 'GRKS 2026 draft (the old default)' });
+async function loadFormulaSet(pick: any): Promise<{ set: FormulaSet; from: { id: number | string | null; name: string } }> {
+  if (pick === 'template') return { set: { rules: {}, settings: {} }, from: { id: null, name: 'Template defaults (no saved set)' } };
+  if (pick === 'grks') return { set: { rules: loadAnnualRules() as any, settings: {} }, from: { id: 'grks', name: 'GRKS 2026 draft (the old default)' } };
   const row = (await query('select id, name, data from formula_sets where id=$1', [Number(pick)])).rows[0];
   if (!row) throw new Error('That formula set no longer exists');
-  return applyFormulaSet(inputs, row.data as FormulaSet, { id: row.id, name: row.name });
+  return { set: row.data as FormulaSet, from: { id: row.id, name: row.name } };
 }
+async function withFormulaSet(inputs: BudgetInputs, pick: any, opts: { assume?: boolean } = {}): Promise<BudgetInputs> {
+  const { set, from } = await loadFormulaSet(pick);
+  return applyFormulaSet(inputs, set, from, opts);
+}
+/** What the browser replays after a set is given to a budget: the row-tool lines, links, smoothing and the compare-card
+    ties (they need the receiving budget's own data), and a count of what the set carries. */
+function setReplay(set: FormulaSet) {
+  const a = set.assume || {};
+  return {
+    lines: set.lines || {}, ties: set.ties || [],
+    carried: { rules: Object.keys(set.rules || {}).length, fits: Object.keys(set.fit || {}).length, curves: Object.keys(set.shapeFromGl || {}).length,
+      assume: Object.keys(a).filter((k) => (a as any)[k] != null) },
+  };
+}
+router.get('/formula-sets/:id', h(async (req, res) => {
+  const { set, from } = await loadFormulaSet(String(req.params.id) === 'template' || String(req.params.id) === 'grks' ? req.params.id : Number(req.params.id));
+  res.json({ ...from, replay: setReplay(set) });
+}));
 router.get('/formula-sets', h(async (_req, res) => {
   res.json((await query(`select id, name, created_by, created_at, source, (select count(*)::int from jsonb_object_keys(coalesce(data->'rules','{}'::jsonb))) as rules from formula_sets order by created_at desc`)).rows);
 }));
@@ -2381,12 +2399,23 @@ router.post('/budgets/:id/formula-set', h(async (req, res) => {
   const lb = await loadBudget(id);
   if (!lb) return res.status(404).json({ error: 'Not found' });
   if (!lb.annual) return res.status(400).json({ error: 'Formula sets apply to annual budgets' });
-  const inputs = await withFormulaSet(lb.budget.inputs || {}, req.body?.formulaSet);
-  const built = buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lb.lines);
+  const { set, from } = await loadFormulaSet(req.body?.formulaSet);
+  const inputs = applyFormulaSet(lb.budget.inputs || {}, set, from, { assume: req.body?.assume !== false });
+  // a line on THIS budget that a row tool built, a link, a zero-out or a smoothed formula line is released on every GL
+  // the set covers, so the set's formula governs (Troy 2026-11-18); lines typed by hand stay as they are
+  const covered = formulaSetGls(set);
+  const released: string[] = [];
+  const lines0 = lb.lines.map((l) => {
+    if (!covered.has(l.gl_code) || !formulaOverride(l)) return l;
+    released.push(l.gl_code);
+    const { smooth: _s, ...d } = (l.driver || {}) as any;
+    return { ...l, override: false, driver: d };
+  });
+  const built = buildLines({ ...lb, lines: lines0, budget: { ...lb.budget, inputs } }, inputs, lines0);
   await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(inputs)]);
   await saveLines(id, built.lines, true);
-  logChange(req.session.username || '', 'apply formula set', { id, set: inputs.rulesFrom });
-  res.json(budgetView((await loadBudget(id))!));
+  logChange(req.session.username || '', 'apply formula set', { id, set: inputs.rulesFrom, released, assume: req.body?.assume !== false });
+  res.json({ ...budgetView((await loadBudget(id))!), setReplay: { ...setReplay(set), released, assume: req.body?.assume !== false } });
 }));
 
 /* Give the formulas of whole sections of THIS budget to other budgets and saved formula sets.
@@ -2670,6 +2699,11 @@ router.post('/budgets/:id/tie-growth', h(async (req, res) => {
       const build = (t: Record<string, number>): BudgetLine[] => { (pinputs as any).acqTie = t; return buildLines({ ...lb, budget: { ...lb.budget, inputs: pinputs } }, pinputs, lb.lines).lines; };
       if (req.body?.clear) {
         const t = { ...tie0 }; for (const p of members) delete t[p];
+        // the tie keys whose categories are no longer tied are forgotten (a formula set re-solves the rest)
+        const tk = { ...((pinputs as any).acqTieKeys || {}) } as Record<string, number>;
+        const memOf = (k: string) => (k === 'opex' || k === 'noi' ? GROWTH_EXPENSE_PCODES : k === 'rental' || k === 'income' ? ['3'] : [k]);
+        for (const k of Object.keys(tk)) if (memOf(k).some((p) => members.includes(p))) delete tk[k];
+        (pinputs as any).acqTieKeys = tk;
         const lines = build(t);
         await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(pinputs)]);
         await saveLines(id, lines, true);
@@ -2708,6 +2742,15 @@ router.post('/budgets/:id/tie-growth', h(async (req, res) => {
         return res.status(400).json({ error: `Scaling the plan lines does not get this subtotal to ${(pct * 100).toFixed(2)}% over UW (it stops at ${Math.round(f).toLocaleString()} against ${Math.round(want).toLocaleString()}) — the rest sits in lines off the plan, contracts or locked lines. Nothing was changed.` });
       }
       (pinputs as any).acqTie = scaled(x);
+      // which subtotal was tied and to what (a formula set re-solves it on another budget, Troy 2026-11-18); a tie on
+      // OpEx / NOI replaces the single-category ties under it
+      {
+        const tk = { ...((pinputs as any).acqTieKeys || {}) } as Record<string, number>;
+        const memOf = (k: string) => (k === 'opex' || k === 'noi' ? GROWTH_EXPENSE_PCODES : k === 'rental' || k === 'income' ? ['3'] : [k]);
+        for (const k of Object.keys(tk)) if (k !== key && memOf(k).some((p) => members.includes(p))) delete tk[k];
+        tk[key] = pct;
+        (pinputs as any).acqTieKeys = tk;
+      }
       await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(pinputs)]);
       await saveLines(id, lines, true);
       logChange(user0, 'tie category to UW (acquisition plan)', { id, pcode: key, pct, target: want, factor: Math.round(x * 1e6) / 1e6 });
