@@ -2088,7 +2088,10 @@ router.put('/budgets/:id/lines/:gl', h(async (req, res) => {
     const income1 = incomeOf(passed);   // recovery (REIM) lines are income too
     if (income1.some((v, i) => Math.abs(v - income0[i]) >= 0.005)) {
       const month0Fixed = !!(lb.annual && lb.budgetCal && Object.keys(lb.budgetCal).length);
-      const nf = refollowMgmtFee(fee.months, income0, income1, { priorMonth: !!feeD.priorMonth, month0Fixed });
+      // a companion's income in the basis (TPNDC on TPND's fee) does not move with this edit
+      const ex: number[] | null = Array.isArray(feeD.feeExtra) && feeD.feeExtra.length === 12 ? feeD.feeExtra.map((v: any) => Number(v) || 0) : null;
+      const withEx = (m: Months): Months => (ex ? m.map((v, i) => v + ex[i]) as Months : m);
+      const nf = refollowMgmtFee(fee.months, withEx(income0), withEx(income1), { priorMonth: !!feeD.priorMonth, month0Fixed });
       if (nf.some((v, i) => v !== fee.months[i])) {
         fee.months = nf;
         await query('update budget_lines set months=$3 where budget_id=$1 and gl_code=$2', [id, '6112', JSON.stringify(fee.months)]);

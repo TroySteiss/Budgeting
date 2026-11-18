@@ -149,7 +149,7 @@ function driverLabelBase(d: any): string {
     case 'burdenRatio': return d.from ? `${(d.ratio * 100).toFixed(1)}% of wages — ratio and monthly shape from ${String(d.from).toUpperCase()}` : `Minot ratio ${(d.ratio * 100).toFixed(1)}% of wages`;
     case 'mgmtPct': return d.firstYear && d.firstYear.months
       ? `${(Number(d.firstYear.pct) * 100).toFixed(2)}% of ${d.priorMonth ? 'prior-month ' : ''}income through ${d.firstYear.through || 'the first year'} (${d.firstYear.months} fee month${d.firstYear.months === 1 ? '' : 's'}), then ${(d.pct * 100).toFixed(2)}%`
-      : `${(d.pct * 100).toFixed(2)}% of ${d.priorMonth ? 'prior-month ' : ''}income`;
+      : `${(d.pct * 100).toFixed(2)}% of ${d.priorMonth ? 'prior-month ' : ''}income${Array.isArray(d.feeExtra) ? ` incl. ${String(d.feeExtraFrom || 'companion').toUpperCase()} income ($${Math.round(d.feeExtra.reduce((a: number, b: any) => a + (Number(b) || 0), 0)).toLocaleString('en-US')})` : ''}`;
     case 'interest': return 'loan interest';
     case 'sellerUtil': return 'seller statement level';
     case 'recovery': return `${(d.pct * 100).toFixed(1)}% recovery of prior-month billing`;

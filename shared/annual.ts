@@ -31,7 +31,7 @@
    ========================================================================== */
 import {
   type CoaAccount, type BudgetLine, type BudgetInputs, type Months, type Driver, type UwSnapshotData,
-  type Lease, type CompWeights, type BaselineShape, type T12Adjust, type Contract, type FeeSchedule,
+  type Lease, type CompWeights, type BaselineShape, type T12Adjust, type Contract, type FeeSchedule, type AllocOut,
   zero12, r2, sum, rollup, spreadMonthly, rotate12, CURVES, WAGE_GLS, ltlMonths, ltlModel, chargeGlMonthly,
   mergeFresh, overriddenWages, withHap, calMonthOf, calYearOf, daysInMonth, dateKey, leaseEndIndex, calendarSlice, foldCredits,
   shapeSmells, smoothShape,
@@ -40,7 +40,7 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-17b';   // b: gutter contracts bill in March and November
+export const ENGINE_VERSION = '2026-11-18a';   // a: TPND split adds 6924; fee on combined TPND + TPNDC income; final fee keeps the split
 // earlier: 2026-11-17a:   // a: another property's curve on every formula (applied again at the end of a build)
 // earlier: 2026-11-16e:   // e: no $0 month on a recurring line (acquisitions); utility recovery capped by group
 // earlier: 2026-11-16d: a vacancy % typed for a month overrides the formula
@@ -1342,11 +1342,25 @@ export function contractLine(cs: Contract[], units: number, startMonth: number, 
 }
 
 /** Recurring journal splits by site (KB A1: "Every month, 41.11% of common electric, sewer, trash,
-    water, insurance, management fee and RE tax moves to TPNDC... Budget on the same basis"). */
-export const ALLOC_OUT_DEFAULTS: Record<string, { to: string; pct: number; gls: string[] }> = {
-  tpnd: { to: 'tpndc', pct: 0.4111, gls: ['6604', '6614', '6620', '6622', '6108', '6112', '6116'] },
+    water, insurance, management fee and RE tax moves to TPNDC... Budget on the same basis").
+    6924 added 2026-11-18 (Troy): the Oct-2026 statement splits the Legend landscaping + snow contract
+    exactly 58.89 / 41.11 ($2,768 TPND / $1,932 TPNDC of $4,700), as it does 6108 / 6112 / 6116 /
+    6604 / 6614 / 6622. 41.11% is Chevron's pro-rata share; TPNDC's part goes into the CAM pool. */
+export const ALLOC_OUT_DEFAULTS: Record<string, AllocOut> = {
+  tpnd: { to: 'tpndc', pct: 0.4111, gls: ['6604', '6614', '6620', '6622', '6108', '6112', '6116', '6924'] },
 };
-export function allocOutFor(inputs: Pick<BudgetInputs, 'allocOut'> | null | undefined, propertyCode: string | null | undefined): { to: string; pct: number; gls: string[] } | null {
+/** The companion's monthly income that sits in the management-fee basis, in budget-month order
+    (TPND: the fee is the agreement rate on TPND + TPNDC income, then 41.11% of it journals to TPNDC).
+    `monthly` from the first month, `stepTo` from calendar month `stepMonth` (Chevron: 8/1). */
+export function allocFeeIncome(alloc: AllocOut | null | undefined, startMonth = 1): Months | null {
+  const fi = alloc?.feeIncome;
+  const base = Number(fi?.monthly) || 0;
+  if (!fi || !(base > 0)) return null;
+  const sm = Math.round(Number(fi.stepMonth) || 0), to = Number(fi.stepTo) || 0;
+  const stepIdx = sm >= 1 && sm <= 12 && to > 0 ? (sm - startMonth + 12) % 12 : 12;   // budget month the step lands in
+  return Array.from({ length: 12 }, (_, i) => r2(i >= stepIdx ? to : base)) as Months;
+}
+export function allocOutFor(inputs: Pick<BudgetInputs, 'allocOut'> | null | undefined, propertyCode: string | null | undefined): AllocOut | null {
   if (inputs && inputs.allocOut !== undefined) return inputs.allocOut && inputs.allocOut.pct > 0 ? inputs.allocOut : null;
   return ALLOC_OUT_DEFAULTS[String(propertyCode || '').toLowerCase()] || null;
 }
@@ -1611,12 +1625,18 @@ export function mgmtFeeOnIncome(lines: BudgetLine[], rates: number[], before: nu
   const fee = lines[i6112], d = fee.driver as any;
   if (fee.override || d?.method !== 'mgmtPct' || !d.priorMonth) return lines;
   const inc = rollup(new Map(lines.map((l) => [l.gl_code, l.months]))).get('5500') || zero12();
-  const basis = inc.map((_, i) => (i === 0 ? (before ? before : inc[0]) : inc[i - 1]));
-  const mr = Number(fee.round) || 0;   // a standing MROUND on the fee still applies
-  const months = basis.map((v, i) => { const x = Math.round(v * (Number(rates[i]) || 0)); return (mr > 0 ? Math.round(x / mr) * mr : x) || 0; }) as Months;
+  // a companion's income in the basis (driver.feeExtra, TPNDC), and the journal split back off (driver.allocOut):
+  // without these the rebuilt fee billed TPND the full 8.44% (Troy 2026-11-18)
+  const ex: number[] | null = Array.isArray(d.feeExtra) && d.feeExtra.length === 12 ? d.feeExtra.map((v: any) => Number(v) || 0) : null;
+  const basis = inc.map((_, i) => (i === 0 ? (before ? before : inc[0]) : inc[i - 1]) + (ex ? (i === 0 ? ex[0] : ex[i - 1]) : 0));
+  const keep = d.allocOut && Number(d.allocOut.pct) > 0 && Number(d.allocOut.pct) < 1 ? 1 - Number(d.allocOut.pct) : 1;
+  const mr = Number(fee.round) || 0;   // a standing MROUND on the fee still applies (to what the property keeps)
+  const gross = basis.map((v, i) => Math.round(v * (Number(rates[i]) || 0)));
+  const months = gross.map((x) => { const k = keep < 1 ? r2(x * keep) : x; return (mr > 0 ? Math.round(k / mr) * mr : k) || 0; }) as Months;
   if (months.every((v, i) => v === fee.months[i])) return lines;
   const out = [...lines];
-  out[i6112] = { ...fee, months };
+  const driver = keep < 1 ? { ...d, allocOut: { ...d.allocOut, gross: r2(sum(gross as Months)), out: r2(sum(gross as Months) - sum(months)) } } : d;
+  out[i6112] = { ...fee, months, driver };
   return out;
 }
 /* VACANCY % TYPED FOR A MONTH (Troy 2026-11-16: "Vacancy is just messed up. The 'historicals' make it so that I basically
@@ -2478,6 +2498,9 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
      budgeted income; without a current-year budget January runs on its own income) ---- */
   const feePct = inputs.mgmtPct || tpl?.mgmtFee?.actualPct || 0;
   const feeEngine = !isSet('6112') && !!feePct;
+  const feeAlloc = allocOutFor(inputs, src.propertyCode);
+  const feeExtra = feeAlloc && feeAlloc.gls.includes('6112') ? allocFeeIncome(feeAlloc, startMonth) : null;
+  const feeExtraFrom = feeAlloc ? feeAlloc.to : '';
   // rebuildable: the quarter shift below can move income between months, and the fee follows income
   const buildFee = (): void => {
     const monthsMap = new Map<string, Months>();
@@ -2486,12 +2509,15 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const prevCal = (startMonth + 10) % 12;                                   // calendar index of the month before the budget starts
     const budIncome = src.budget && Object.keys(src.budget).length ? rollup(new Map(Object.entries(src.budget) as [string, Months][])).get('5500') : null;
     const before = budIncome && budIncome[prevCal] ? budIncome[prevCal] : totalIncome[0];
-    const basis = totalIncome.map((v, i) => (i === 0 ? before : totalIncome[i - 1])) as Months;
+    const own = totalIncome.map((v, i) => (i === 0 ? before : totalIncome[i - 1])) as Months;
+    // a companion property's income in the basis (TPND + TPNDC): its prior month, January on its own January
+    const extra = feeExtra;
+    const basis = (extra ? own.map((v, i) => v + (i === 0 ? extra[0] : extra[i - 1])) : own) as Months;
     // first twelve months of ownership at the first-year rate (typed on the budget, else the
     // property's acquisition budget), the regular rate after
     const fy = { pct: inputs.mgmtFirstYear?.pct !== undefined ? inputs.mgmtFirstYear.pct : src.acquisition?.firstYearPct, start: inputs.mgmtFirstYear?.start || src.acquisition?.start };
     const fr = mgmtFeeRates(inputs.year, startMonth, feePct, fy);
-    mk('6112', basis.map((v, i) => Math.round(v * fr.rates[i])) as Months, { method: 'mgmtPct', pct: feePct, priorMonth: true, ...(fr.firstMonths ? { firstYear: { pct: fy.pct, months: fr.firstMonths, through: fr.through } } : {}) } as any);
+    mk('6112', basis.map((v, i) => Math.round(v * fr.rates[i])) as Months, { method: 'mgmtPct', pct: feePct, priorMonth: true, ...(extra ? { feeExtra: extra, feeExtraFrom: feeExtraFrom } : {}), ...(fr.firstMonths ? { firstYear: { pct: fy.pct, months: fr.firstMonths, through: fr.through } } : {}) } as any);
   };
   if (isSet('6112')) {
     // a shape chosen on the row: already built above

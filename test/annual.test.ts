@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, formulaOverride, acqTieKeysOf, corpGuidanceLine, mgmtFeeRates, summaryColumn, sumSummaryCols, summaryLabels, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
   refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, contractMonths, flatFeeFromSchedule, guidanceCheck, elevatedInsuranceRate, fitToT12, noiQuarters, qShiftTargets, normalizeGuidance, type TemplateData, type AnnualSources,
-  refollowMgmtFee,
+  refollowMgmtFee, allocFeeIncome,
 } from '../shared/annual.js';
 import { sum, zero12, rollup, CURVES, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
 import { parseYardiBudgetTemplate, parseRentRoll, parseMonarchStatement, detectUploadKind } from '../src/importers.js';
@@ -1690,6 +1690,31 @@ describe('2027 notes pass', () => {
     // turned off on the budget
     expect(L(generateAnnualLines(coaList, { ...inputs, allocOut: null }, { ...src, propertyCode: 'tpnd' }), '6108').months[0]).toBe(L(c, '6108').months[0]);
   });
+  it('TPND split covers the Legend landscaping contract (6924): Oct-26 posted $2,768 of $4,700', () => {
+    const legend = [{ vendor: 'Legend Lawn Maintenance', gl: '6924', kind: 'monthly' as const, amount: 4700 }];
+    const t = L(generateAnnualLines(coaList, { ...inputs, contracts: legend }, { ...src, propertyCode: 'tpnd' }), '6924');
+    expect(t.months[0]).toBeCloseTo(4700 * (1 - 0.4111), 2);                       // 2,767.83
+    expect((t.driver as any).allocOut.gross).toBe(56400);
+    expect(L(generateAnnualLines(coaList, { ...inputs, contracts: legend }, { ...src, propertyCode: 'clnd' }), '6924').months[0]).toBe(4700);
+  });
+  it('allocFeeIncome: the companion income by budget month, stepping in its calendar month', () => {
+    expect(allocFeeIncome({ to: 'tpndc', pct: 0.4111, gls: ['6112'] })).toBeNull();
+    const fi = allocFeeIncome({ to: 'tpndc', pct: 0.4111, gls: ['6112'], feeIncome: { monthly: 1000, stepMonth: 8, stepTo: 1030 } }, 1)!;
+    expect(fi[6]).toBe(1000); expect(fi[7]).toBe(1030); expect(fi[11]).toBe(1030);
+    // an ownership year starting in September: the August step is the last budget month
+    const sep = allocFeeIncome({ to: 'tpndc', pct: 0.4111, gls: ['6112'], feeIncome: { monthly: 1000, stepMonth: 8, stepTo: 1030 } }, 9)!;
+    expect(sep[10]).toBe(1000); expect(sep[11]).toBe(1030);
+  });
+  it('TPND fee = rate x (TPND + TPNDC prior-month income), then 41.11% journals to TPNDC', () => {
+    const co = 120000;
+    const alloc = { to: 'tpndc', pct: 0.4111, gls: ['6112'], feeIncome: { monthly: co } };
+    const own = generateAnnualLines(coaList, { ...inputs, mgmtPct: 0.04, allocOut: { to: 'tpndc', pct: 0.4111, gls: ['6112'] } }, { ...src, propertyCode: 'tpnd' });
+    const comb = generateAnnualLines(coaList, { ...inputs, mgmtPct: 0.04, allocOut: alloc }, { ...src, propertyCode: 'tpnd' });
+    const f0 = L(own, '6112'), f1 = L(comb, '6112');
+    expect(f1.months[3] - f0.months[3]).toBeCloseTo(Math.round(0.04 * co) * (1 - 0.4111), 0);
+    expect((f1.driver as any).feeExtra[0]).toBe(co);
+    expect((f1.driver as any).allocOut.pct).toBe(0.4111);
+  });
   it('flatFeeFromSchedule: all on the fee = fee x occupied units; a RUBS remainder converts as leases end', () => {
     const vac = Array(12).fill(0.05) as Months;
     const all = flatFeeFromSchedule({ fees: { '1': 100, '2': 150 }, units: { '1': 5, '2': 5 }, onFlatPct: 1 }, { lastIncome: 900, occLast: 0.9, units: 10, vacPct: vac, year: 2027 })!;
@@ -2425,6 +2450,13 @@ describe('the fee on the final prior-month income (Troy 2026-11-16: "Management 
     expect(mgmtFeeOnIncome(locked, rates, null)).toBe(locked);
     const flat = [ln('4994', inc), ln('6112', Array(12).fill(5) as Months)];
     expect(mgmtFeeOnIncome(flat, rates, null)).toBe(flat);
+  });
+  it('keeps the journal split and the companion income (TPND: without them the rebuilt fee was the full 8.44%)', () => {
+    const split = fee({ driver: { method: 'mgmtPct', pct: 0.04, priorMonth: true, allocOut: { to: 'tpndc', pct: 0.4111, gross: 0, out: 0 }, feeExtra: Array(12).fill(120000) } as any });
+    const out = mgmtFeeOnIncome([ln('4994', inc), split], Array(12).fill(0.04), 98000).find((l) => l.gl_code === '6112')!;
+    expect(out.months[0]).toBeCloseTo(Math.round(0.04 * (98000 + 120000)) * (1 - 0.4111), 2);
+    expect(out.months[1]).toBeCloseTo(Math.round(0.04 * (100000 + 120000)) * (1 - 0.4111), 2);
+    expect((out.driver as any).allocOut.out).toBeCloseTo(sum(out.months) / (1 - 0.4111) * 0.4111, 0);
   });
 });
 

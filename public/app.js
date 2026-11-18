@@ -168,7 +168,7 @@ function drvMetaBase(l) {
     case 'burdenRatio': { const bs = l.driver.basis === 'budget' ? 'CY budget ratio' : l.driver.basis === 'mix' ? 'avg of T12 actual & CY budget ratios' : 'T12 actual ratio';
       return { cls: 'drv-pay', tag: l.driver.from ? `%WAGES·${String(l.driver.from).toUpperCase()}` : '%WAGES', label: `${((l.driver.ratio || 0) * 100).toFixed(1)}% of wages (${S.bv && S.bv.annual ? `same-month ${bs} × that month's budgeted wages — keeps the quarterly / seasonal shape` : 'Minot ratio'})${l.driver.from ? ` — the % and the monthly shape are taken from ${String(l.driver.from).toUpperCase()}'s history, applied to this property's own wages` : ''}` }; }
     case 'mgmtPct': { const fy = l.driver.firstYear;
-      return { cls: 'drv-fee', tag: fy ? '%INC·Y1' : '%INC', label: fy ? `Management fee: ${((fy.pct || 0) * 100).toFixed(2)}% for the first 12 months of ownership (income through ${fy.through}; ${fy.months} fee month${fy.months === 1 ? '' : 's'} of this budget), then ${((l.driver.pct || 0) * 100).toFixed(2)}% — on the prior month's income` : `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.priorMonth ? 'prior-month ' : ''}income` }; }
+      return { cls: 'drv-fee', tag: fy ? '%INC·Y1' : '%INC', label: fy ? `Management fee: ${((fy.pct || 0) * 100).toFixed(2)}% for the first 12 months of ownership (income through ${fy.through}; ${fy.months} fee month${fy.months === 1 ? '' : 's'} of this budget), then ${((l.driver.pct || 0) * 100).toFixed(2)}% — on the prior month's income` : `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.priorMonth ? 'prior-month ' : ''}income${Array.isArray(l.driver.feeExtra) ? ` — basis includes ${String(l.driver.feeExtraFrom || 'companion').toUpperCase()} income ($${money(l.driver.feeExtra.reduce((a, b) => a + (Number(b) || 0), 0))} for the year)` : ''}` }; }
     case 'interest': return { cls: 'drv-int', tag: 'INT', label: 'Interest (loan × rate × days)' };
     case 'sellerUtil': return { cls: 'drv-t12', tag: 'SLR', label: 'Seller statement level (× growth)' };
     case 'sellerLine': return l.driver.basis === 'budget'
@@ -3886,13 +3886,24 @@ function openAllocSplit(b) {
   const dlg = ensureDlg('split-dlg');
   const inp = S.bv.budget.inputs || {};
   const cur = S.bv.allocOut || { to: '', pct: 0, gls: [] };
+  const fi = cur.feeIncome || {};
+  const nv = (v) => (v ? +Number(v).toFixed(2) : '');
   dlg.innerHTML = `<h2>Journal split to another property</h2>
-    <p class="muted" style="font-size:12px; margin:0 0 8px">A share of these GLs moves to a companion property by recurring journal every month (TPND → TPNDC 41.11%: common electric, sewer, trash, water, insurance, management fee, RE tax). The split comes off lines the engine builds from scratch (corporate rate, fee, contracts); lines built from this property's own history already post net of the journal. ${S.bv.allocOutSite ? `Site default: ${Math.round(S.bv.allocOutSite.pct * 10000) / 100}% to ${S.bv.allocOutSite.to.toUpperCase()}.` : ''}</p>
+    <p class="muted" style="font-size:12px; margin:0 0 8px">A share of these GLs moves to a companion property by recurring journal every month (TPND → TPNDC 41.11%: common electric, sewer, trash, water, insurance, management fee, RE tax, landscaping). The split comes off lines the engine builds from scratch (corporate rate, fee, contracts); lines built from this property's own history already post net of the journal. ${S.bv.allocOutSite ? `Site default: ${Math.round(S.bv.allocOutSite.pct * 10000) / 100}% to ${S.bv.allocOutSite.to.toUpperCase()} on ${S.bv.allocOutSite.gls.join(', ')}.` : ''}</p>
     <div class="row" style="gap:12px">
       <div class="fld"><label>To property</label><input id="sp-to" value="${esc(cur.to || '')}" style="width:80px"></div>
       <div class="fld"><label>Share moved %</label><input id="sp-pct" value="${cur.pct ? +(cur.pct * 100).toFixed(4) : ''}" style="width:70px"></div>
-      <div class="fld"><label>GLs (comma separated)</label><input id="sp-gls" value="${esc((cur.gls || []).join(', '))}" style="width:260px"></div>
+      <div class="fld"><label>GLs (comma separated)</label><input id="sp-gls" value="${esc((cur.gls || []).join(', '))}" style="width:300px"></div>
     </div>
+    <h3 style="font-size:13px; margin:12px 0 4px">Companion income in the management fee</h3>
+    <p class="muted" style="font-size:12px; margin:0 0 8px">When 6112 is split, the fee is the agreement rate on this property's income <b>plus</b> the companion's (TPND: 4% of TPND + TPNDC, then 41.11% of the fee journals to TPNDC). Blank = this property's income only.</p>
+    <div class="row" style="gap:12px">
+      <div class="fld"><label>Companion income $/mo</label><input id="sp-fi" value="${nv(fi.monthly)}" style="width:110px"></div>
+      <div class="fld"><label>Steps in month (1–12)</label><input id="sp-fsm" value="${fi.stepMonth || ''}" style="width:60px"></div>
+      <div class="fld"><label>to $/mo</label><input id="sp-fto" value="${nv(fi.stepTo)}" style="width:110px"></div>
+      <div class="fld"><label>Fee % (of combined income)</label><input id="sp-fee" value="${((inp.mgmtPct || 0) * 100).toFixed(2)}" style="width:70px"></div>
+    </div>
+    <p class="muted" id="sp-fee-warn" style="font-size:12px; margin:4px 0 0; color:var(--warn, #b45309)"></p>
     <div class="row" style="justify-content:space-between; margin-top:10px">
       <span>${inp.allocOut !== undefined ? '<button class="btn sub" id="sp-def" title="Forget this budget\'s own setting">Use site default</button>' : ''} <button class="btn sub" id="sp-off">Turn off</button></span>
       <span><button class="btn sub" id="sp-x">Cancel</button> <button class="btn" id="sp-save">Save & recalculate</button></span>
@@ -3900,13 +3911,25 @@ function openAllocSplit(b) {
   dlg.querySelector('#sp-x').addEventListener('click', () => dlg.close());
   dlg.querySelector('#sp-off').addEventListener('click', async () => { dlg.close(); await saveInputs(b, { allocOut: null }); });
   { const d = dlg.querySelector('#sp-def'); if (d) d.addEventListener('click', async () => { dlg.close(); const next = { ...(S.bv.budget.inputs || {}) }; delete next.allocOut; pushUndo(); S.bv = await POST(`/budgets/${b.id}/restore`, { lines: S.bv.planLines || S.bv.lines, inputs: next }); S.bv = await POST(`/budgets/${b.id}/recalc`); render(); }); }
+  const num$ = (sel) => Number(String(dlg.querySelector(sel).value).replace(/[$,\s]/g, '')) || 0;
+  const warn = () => {   // a stand-in rate (8.44%) on a combined basis would double the fee
+    const w = dlg.querySelector('#sp-fee-warn');
+    w.textContent = num$('#sp-fi') > 0 && num$('#sp-fee') > 6 ? `With the companion income in the basis the fee % should be the agreement rate (4%), not a stand-in like ${num$('#sp-fee').toFixed(2)}%.` : '';
+  };
+  ['#sp-fi', '#sp-fee'].forEach((sel) => dlg.querySelector(sel).addEventListener('input', warn)); warn();
   dlg.querySelector('#sp-save').addEventListener('click', async () => {
     const to = dlg.querySelector('#sp-to').value.trim().toLowerCase();
     const pct = (Number(dlg.querySelector('#sp-pct').value) || 0) / 100;
     const gls = dlg.querySelector('#sp-gls').value.split(/[\s,]+/).map((x) => x.trim()).filter((x) => /^\d{4}$/.test(x));
     if (!to || !(pct > 0 && pct < 1) || !gls.length) { alert('Enter a property, a share between 0 and 100%, and at least one GL.'); return; }
+    const monthly = num$('#sp-fi'), stepMonth = Math.round(num$('#sp-fsm')), stepTo = num$('#sp-fto');
+    if (stepTo && !(stepMonth >= 1 && stepMonth <= 12)) { alert('Enter the month (1–12) the companion income steps up.'); return; }
+    const allocOut = { to, pct, gls, ...(monthly > 0 ? { feeIncome: { monthly, ...(stepTo > 0 ? { stepMonth, stepTo } : {}) } } : {}) };
+    const patch = { allocOut };
+    const fee = num$('#sp-fee') / 100;
+    if (Math.abs(fee - (inp.mgmtPct || 0)) > 1e-7) patch.mgmtPct = fee;   // only when it was changed here
     dlg.close();
-    await saveInputs(b, { allocOut: { to, pct, gls } });
+    await saveInputs(b, patch);
   });
   dlg.showModal();
 }

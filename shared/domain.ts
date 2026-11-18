@@ -109,6 +109,16 @@ export interface FeeSchedule { fees: Record<string, number>; units: Record<strin
 export type BaselineShape = 'wavg' | 'actual' | 'flat' | 'curve' | 'last' | 'avgnz' | 'turns';
 
 /** Everything the generator needs. Stored on budgets.inputs (jsonb). */
+/** A recurring journal split to a companion property (TPND → TPNDC). `feeIncome`: the companion's
+    monthly income that sits in the management-fee basis (TPND's fee is the agreement rate on TPND +
+    TPNDC income, and the split then moves its share of the fee); `stepTo` from calendar `stepMonth`. */
+export interface AllocOut {
+  to: string;
+  pct: number;
+  gls: string[];
+  feeIncome?: { monthly: number; stepMonth?: number | null; stepTo?: number | null; note?: string } | null;
+}
+
 export interface BudgetInputs {
   /** bad debt recovery rate on the 60-day uncollected (dqChain); unset = the trailing-12's */
   recoveryPct?: number | null;
@@ -242,7 +252,7 @@ export interface BudgetInputs {
   /** annual: share of chosen GLs allocated out to a companion property by recurring journal
       (TPND → TPNDC 41.11%). Applies to engine-built lines only (corporate rate, fee, contracts):
       history-based lines already post net of the journal. Unset = the site default (ALLOC_OUT_DEFAULTS). */
-  allocOut?: { to: string; pct: number; gls: string[] } | null;
+  allocOut?: AllocOut | null;
   /** annual: NOI share by quarter (blank = absorbs the rest) carried by the picked expense lines and/or
       vacancy timing — year totals kept (shared/annual.ts quarterShiftSolve) */
   qShift?: { targets: (number | null)[]; gls?: string[]; vacancy?: boolean; floor?: number; increases?: boolean } | null;
