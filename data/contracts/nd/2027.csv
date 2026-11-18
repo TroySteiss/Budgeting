@@ -141,3 +141,9 @@ nrnd,7430,2027 SP: Sidewalks,annual,27300.0,,,12,,,replace,"2027 SP review 11/18
 rrnd,7430,2027 SP: Sidewalks,annual,15000.0,,,12,,,replace,"2027 SP review 11/18/2026: 2027 - Concrete 15,000",yes
 drnd,7430,2027 SP: Sidewalks,annual,37897.0,,,12,,,replace,"2027 SP review 11/18/2026: 2027 - Concrete 20,000; 2027 - Patio Lifting 9,997; Recurring fill - concrete 7,900",yes
 mwnd,7430,2027 SP: Sidewalks,annual,10000.0,,,12,,,replace,"2027 SP review 11/18/2026: 2027 - Concrete 8,500; Concrete top-up to $10K min 1,500",yes
+lhnd,6916,Elevator service,monthly,525,month,,,,,replace,2027 elevator contract $525/month (Troy 2026-11-18),yes
+mwnd,6916,Elevator service,monthly,525,month,,,,,replace,2027 elevator contract $525/month (Troy 2026-11-18),yes
+drnd,6916,Elevator service,monthly,525,month,,,,,replace,2027 elevator contract $525/month (Troy 2026-11-18),yes
+rrnd,6916,Elevator service,monthly,350,month,,,,,replace,2027 elevator contract $350/month (Troy 2026-11-18),yes
+nrnd,6916,Elevator service,monthly,350,month,,,,,replace,2027 elevator contract $350/month (Troy 2026-11-18),yes
+cwnd,6916,Elevator service,monthly,700,month,,,,,replace,2027 elevator contract $700/month (Troy 2026-11-18),yes
