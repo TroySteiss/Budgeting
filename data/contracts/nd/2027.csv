@@ -1,1 +1,23 @@
-property,gl,vendor,kind,amount,per,months,bill_month,step_month,step_pct,mode,note
+property,gl,vendor,kind,amount,per,months,bill_month,step_month,step_pct,mode,note,whole_gl
+clnd,6924,Legend Lawn Maintenance,monthly,6850,month,,,9,3,replace,Minot joint contract 9/1/2026-8/31/2027 (landscaping + snow); Sep-Dec no contract yet so +3%,yes
+spnd,6924,Legend Lawn Maintenance,monthly,7000,month,,,9,3,replace,Minot joint contract 9/1/2026-8/31/2027 (landscaping + snow); Sep-Dec no contract yet so +3%,yes
+tcnd,6924,Legend Lawn Maintenance,monthly,3500,month,,,9,3,replace,Minot joint contract 9/1/2026-8/31/2027 (landscaping + snow); Sep-Dec no contract yet so +3%,yes
+tpnd,6924,Legend Lawn Maintenance,monthly,4700,month,,,9,3,replace,Minot joint contract 9/1/2026-8/31/2027 (landscaping + snow); Sep-Dec no contract yet so +3%; full contract (TPNDC 41.11% split open),yes
+wynd,6924,Legend Lawn Maintenance,monthly,7400,month,,,9,3,replace,Minot joint contract 9/1/2026-8/31/2027 (landscaping + snow); Sep-Dec no contract yet so +3%,yes
+bcnd,6924,Landscape Elements ND,monthly,13200,month,5;6;7;8;9;10,,1,3,replace,2026 lawn billing May-Oct +3% (no 2027 contract); snow is 6934,yes
+bcnd,6924,Landscape Elements ND - Jul above base,annual,3865.84,,,7,1,3,replace,Jul 2026 billed 17065.84 vs 13200 base; +3%,yes
+bcnd,6924,Landscape Elements ND - Aug above base,annual,4095,,,8,1,3,replace,Aug 2026 billed 17295 vs 13200 base; +3%,yes
+bcnd,6924,Landscape Elements ND - Oct above base,annual,2230,,,10,1,3,replace,Oct 2026 billed 15430 vs 13200 base; +3%,yes
+ecnd,6924,Landscape Elements ND,monthly,8500,month,5;6;7;8;9;10,,1,3,replace,2026 lawn billing May-Oct +3% (no 2027 contract); snow is 6934,yes
+ecnd,6924,Landscape Elements ND - Oct above base,annual,2230,,,10,1,3,replace,Oct 2026 billed 10730 vs 8500 base; +3%,yes
+fhnd,6924,Landscape Elements ND,monthly,8300,month,5;6;7;8;9;10,,1,3,replace,2026 lawn billing May-Oct +3% (no 2027 contract); snow is 6934,yes
+fhnd,6924,Landscape Elements ND - Sep above base,annual,960,,,9,1,3,replace,Sep 2026 billed 9260 vs 8300 base; +3%,yes
+fhnd,6924,Landscape Elements ND - Oct above base,annual,2230,,,10,1,3,replace,Oct 2026 billed 10530 vs 8300 base; +3%,yes
+phnd,6924,Landscape Elements ND,monthly,5000,month,5;6;7;8;9;10,,1,3,replace,2026 lawn billing May-Oct +3% (no 2027 contract); snow is 6934,yes
+phnd,6924,Landscape Elements ND - Oct above base,annual,3319.17,,,10,1,3,replace,Oct 2026 billed 8319.17 vs 5000 base; +3%,yes
+cwnd,6924,Lang's Lawn Care,monthly,3289,month,6;7;8;9;10,,1,3,replace,2026 contract rate Jun-Oct +3% (no 2027 contract; cash may land a month later),yes
+lhnd,6924,Lang's Lawn Care,monthly,1587,month,6;7;8;9;10,,1,3,replace,2026 contract rate Jun-Oct +3% (no 2027 contract; cash may land a month later),yes
+nrnd,6924,Lang's Lawn Care,monthly,1357,month,6;7;8;9;10,,1,3,replace,2026 contract rate Jun-Oct +3% (no 2027 contract; cash may land a month later),yes
+rrnd,6924,Lang's Lawn Care,monthly,2001,month,6;7;8;9;10,,1,3,replace,2026 contract rate Jun-Oct +3% (no 2027 contract; cash may land a month later),yes
+drnd,6924,No contract - rebid (placeholder),monthly,6306,total,6;7;8;9;10,,1,3,replace,Placeholder: seller-stated spend (Total Clean; no contract) +3% even Jun-Oct; review T12 tab shows 32477 - reconcile,yes
+mwnd,6924,No contract - rebid (placeholder),monthly,10339,total,6;7;8;9;10,,1,3,replace,Placeholder: seller-stated spend (Total Clean; no contract) +3% even Jun-Oct,yes

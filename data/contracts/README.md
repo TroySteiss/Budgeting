@@ -25,5 +25,6 @@ Columns (header row; any order; blank = not set):
 | step_month / step_pct | a price change from that month, in % (3 = +3%) |
 | mode | replace (the line becomes its contracts) or add (on top of the line's formula); default replace |
 | note | free text |
+| whole_gl | `yes` = the file's rows are the whole GL for that property and year: contracts on that GL from the review workbook or carried over from a budget's own list are removed on every deploy. Rows added or changed on the page stay, and the deploy log names them |
 
 Gutter contracts always bill in March and November, whatever months are typed (engine rule).

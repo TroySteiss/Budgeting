@@ -14,10 +14,12 @@
      step_pct   the change, as a % (3 = +3%)                     (optional)
      mode       replace | add — replace the line's formula, or sit on top of it (default replace)
      note       free text
+     whole_gl   yes = the file's rows are the whole GL for that property and year: contracts on that GL from the review
+                workbook or carried over from a budget's own list are removed (rows added or changed on the page stay)
    The year comes from the file name. Pure: parsing and identity only; src/contracts.ts writes the register. */
 import type { Contract } from './domain.js';
 
-export interface RepoContractRow { property: string; year: number; gl: string; vendor: string; contract: Contract; note: string; line: number }
+export interface RepoContractRow { property: string; year: number; gl: string; vendor: string; contract: Contract; note: string; line: number; wholeGl: boolean }
 
 /** RFC-4180-ish CSV: quoted fields, doubled quotes, CRLF or LF. */
 export function parseCsv(text: string): string[][] {
@@ -91,7 +93,7 @@ export function parseContractsCsv(text: string, year: number): { rows: RepoContr
       stepMonth: stepM, stepPct: stepP != null && Number.isFinite(stepP) ? stepP : null,
       mode, source: `repo: data/contracts ${year}`,
     } as Contract;
-    rows.push({ property, year, gl, vendor, contract, note: v('note'), line });
+    rows.push({ property, year, gl, vendor, contract, note: v('note'), line, wholeGl: /^(y|yes|true|1|x)$/i.test(v('whole_gl')) });
   }
   return { rows, errors };
 }

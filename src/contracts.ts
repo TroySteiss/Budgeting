@@ -123,6 +123,18 @@ export async function syncRepoContracts(region: string, dir = join(process.cwd()
       changed.set(`${r.property}:${year}`, { property: r.property, year });
       loaded++;
     }
+    // whole_gl: the file's rows are the whole GL for that property and year. Contracts on it from the review workbook or
+    // carried over from a budget's own list are removed; rows added or changed on the page stay (and are reported).
+    const whole = new Map<string, { property: string; gl: string }>();
+    for (const r of rows) if (r.wholeGl) whole.set(`${r.property}:${r.gl}`, { property: r.property, gl: r.gl });
+    for (const w of whole.values()) {
+      const others = (await query(`select id, vendor, origin, ui_edited from contracts where lower(property_code)=$1 and year=$2 and gl=$3 and origin <> 'repo'`, [w.property, year, w.gl])).rows as any[];
+      for (const o of others) {
+        if (o.origin === 'ui' || o.ui_edited) { errors.push(`${region}/${f} ${w.property} ${w.gl}: kept "${o.vendor}" (added or changed on the page) next to the file's rows`); continue; }
+        await query(`delete from contracts where id=$1`, [o.id]);
+        changed.set(`${w.property}:${year}`, { property: w.property, year });
+      }
+    }
     // the file's own rows it no longer lists (never one changed on the page)
     const gone = (await query(`select id, property_code, gl, vendor from contracts where origin='repo' and year=$1 and not ui_edited`, [year])).rows as any[];
     for (const g of gone) {

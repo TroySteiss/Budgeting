@@ -1,6 +1,8 @@
 /* The contracts register's repo file (Troy 2026-11-17: "a significantly better way to alter contract expenses per year
    that you can push data directly into"). Synthetic rows only. */
 import { describe, it, expect } from 'vitest';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { parseCsv, parseContractsCsv, contractKey, contractHash } from '../shared/contractsFile.js';
 
 describe('contracts repo file', () => {
@@ -28,6 +30,18 @@ describe('contracts repo file', () => {
     expect(rows.map((r) => r.line)).toEqual([5]);
     expect(errors).toEqual(['line 2: gl "68"', 'line 3: no vendor', 'line 4: amount "0"', 'line 6: clnd 6808 "ken" twice']);
     expect(parseContractsCsv('gl,vendor\n6808,x', 2027).errors[0]).toMatch(/no "property" column/);
+  });
+  it('whole_gl marks the file as the whole GL for that property', () => {
+    const { rows } = parseContractsCsv(['property,gl,vendor,amount,whole_gl', 'clnd,6924,A,10,yes', 'clnd,6808,B,10,', 'spnd,6924,C,10,No'].join('\n'), 2027);
+    expect(rows.map((r) => r.wholeGl)).toEqual([true, false, false]);
+  });
+  it('every repo file in data/contracts parses cleanly', () => {
+    const root = join(process.cwd(), 'data', 'contracts');
+    for (const region of ['nd', 'kc']) {
+      let files: string[] = [];
+      try { files = readdirSync(join(root, region)).filter((f) => /^\d{4}\.csv$/.test(f)); } catch { continue; }
+      for (const f of files) expect(parseContractsCsv(readFileSync(join(root, region, f), 'utf8'), Number(f.slice(0, 4))).errors, `${region}/${f}`).toEqual([]);
+    }
   });
   it('identity ignores case and punctuation; the fingerprint follows the content', () => {
     expect(contractKey('CLND', 2027, '6808', "Ken's Gutters")).toBe(contractKey('clnd', 2027, '6808', 'kens gutters'.replace('kens', "ken's")));

@@ -33,7 +33,7 @@ async function loadRepoContracts(): Promise<void> {
     try {
       await inRegion(r, async () => {
         const out = await syncRepoContracts(r);
-        if (out.errors.length) console.warn(`[contracts] ${r}: ${out.errors.length} row(s) skipped — ${out.errors.slice(0, 8).join('; ')}`);
+        if (out.errors.length) console.warn(`[contracts] ${r}: ${out.errors.length} note(s) (rows skipped / page rows kept) — ${out.errors.slice(0, 8).join('; ')}`);
         if (out.changed.length) {
           const ids = await recalcContractBudgets(out.changed);
           console.log(`[contracts] ${r}: ${out.loaded} repo row(s); ${out.changed.length} property-year(s) changed, ${ids.length} budget(s) recalculated`);
