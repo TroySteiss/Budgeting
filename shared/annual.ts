@@ -40,7 +40,8 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-18a';   // a: TPND split adds 6924; fee on combined TPND + TPNDC income; final fee keeps the split
+export const ENGINE_VERSION = '2026-11-18b';   // b: % increase over contract cost (inputs.contractPct)
+// a: TPND split adds 6924; fee on combined TPND + TPNDC income; final fee keeps the split
 // earlier: 2026-11-17a:   // a: another property's curve on every formula (applied again at the end of a build)
 // earlier: 2026-11-16e:   // e: no $0 month on a recurring line (acquisitions); utility recovery capped by group
 // earlier: 2026-11-16d: a vacancy % typed for a month overrides the formula
@@ -1327,18 +1328,24 @@ export function contractsByGl(cs: Contract[] | null | undefined, onChart: (gl: s
   return out;
 }
 /** One GL's line from its contracts: their months summed — the whole line ('replace', when any contract replaces) or
-    on top of the line's own formula ('add', when all add). The driver lists each contract; a contract from the review
-    workbook carries its row and the months it fills (the grid marks those cells and names the row on hover). */
-export function contractLine(cs: Contract[], units: number, startMonth: number, prev: { months: Months; driver?: any } | null): { months: Months; driver: Record<string, any> } {
+    on top of the line's own formula ('add', when all add). The driver lists each contract with the months it bills (the
+    grid marks those cells and names the contracts on hover); a contract from the review workbook also carries its row.
+    `pct` (Troy 2026-11-18: "show a % increase to increase over contract cost in same months"): each month's contract
+    cost x (1 + pct), so the line keeps the contracts' billing months; `cost` = the contract cost by month before it. */
+export function contractLine(cs: Contract[], units: number, startMonth: number, prev: { months: Months; driver?: any } | null, pct = 0): { months: Months; driver: Record<string, any> } {
   const add = cs.every((c) => c.mode === 'add');
   const tot = zero12();
   const items = cs.map((c) => {
     const m = contractMonths(c, units, startMonth);
     m.forEach((v, i) => { tot[i] = r2(tot[i] + v); });
-    return { vendor: c.vendor || '', annual: r2(sum(m)), kind: c.kind, ...(c.review ? { review: c.review, months: m.map((v, i) => (v ? i : -1)).filter((i) => i >= 0) } : {}) };
+    // each contract's own months by budget month, so the grid can name what bills in a cell
+    const byMonth = m.map((v) => r2(v));
+    return { vendor: c.vendor || '', annual: r2(sum(m)), kind: c.kind, months: m.map((v, i) => (v ? i : -1)).filter((i) => i >= 0), byMonth, ...(c.review ? { review: c.review } : {}) };
   });
-  const months = add && prev ? prev.months.map((v, i) => r2(v + tot[i])) as Months : tot;
-  return { months, driver: { method: 'contract', mode: add ? 'add' : 'replace', items, ...(add && prev ? { base: prev.driver } : {}) } };
+  const k = Number.isFinite(Number(pct)) ? Number(pct) : 0;
+  const up = k ? tot.map((v) => r2(v * (1 + k))) as Months : tot;
+  const months = add && prev ? prev.months.map((v, i) => r2(v + up[i])) as Months : up;
+  return { months, driver: { method: 'contract', mode: add ? 'add' : 'replace', items, ...(k ? { pct: k, cost: tot } : {}), ...(add && prev ? { base: prev.driver } : {}) } };
 }
 
 /** Recurring journal splits by site (KB A1: "Every month, 41.11% of common electric, sewer, trash,
@@ -2440,7 +2447,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   /* ---- known contracts and recurring costs (inputs.contracts): set the line, or sit on top of its
      formula. Before the fee, so a contracted income line (a commercial lease) is in its basis. ---- */
   for (const [gl, cs] of contractsByGl(inputs.contracts, (gl) => coaByCode.has(gl))) {
-    const cl = contractLine(cs, units, startMonth, lines.get(gl) || null);
+    const cl = contractLine(cs, units, startMonth, lines.get(gl) || null, Number(inputs.contractPct?.[gl]) || 0);
     mk(gl, cl.months, cl.driver as any);
   }
 

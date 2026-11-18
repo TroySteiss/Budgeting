@@ -1690,6 +1690,23 @@ describe('2027 notes pass', () => {
     // turned off on the budget
     expect(L(generateAnnualLines(coaList, { ...inputs, allocOut: null }, { ...src, propertyCode: 'tpnd' }), '6108').months[0]).toBe(L(c, '6108').months[0]);
   });
+  it('a % increase over contract cost keeps the contracts\' billing months (Troy 2026-11-18)', () => {
+    const snow = [{ vendor: 'Brandoz', gl: '6934', kind: 'monthly' as const, amount: 60000, per: 'total' as const, months: [11, 12, 1, 2, 3, 4] }];
+    const plainC = L(generateAnnualLines(coaList, { ...inputs, contracts: snow }, src), '6934');
+    const up = L(generateAnnualLines(coaList, { ...inputs, contracts: snow, contractPct: { '6934': 0.03 } }, src), '6934');
+    expect(up.months[0]).toBeCloseTo(plainC.months[0] * 1.03, 2);
+    expect(up.months[5]).toBe(0);                                   // a month the contract does not bill stays empty
+    expect(sum(up.months)).toBeCloseTo(60000 * 1.03, 2);
+    expect((up.driver as any).pct).toBe(0.03);
+    expect((up.driver as any).cost[0]).toBe(plainC.months[0]);
+    expect((up.driver as any).items[0].byMonth[0]).toBe(10000);    // each contract's own months, for the grid hover
+    expect((plainC.driver as any).pct).toBeUndefined();
+    // an 'add' contract: only the contract part goes up, the formula under it is as built
+    const addC = [{ vendor: 'A', gl: '6620', kind: 'monthly' as const, amount: 100, mode: 'add' as const }];
+    const a0 = L(generateAnnualLines(coaList, { ...inputs, contracts: addC }, src), '6620');
+    const a1 = L(generateAnnualLines(coaList, { ...inputs, contracts: addC, contractPct: { '6620': 0.1 } }, src), '6620');
+    expect(a1.months[0] - a0.months[0]).toBeCloseTo(10, 2);
+  });
   it('TPND split covers the Legend landscaping contract (6924): Oct-26 posted $2,768 of $4,700', () => {
     const legend = [{ vendor: 'Legend Lawn Maintenance', gl: '6924', kind: 'monthly' as const, amount: 4700 }];
     const t = L(generateAnnualLines(coaList, { ...inputs, contracts: legend }, { ...src, propertyCode: 'tpnd' }), '6924');

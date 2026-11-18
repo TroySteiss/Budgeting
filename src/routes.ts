@@ -366,7 +366,7 @@ async function applyReviewToBudget(lb: LoadedBudget, rows: ApplyRow[], filename:
       // built from its contracts exactly as the engine will on every recalculation: not locked, chip CONTRACT
       let ln = lines.find((l) => l.gl_code === c.gl);
       const old = ln ? sum(ln.months) : 0;
-      const cl = contractLine(contracts.filter((x: any) => x.gl === c.gl), units, sm, ln && !ln.override ? { months: ln.months, driver: ln.driver } : null);
+      const cl = contractLine(contracts.filter((x: any) => x.gl === c.gl), units, sm, ln && !ln.override ? { months: ln.months, driver: ln.driver } : null, Number(lb.budget.inputs?.contractPct?.[c.gl]) || 0);
       if (!ln) { ln = { gl_code: c.gl, months: zero12(), driver: { method: 'manual' } as any, override: false, note: '' }; lines.push(ln); }
       ln.months = cl.months; ln.driver = cl.driver as any; ln.override = false;
       entries.push({ gl: c.gl, old: r2(old), new: r2(sum(ln.months)), rows: c.rowIds, kinds: c.kinds, flags: c.flags, contracts: true });

@@ -713,6 +713,13 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
           },
         };
       }
+      case 'contract': {
+        // the contract cost in that month x (1 + the % over contract), the split after (Troy 2026-11-18)
+        if (d.mode === 'add') return null;
+        const cost: number[] = Array.isArray(d.cost) && d.cost.length === 12 ? d.cost.map((v: any) => Number(v) || 0) : ln.months.map((v) => (Number(v) || 0) / (sp ? 1 - sp : 1));
+        if (!Array.isArray(d.cost) && sp) return null;   // an older line without its cost: the value stands
+        return { factor: { value: Number(d.pct) || 0, fmt: '0.00%' }, month: (i) => (cost[i] ? split(`ROUND(${r2(cost[i])}*(1+${D}),2)`) : null) };
+      }
       case 'pctGpr': {
         const rG = rowOf.get('4994');
         if (d.of !== 'gpr' || !(Number(d.pct)) || !rG) return null;

@@ -249,6 +249,9 @@ export interface BudgetInputs {
   /** annual: known contracts and recurring costs (snow, elevators, SmartRent, annual invoices, a
       commercial lease…) — see contractMonths in shared/annual.ts */
   contracts?: Contract[] | null;
+  /** annual: % increase over contract cost by GL (Troy 2026-11-18): each month = that month's contract cost x (1 + %),
+      the contracts' billing months kept. Applies to the contract part only ('add' lines keep their formula as built). */
+  contractPct?: Record<string, number> | null;
   /** annual: share of chosen GLs allocated out to a companion property by recurring journal
       (TPND → TPNDC 41.11%). Applies to engine-built lines only (corporate rate, fee, contracts):
       history-based lines already post net of the journal. Unset = the site default (ALLOC_OUT_DEFAULTS). */

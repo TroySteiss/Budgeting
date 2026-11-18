@@ -154,7 +154,10 @@ function drvMetaBase(l) {
       const d = l.driver, items = (d.items || []).map((x) => `${x.vendor || 'contract'} $${money(x.annual)}${x.review ? ` [${x.review.rowId}]` : ''}`).join(' + ');
       // contracts filed from the ND budget review workbook keep its teal (Troy 2026-11-12: their own chip and colour)
       const fromReview = (d.items || []).some((x) => x.review);
-      return { cls: fromReview ? 'drv-rev' : 'drv-corp', tag: (d.mode === 'add' ? 'CONTRACT+' : 'CONTRACT') + (fromReview ? '·RV' : ''), label: `${d.mode === 'add' ? 'Formula plus known contracts' : 'Known contracts'}: ${items}${fromReview ? ' — [A…] = from the ND 2027 Budget Review; hover a teal month for the row' : ''} (More → Contracts & known costs…)` };
+      // every contract line in the review style (Troy 2026-11-18: "I like formatting of Contract RV much more"): teal
+      // chip, teal months, hover = what bills in that month
+      const up = d.pct ? ` + ${(d.pct * 100).toFixed(2)}% over contract cost` : '';
+      return { cls: 'drv-rev', tag: (d.mode === 'add' ? 'CONTRACT+' : 'CONTRACT') + (fromReview ? '·RV' : ''), label: `${d.mode === 'add' ? 'Formula plus known contracts' : 'Known contracts'}: ${items}${up}${fromReview ? ' — [A…] = from the ND 2027 Budget Review' : ''}; hover a teal month for what bills in it (More → Contracts & known costs…)` };
     }
     case 'flatFee': if (l.driver.schedule) return { cls: 'drv-rr', tag: 'FEE SCHED', label: `Flat-fee package schedule: $${money(l.driver.F, 2)} per occupied unit on the fee, $${money(l.driver.R, 2)} on RUBS until each lease switches at expiration (${Math.round((l.driver.share[0] || 0) * 100)}% on the fee in the first month, ${Math.round((l.driver.share[11] || 0) * 100)}% by the last) × budgeted occupancy; this GL takes ${Math.round((l.driver.weight || 0) * 1000) / 10}% of it (last actual month's mix)` };
       return { cls: 'drv-rr', tag: 'FLAT FEE', label: `Flat utility fee per occupied unit — ${MONTHS[(l.driver.lastMonth || 1) - 1]} actual $${money(l.driver.base || 0)} × budgeted occupancy ÷ ${((l.driver.occLast || 1) * 100).toFixed(1)}% occupied that month (ties to the vacancy assumption)${l.driver.pct ? ` × ${(l.driver.pct * 100).toFixed(1)}% fee increase` : ''}` };
@@ -2185,16 +2188,28 @@ function gridHtml(bv, totals) {
     // a CONTRACT line filed from the review: its contracts carry the row and the months they bill
     const revFromContracts = (d) => {
       const cells = {}, rows = {};
-      for (const x of d.items || []) {
-        if (!x.review) continue;
-        rows[x.review.rowId] = x.review;
-        for (const i of x.months || []) (cells[i] = cells[i] || []).includes(x.review.rowId) || cells[i].push(x.review.rowId);
-      }
-      return Object.keys(rows).length ? { cells, rows, file: ((d.items || []).find((x) => x.review && x.review.file) || {}).review?.file } : null;
+      (d.items || []).forEach((x, k) => {
+        // a review contract keeps its row; a contract typed under Contracts & known costs gets one of its own
+        const id = x.review ? x.review.rowId : `contract ${k + 1}`;
+        rows[id] = x.review || { item: x.vendor || 'contract', action: 'contract', firmness: x.kind || '', byMonth: x.byMonth, contract: true };
+        if (x.review && x.byMonth) rows[id] = { ...rows[id], byMonth: x.byMonth };
+        for (const i of x.months || []) (cells[i] = cells[i] || []).includes(id) || cells[i].push(id);
+      });
+      return Object.keys(rows).length ? { cells, rows, pct: d.pct || 0, contracts: true, file: ((d.items || []).find((x) => x.review && x.review.file) || {}).review?.file } : null;
     };
     const rev = l && l.driver && l.driver.method === 'review' ? (l.driver.rev || {}) : l && l.driver && l.driver.method === 'contract' ? revFromContracts(l.driver) : null;
     const revAt = (i) => (rev && rev.cells && rev.cells[i] && !isHard(i) ? rev.cells[i] : null);
-    const revTip = (i) => revAt(i).map((id) => { const r = (rev.rows || {})[id] || {}; return `${id} · ${r.action || ''} · ${r.item || ''}\n${r.firmness || ''}${r.basis ? ` — ${r.basis}` : ''}${r.source ? `\nSource: ${r.source}${r.contractsRow ? ` (Contracts row ${r.contractsRow})` : ''}` : ''}`; }).join('\n\n') + `\n\nND 2027 Budget Review${rev.file ? ` · ${rev.file}` : ''}`;
+    const revTip = (i) => {
+      const parts = revAt(i).map((id) => {
+        const r = (rev.rows || {})[id] || {};
+        const amt = Array.isArray(r.byMonth) && r.byMonth[i] ? ` $${money(r.byMonth[i])}` : '';
+        if (r.contract) return `${r.item}${amt}${r.firmness ? ` (${r.firmness})` : ''}`;
+        return `${id} · ${r.action || ''} · ${r.item || ''}${amt}\n${r.firmness || ''}${r.basis ? ` — ${r.basis}` : ''}${r.source ? `\nSource: ${r.source}${r.contractsRow ? ` (Contracts row ${r.contractsRow})` : ''}` : ''}`;
+      });
+      const up = rev.pct ? `\n+ ${(rev.pct * 100).toFixed(2)}% over contract cost` : '';
+      const fromRev = Object.values(rev.rows || {}).some((r) => !r.contract);
+      return parts.join(rev.contracts ? '\n' : '\n\n') + up + (fromRev ? `\n\nND 2027 Budget Review${rev.file ? ` · ${rev.file}` : ''}` : rev.contracts ? '\n\nContracts & known costs' : '');
+    };
     const prm = cols.fx && l && !l.override ? paramFor(a.code, l, bv.budget.inputs || {}) : null;
     // seller-derived lines get a non-accrual flag when the billing looks bad
     const smell = sellerDerived(l) ? billingSmell(m) : null;
@@ -2475,6 +2490,10 @@ function paramFor(gl, line, inp) {
   }
   if (m === 'perTurn') {
     return { label: '$ per move-in', value: line.driver.amount || 0, patch: (v) => ({ turnFees: { ...(inp.turnFees || {}), [gl]: v } }) };
+  }
+  if (m === 'contract') {
+    // % increase over the contract cost, month by month (Troy 2026-11-18); 0 = the contracts as they stand
+    return { label: '% increase over contract cost (same months)', value: pct((inp.contractPct || {})[gl] || 0), patch: (v) => ({ contractPct: { ...(inp.contractPct || {}), [gl]: v / 100 } }) };
   }
   if (m === 'corpRate') {
     const cur = { perUnitYr: line.driver.perUnitYr || 0, flatMo: line.driver.flatMo || 0 };
