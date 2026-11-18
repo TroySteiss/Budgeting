@@ -44,7 +44,7 @@ describe('Payroll sheet → Budget sheet', () => {
   it('wage rows are inputs, burden rows are Ratio used × TOTAL WAGES, and the Budget sheet reads every payroll row from the Payroll sheet', async () => {
     const a = args('tst');
     const wb = await load(await buildReviewWorkbook(a));
-    expect(wb.worksheets.map((w) => w.name)).toEqual(['Budget Comps', 'Budget', 'Payroll', 'Summary', 'Raw Data', 'Formulas']);   // the comps summary is the first tab
+    expect(wb.worksheets.map((w) => w.name)).toEqual(['Budget Comps', 'Budget', 'Payroll', 'T12', 'Summary', 'Raw Data', 'Formulas']);   // the comps summary is the first tab
     const pay = wb.getWorksheet('Payroll')!, bud = wb.getWorksheet('Budget')!;
     const rW = rowOfCode(pay, '6402'), rB = rowOfCode(pay, '6418'), rM = rowOfCode(pay, '6404');
     expect(rW && rB && rM).toBeTruthy();
@@ -71,10 +71,10 @@ describe('Payroll sheet → Budget sheet', () => {
     expect(formulaOf(bud.getCell(bW, 5))).toBe(`Payroll!C${rW}`);
     expect(formulaOf(bud.getCell(bB, 9))).toBe(`Payroll!G${rB}`);
     expect(resultOf(bud.getCell(bB, 5))).toBeCloseTo(400, 1);
-    expect(String(bud.getCell(bB, 4).value)).toContain('→ Payroll sheet');
-    // a non-payroll row reads its own formula's value from the Formulas sheet (2026-11-16), not the Payroll sheet
+    expect(String(bud.getCell(bB, 3).value)).toContain('→ Payroll sheet');
+    // a non-payroll row shows its own arithmetic on the T12 sheet and its increase factor (2026-11-18), not the Payroll sheet
     const b6604 = rowOfCode(bud, '6604');
-    expect(formulaOf(bud.getCell(b6604, 5))).toBe(`Formulas!E${b6604}`);
+    expect(formulaOf(bud.getCell(b6604, 5))).toContain(`'T12'!E${b6604}*(1+$D${b6604})`);
     // the historicals sit below the budget block
     let histHead = 0;
     pay.eachRow((row, n) => { if (!histHead && String(row.getCell(2).value || '').startsWith('T12 actuals — by calendar month')) histHead = n; });
@@ -240,22 +240,34 @@ describe('hard-coded numbers stand out in the workbook', () => {
 
 import { parseReviewDraft } from '../src/importers.js';
 describe('export → edit → upload round trip (Troy 2026-11-16: "it needs to upload formulas back into the system, not hard coded values")', () => {
-  it('formula months link to the Formulas sheet, typed numbers are flagged bold red, and only typed cells come back as changes', async () => {
+  it('month cells show their math on visible cells; the Formulas sheet is hidden and no cell reads it; changed months are flagged bold red', async () => {
     const a = args('tst');
     const wb = await load(await buildReviewWorkbook(a));
-    const bud = wb.getWorksheet('Budget')!, fx = wb.getWorksheet('Formulas')!;
+    const bud = wb.getWorksheet('Budget')!, fx = wb.getWorksheet('Formulas')!, t12 = wb.getWorksheet('T12')!;
+    expect(fx.state).toBe('hidden');
+    expect(t12.state).not.toBe('hidden');
     const r = rowOfCode(bud, '6604');
-    expect(formulaOf(bud.getCell(r, 5))).toBe(`Formulas!E${r}`);                         // still a formula in Excel
-    expect(Number(resultOf(bud.getCell(r, 5)))).toBeCloseTo(Number(fx.getCell(r, 5).value), 2);
+    // the T12 history and the increase factor, both on view: no link to the Formulas sheet anywhere on the Budget sheet
+    const f = formulaOf(bud.getCell(r, 5));
+    expect(f).toContain(`'T12'!E${r}*(1+$D${r})`);
+    let linksToFormulas = 0;
+    bud.eachRow((row) => row.eachCell((c) => { if (/Formulas/i.test(formulaOf(c))) linksToFormulas++; }));
+    expect(linksToFormulas).toBe(0);
+    expect(Number(resultOf(bud.getCell(r, 5)))).toBeCloseTo(Number(fx.getCell(r, 5).value), 2);   // the tool's number, to the cent
     expect(String(fx.getCell(r, 1).value)).toBe('6604');                                 // same row, GL in column A
+    expect(String(t12.getCell(r, 1).value)).toBe('6604');                                // the T12 sheet lines up row for row
+    // the increase factor is an input: blue
+    expect(bud.getCell(6, 4).value).toBe('Increase Factor');
+    expect(typeof bud.getCell(r, 4).value).toBe('number');
+    expect(bud.getCell(r, 4).font?.color?.argb).toBe('FF0000FF');
     // payroll rows still read the Payroll sheet
     expect(formulaOf(bud.getCell(rowOfCode(bud, '6402'), 5))).toMatch(/^Payroll!/);
-    // the conditional format: bold red on a typed (non-formula) month
+    // the conditional format: bold red when a month no longer matches the hidden reference (typed over or moved by an input)
     const cf = (bud as any).conditionalFormattings as any[];
-    expect(cf.length).toBe(1);
-    expect(cf[0].ref).toMatch(/^E7:P\d+$/);
-    expect(cf[0].rules[0].formulae[0]).toBe('AND(E7<>"",NOT(_xlfn.ISFORMULA(E7)))');
-    expect(cf[0].rules[0].style.font).toMatchObject({ bold: true, color: { argb: 'FFFF0000' } });
+    const mine = cf.find((x) => x.ref === `E${r}:P${r}`);
+    expect(mine).toBeTruthy();
+    expect(mine.rules[0].formulae[0]).toBe(`ABS(N(E${r})-N('Formulas'!E${r}))>=0.01`);
+    expect(mine.rules[0].style.font).toMatchObject({ bold: true, color: { argb: 'FFFF0000' } });
     // Troy's widths
     expect(bud.getColumn(2).width).toBe(29.86);
     expect(bud.getColumn(10).width).toBe(7.86);

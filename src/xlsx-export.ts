@@ -6,18 +6,57 @@
    Sheets: Budget (PHNDBudget-style), Summary (SummaryPHND-style), Raw Data
    (org rule: show the work — formulas + raw inputs). */
 import ExcelJS from 'exceljs';
-import { summaryColumn, sumSummaryCols, type SummaryCol } from '../shared/annual.js';
+import { summaryColumn, sumSummaryCols, applyT12Adjust, type SummaryCol } from '../shared/annual.js';
 import { fillSummaryPanel, fillSchedule, PANEL_ROW, type ScheduleRow } from './xlsx-summary.js';
 import { fillCachedResults, type CachedDiff } from './xlsx-calc.js';
 import {
   CoaAccount, BudgetLine, UwSnapshotData, BudgetInputs, PCODES, PCODE_LABELS,
-  sum, zero12, r2, Months, monthLabels, WAGE_GLS,
+  sum, zero12, r2, Months, monthLabels, WAGE_GLS, rotate12, rollup,
 } from '../shared/domain.js';
 
-/* Budget-sheet columns (1-based): A code, B name, C notes, D driver,
-   E..P months (5..16), Q spacer, R annual, S spacer, T UW, U comp,
-   V/W spacers, X $/unit, Y $/unit/mo, Z upload note */
-const C = { code: 1, name: 2, notes: 3, driver: 4, m1: 5, annual: 18, uw: 20, comp: 21, perUnit: 24, perUnitMo: 25, note: 26 };
+/* Budget-sheet columns (1-based), laid out like the FHND workbook: A code, B name, C notes (how the line is
+   built), D increase factor (the input its month formulas read), E..P months (5..16), Q spacer, R annual,
+   S spacer, T UW / T12, U comp / CY budget, V/W spacers, X $/unit, Y $/unit/mo, Z upload note */
+const C = { code: 1, name: 2, notes: 3, factor: 4, m1: 5, annual: 18, uw: 20, comp: 21, perUnit: 24, perUnitMo: 25, note: 26 };
+const INPUT_FONT = { size: 8, color: { argb: 'FF0000FF' } };   // org rule: blue font = an input
+
+/* MONTH FORMULAS THAT SHOW THE MATH (Troy 2026-11-18: "the cell references to the hard coded values make it hard for
+   anyone to adjust to understand what is happening. that tab is a reference point, so should be hidden and not
+   referenced"). A month cell is written as the line's own arithmetic on this workbook's visible cells (the T12 sheet,
+   the increase factor in column D, the income row, units in C3) — never a link to the Formulas sheet. Every such
+   formula is worked out before the file is written and kept ONLY if it reproduces the tool's number to the cent;
+   otherwise the cell gets the tool's number as a plain value (column C says how it was built). */
+interface MonthCand { ws: ExcelJS.Worksheet; row: number; col: number; engine: number }
+const candByWorkbook = new WeakMap<ExcelJS.Workbook, MonthCand[]>();
+function settleMonthFormulas(wb: ExcelJS.Workbook): { kept: number; values: number } {
+  const cands = candByWorkbook.get(wb) || [];
+  if (!cands.length) return { kept: 0, values: 0 };
+  // each formula is worked out on the tool's numbers for every other month cell it reads (pinned), so one line
+  // falling back to a value never knocks out the lines built on it (the fee on income)
+  const pinned = new Map<string, number>(cands.map((c) => [`${c.ws.name}!${c.row},${c.col}`, c.engine]));
+  const bad = new Set<string>();
+  fillCachedResults(wb, { recompute: true, pinned, onDiff: (d) => bad.add(`${d.sheet}!${d.cell}`) });
+  const keptRows = new Map<ExcelJS.Worksheet, Set<number>>();
+  let values = 0;
+  for (const c of cands) {
+    const cell = c.ws.getCell(c.row, c.col);
+    const v: any = cell.value;
+    const res = v && typeof v === 'object' ? (cell as any).model?.result : undefined;
+    const off = bad.has(`${c.ws.name}!${cell.address}`) || typeof res !== 'number' || Math.abs(res - c.engine) > 0.005;
+    if (off) { cell.value = c.engine; values++; continue; }
+    if (!keptRows.has(c.ws)) keptRows.set(c.ws, new Set());
+    keptRows.get(c.ws)!.add(c.row);
+  }
+  // an increase factor no month formula reads any more is not an input: clear it
+  const rowsWithFactor = new Map<ExcelJS.Worksheet, Set<number>>();
+  for (const c of cands) { if (!rowsWithFactor.has(c.ws)) rowsWithFactor.set(c.ws, new Set()); rowsWithFactor.get(c.ws)!.add(c.row); }
+  for (const [ws, rows] of rowsWithFactor) for (const r of rows) {
+    if (keptRows.get(ws)?.has(r)) continue;
+    const f = ws.getCell(r, C.factor);
+    f.value = null; f.font = { size: 8 }; f.numFmt = 'General';
+  }
+  return { kept: cands.length - values, values };
+}
 
 const CUR = '"$"#,##0_);[Red]("$"#,##0)';
 const ACCT = '_(* #,##0_);_(* (#,##0);_(* "-"??_);_(@_)';
@@ -217,6 +256,8 @@ export interface ReviewArgs {
   noiTrend?: { label: string; noi: number | null }[];
   /** how the trailing-12 was built, printed under the Budget Comps title (spec 1.5) */
   t12Basis?: string;
+  /** ANNUAL: the trailing-12's last month (the T12 sheet's month labels; "last month, flat" lines) */
+  t12End?: { month: number; year: number } | null;
 }
 /** What a property's "Budget Comps" sheet holds, for the portfolio panel and the Schedule. */
 interface CompsInfo { site: ReviewArgs; sheet: string; t12: SummaryCol | null; t4: SummaryCol | null; bud: SummaryCol; capital: number; units: number; cyBudgetNoi: number | null; cyBudgetMonths: number; cyBudgetLabel: string | null; cyRef: string | null; trendRefs: (string | null)[] }
@@ -255,6 +296,7 @@ export async function buildReviewWorkbook(args: ReviewArgs): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'nd-budget-tool';
   addReviewSheets(wb, args, '');
+  settleMonthFormulas(wb);
   // every formula carries the value it computes (spec 1.1), and Excel recalculates everything on open
   { const diffs: CachedDiff[] = []; fillCachedResults(wb, { recompute: true, onDiff: (d) => diffs.push(d) });
     if (diffs.length) console.log(`[xlsx] ${diffs.length} formula value(s) written differently from what they compute — now stored as computed; e.g. ${diffs.slice(0, 6).map((d) => `${d.sheet}!${d.cell} ${String(d.stored)} → ${String(d.computed)}`).join('; ')}`); }
@@ -423,6 +465,7 @@ export async function buildPortfolioWorkbook(sites: ReviewArgs[], portfolioLabel
   cocT.value = { formula: `IF(${LT}${S_CAP_ROW}>0,${LT}${S_CASH_ROW}/${LT}${S_CAP_ROW},"")` } as any;
   cocT.numFmt = PCT; cocT.font = { size: 11, bold: true, color: { argb: RED } };
 
+  settleMonthFormulas(wb);
   // every formula carries the value it computes (spec 1.1), and Excel recalculates everything on open
   { const diffs: CachedDiff[] = []; fillCachedResults(wb, { recompute: true, onDiff: (d) => diffs.push(d) });
     if (diffs.length) console.log(`[xlsx] ${diffs.length} formula value(s) written differently from what they compute — now stored as computed; e.g. ${diffs.slice(0, 6).map((d) => `${d.sheet}!${d.cell} ${String(d.stored)} → ${String(d.computed)}`).join('; ')}`); }
@@ -471,7 +514,7 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
   });
   // Troy's own widths from his edited CLND draft (2026-11-16: "I also would like export to have the same changes made to
   // width of columns so that everything can actually be read") — the row-3 KPI values fit, and so does Cash on Cash in Q
-  const widths = [8, 29.86, 16, 20, 12.43, 10.43, 13.71, 10.43, 10.86, 7.86, 11.57, 11.57, 11.57, 11.57, 11.57, 11.57, 11.57, 13, 1.43, 13, 13, 1.43, 1.43, 9.43, 9.43, 26];
+  const widths = [8, 29.86, 24, 14, 12.43, 10.43, 13.71, 10.43, 10.86, 7.86, 11.57, 11.57, 11.57, 11.57, 11.57, 11.57, 11.57, 13, 1.43, 13, 13, 1.43, 1.43, 9.43, 9.43, 26];
   widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   /* ROUND TRIP (Troy 2026-11-16: "When I export a budget, make changes, and then reupload it, it needs to upload formulas
      back into the system, not hard coded values. Also, the conditional formatting should bold and red any value in the
@@ -480,7 +523,7 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
      one, and the conditional format below turns it bold red. On re-upload the Formulas sheet is the baseline: only cells
      that differ from it become hard-coded cells; every other line stays on its formula. */
   const fxName = `${prefix}Formulas`;
-  const FQ = prefix ? `'${fxName.replace(/'/g, "''")}'!` : 'Formulas!';
+  const FQ = `'${fxName.replace(/'/g, "''")}'!`;   // the hidden reference sheet: read by the upload and the "changed" format only
 
   /* ---- Payroll sheet (annual): every payroll GL in COA order, a TOTAL WAGES
      row under the last wage GL, a TOTAL row at the end. The Budget sheet's
@@ -554,10 +597,12 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     cell.alignment = { horizontal: 'center' };
   });
   { const hk = ws.getCell(5, C.m1 + Object.keys(DRIVER_FILLS).length); hk.value = '1,234 = hard-coded'; hk.font = { ...HARD_FONT, size: 7 }; hk.alignment = { horizontal: 'center' }; }
+  { const hk = ws.getCell(5, C.m1 + Object.keys(DRIVER_FILLS).length + 1); hk.value = 'red = changed here'; hk.font = { size: 7, bold: true, color: { argb: 'FFFF0000' } }; hk.alignment = { horizontal: 'center' }; }
+  { const ik = ws.getCell(5, C.m1 + Object.keys(DRIVER_FILLS).length + 2); ik.value = 'blue = input'; ik.font = { ...INPUT_FONT, size: 7 }; ik.alignment = { horizontal: 'center' }; }
 
   // r6 column headers
   const heads: [number, string][] = [
-    [C.code, 'GL Code'], [C.name, 'GL Name'], [C.notes, 'Notes'], [C.driver, 'Driver'],
+    [C.code, 'GL Code'], [C.name, 'GL Name'], [C.notes, 'Notes'], [C.factor, 'Increase Factor'],
     ...labels.map((m, i) => [C.m1 + i, m] as [number, string]),
     [C.annual, args.annual ? `Total ${args.year} Budget` : 'Total Year 1 Budget'],
     [C.uw, args.annual ? (refA ? `T12 Actuals${refA.period ? ` (${refA.period})` : ''}` : 'T12 Actuals') : 'Year 1 UW Budget'],
@@ -590,6 +635,98 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     ordered.filter((a) => a.kind === 'detail' && parseInt(a.code, 10) >= lo && parseInt(a.code, 10) <= hi).map((a) => rowOf.get(a.code)!);
   const colL = (n: number): string => ws.getColumn(n).letter;
 
+  /* ---- the T12 sheet the month formulas read (annual): the history the tool built from, one-time items taken out,
+     in the budget's month order, row for row with this sheet ---- */
+  const startM = inputs.startMonth || 1;   // also read further down
+  const t12Name = `${prefix}T12`;
+  const TQ = `'${t12Name.replace(/'/g, "''")}'!`;
+  const t12Cal = args.annual && args.payrollHist?.t12 ? applyT12Adjust(args.payrollHist.t12, inputs.t12Adjust).actual : null;
+  const hasT12 = (gl: string): boolean => !!t12Cal?.[gl]?.some((v) => v);
+  const lastIdx = args.t12End?.month ? ((args.t12End.month - 1) - (startM - 1) + 12) % 12 : null;
+  // January's fee runs on the current-year budget's December income (the generator and the final fee rebuild agree)
+  const budCal = args.payrollHist?.budget || null;
+  const decIncome = (() => {
+    if (!budCal || !Object.keys(budCal).length) return null;
+    const inc = rollup(new Map(Object.entries(budCal) as [string, Months][])).get('5500');
+    const v = inc ? inc[(startM + 10) % 12] : 0;
+    return v ? r2(v) : null;
+  })();
+  const cands: MonthCand[] = candByWorkbook.get(wb) || [];
+  candByWorkbook.set(wb, cands);
+  let driftUsed = 0;
+  const rnd = (x: string, mult: number): string => (mult > 0 ? `ROUND((${x})/${mult},0)*${mult}` : `ROUND(${x},2)`);
+  type Plan = { factor?: { value: number; fmt: string; formula?: string }; month: (i: number) => string | null };
+  const planFor = (ln: BudgetLine, a: CoaAccount, r: number): Plan | null => {
+    const d: any = ln.driver || {};
+    const D = `$D${r}`;
+    const sp = d.allocOut && Number(d.allocOut.pct) > 0 && Number(d.allocOut.pct) < 1 ? Number(d.allocOut.pct) : 0;
+    const split = (f: string): string => (sp ? `ROUND(${f}*(1-${sp}),2)` : f);
+    if (ln.override && (!d.method || d.method === 'manual')) return null;
+    switch (d.method) {
+      case 'baseline': {
+        if (!hasT12(a.code) || d.pcts || d.src === 'budget' || d.accrual || d.reTax || d.folded) return null;
+        const mult = Number(d.mult) || 0;
+        let base: (i: number) => string;
+        if (d.shape === 'flat') base = () => `${TQ}$${colL(C.annual)}${r}/12`;
+        else if (d.shape === 'last') { if (lastIdx == null) return null; const L = colL(C.m1 + lastIdx); base = () => `${TQ}$${L}${r}`; }
+        else if (!d.shape || d.shape === 'actual') base = (i) => `${TQ}${colL(C.m1 + i)}${r}`;
+        else if (d.shape === 'wavg') {
+          // 1-2-1 weighted: twice the month plus the months either side, over 4 (the year wraps)
+          const cell = (i: number) => `${TQ}${colL(C.m1 + ((i + 12) % 12))}${r}`;
+          base = (i) => `(2*${cell(i)}+${cell(i - 1)}+${cell(i + 1)})/4`;
+        } else return null;
+        // RMC's Excel weighted average could not wrap: on a January-start budget its January and December are the
+        // plain same month x factor to the $10 (the generator does the same)
+        const wavgEdge = d.shape === 'wavg' && d.rule === 'wavg' && startM === 1;
+        const drift = Number(d.drift) || 0;
+        if (drift) driftUsed = drift;
+        return {
+          factor: { value: Number(d.pct) || 0, fmt: '0.0%' },
+          month: (i) => {
+            const f = wavgEdge && (i === 0 || i === 11) ? `ROUND(${TQ}${colL(C.m1 + i)}${r}*(1+${D})/10,0)*10` : rnd(`${base(i)}*(1+${D})`, mult);
+            return drift ? rnd(`${f}*${colL(C.m1 + i)}$4`, mult) : f;
+          },
+        };
+      }
+      case 'corpRate': {
+        const pu = Number(d.perUnitYr) || 0, fm = Number(d.flatMo) || 0;
+        if (pu) return { factor: { value: pu, fmt: '"$"#,##0.00' }, month: () => split(`ROUND($C$3*${D}/12${fm ? `+${fm}` : ''},2)`) };
+        if (fm) return { factor: { value: fm, fmt: CUR }, month: () => split(`ROUND(${D},2)`) };
+        return null;
+      }
+      case 'mgmtPct': {
+        const inc = rowOf.get('5500');
+        if (!inc || !d.priorMonth || !(Number(d.pct) > 0)) return null;
+        const ex: number[] | null = Array.isArray(d.feeExtra) && d.feeExtra.length === 12 ? d.feeExtra.map((v: any) => Number(v) || 0) : null;
+        const mr = Number(ln.round) || 0;
+        const basis = (i: number): string => {
+          const own = i === 0 ? (decIncome != null ? String(decIncome) : `${colL(C.m1)}${inc}`) : `${colL(C.m1 + i - 1)}${inc}`;
+          const e = ex ? ex[i === 0 ? 0 : i - 1] : 0;
+          return e ? `(${own}+${e})` : own;
+        };
+        return {
+          factor: { value: Number(d.pct), fmt: '0.00%' },
+          month: (i) => {
+            let f = `ROUND(${basis(i)}*${D},0)`;
+            if (sp) f = `ROUND(${f}*(1-${sp}),2)`;
+            return mr > 0 ? `ROUND(${f}/${mr},0)*${mr}` : f;
+          },
+        };
+      }
+      case 'pctGpr': {
+        const rG = rowOf.get('4994');
+        if (d.of !== 'gpr' || !(Number(d.pct)) || !rG) return null;
+        // the rate: a typed % as typed, else the T12 ratio worked out on the T12 sheet (the line's T12 over GPR's)
+        const typed = inputs.pctGpr?.[a.code];
+        const factor = typed != null ? { value: Number(typed), fmt: '0.000%' }
+          : hasT12(a.code) && hasT12('4994') ? { value: 0, formula: `${TQ}$${colL(C.annual)}${r}/${TQ}$${colL(C.annual)}${rG}`, fmt: '0.000%' } : null;
+        if (!factor) return null;
+        return { factor, month: (i) => `ROUND(${colL(C.m1 + i)}${rG}*${D},2)` };
+      }
+      default: return null;
+    }
+  };
+
   for (const a of ordered) {
     const r = rowOf.get(a.code)!;
     const row = ws.getRow(r);
@@ -604,14 +741,22 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     if (a.kind === 'detail') {
       const ln = byGl.get(a.code);
       const payRow = wsPay ? payRowOf.get(a.code) : undefined;
-      ws.getCell(r, C.driver).value = (payRow ? '→ Payroll sheet' + (ln ? ' · ' : '') : '') + (ln ? driverLabel(ln.driver, { total: sum(ln.months), units, gl: a.code }) + (ln.override ? ' (manual)' : '') : '');
-      ws.getCell(r, C.driver).font = { size: 7.5, italic: true, color: { argb: 'FF808080' } };
+      ws.getCell(r, C.notes).value = (payRow ? '→ Payroll sheet' + (ln ? ' · ' : '') : '') + (ln ? driverLabel(ln.driver, { total: sum(ln.months), units, gl: a.code }) + (ln.override ? ' (manual)' : '') : '');
+      ws.getCell(r, C.notes).font = { size: 7.5, italic: true, color: { argb: 'FF808080' } };
       const hasVals = ln && (ln.months.some((v) => v) || ln.override);
       const dFill = DRIVER_FILLS[driverKind(hasVals ? ln : undefined)].fill;
+      const plan = ln && !payRow && hasVals ? planFor(ln, a, r) : null;
+      if (plan?.factor) {
+        const fc = ws.getCell(r, C.factor);
+        // a typed rate is an input (blue); a rate worked out from the T12 is a formula you can type over
+        fc.value = plan.factor.formula ? { formula: plan.factor.formula } as any : plan.factor.value;
+        fc.numFmt = plan.factor.fmt; fc.font = plan.factor.formula ? { size: 8 } : INPUT_FONT; fc.alignment = { horizontal: 'right' };
+      }
       (ln?.months || zero12()).forEach((v, i) => {
         const cell = ws.getCell(r, C.m1 + i);
+        const f = v && ln && !payRow && !isHardCell(ln, i) && plan ? plan.month(i) : null;
         if (payRow) cell.value = { formula: `${PQ}${payColL(i)}${payRow}`, result: v || 0 } as any;
-        else if (v && ln && !isHardCell(ln, i)) cell.value = { formula: `${FQ}${colL(C.m1 + i)}${r}`, result: v } as any;
+        else if (f) { cell.value = { formula: f, result: v } as any; cands.push({ ws, row: r, col: C.m1 + i, engine: v }); }
         else if (v) cell.value = v;
         cell.numFmt = CUR;
         // hard-coded (typed / fixed by hand): bold in the one colour nothing else uses
@@ -723,6 +868,58 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
           cc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: COMPFILL } };
         }
       }
+    }
+  }
+
+  // within-year cost drift (history-based expense lines cost a little more late in the year): the month factors
+  // the drifted lines' formulas multiply by, off the one input in D4
+  if (driftUsed) {
+    const d4 = ws.getCell(4, C.factor);
+    d4.value = driftUsed; d4.numFmt = '"drift "0.0%'; d4.font = { ...INPUT_FONT, size: 8 }; d4.alignment = { horizontal: 'right' };
+    (d4 as any).note = 'Within-year cost drift: the drifted expense lines cost (1 + drift × (month position − ½)) of their level, so late months a little more than early ones. The month factors are in E4:P4.';
+    for (let i = 0; i < 12; i++) {
+      const c4 = ws.getCell(4, C.m1 + i);
+      c4.value = { formula: `1+$D$4*(${i}/11-0.5)`, result: 1 + driftUsed * (i / 11 - 0.5) } as any;
+      c4.numFmt = '0.0000'; c4.font = { size: 7, color: { argb: 'FF808080' } };
+    }
+  }
+
+  /* ---- T12 sheet: what the month formulas read ---- */
+  if (t12Cal) {
+    const wsT = wb.addWorksheet(t12Name, { properties: { tabColor: { argb: 'FFF4B183' }, defaultRowHeight: 12 }, views: [{ state: 'frozen', xSplit: 2, ySplit: 6 }] });
+    widths.forEach((w, i) => { wsT.getColumn(i + 1).width = w; });
+    wsT.getCell(1, 2).value = `${args.propertyName} — trailing-12 actuals by month`;
+    wsT.getCell(1, 2).font = { size: 12, bold: true };
+    wsT.getCell(2, 2).value = `The history the budget is built from${refA?.period ? ` (${refA.period})` : ''}, in the budget's month order and row for row with the Budget sheet, so a Budget formula such as ='${t12Name}'!E20*(1+$D20) reads the same month here.${(inputs.t12Adjust || []).length ? ' One-time items taken out of the T12 in the tool are taken out here too.' : ''}`;
+    wsT.getCell(2, 2).font = { size: 8, italic: true, color: { argb: 'FF505050' } };
+    const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const end = args.t12End || null;
+    const heads2: [number, string][] = [[C.code, 'GL Code'], [C.name, 'GL Name'], [C.annual, 'T12 Total']];
+    for (let i = 0; i < 12; i++) {
+      const c = (startM - 1 + i) % 12;
+      const yr = end ? (c <= end.month - 1 ? end.year : end.year - 1) : null;
+      heads2.push([C.m1 + i, yr ? `${MON[c]}-${String(yr).slice(2)}` : MON[c]]);
+    }
+    for (const [col, text] of heads2) {
+      const cell = wsT.getCell(6, col);
+      cell.value = text; cell.font = f8b;
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD } };
+      cell.border = { bottom: { style: 'thin' } };
+      cell.alignment = { horizontal: col >= C.m1 ? 'right' : 'left' };
+    }
+    for (const a of ordered) {
+      const r = rowOf.get(a.code)!;
+      wsT.getCell(r, C.code).value = a.code;
+      wsT.getCell(r, C.code).font = { size: 8, color: { argb: 'FF808080' } };
+      wsT.getCell(r, C.name).value = (a.kind === 'detail' ? '    ' : a.kind === 'total' ? '  ' : ' ') + a.name;
+      wsT.getCell(r, C.name).font = a.kind === 'detail' ? f8 : f8b;
+      if (a.kind !== 'detail') continue;
+      const cal = t12Cal[a.code];
+      if (!cal || !cal.some((v) => v)) { wsT.getRow(r).hidden = true; continue; }
+      rotate12(cal, startM).forEach((v, i) => { const cell = wsT.getCell(r, C.m1 + i); cell.value = v || 0; cell.numFmt = CUR; cell.font = f8; });
+      const t = wsT.getCell(r, C.annual);
+      t.value = { formula: `SUM(${colL(C.m1)}${r}:${colL(C.m1 + 11)}${r})`, result: r2(sum(cal)) } as any;
+      t.numFmt = CUR; t.font = f8b;
     }
   }
 
@@ -849,7 +1046,7 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
   /* monthly Cash-on-Cash table (Troy's draft): M1..M12 with NOI / Interest /
      Cash Flow / Return % / Running, calendar-year markers in col I, a medium
      border at the calendar-year break and a double border under M12. */
-  const startM = inputs.startMonth || 1;
+  // startM: the budget start month (set above, with the T12 sheet)
   const monthsInYr1 = startM > 1 ? 13 - startM : 12;
   const th = (col: number, t: string) => { const c2 = wsS.getCell(S_TABLE_HEAD, col); c2.value = t; c2.font = { bold: true }; };
   wsS.getCell(S_TABLE_HEAD, 2).value = 'Cash on Cash Return';
@@ -1052,9 +1249,10 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     widths.forEach((w, i) => { wsF.getColumn(i + 1).width = w; });
     wsF.getCell(1, 2).value = `${args.propertyName} — the system's formulas`;
     wsF.getCell(1, 2).font = { size: 12, bold: true };
-    wsF.getCell(2, 2).value = 'What each line\'s formula came to when this file was exported. Budget cells that link here are still on their formula; a number typed over one on the Budget sheet turns bold red and comes back as a hard-coded cell when this file is uploaded. Leave this sheet as it is: it is what the upload compares against.';
+    wsF.state = 'hidden';   // a reference point only: no Budget cell reads it (Troy 2026-11-18)
+    wsF.getCell(2, 2).value = 'Hidden reference: what the tool had for every line when this file was exported. Nothing on the Budget sheet reads it. On upload, a Budget month that differs from it comes back as a hard-coded cell; while editing, such a month shows bold red. Leave it as it is.';
     wsF.getCell(2, 2).font = { size: 8, italic: true, color: { argb: 'FF505050' } };
-    for (const [col, text] of [[C.code, 'GL Code'], [C.name, 'GL Name'], [C.driver, 'Formula'], ...labels.map((m, i) => [C.m1 + i, m] as [number, string]), [C.annual, 'Total']] as [number, string][]) {
+    for (const [col, text] of [[C.code, 'GL Code'], [C.name, 'GL Name'], [C.notes, 'Formula'], ...labels.map((m, i) => [C.m1 + i, m] as [number, string]), [C.annual, 'Total']] as [number, string][]) {
       const cell = wsF.getCell(6, col);
       cell.value = text; cell.font = f8b;
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD } };
@@ -1069,20 +1267,26 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
       wsF.getCell(r, C.code).font = { size: 8, color: { argb: 'FF808080' } };
       wsF.getCell(r, C.name).value = a.name;
       wsF.getCell(r, C.name).font = f8;
-      wsF.getCell(r, C.driver).value = driverLabel(ln.driver, { total: sum(ln.months), units, gl: a.code }) + (ln.override ? ' (manual)' : '');
-      wsF.getCell(r, C.driver).font = { size: 7.5, italic: true, color: { argb: 'FF808080' } };
+      wsF.getCell(r, C.notes).value = driverLabel(ln.driver, { total: sum(ln.months), units, gl: a.code }) + (ln.override ? ' (manual)' : '');
+      wsF.getCell(r, C.notes).font = { size: 7.5, italic: true, color: { argb: 'FF808080' } };
       ln.months.forEach((v, i) => { const cell = wsF.getCell(r, C.m1 + i); cell.value = v || 0; cell.numFmt = CUR; cell.font = f8; });
       const t = wsF.getCell(r, C.annual);
       t.value = { formula: `SUM(${colL(C.m1)}${r}:${colL(C.m1 + 11)}${r})`, result: r2(sum(ln.months)) } as any;
       t.numFmt = CUR; t.font = f8;
     }
-    // a typed number on the Budget month grid: bold red (a formula, the totals and blank cells are left as they are)
-    const lastRow = Math.max(7, ...[...rowOf.values()]);
-    const tl = `${colL(C.m1)}7`;
-    ws.addConditionalFormatting({
-      ref: `${tl}:${colL(C.m1 + 11)}${lastRow}`,
-      rules: [{ type: 'expression', priority: 1, formulae: [`AND(${tl}<>"",NOT(_xlfn.ISFORMULA(${tl})))`], style: { font: { bold: true, color: { argb: 'FFFF0000' } } } } as any],
-    });
+    // a detail month that no longer matches what the tool exported (typed over, or moved by a changed input): bold red.
+    // Only the detail rows the hidden sheet carries are in the rule; totals and blanks are left as they are.
+    for (const a of ordered) {
+      if (a.kind !== 'detail') continue;
+      const ln = byGl.get(a.code);
+      if (!ln || !ln.months.some((v) => v)) continue;
+      const r = rowOf.get(a.code)!;
+      const tl = `${colL(C.m1)}${r}`;
+      ws.addConditionalFormatting({
+        ref: `${tl}:${colL(C.m1 + 11)}${r}`,
+        rules: [{ type: 'expression', priority: 1, formulae: [`ABS(N(${tl})-N(${FQ}${tl}))>=0.01`], style: { font: { bold: true, color: { argb: 'FFFF0000' } } } } as any],
+      });
+    }
   }
   return payInfo;
 }

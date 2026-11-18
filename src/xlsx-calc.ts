@@ -76,7 +76,11 @@ export interface CachedDiff { sheet: string; cell: string; stored: unknown; comp
     `recompute` (Troy 2026-11-13 change spec 1.1: "Anything that opens the file without recalculating ... must see the same
     numbers Excel will"): EVERY formula is worked out from its own inputs and that result stored, whatever value it was
     written with; `onDiff` hears each one whose stored value was different. A formula it cannot read keeps its stored value. */
-export function fillCachedResults(wb: ExcelJS.Workbook, opts: { recompute?: boolean; onDiff?: (d: CachedDiff) => void } = {}): number {
+export function fillCachedResults(wb: ExcelJS.Workbook, opts: { recompute?: boolean; onDiff?: (d: CachedDiff) => void;
+  /** `${sheet}!${row},${col}` → a value every REFERENCE to that cell reads (the cell itself is still worked out from its own
+      formula). The export uses it to test each month formula against the tool's numbers for everything it reads. */
+  pinned?: Map<string, number> } = {}): number {
+  const pinned = opts.pinned || null;
   const recompute = !!opts.recompute;
   const sheets = new Map<string, ExcelJS.Worksheet>();
   for (const ws of wb.worksheets) sheets.set(ws.name.toLowerCase(), ws);
@@ -85,7 +89,8 @@ export function fillCachedResults(wb: ExcelJS.Workbook, opts: { recompute?: bool
 
   // ExcelJS's `cell.value` leaves out a stored result of 0 or "" — the cell's model has it
   const stored = (cell: ExcelJS.Cell): any => (cell as any).model?.result;
-  const cellValue = (ws: ExcelJS.Worksheet, row: number, col: number): Scalar => {
+  const cellValue = (ws: ExcelJS.Worksheet, row: number, col: number, top = false): Scalar => {
+    if (pinned && !top) { const pv = pinned.get(`${ws.name}!${row},${col}`); if (pv !== undefined) return pv; }
     const r = ws.findRow(row); const cell = r ? r.findCell(col) : undefined;
     if (!cell) return null;
     const v: any = cell.value;
@@ -341,7 +346,7 @@ export function fillCachedResults(wb: ExcelJS.Workbook, opts: { recompute?: bool
         const have = stored(cell);
         if (!recompute && have !== undefined && have !== null) return;
         try {
-          let res = cellValue(ws, r, c);
+          let res = cellValue(ws, r, c, true);
           if (res == null) res = 0;                                   // a reference to an empty cell shows 0
           if (typeof res === 'number' && !Number.isFinite(res)) return;
           if (recompute && opts.onDiff && have !== undefined && have !== null) {

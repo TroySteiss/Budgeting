@@ -3170,7 +3170,7 @@ function t12BasisText(lb: LoadedBudget): string {
   if (/seller/i.test(actualLabel)) return `T12 = ${runs(live)} posted + seller actuals (${runs(excluded)} from the seller T12)`;
   return `T12 = ${runs(live)} × 12/${live.length} (${runs(excluded)} excluded)`;
 }
-function reviewArgs(lb: LoadedBudget, prop: any, compName: string): ReviewArgs {
+export function reviewArgs(lb: LoadedBudget, prop: any, compName: string): ReviewArgs {
   return {
     propertyCode: lb.budget.property_code, propertyName: prop?.name || lb.budget.property_code,
     year: lb.budget.year, units: Number(lb.budget.inputs?.units) || prop?.units || 0,
@@ -3186,6 +3186,7 @@ function reviewArgs(lb: LoadedBudget, prop: any, compName: string): ReviewArgs {
     region: String(prop?.market || '').trim() || 'Other',
     noiTrend: lb.noiTrend.map((t) => ({ label: t.label, noi: t.noi })),
     t12Basis: t12BasisText(lb),
+    t12End: lb.t12End || null,
   };
 }
 
