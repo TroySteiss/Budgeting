@@ -294,7 +294,7 @@ function annualDriverLabel(d: any): string {
     case 'contract': return `${d.mode === 'add' ? 'formula + ' : ''}contracts: ${(d.items || []).map((x: any) => `${x.vendor || 'contract'} $${Math.round(x.annual).toLocaleString('en-US')}`).join(' + ')}`;
     case 'corpRate': return `corporate rate${d.perUnitYr ? ` $${d.perUnitYr}/unit/yr` : ''}${d.flatMo ? ` + $${d.flatMo}/mo` : ''}`;
     case 'debtService': return `Yardi amortization schedule — ${d.kind}${d.loan ? ` (${d.loan})` : ''}`;
-    case 'perTurn': return `$${d.amount}/move-in × ${d.turns} projected move-ins`;
+    case 'perTurn': return `$${Math.round(d.amount * 100) / 100}/move-in × ${d.turns} projected move-ins${d.typed ? ' (typed $)' : d.startTurns ? ` ($ = T12 ÷ ${d.startTurns} starting move-ins)` : ''}`;
     case 'recapture': return `${((d.pct || 0) * 100).toFixed(1)}% recapture of the other concessions`;
     default: return '';
   }

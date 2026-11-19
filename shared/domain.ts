@@ -68,7 +68,7 @@ export type Driver = { revised?: boolean; /** month indexes (0-11) typed by hand
   | { method: 'suggested'; note?: string }                       // corporate BudgetSuggestions amounts
   | { method: 'corpRate'; perUnitYr?: number; flatMo?: number }   // corporate per-unit / flat monthly rate
   | { method: 'debtService'; kind: 'interest' | 'principal'; loan?: string }  // amortization schedule from Yardi
-  | { method: 'perTurn'; amount: number; turns: number }          // $ per new move-in × projected move-ins
+  | { method: 'perTurn'; amount: number; turns: number; startTurns?: number; t12?: number; typed?: boolean }   // $ per new move-in × projected move-ins (default $ = T12 ÷ the starting move-ins)
   | { method: 'recapture'; pct: number }                          // concession recapture % of the other concessions
   | { method: 'zero' }
   | { method: 'collections'; pct: number; startDq: number }   // prior-period collections = rate x the previous month's delinquency

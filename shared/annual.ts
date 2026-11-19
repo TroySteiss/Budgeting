@@ -40,7 +40,8 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-19b';   // b: no fit on a line that carries a contract
+export const ENGINE_VERSION = '2026-11-19c';   // c: per-move-in income follows turnover from the T12
+// 2026-11-19b: no fit on a line that carries a contract
 // 2026-11-19a:   // a: TPND review — utility cap on the gross bill at a split property, an annual bill on "last month" no longer drops, RE tax MF share shown
 // 2026-11-18e:   // e: no curve or T12 fit ever on a corporate formula
 // d:   // d: November gift cards = $500 x allocated employees
@@ -2037,9 +2038,12 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
      UAD leases, else the Yardi template's count (Troy 2026-11-04: the UAD is the source
      of expirations — it beats the template). The turn curve is the same series lagged
      one month for invoice processing. ---- */
-  const exp: Months = (inputs.expirations && inputs.expirations.some((v) => v) ? inputs.expirations
-    : src.leases?.length ? expirationsFromLeases(src.leases, inputs.year, { asOf: src.rollAsOf, startMonth })
-    : tpl?.leaseExpirations?.some((v) => v) ? tpl.leaseExpirations : zero12()) as Months;
+  const expSrc: Months | null = (src.leases?.length ? expirationsFromLeases(src.leases, inputs.year, { asOf: src.rollAsOf, startMonth })
+    : tpl?.leaseExpirations?.some((v) => v) ? tpl.leaseExpirations : null) as Months | null;
+  const exp: Months = (inputs.expirations && inputs.expirations.some((v) => v) ? inputs.expirations : expSrc || zero12()) as Months;
+  // the STARTING expirations the per-move-in income lines are anchored to: what a new budget starts with — the
+  // template's (defaultAnnualInputs copies them onto the budget), else the rent roll / UAD's, else the budget's own
+  const expStart: Months = (tpl?.leaseExpirations?.some((v) => v) ? tpl.leaseExpirations : expSrc || exp) as Months;
   const turnCurve: Months = lagMonths(exp, 1);
   const baseline = (a: CoaAccount, shape?: BaselineShape, pctOverride?: number): boolean => {
     let cal = base[a.code];
@@ -2342,15 +2346,31 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     mk(gl, Array(12).fill(r2(monthly)) as Months, { method: 'charges', codes: gl });
   }
 
-  /* ---- turnover-driven income: $ per new move-in × projected move-ins ---- */
+  /* ---- turnover-driven income: $ per new move-in × projected move-ins (application fees, deposit forfeitures,
+     move-in admin fees). Troy 2026-11-19: "It should follow turnover, and starting point should equal t12, but
+     increasing it should not just seem like it does something when it is changing nothing."
+       default $/move-in = the GL's trailing-12 ÷ the STARTING move-ins: the expirations a new budget starts with (the
+         template's, else the rent roll / UAD's) × (1 − the template's renewal %, the budget's default). At the starting inputs
+         the year is the T12; a renewal % or expirations typed on the budget move it — more move-ins, more fees. (It
+         used to be T12 ÷ THIS year's move-ins, so the move-ins cancelled and the total never moved.)
+       a $/move-in typed on the budget (Assumptions or the line card) always takes effect: over a row shape and a
+         formula set's rule, and a typed 0 is a zero line. Only a hand-typed line or a contract outranks it. ---- */
   if (turnsTotal > 0) {
+    const renew0 = tpl?.renewalPct ?? 0.65;
+    const turns0 = expStart.reduce((x, e) => x + r2(e * (1 - renew0)), 0);
     for (const [gl] of Object.entries(TURN_GLS)) {
       const a = coaByCode.get(gl);
-      if (!a || isSet(gl) || ruleOf(gl)) continue;   // a foundation rule (GRKS: wavg) outranks the template's per-move-in formula
-      // default $/turn keeps LAST YEAR's dollars at THIS year's turnover count
-      const amt = inputs.turnFees?.[gl] ?? (baseTotal(gl) ? r2(baseTotal(gl) / turnsTotal) : 0);
-      if (!amt) continue;
-      mk(gl, turns.map((t) => r2(t * amt)), { method: 'perTurn', amount: amt, turns: r2(turnsTotal) });
+      if (!a) continue;
+      const typedRaw = inputs.turnFees?.[gl];
+      const typed = typedRaw != null && Number.isFinite(Number(typedRaw)) ? Number(typedRaw) : null;
+      // with nothing typed, a row shape / a formula set's rule (GRKS: wavg) keeps its own formula
+      if (typed == null && (isSet(gl) || ruleOf(gl))) continue;
+      const t12 = baseTotal(gl);
+      const amt = typed ?? (t12 && turns0 > 0 ? t12 / turns0 : 0);
+      if (!amt && typed == null) continue;
+      userShaped.delete(gl);
+      mk(gl, turns.map((t) => r2(t * amt)), { method: 'perTurn', amount: Math.round(amt * 10000) / 10000, turns: r2(turnsTotal),
+        startTurns: r2(turns0), t12: r2(t12), ...(typed != null ? { typed: true } : {}) } as any);
     }
   }
 

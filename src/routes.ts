@@ -1786,6 +1786,9 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
     const elevatedInsurance = uwInsuranceRate(lb) != null;
     for (const l of ls) if (corpGuidanceLine(l, { elevatedInsurance })) out.add(l.gl_code);
     for (const [gl, v] of Object.entries(inputs.burdenFromGl || {})) if ((v || []).length) out.add(gl);
+    // per-move-in income (application fees, deposit forfeitures, admin fees) follows turnover from the T12 (Troy
+    // 2026-11-19): the plan's level would freeze it and leave the $/move-in box doing nothing. Its gap to UW shows.
+    for (const l of ls) if ((l.driver as any)?.method === 'perTurn' && !l.override) out.add(l.gl_code);
     const own = String(lb.budget.property_code || '').toLowerCase();
     const borrowAll = !!inputs.burdenFrom && String(inputs.burdenFrom).toLowerCase() !== own;
     for (const l of ls) { const d = l.driver as any; if (d?.method === 'burdenRatio' && (d.from || borrowAll)) out.add(l.gl_code); }

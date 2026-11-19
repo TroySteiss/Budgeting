@@ -351,15 +351,37 @@ describe('lease expirations and turnover-driven lines', () => {
     const expired = L(generateAnnualLines(coaList, noGrow, { actual, budget: null, lastMonth: 10, leases: leases.map((l) => ({ ...l, e: '2025-06-01' })), rollAsOf: '2025-09-30' }), '5003');
     expect(expired.months[1]).toBe(-1000);                                 // already expired at the roll → still MTM
   });
-  it('application fees = last year $ ÷ this year move-ins × each month\'s move-ins', () => {
+  it('per-move-in income starts at the T12 and follows turnover (Troy 2026-11-19)', () => {
     const actual = synthetic();
-    const inputs = { ...baseInputs(2026, 10, actual, null, coaList, null, 10), expirations: cal([0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0]) };
-    inputs.ltl.renewalPct = 0.5;
-    const lines = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10 });
-    const l = L(lines, '5105');
-    expect((l.driver as any).method).toBe('perTurn');
-    expect(sum(l.months)).toBeCloseTo(480, 1);            // last year's 480 preserved
-    expect(l.months[2]).toBeCloseTo(480, 1);              // all on the month with the turns
+    const tpl = { lastActual: { month: 10, year: 2025 }, units: 100, leaseExpirations: cal([0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0]), renewalPct: 0.5 } as any;
+    const at = (patch: Record<string, any>, ltl: Record<string, any> = {}) => {
+      const b = baseInputs(2026, 10, actual, null, coaList, null, 10);
+      return L(generateAnnualLines(coaList, { ...b, ...patch, ltl: { ...b.ltl, renewalPct: 0.5, ...ltl } }, { actual, budget: null, lastMonth: 10, template: tpl }), '5105');
+    };
+    const start = at({});
+    expect((start.driver as any).method).toBe('perTurn');
+    expect(sum(start.months)).toBeCloseTo(480, 1);              // the starting point is the T12
+    expect(start.months[2]).toBeCloseTo(480, 1);                // on the month with the move-ins
+    expect(sum(at({}, { renewalPct: 0.25 }).months)).toBeCloseTo(720, 1);    // 7.5 move-ins, not 5: +50%
+    expect(sum(at({ expirations: cal([0, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0]) }).months)).toBeCloseTo(960, 1);   // twice the expirations
+    expect(sum(at({ turnFees: { '5105': 120 } }).months)).toBeCloseTo(600, 1);   // a typed $ applies: 5 × 120
+    // a budget made from the template carries the template's expirations; a linked rent roll does not move the start
+    const b = baseInputs(2026, 10, actual, null, coaList, null, 10);
+    const leases = Array.from({ length: 40 }, () => ({ m: 1000, r: 950, e: '2026-06-15' }));
+    const withRoll = L(generateAnnualLines(coaList, { ...b, expirations: tpl.leaseExpirations, ltl: { ...b.ltl, renewalPct: 0.5 } }, { actual, budget: null, lastMonth: 10, template: tpl, leases, rollAsOf: '2025-09-30' }), '5105');
+    expect(sum(withRoll.months)).toBeCloseTo(480, 1);
+  });
+  it('a typed $/move-in takes effect over a row shape, and a typed 0 is a zero line', () => {
+    const actual = synthetic();
+    const b = baseInputs(2026, 10, actual, null, coaList, null, 10);
+    const ex = { expirations: cal([0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0]) };
+    const shaped = { ...b, ...ex, baseline: { ...b.baseline!, glShape: { '5105': 'flat' as const } } };
+    expect((L(generateAnnualLines(coaList, shaped, { actual, budget: null, lastMonth: 10 }), '5105').driver as any).method).not.toBe('perTurn');
+    const typed = L(generateAnnualLines(coaList, { ...shaped, turnFees: { '5105': 50 } }, { actual, budget: null, lastMonth: 10 }), '5105');
+    expect((typed.driver as any).method).toBe('perTurn');
+    expect(sum(typed.months)).toBeCloseTo(50 * sum(cal([0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0])) * (1 - (b.ltl.renewalPct ?? 0.65)), 1);
+    const zero = L(generateAnnualLines(coaList, { ...b, ...ex, turnFees: { '5105': 0 } }, { actual, budget: null, lastMonth: 10 }), '5105');
+    expect(sum(zero.months)).toBe(0);
   });
 });
 
