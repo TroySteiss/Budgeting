@@ -1225,20 +1225,43 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
            annual, stmtActual, stmtBudget, template, actualCal, budgetCal, budgetRefCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs, priorT12 };
 }
 
+/* SAVING A BUDGET'S LINES IN ONE STATEMENT (Troy 2026-11-18: "Changes are getting extremely slow"): the lines used to go
+   in one INSERT each — a few hundred round trips to the database per save, about a second on Railway for every edit,
+   recalc, contract change and fix. Now one multi-row INSERT per 500 lines. A GL listed twice keeps its last copy, and
+   a row a concurrent save already wrote is updated rather than failing (the log showed budget_lines_pkey clashes). */
 export async function saveLines(budgetId: number, lines: BudgetLine[], fullBuild = false): Promise<void> {
+  const rows = [...new Map(lines.map((l) => [l.gl_code, l])).values()];
   await tx(async (c) => {
     await c.query('delete from budget_lines where budget_id=$1', [budgetId]);
-    for (const l of lines) {
+    for (let k = 0; k < rows.length; k += 500) {
+      const params: any[] = [budgetId];
+      const vals = rows.slice(k, k + 500).map((l) => {
+        const b = params.length;
+        params.push(l.gl_code, JSON.stringify(l.months), JSON.stringify(l.driver), !!l.override, l.note || '', l.round || 0);
+        return `($1,$${b + 1},$${b + 2}::jsonb,$${b + 3}::jsonb,$${b + 4},$${b + 5},$${b + 6})`;
+      });
+      if (!vals.length) continue;
       await c.query(
-        'insert into budget_lines(budget_id, gl_code, months, driver, override, note, round) values($1,$2,$3,$4,$5,$6,$7)',
-        [budgetId, l.gl_code, JSON.stringify(l.months), JSON.stringify(l.driver), l.override, l.note || '', l.round || 0]
+        `insert into budget_lines(budget_id, gl_code, months, driver, override, note, round) values ${vals.join(',')}
+         on conflict (budget_id, gl_code) do update set months=excluded.months, driver=excluded.driver, override=excluded.override, note=excluded.note, round=excluded.round`,
+        params
       );
     }
-    await c.query('update budgets set updated_at=now() where id=$1', [budgetId]);
     // a FULL build (generate / regenerate / recalc) stamps the formula version it ran on;
     // single-line edits, restores and rounding leave the stamp alone
-    if (fullBuild) await c.query('update budgets set calc_version=$2, calc_at=now() where id=$1', [budgetId, ENGINE_VERSION]);
+    if (fullBuild) await c.query('update budgets set updated_at=now(), calc_version=$2, calc_at=now() where id=$1', [budgetId, ENGINE_VERSION]);
+    else await c.query('update budgets set updated_at=now() where id=$1', [budgetId]);
   });
+}
+
+/** Run `fn` over `items` with at most `n` at a time, results in order (the Summary loads its budgets this way). */
+async function mapLimit<T, R>(items: T[], n: number, fn: (x: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (next < items.length) { const k = next++; out[k] = await fn(items[k]); }
+  }));
+  return out;
 }
 
 /** Lines as they READ and export: the stored plan with every actualized
@@ -2544,8 +2567,10 @@ router.get('/summary', h(async (req, res) => {
   const out: any[] = [];
   const review = await loadReviewRules();
   const reviewNa = await loadReviewNa();
-  for (const r of rows) {
-    const lb = await loadBudget(r.id);
+  // the budgets load five at a time (one after another took ~1.5s for the 15 ND budgets on every Summary / Review load)
+  const loaded = await mapLimit(rows, 5, (r: any) => loadBudget(r.id));
+  for (const [k, r] of rows.entries()) {
+    const lb = loaded[k];
     if (!lb) continue;
     const lines = effectiveLines(lb);
     // the review checklist: each rule on this budget's months laid out Jan..Dec, against its own trailing-12

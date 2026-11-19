@@ -7306,7 +7306,7 @@ function renderSummary(el) {
   if (!S.sumView) S.sumView = store('bt-sumview') || 'numbers';
   const viewSeg = `<span class="edseg"><button data-sumview="numbers" class="${S.sumView === 'numbers' ? 'on' : ''}" title="Every property's budget against the T12 / UW, with the guidance colours">Numbers</button><button data-sumview="review" class="${S.sumView === 'review' ? 'on' : ''}" title="The budget review checklist: each known pattern (January rebates, April accounting fee, November gift cards, bonuses each quarter, snow removal...) checked on every budget">Review</button></span>`;
   const wireView = () => el.querySelectorAll('[data-sumview]').forEach((b) => b.addEventListener('click', () => { S.sumView = b.dataset.sumview; store('bt-sumview', S.sumView); render(); }));
-  if (S.sumView === 'review') { renderReview(el, d, viewSeg); wireView(); return; }
+  if (S.sumView === 'review') { S.rvRerender = () => { renderReview(el, d, viewSeg); wireView(); }; S.rvRerender(); return; }
   if (!S.sumMode) S.sumMode = store('bt-summode') || 'pct';
   if (S.sumDetail == null) S.sumDetail = store('bt-sumdetail') === '1';
   const mode = S.sumMode;
@@ -7493,12 +7493,23 @@ function renderReview(el, d, viewSeg) {
   el.querySelectorAll('[data-rvfix]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); const rule = rules.find((x) => x.id === b.dataset.rvfix); const p = d.properties.find((x) => String(x.id) === b.dataset.rvid); if (rule && p) runFix(rule, [p]); }));
   el.querySelectorAll('[data-rvfixall]').forEach((b) => b.addEventListener('click', () => { const rule = rules.find((x) => x.id === b.dataset.rvfixall); if (rule) runFix(rule, fixable(Number(b.dataset.rvi))); }));
   // mark / unmark n/a (Troy 2026-11-18: "Need to be able to mark NA"); the grid keeps its scroll position
+  // the cell flips at once and the grid redraws from what is already loaded — no Summary reload (that took ~1.5s a click)
   el.querySelectorAll('[data-rvna]').forEach((b) => b.addEventListener('click', async (e) => {
     e.stopPropagation();
     const w = el.querySelector('.rvwrap'); const pos = w ? { t: w.scrollTop, l: w.scrollLeft } : null;
-    await POST('/review-na', { ruleId: b.dataset.rvna, code: b.dataset.rvcode, na: b.dataset.rvset === '1' });
+    const set = b.dataset.rvset === '1';
+    const i = rules.findIndex((x) => x.id === b.dataset.rvna);
+    const p = d.properties.find((x) => String(x.code) === b.dataset.rvcode);
+    b.disabled = true;
+    await POST('/review-na', { ruleId: b.dataset.rvna, code: b.dataset.rvcode, na: set });
+    if (p && i >= 0) {
+      const cur = (p.review || [])[i] || {};
+      p.review[i] = set
+        ? { status: 'na', text: 'marked n/a', marked: { by: (S.user && S.user.username) || 'you', at: new Date().toISOString(), was: cur.status, wasText: cur.text, prev: cur } }
+        : (cur.marked && cur.marked.prev) || { status: (cur.marked || {}).was || 'info', text: (cur.marked || {}).wasText || '' };
+    }
     S.rvScroll = pos;
-    loadSummary(d.year);
+    (S.rvRerender || (() => renderReview(el, d, viewSeg)))();
   }));
   if (S.rvScroll) { const w = el.querySelector('.rvwrap'); if (w) { w.scrollTop = S.rvScroll.t; w.scrollLeft = S.rvScroll.l; } S.rvScroll = null; }
   // the property row freezes right under the region row: its offset is the region row's real height
