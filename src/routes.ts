@@ -1487,6 +1487,8 @@ function budgetView(lb: LoadedBudget) {
     budget: lb.budget,
     // the Summary panel (budget comps layout): T12 / T4 annualized / this budget
     summary: summaryOf(lb, lines),
+    // an imported draft waiting for its GL-by-GL review (Troy 2026-11-19)
+    importReview: importReviewView(lb, lines),
     // the formula version in force now; budget.calc_version is the one this budget was last built on
     engineVersion: ENGINE_VERSION,
     lines,
@@ -3634,19 +3636,22 @@ router.get('/export/portfolio.xlsx', h(async (req, res) => {
    else the budget itself. Only the months that differ become hard-coded cells, exactly as if typed in the grid (the line
    keeps its formula, flagged revised, `hard` = those months); every other line stays on its formula and is rebuilt.
    Months closed to actuals are left alone. Summary D27 updates capital. */
-router.post('/budgets/:id/import-draft', upload.single('file'), h(async (req, res) => {
-  const lb = await loadBudget(Number(req.params.id));
-  if (!lb) return res.status(404).json({ error: 'Not found' });
-  if (!req.file) return res.status(400).json({ error: 'No file' });
-  const parsed = parseReviewDraft(req.file.buffer);
-  if (parsed.code && parsed.code !== lb.budget.property_code) {
-    return res.status(400).json({ error: `Draft is for ${parsed.code.toUpperCase()}, this budget is ${lb.budget.property_code.toUpperCase()}` });
-  }
-  const user = req.session.username || '';
+/* IMPORT REVIEW (Troy 2026-11-19: "When I import/upload a Excel file, I would like for it to go through a GL by GL review
+   covering all changes made. I want to be able to see notes, T12 revised, prior T12, Current Model T12, with columns in
+   red where changes were made on excel. Should be able to accept, flag for review, or deny changes"). An imported draft
+   no longer goes straight in: `draftChanges` lists, per GL, the months the file changed (vs what it was exported with)
+   and a changed note; the list is held on the budget (`inputs.importReview`) and shown GL by GL in the editor (the
+   file's year, the current model's year, the trailing-12, the file's months with the changed ones in red). Per GL:
+   accept (applied as typed cells, exactly as the one-step import did), flag (held, still pending, to decide later), or
+   deny (dropped). Capital (Summary D27) is a decision of its own. Nothing is applied until a decision says so. */
+type ImportReviewRow = { gl: string; months: number[]; typed: number[]; note: string | null; status: 'pending' | 'flagged'; file?: string };
+interface ImportReview { file: string; at: string; by: string; base: string; capital: { from: number; to: number } | null; rows: ImportReviewRow[] }
+
+async function draftChanges(lb: LoadedBudget, parsed: ReturnType<typeof parseReviewDraft>, filename: string): Promise<{ rows: ImportReviewRow[]; base: string; capital: { from: number; to: number } | null }> {
   // the baseline: what the file was exported with
   let base: Record<string, number[]> | null = parsed.exported, baseFrom = 'the file\'s Formulas sheet';
   if (!base) {
-    const fm = req.file.originalname.match(/Budget Draft\s+([A-Za-z]{1,6})\s+(\d{8})/i);
+    const fm = filename.match(/Budget Draft\s+([A-Za-z]{1,6})\s+(\d{8})/i);
     const named = fm ? (await query(`select name, lines from budget_snapshots where budget_id=$1 and name=$2 order by created_at desc limit 1`, [lb.budget.id, `exported ${fm[1].toUpperCase()} ${fm[2]}`])).rows[0] : null;
     const snap = named || (await query(`select name, lines from budget_snapshots where budget_id=$1 and name like 'exported %' order by created_at desc limit 1`, [lb.budget.id])).rows[0];
     if (snap) {
@@ -3664,58 +3669,130 @@ router.post('/budgets/:id/import-draft', upload.single('file'), h(async (req, re
     const ai = ownershipIndexOf(Number(lb.budget.year), lb.budget.inputs?.startMonth || 1, calYear, calMonth);
     if (ai >= 0) actIdx.add(ai);
   }
-  await captureSnapshot(lb, `before import ${req.file.originalname.slice(0, 40)}`, user);
-  let changed = 0, cells = 0;
   const byGl = new Map(lb.lines.map((l) => [l.gl_code, l]));
+  const out = new Map<string, ImportReviewRow>();
   for (const [gl, m] of Object.entries(parsed.glMonths)) {
     const a = lb.coaMap.get(gl);
     if (!a || a.kind !== 'detail') continue;
     const b0 = base[gl] || [];
     const typed = m.map((v, i) => (!actIdx.has(i) && Math.abs((Number(v) || 0) - (Number(b0[i]) || 0)) >= 0.01 ? i : -1)).filter((i) => i >= 0);
     if (!typed.length) continue;
-    let l = byGl.get(gl);
-    if (!l) { l = { gl_code: gl, months: zero12(), driver: { method: 'manual' } as any, override: false, note: '' }; lb.lines.push(l); byGl.set(gl, l); }
-    const wasOverride = l.override;
-    const prev: any = l.driver || {};
-    const next = [...l.months] as Months;
-    for (const i of typed) next[i] = r2(Number(m[i]) || 0);
-    l.months = next;
-    l.override = true;
-    l.driver = prev.method && prev.method !== 'manual' ? { ...prev, revised: true } : { method: 'manual' } as any;
-    const smoothed = !!prev.smooth || prev.method === 'smooth';
-    if (!wasOverride || Array.isArray(prev.hard) || smoothed) (l.driver as any).hard = [...new Set<number>([...(wasOverride && Array.isArray(prev.hard) ? prev.hard : []), ...typed])].sort((x, y) => x - y);
-    changed++; cells += typed.length;
+    out.set(gl, { gl, months: m.map((v) => r2(Number(v) || 0)), typed, note: null, status: 'pending' });
   }
   /* RMs' NOTES COME BACK (Troy 2026-11-18): a note typed in the Budget sheet's "Notes for Budget Upload" column replaces the
      line's note when it differs from what the file was exported with (its Formulas sheet; an older export: the line's
      note now). A cleared note clears it. The export's own "REVIEW: ... and no note" flag is not a note. */
-  const notes: { gl: string; name: string; note: string }[] = [];
   for (const [gl, raw] of Object.entries(parsed.glNotes || {})) {
     const a = lb.coaMap.get(gl);
     if (!a || a.kind !== 'detail') continue;
     const txt = String(raw || '').trim().slice(0, 500);
     if (/^REVIEW: .* vs the T12 and no note$/.test(txt)) continue;
-    const l0 = byGl.get(gl);
-    const cur = String(l0?.note || '').trim();
+    const cur = String(byGl.get(gl)?.note || '').trim();
     const was = parsed.exportedNotes ? String(parsed.exportedNotes[gl] || '').trim() : cur;
     if (txt === was || txt === cur) continue;
-    let l = l0;
-    if (!l) { if (!txt) continue; l = { gl_code: gl, months: zero12(), driver: { method: 'manual' } as any, override: false, note: '' }; lb.lines.push(l); byGl.set(gl, l); }
-    l.note = txt;
-    notes.push({ gl, name: a.name, note: txt });
+    if (!byGl.get(gl) && !txt) continue;
+    const r = out.get(gl) || { gl, months: (parsed.glMonths[gl] || []).map((v) => r2(Number(v) || 0)), typed: [], note: null, status: 'pending' as const };
+    r.note = txt;
+    out.set(gl, r);
   }
-  const inputs: BudgetInputs = { ...lb.budget.inputs };
-  let capitalChanged = false;
-  if (parsed.capital != null && Math.abs(parsed.capital - (Number(inputs.capital) || 0)) >= 1) {
-    inputs.capital = parsed.capital;
-    capitalChanged = true;
+  const capital = parsed.capital != null && Math.abs(parsed.capital - (Number(lb.budget.inputs?.capital) || 0)) >= 1
+    ? { from: Number(lb.budget.inputs?.capital) || 0, to: parsed.capital } : null;
+  return { rows: [...out.values()], base: baseFrom, capital };
+}
+/** Accepted import rows onto the budget's lines: the changed months become typed cells (the line keeps its formula,
+    flagged revised, `hard` = those months), a changed note replaces the line's note. */
+function applyDraftRows(lb: LoadedBudget, rows: ImportReviewRow[]): { changed: number; cells: number; notes: { gl: string; name: string; note: string }[] } {
+  const byGl = new Map(lb.lines.map((l) => [l.gl_code, l]));
+  let changed = 0, cells = 0;
+  const notes: { gl: string; name: string; note: string }[] = [];
+  for (const r of rows) {
+    let l = byGl.get(r.gl);
+    if (!l) { l = { gl_code: r.gl, months: zero12(), driver: { method: 'manual' } as any, override: false, note: '' }; lb.lines.push(l); byGl.set(r.gl, l); }
+    if (r.typed.length) {
+      const wasOverride = l.override;
+      const prev: any = l.driver || {};
+      const next = [...l.months] as Months;
+      for (const i of r.typed) next[i] = r2(Number(r.months[i]) || 0);
+      l.months = next;
+      l.override = true;
+      l.driver = prev.method && prev.method !== 'manual' ? { ...prev, revised: true } : { method: 'manual' } as any;
+      const smoothed = !!prev.smooth || prev.method === 'smooth';
+      if (!wasOverride || Array.isArray(prev.hard) || smoothed) (l.driver as any).hard = [...new Set<number>([...(wasOverride && Array.isArray(prev.hard) ? prev.hard : []), ...r.typed])].sort((x, y) => x - y);
+      changed++; cells += r.typed.length;
+    }
+    if (r.note != null) { l.note = r.note; notes.push({ gl: r.gl, name: lb.coaMap.get(r.gl)?.name || '', note: r.note }); }
   }
+  return { changed, cells, notes };
+}
+/** The held import review, GL by GL, for the editor card: the file's months and year, the current model's, the T12's. */
+function importReviewView(lb: LoadedBudget, lines?: BudgetLine[]) {
+  const ir = lb.budget.inputs?.importReview as ImportReview | undefined;
+  if (!ir || (!ir.rows?.length && !ir.capital)) return null;
+  const eff = new Map((lines || effectiveLines(lb)).map((l) => [l.gl_code, l]));
+  const start = Number(lb.budget.inputs?.startMonth) || 1;
+  const yr = (m: number[] | null | undefined) => (m ? r2(m.reduce((a, v) => a + (Number(v) || 0), 0)) : null);
+  const rows = ir.rows.map((r) => {
+    const a = lb.coaMap.get(r.gl);
+    const model = eff.get(r.gl)?.months || zero12();
+    const t12 = lb.annual && lb.actualCal?.[r.gl] ? rotate12(lb.actualCal[r.gl], start) : null;
+    return { ...r, name: a?.name || '', section: a?.section || '', order: a?.display_order ?? 0, model, t12,
+      fileYear: yr(r.months), modelYear: yr(model), t12Year: yr(t12), curNote: eff.get(r.gl)?.note || lb.lines.find((l) => l.gl_code === r.gl)?.note || '' };
+  }).sort((x, y) => (x.order || 0) - (y.order || 0));
+  return { file: ir.file, at: ir.at, by: ir.by, base: ir.base, capital: ir.capital, rows, months: monthLabels(lb.budget.year, start) };
+}
+
+// step 1: read the file into a held review (nothing applied)
+router.post('/budgets/:id/import-draft', upload.single('file'), h(async (req, res) => {
+  const lb = await loadBudget(Number(req.params.id));
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+  const parsed = parseReviewDraft(req.file.buffer);
+  if (parsed.code && parsed.code !== lb.budget.property_code) {
+    return res.status(400).json({ error: `Draft is for ${parsed.code.toUpperCase()}, this budget is ${lb.budget.property_code.toUpperCase()}` });
+  }
+  const user = req.session.username || '';
+  const d = await draftChanges(lb, parsed, req.file.originalname);
+  // a new file's GLs replace the same GLs still held from an earlier import; the others stay held
+  const prev = lb.budget.inputs?.importReview as ImportReview | undefined;
+  const fresh = new Set(d.rows.map((r) => r.gl));
+  const kept = (prev?.rows || []).filter((r) => !fresh.has(r.gl)).map((r) => ({ ...r, file: r.file || prev!.file }));
+  const review: ImportReview = { file: req.file.originalname.slice(0, 120), at: new Date().toISOString(), by: user, base: d.base,
+    capital: d.capital || prev?.capital || null, rows: [...d.rows.map((r) => ({ ...r, file: req.file!.originalname.slice(0, 120) })), ...kept] };
+  const inputs: BudgetInputs = { ...lb.budget.inputs, importReview: review } as any;
   await query('update budgets set inputs=$2, updated_at=now() where id=$1', [lb.budget.id, JSON.stringify(inputs)]);
-  const built = buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lb.lines);
-  await saveLines(lb.budget.id, built.lines, true);
-  logChange(user, 'import draft workbook', { id: lb.budget.id, file: req.file.originalname, changed, cells, base: baseFrom, capitalChanged, notes: notes.length });
+  logChange(user, 'import draft workbook (review)', { id: lb.budget.id, file: req.file.originalname, gls: d.rows.length, cells: d.rows.reduce((a, r) => a + r.typed.length, 0), base: d.base, capital: !!d.capital });
   const view: any = budgetView((await loadBudget(lb.budget.id))!);
-  view.importResult = { changed, cells, base: baseFrom, capitalChanged, capital: parsed.capital, notes };
+  view.importResult = { review: true, gls: d.rows.length, cells: d.rows.reduce((a, r) => a + r.typed.length, 0), notes: d.rows.filter((r) => r.note != null).length, capital: !!d.capital, base: d.base };
+  res.json(view);
+}));
+// step 2: the decisions. body { decisions: { [gl]: 'accept' | 'flag' | 'deny' }, capital?: 'accept' | 'deny' }
+router.post('/budgets/:id/import-review', h(async (req, res) => {
+  const lb = await loadBudget(Number(req.params.id));
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  const ir = lb.budget.inputs?.importReview as ImportReview | undefined;
+  if (!ir) return res.status(400).json({ error: 'No import waiting for review on this budget' });
+  const dec: Record<string, string> = req.body?.decisions || {};
+  const capDec = String(req.body?.capital || '');
+  const accept = ir.rows.filter((r) => dec[r.gl] === 'accept');
+  const keep = ir.rows.filter((r) => dec[r.gl] !== 'accept' && dec[r.gl] !== 'deny').map((r) => (dec[r.gl] === 'flag' ? { ...r, status: 'flagged' as const } : r));
+  const user = req.session.username || '';
+  const capAccept = !!ir.capital && capDec === 'accept';
+  if (accept.length || capAccept) await captureSnapshot(lb, `before import review ${String(ir.file || '').slice(0, 30)}`, user);
+  const applied = applyDraftRows(lb, accept);
+  const inputs: BudgetInputs = { ...lb.budget.inputs } as any;
+  if (capAccept) inputs.capital = ir.capital!.to;
+  const capital = capDec === 'accept' || capDec === 'deny' ? null : ir.capital;
+  if (keep.length || capital) (inputs as any).importReview = { ...ir, rows: keep, capital };
+  else delete (inputs as any).importReview;
+  await query('update budgets set inputs=$2, updated_at=now() where id=$1', [lb.budget.id, JSON.stringify(inputs)]);
+  if (accept.length || capAccept) {
+    const built = buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lb.lines);
+    await saveLines(lb.budget.id, built.lines, true);
+  }
+  const denied = ir.rows.filter((r) => dec[r.gl] === 'deny').length, flagged = keep.filter((r) => r.status === 'flagged').length;
+  logChange(user, 'import review decisions', { id: lb.budget.id, file: ir.file, accepted: accept.length, denied, flagged, pending: keep.length - flagged, capital: capDec || null });
+  const view: any = budgetView((await loadBudget(lb.budget.id))!);
+  view.importResult = { decided: true, accepted: accept.length, cells: applied.cells, notes: applied.notes.length, denied, flagged, pending: keep.length - flagged, capital: capAccept ? ir.capital!.to : null };
   res.json(view);
 }));
 

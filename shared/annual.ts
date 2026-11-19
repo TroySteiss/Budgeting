@@ -40,7 +40,8 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-19c';   // c: per-move-in income follows turnover from the T12
+export const ENGINE_VERSION = '2026-11-19d';   // d: 5157 = move-ins × setup fee ($150) + VCR admin fees
+// 2026-11-19c: per-move-in income follows turnover from the T12
 // 2026-11-19b: no fit on a line that carries a contract
 // 2026-11-19a:   // a: TPND review — utility cap on the gross bill at a split property, an annual bill on "last month" no longer drops, RE tax MF share shown
 // 2026-11-18e:   // e: no curve or T12 fit ever on a corporate formula
@@ -460,6 +461,9 @@ export interface TemplateData {
   /** prior-year move-outs by calendar month (2027 template's MoveOuts sheet): scheduled = 60+ days'
       notice, unscheduled = under 60 days, month-to-month, skips and evictions */
   moveOuts: { scheduled: Months; unscheduled: Months } | null;
+  /** last year's VCR admin fees (2027 template's VcrAdmin sheet): count by calendar month, the current fee, the cap
+      (null = none). Absent on templates pulled before the final 2027 release. */
+  vcrAdmin?: { counts: Months; fee: number; cap: number | null } | null;
 }
 
 /* ---------------- template rules ---------------- */
@@ -640,6 +644,9 @@ export const TEMPLATE_GL_PCT: Record<string, number> = {
 export const TEMPLATE_CAT_PCT: Record<string, number> = { '1': 0, loss: 0, '2': 0, '3': 0, '4': 0, '5': 0, '6': 0, '7': 0, '8': 0, '9': 0.05, '10': 0, '11': 0, '12': 0, '13': 0.05, '14': 0.05, '*': 0 };
 /** Turnover-driven income: $ per NEW MOVE-IN (expirations × (1 − renewal %)). */
 export const TURN_GLS: Record<string, string> = { '5105': 'application fees', '5152': 'deposit forfeitures', '5157': 'move-in admin fees' };
+/** 5157 non-refundable admin fee (Troy 2026-11-19): the move-in setup fee charged on each new move-in, unless typed. */
+export const ADMIN_FEE_GL = '5157';
+export const ADMIN_SETUP_FEE_DEFAULT = 150;
 /** Trailing-12 total / 12 flat (template: only when the T12 exceeds $1,000). */
 export const FLAT_T12_GLS = new Set(['5135', '5151']);
 /** Turn-related expense lines (Troy 2026-11-04): paint, carpet, blinds, locks, appliances,
@@ -2370,7 +2377,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const turns0 = expStart.reduce((x, e) => x + r2(e * (1 - renew0)), 0);
     for (const [gl] of Object.entries(TURN_GLS)) {
       const a = coaByCode.get(gl);
-      if (!a) continue;
+      if (!a || gl === ADMIN_FEE_GL) continue;   // 5157: the template's own formula, below
       const typedRaw = inputs.turnFees?.[gl];
       const typed = typedRaw != null && Number.isFinite(Number(typedRaw)) ? Number(typedRaw) : null;
       // with nothing typed, a row shape / a formula set's rule (GRKS: wavg) keeps its own formula
@@ -2381,6 +2388,31 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       userShaped.delete(gl);
       mk(gl, turns.map((t) => r2(t * amt)), { method: 'perTurn', amount: Math.round(amt * 10000) / 10000, turns: r2(turnsTotal),
         startTurns: r2(turns0), t12: r2(t12), ...(typed != null ? { typed: true } : {}) } as any);
+    }
+  }
+  /* ---- 5157 NON-REFUNDABLE ADMIN FEE: the 2027 template's formula (Troy 2026-11-19: "Here is how it works. We can just
+     swap the non-admin formula and default to $150"):
+       projected new move-ins (expirations × (1 − renewal %)) × the move-in setup fee ($150 unless typed)
+       + VCR admin fees: last year's VCR count by calendar month (the template's VcrAdmin sheet) × (the current fee + a
+         typed increase, held to the fee cap where there is one).
+     It replaces the T12 ÷ move-ins default and the old template rule (PY same month). A row shape picked on the budget or
+     a hand-typed line still wins; a typed setup fee always applies. A template pulled before the final 2027 release has
+     no VcrAdmin sheet: the VCR part is 0 and the chip says so (re-upload the template to bring it in). ---- */
+  {
+    const gl = ADMIN_FEE_GL;
+    const typedRaw = inputs.turnFees?.[gl];
+    const typed = typedRaw != null && Number.isFinite(Number(typedRaw)) ? Number(typedRaw) : null;
+    if (coaByCode.has(gl) && (typed != null || (!isSet(gl) && !isRowShaped(gl)))) {
+      const fee = typed ?? ADMIN_SETUP_FEE_DEFAULT;
+      const v = tpl?.vcrAdmin || null;
+      const inc = Number(inputs.vcrFeeIncrease) || 0;
+      const vFee = v && v.fee > 0 ? (v.cap && v.cap > 0 ? Math.min(v.fee + inc, v.cap) : v.fee + inc) : 0;
+      // VCR counts are calendar months; the budget's months start at startMonth
+      const vcr = Array.from({ length: 12 }, (_, i) => r2((Number(v?.counts?.[(startMonth - 1 + i) % 12]) || 0) * vFee)) as Months;
+      userShaped.delete(gl);
+      mk(gl, turns.map((t, i) => r2(t * fee + vcr[i])) as Months, { method: 'perTurn', amount: fee, turns: r2(turnsTotal), admin: true, t12: r2(baseTotal(gl)),
+        ...(typed != null ? { typed: true } : {}),
+        vcr: v ? { count: r2(sum(v.counts as Months)), fee: vFee, current: v.fee, cap: v.cap ?? null, increase: inc, amount: r2(sum(vcr)) } : null } as any);
     }
   }
 

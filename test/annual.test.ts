@@ -2938,3 +2938,34 @@ describe('the FY budget statement (Troy 2026-11-19: NOI vs the 2026 FY budget, n
     expect(isFyBudgetStmt(null, 'Jan 2026-Dec 2026', 2026)).toBe(false);
   });
 });
+
+describe('5157 admin fee = move-ins × setup fee + VCR admin fees (Troy 2026-11-19, the 2027 template)', () => {
+  const tplWith = (vcrAdmin: any) => ({ lastActual: { month: 10, year: 2025 }, units: 100, leaseExpirations: cal([0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0]), renewalPct: 0.5, vcrAdmin } as any);
+  const run = (tpl: any, patch: Record<string, any> = {}) => {
+    const actual = synthetic();
+    const b = baseInputs(2026, 10, actual, null, coaList, null, 10);
+    return L(generateAnnualLines(coaList, { ...b, ...patch, ltl: { ...b.ltl, renewalPct: 0.5 } }, { actual, budget: null, lastMonth: 10, template: tpl }), '5157');
+  };
+  it('defaults to $150 per new move-in plus last year\'s VCR count × the current fee', () => {
+    const counts = cal([1, -1, 3, 4, 5, 6, 10, 6, 4, 1, 1, 1]);
+    const l = run(tplWith({ counts, fee: 50, cap: null }));
+    expect((l.driver as any).admin).toBe(true);
+    expect((l.driver as any).amount).toBe(150);
+    // 5 move-ins in March × $150 + 3 VCR × $50
+    expect(l.months[2]).toBeCloseTo(5 * 150 + 3 * 50, 2);
+    expect(l.months[1]).toBeCloseTo(-50, 2);                   // the template keeps a negative count as it is
+    expect(sum(l.months)).toBeCloseTo(750 + sum(counts) * 50, 2);
+  });
+  it('a typed setup fee and a VCR increase apply; the increase is held to the cap', () => {
+    const counts = cal([2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const l = run(tplWith({ counts, fee: 10, cap: 12 }), { turnFees: { '5157': 200 }, vcrFeeIncrease: 5 });
+    expect(l.months[2]).toBeCloseTo(5 * 200, 2);
+    expect(l.months[0]).toBeCloseTo(2 * 12, 2);                // $10 + $5 capped at $12
+    expect((l.driver as any).vcr.fee).toBe(12);
+  });
+  it('no VcrAdmin on the template: setup fees only, and the driver says so', () => {
+    const l = run(tplWith(null));
+    expect(sum(l.months)).toBeCloseTo(5 * 150, 2);
+    expect((l.driver as any).vcr).toBeNull();
+  });
+});

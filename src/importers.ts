@@ -1449,6 +1449,11 @@ export function parseYardiBudgetTemplate(buf: Buffer, coaDetail?: Set<string>): 
   const moG = sheet(/^moveouts$/i);
   const moR = moG?.[1] || [];
   const moveOuts = moG && moR.length > 1 ? { scheduled: Array.from({ length: 12 }, (_, i) => num(moR[1 + i])) as Months, unscheduled: Array.from({ length: 12 }, (_, i) => num(moR[13 + i])) as Months } : null;
+  // VcrAdmin (2027 template, final release 2026-11-19): row 2 = property, B..M last year's VCR admin fee count by calendar
+  // month, N the current fee, O the fee cap (blank = none). Feeds 5157 with the move-in setup fee.
+  const vcG = sheet(/^vcradmin$/i);
+  const vcR = vcG?.[1] || [];
+  const vcrAdmin = vcG && vcR.length > 1 ? { counts: Array.from({ length: 12 }, (_, i) => num(vcR[1 + i])) as Months, fee: num(vcR[13]), cap: num(vcR[14]) || null } : null;
   const dh = sheet(/^disthist$/i) || [];
   const distHist = dh.slice(1).filter((r) => r?.[0]).map((r) => { const d = serialDate(r[1]); return { date: d ? `${d.y}-${String(d.m).padStart(2, '0')}` : s(r[1]), type: s(r[2]), pct: num(r[3]), amount: num(r[4]) }; });
   const md = sheet(/^mortgagedetail$/i) || [];
@@ -1466,6 +1471,7 @@ export function parseYardiBudgetTemplate(buf: Buffer, coaDetail?: Set<string>): 
     mgmtFee, utilForecast, suggestions, suggestionNotes, leaseGoals, leaseExpirations,
     renewalPct, burnoffRenew, burnoffNew, gprPct, vacancyPct, delinqPct, priorPeriodPct, distHist, mortgage, softwareFixedMo,
     moveOuts: moveOuts && (moveOuts.scheduled.some((v) => v) || moveOuts.unscheduled.some((v) => v)) ? moveOuts : null,
+    vcrAdmin,
   };
   return { template, actual, budget, skippedSheets };
 }

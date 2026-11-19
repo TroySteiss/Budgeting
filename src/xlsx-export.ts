@@ -296,7 +296,8 @@ function annualDriverLabel(d: any): string {
     case 'contract': return `${d.mode === 'add' ? 'formula + ' : ''}contracts: ${(d.items || []).map((x: any) => `${x.vendor || 'contract'} $${Math.round(x.annual).toLocaleString('en-US')}`).join(' + ')}`;
     case 'corpRate': return `corporate rate${d.perUnitYr ? ` $${d.perUnitYr}/unit/yr` : ''}${d.flatMo ? ` + $${d.flatMo}/mo` : ''}`;
     case 'debtService': return `Yardi amortization schedule — ${d.kind}${d.loan ? ` (${d.loan})` : ''}`;
-    case 'perTurn': return `$${Math.round(d.amount * 100) / 100}/move-in × ${d.turns} projected move-ins${d.typed ? ' (typed $)' : d.startTurns ? ` ($ = T12 ÷ ${d.startTurns} starting move-ins)` : ''}`;
+    case 'perTurn': if (d.admin) return `$${Math.round(d.amount * 100) / 100} setup fee/move-in${d.typed ? ' (typed)' : ''} × ${d.turns} projected move-ins${d.vcr ? ` + VCR admin fees ${Math.round(d.vcr.amount)} (${d.vcr.count} last year × $${d.vcr.fee})` : ' (no VCR counts on the template)'}`;
+      return `$${Math.round(d.amount * 100) / 100}/move-in × ${d.turns} projected move-ins${d.typed ? ' (typed $)' : d.startTurns ? ` ($ = T12 ÷ ${d.startTurns} starting move-ins)` : ''}`;
     case 'recapture': return `${((d.pct || 0) * 100).toFixed(1)}% recapture of the other concessions`;
     default: return '';
   }

@@ -68,7 +68,9 @@ export type Driver = { revised?: boolean; /** month indexes (0-11) typed by hand
   | { method: 'suggested'; note?: string }                       // corporate BudgetSuggestions amounts
   | { method: 'corpRate'; perUnitYr?: number; flatMo?: number }   // corporate per-unit / flat monthly rate
   | { method: 'debtService'; kind: 'interest' | 'principal'; loan?: string }  // amortization schedule from Yardi
-  | { method: 'perTurn'; amount: number; turns: number; startTurns?: number; t12?: number; typed?: boolean }   // $ per new move-in × projected move-ins (default $ = T12 ÷ the starting move-ins)
+  | { method: 'perTurn'; amount: number; turns: number; startTurns?: number; t12?: number; typed?: boolean;
+      /** 5157: $ = the move-in setup fee, plus VCR admin fees (count × fee) */
+      admin?: boolean; vcr?: { count: number; fee: number; current: number; cap: number | null; increase: number; amount: number } | null }   // $ per new move-in × projected move-ins (default $ = T12 ÷ the starting move-ins)
   | { method: 'recapture'; pct: number }                          // concession recapture % of the other concessions
   | { method: 'zero' }
   | { method: 'collections'; pct: number; startDq: number }   // prior-period collections = rate x the previous month's delinquency
@@ -335,6 +337,8 @@ export interface BudgetInputs {
   /** per-GL $ per new move-in for the turnover-driven income lines
       (application fee 5105, deposit forfeiture 5152, admin fee 5157) */
   turnFees?: Record<string, number>;
+  /** 5157 VCR admin fees: $ added to the current fee (the template's "enter $ increase"), held to the cap */
+  vcrFeeIncrease?: number | null;
   /** corporate per-unit / flat rates (insurance $/unit, IT, legal, marketing
       allocations) — defaults from the Yardi template year */
   corpRates?: Record<string, { perUnitYr?: number; flatMo?: number }>;

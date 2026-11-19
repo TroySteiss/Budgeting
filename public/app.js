@@ -218,7 +218,12 @@ function drvMetaBase(l) {
     case 'collectionFee': return { cls: 'drv-base', tag: `${Math.round((l.driver.pct || 0) * 100)}% REC`, label: `Collection fees = ${Math.round((l.driver.pct || 0) * 100)}% of bad debt recovery (5110), month by month.` };
     case 'collections': return { cls: 'drv-base', tag: '%PRIOR DQ', label: `Follows current delinquency (5035) whatever formula it is on. ${((l.driver.pct || 0) * 100).toFixed(1)}% of the PREVIOUS month's delinquency is collected${l.driver.basis === 't12' ? ` (the trailing-12's collections ÷ its delinquency${l.driver.postedRate != null ? '; nothing was collected in the months posted since closing' : ''})` : l.driver.basis === 'plan' ? ' (the acquisition plan\'s own collections ÷ delinquency; nothing posted or in the T12 to measure)' : l.driver.basis === 'posted' ? ' (what the months posted since closing collected against the month before)' : l.driver.basis === 'typed' ? ' (typed on this budget)' : l.driver.basis === 'none' ? ' — NO RATE: nothing collected in the posted months, the T12 or the plan; type a % in the box' : ''} (January collects against the last actual month's $${money(l.driver.startDq || 0)}). Higher delinquency one month means higher collections the next; it can never exceed that delinquency${l.driver.capped ? ` — the trailing-12 collected ${((l.driver.t12Rate || 0) * 100).toFixed(0)}% of its delinquency (older balances), capped here at 100%` : ''}` };
     case 'recapture': return { cls: 'drv-base', tag: 'RECAP', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% recapture of the other concession lines (T12 ratio)` };
-    case 'perTurn': return { cls: 'drv-base', tag: l.driver.typed ? 'TURNS' : 'T12·TURNS', label: l.driver.typed
+    case 'perTurn': if (l.driver.admin) {
+      const v = l.driver.vcr;
+      const vTxt = v ? ` + VCR admin fees ${money(v.amount)} (${money(v.count)} last year × $${money(v.fee, 2)}${v.increase ? `: $${money(v.current, 2)} + $${money(v.increase, 2)}` : ''}${v.cap ? `, cap $${money(v.cap)}` : ''})` : ' · no VCR counts on file (the linked template predates the VcrAdmin sheet: re-upload a 2027 template pull)';
+      return { cls: 'drv-base', tag: v ? 'SETUP+VCR' : 'SETUP', label: `$${money(l.driver.amount)} setup fee per move-in${l.driver.typed ? ' (typed)' : ' (default)'} × ${money(l.driver.turns)} projected move-ins${vTxt}. The 2027 template's 5157 formula` };
+    }
+    return { cls: 'drv-base', tag: l.driver.typed ? 'TURNS' : 'T12·TURNS', label: l.driver.typed
       ? `$${money(l.driver.amount)} per move-in (typed) × ${money(l.driver.turns)} projected move-ins, on the months they happen`
       : `$${money(l.driver.amount)} per move-in × ${money(l.driver.turns)} projected move-ins. The $ per move-in is the T12 (${money(l.driver.t12 || 0)}) ÷ the starting move-ins (${money(l.driver.startTurns || 0)}: the template's expirations at its renewal %, the budget's starting inputs), so the year starts at the T12 and moves with the renewal % and expirations` };
     case 'suggested': return { cls: 'drv-corp', tag: 'CORP', label: `Corporate budget suggestion${l.driver.note ? ` — ${l.driver.note}` : ''}` };
@@ -1345,6 +1350,7 @@ function renderEditor(el) {
       </div>
     </div>
     ${staleBannerHtml(bv)}
+    ${importReviewHtml(bv)}
     <div class="kpis">
       ${kpiCard('Total income', k.income, prop.units)}
       ${kpiCard('Total expense', k.expense, prop.units)}
@@ -1503,18 +1509,26 @@ function renderEditor(el) {
   document.getElementById('imp-file').addEventListener('change', async (e) => {
     const f = e.target.files[0];
     if (!f) return;
-    if (!confirm(`Import "${f.name}" into this budget?\n\nThe current state is saved as its own iteration first. Only the months you changed in the workbook (compared with what it was exported with) come back as hard-coded cells; every other line stays on its formula.`)) return;
     const fd = new FormData();
     fd.append('file', f);
     try {
       S.bv = await POST(`/budgets/${b.id}/import-draft`, fd);
       const ir = S.bv.importResult || {};
+      // the file is held for the GL-by-GL review (Troy 2026-11-19): nothing applied yet
+      if (ir.review) {
+        S.irDec = null;
+        if (!ir.gls && !ir.capital) alert(`Nothing in "${f.name}" differs from what it was exported with (${ir.base}).`);
+        render();
+        e.target.value = '';
+        return;
+      }
       const nl = (ir.notes || []);
       alert(`Imported: ${ir.cells || 0} changed cell(s) on ${ir.changed || 0} line(s), now hard-coded (bold); every other line stays on its formula${ir.capitalChanged ? ` · capital set to ${money(ir.capital)}` : ''}.${nl.length ? `\n\n${nl.length} note${nl.length === 1 ? '' : 's'} brought back:\n${nl.slice(0, 12).map((x) => `${x.gl} ${x.name}: ${x.note || '(cleared)'}`).join('\n')}${nl.length > 12 ? `\n… and ${nl.length - 12} more` : ''}` : ''}\nCompared with ${ir.base || 'the export'}.\nPrior iteration saved under ⎘ Save points.`);
       render();
     } catch (e2) { alert('Import failed: ' + e2.message); }
     e.target.value = '';
   });
+  wireImportReview(el, b);
   document.getElementById('recalc').addEventListener('click', async () => { pushUndo(); S.bv = await POST(`/budgets/${b.id}/recalc`); render(); });
   { const sr = document.getElementById('stale-recalc'); if (sr) sr.addEventListener('click', async () => { pushUndo(); S.bv = await POST(`/budgets/${b.id}/recalc`); render(); }); }
   { const tk = document.getElementById('tag-key'); if (tk) tk.addEventListener('click', openTagKey); }
@@ -2506,7 +2520,7 @@ function paramFor(gl, line, inp) {
     return { label: m === 'recapture' ? 'recapture %' : `% of ${line.driver.of === 'net' ? 'net rent' : line.driver.of === 'netgpr' ? 'net GPR' : 'GPR'}`, value: +((line.driver.pct || 0) * 100).toFixed(3), patch: (v) => ({ pctGpr: { ...(inp.pctGpr || {}), [gl]: v / 100 } }) };
   }
   if (m === 'perTurn') {
-    return { label: '$ per move-in', value: line.driver.amount || 0, patch: (v) => ({ turnFees: { ...(inp.turnFees || {}), [gl]: v } }) };
+    return { label: line.driver.admin ? 'setup fee $ per move-in' : '$ per move-in', value: line.driver.amount || 0, patch: (v) => ({ turnFees: { ...(inp.turnFees || {}), [gl]: v } }) };
   }
   if (m === 'contract') {
     // % increase over the contract cost, month by month (Troy 2026-11-18); 0 = the contracts as they stand
@@ -3133,6 +3147,77 @@ function openDroppedDialog(b) {
     if (gls.length) await budgetDroppedLines(b, gls);
   });
   dlg.showModal();
+}
+
+/* ---- IMPORT REVIEW (Troy 2026-11-19: "When I import/upload a Excel file, I would like for it to go through a GL by GL
+   review covering all changes made. I want to be able to see notes, T12 revised, prior T12, Current Model T12, with
+   columns in red where changes were made on excel. Should be able to accept, flag for review, or deny changes"). An
+   imported draft is held on the budget (bv.importReview) until each GL is decided: Accept applies it (typed cells, as
+   the import always did), Flag keeps it held for later, Deny drops it. A GL left undecided stays held too. ---- */
+function importReviewHtml(bv) {
+  const ir = bv.importReview;
+  if (!ir) return '';
+  if (!S.irDec || S.irDec.file !== ir.file || S.irDec.at !== ir.at) S.irDec = { file: ir.file, at: ir.at, d: {}, cap: '' };
+  const D = S.irDec.d;
+  const flagged = ir.rows.filter((r) => r.status === 'flagged').length;
+  const segBtn = (gl, v, label, tip) => `<button class="${D[gl] === v ? 'on' : ''}" data-irdec="${esc(gl)}" data-v="${v}" title="${esc(tip)}">${label}</button>`;
+  const seg = (gl) => `<span class="edseg irseg">${segBtn(gl, 'accept', 'Accept', 'Apply the changed months (and note) to the budget')}${segBtn(gl, 'flag', 'Flag', 'Hold it for review: not applied, kept here to decide later')}${segBtn(gl, 'deny', 'Deny', 'Drop the change; the line stays as it is')}</span>`;
+  const delta = (a, b) => (a == null || b == null ? '' : a - b);
+  const rows = ir.rows.map((r) => {
+    const typed = new Set(r.typed || []);
+    const d = delta(r.fileYear, r.modelYear);
+    const noteCell = r.note != null
+      ? `<td class="l irnote irchg" title="${esc(`Note from the file${r.curNote ? `; the line's note now: ${r.curNote}` : ''}`)}">${r.note ? esc(r.note) : '<i>(note cleared)</i>'}</td>`
+      : `<td class="l irnote muted" title="The line's note now (not changed in the file)">${esc(r.curNote || '')}</td>`;
+    const months = r.months.map((v, i) => `<td class="${typed.has(i) ? 'irchg' : 'muted'}" title="${esc(`${ir.months[i]}: model ${money(r.model[i] || 0)} → file ${money(v || 0)}${r.t12 ? ` · T12 ${money(r.t12[i] || 0)}` : ''}`)}">${money(v || 0)}</td>`).join('');
+    return `<tr class="${r.status === 'flagged' ? 'irflag' : ''}">
+      <td class="l stick"><b>${esc(r.gl)}</b> ${esc(r.name)}${r.status === 'flagged' ? ' <span class="badge irflagb">flagged</span>' : ''}${r.file && r.file !== ir.file ? `<div class="muted" style="font-size:10.5px">from ${esc(r.file)}</div>` : ''}</td>
+      ${noteCell}
+      <td>${r.t12Year == null ? '<span class="muted">—</span>' : money(r.t12Year)}</td>
+      <td>${money(r.modelYear || 0)}</td>
+      <td class="${r.typed && r.typed.length ? 'irchg' : ''}"><b>${money(r.fileYear || 0)}</b></td>
+      <td class="${d < 0 ? 'neg' : ''}">${d === '' || Math.abs(d) < 1 ? '<span class="muted">—</span>' : money(d)}</td>
+      ${months}
+      <td>${seg(r.gl)}</td></tr>`;
+  }).join('');
+  const capRow = ir.capital ? `<tr><td class="l stick"><b>Capital</b> (Summary D27)</td><td class="l irnote muted">Cash on cash divides by it</td><td></td><td>${money(ir.capital.from)}</td><td class="irchg"><b>${money(ir.capital.to)}</b></td><td>${money(ir.capital.to - ir.capital.from)}</td><td colspan="12"></td>
+      <td><span class="edseg irseg"><button class="${S.irDec.cap === 'accept' ? 'on' : ''}" data-ircap="accept">Accept</button><button class="${S.irDec.cap === '' ? 'on' : ''}" data-ircap="" title="Hold it">Flag</button><button class="${S.irDec.cap === 'deny' ? 'on' : ''}" data-ircap="deny">Deny</button></span></td></tr>` : '';
+  const nDec = Object.values(D).filter(Boolean).length + (S.irDec.cap ? 1 : 0);
+  return `<div class="card irwrap">
+    <div class="row" style="justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px">
+      <div><b>Import review</b> <span class="badge">${ir.rows.length} GL${ir.rows.length === 1 ? '' : 's'}${flagged ? ` · ${flagged} flagged` : ''}</span>
+        <span class="muted" style="font-size:11.5px"> · ${esc(ir.file)} · ${ir.by ? `${esc(ir.by)}, ` : ''}${new Date(ir.at).toLocaleString()} · changes vs ${esc(ir.base)}</span></div>
+      <div class="row" style="gap:6px; align-items:center">
+        <button class="btn sub sm" data-irall="accept">Accept all</button><button class="btn sub sm" data-irall="flag">Flag all</button><button class="btn sub sm" data-irall="deny">Deny all</button>
+        <button class="btn sm" id="ir-apply" ${nDec ? '' : 'disabled'} title="Apply the accepted GLs, drop the denied ones; flagged and undecided GLs stay here">Apply decisions${nDec ? ` (${nDec})` : ''}</button>
+      </div>
+    </div>
+    <div class="sumwrap"><table class="sumtbl irtbl">
+      <tr><th class="l stick">GL</th><th class="l">Notes</th><th title="The property's trailing-12 actuals for the GL">Prior T12</th><th title="The GL's budget year in the tool now">Current model</th><th title="The year as revised in the Excel file">Revised (Excel)</th><th title="Revised minus current model">Δ vs model</th>
+        ${ir.months.map((m) => `<th>${esc(m)}</th>`).join('')}<th>Decision</th></tr>
+      ${rows}${capRow}
+    </table></div>
+    <p class="muted" style="font-size:11.5px; margin:6px 0 0"><span class="irchg-key">Red</span> = changed in the Excel file (vs what it was exported with); hover a month for the model and T12. Accepted months come in as typed cells (bold in the grid); the line keeps its formula elsewhere. A save point is taken before anything is applied. Flagged or undecided GLs stay here, not applied.</p>
+  </div>`;
+}
+function wireImportReview(el, b) {
+  const ir = S.bv && S.bv.importReview;
+  if (!ir) return;
+  el.querySelectorAll('[data-irdec]').forEach((x) => x.addEventListener('click', () => { const g = x.dataset.irdec; S.irDec.d[g] = S.irDec.d[g] === x.dataset.v ? '' : x.dataset.v; render(); }));
+  el.querySelectorAll('[data-irall]').forEach((x) => x.addEventListener('click', () => { for (const r of ir.rows) S.irDec.d[r.gl] = x.dataset.irall; if (ir.capital) S.irDec.cap = x.dataset.irall === 'flag' ? '' : x.dataset.irall; render(); }));
+  el.querySelectorAll('[data-ircap]').forEach((x) => x.addEventListener('click', () => { S.irDec.cap = x.dataset.ircap; render(); }));
+  const ap = el.querySelector('#ir-apply');
+  if (ap) ap.addEventListener('click', async () => {
+    const d = Object.fromEntries(Object.entries(S.irDec.d).filter(([, v]) => v));
+    const n = (v) => Object.values(d).filter((x) => x === v).length;
+    if (!confirm(`Apply the import decisions?\n\nAccept ${n('accept')} · flag ${n('flag')} · deny ${n('deny')}${ir.capital && S.irDec.cap ? ` · capital: ${S.irDec.cap}` : ''}\n\nA save point is taken first. Flagged and undecided GLs stay held.`)) return;
+    try {
+      pushUndo();
+      S.bv = await POST(`/budgets/${b.id}/import-review`, { decisions: d, capital: S.irDec.cap || undefined });
+      S.irDec = null;
+      render();
+    } catch (e) { alert('Could not apply: ' + e.message); }
+  });
 }
 
 /* ---- calculated on older formulas? ---- */
@@ -6864,7 +6949,9 @@ function annualInputsHtml(inp) {
 
   // 6. per move-in income & corporate rates
   const s6 = `<div class="row">
-      ${[['5105', 'Application fees'], ['5152', 'Deposit forfeitures'], ['5157', 'Move-in admin fee']].map(([gl, label]) => f(`${gl} ${label} $/move-in`, `<input class="in-turn" data-gl="${gl}" value="${(inp.turnFees || {})[gl] ?? ''}" style="width:80px" placeholder="auto">`, 'Blank = the T12 ÷ the starting move-ins, so the year starts at the T12 and follows the renewal % and expirations. A typed $ always applies.')).join('')}
+      ${[['5105', 'Application fees'], ['5152', 'Deposit forfeitures']].map(([gl, label]) => f(`${gl} ${label} $/move-in`, `<input class="in-turn" data-gl="${gl}" value="${(inp.turnFees || {})[gl] ?? ''}" style="width:80px" placeholder="auto">`, 'Blank = the T12 ÷ the starting move-ins, so the year starts at the T12 and follows the renewal % and expirations. A typed $ always applies.')).join('')}
+      ${f('5157 Admin fee: setup $/move-in', `<input class="in-turn" data-gl="5157" value="${(inp.turnFees || {})['5157'] ?? ''}" style="width:80px" placeholder="150">`, 'The 2027 template: new move-ins × the setup fee (blank = $150) + VCR admin fees.')}
+      ${f('5157 VCR fee + $', `<input id="in-vcrinc" value="${inp.vcrFeeIncrease ?? ''}" style="width:60px" placeholder="0">`, "Added to the current VCR admin fee (the template's VcrAdmin sheet), held to the fee cap. Last year's VCR count by month × the fee.")}
     </div>
     <div class="row">
       ${f('6108 Insurance $/unit/yr', `<input class="in-corp" data-gl="6108" data-k="perUnitYr" value="${corp[6108].perUnitYr ?? ''}" style="width:70px">`)}
@@ -6966,6 +7053,7 @@ async function applyAnnualInputs(b, el) {
     utilities: { ...(cur.utilities || {}), billing: q('#in-utilbill') ? q('#in-utilbill').value : ((cur.utilities || {}).billing || 'rubs') },
     baseline: { ...(cur.baseline || {}), source: q('#in-blsrc').value, shape: q('#in-blshape').value, mround: num('#in-blmround'), costDrift: q('#in-drift') ? Math.max(0, num('#in-drift', 3)) / 100 : (cur.baseline || {}).costDrift, growthPct, useUtilForecast: q('#in-blutil').checked },
     turnFees, corpRates,
+    vcrFeeIncrease: (() => { const x = el.querySelector('#in-vcrinc'); if (!x) return cur.vcrFeeIncrease ?? null; const v = parseFloat(String(x.value).replace(/[$,]/g, '')); return Number.isFinite(v) && v !== 0 ? v : null; })(),
     tieIncome: q('#in-tieinc').checked,
     tieNoi: q('#in-tienoi').checked,
   };
