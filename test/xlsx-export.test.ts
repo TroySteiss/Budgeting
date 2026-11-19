@@ -294,6 +294,10 @@ describe('export → edit → upload round trip (Troy 2026-11-16: "it needs to u
     expect(p.glNotes['6604']).toBe('RM: new electric rate from Jan');
     expect(p.exportedNotes).not.toBeNull();
     expect(p.exportedNotes!['6604'] || '').toBe('');
+    // column C (how each line is built) and row 2 (drift factors) hidden; units and capital readable in B3 / B4
+    expect(bud.getColumn(3).hidden).toBe(true);
+    expect(bud.getRow(2).hidden).toBe(true);
+    expect(String(resultOf(bud.getCell(3, 2)))).toMatch(/^Units: /);
     // column Z is "Notes" and carries no automatic REVIEW flags (Troy 2026-11-18)
     expect(bud.getCell(6, 26).value).toBe('Notes');
     let flags = 0; bud.eachRow((row) => { if (/^REVIEW:/.test(String(row.getCell(26).value || ''))) flags++; });

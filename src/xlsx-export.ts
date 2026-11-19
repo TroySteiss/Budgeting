@@ -526,6 +526,10 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
   // width of columns so that everything can actually be read") — the row-3 KPI values fit, and so does Cash on Cash in Q
   const widths = [8, 29.86, 24, 14, 12.43, 10.43, 13.71, 10.43, 10.86, 7.86, 11.57, 11.57, 11.57, 11.57, 11.57, 11.57, 11.57, 13, 1.43, 13, 13, 1.43, 1.43, 9.43, 9.43, 26];
   widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  // column C (how each line is built) and row 2 (the drift factors) are hidden (Troy 2026-11-18: "Column C with the
+  // calculation notes needs to be somewhere else. Row 2 needs to be hidden ... Jus thide column C"); both still work
+  ws.getColumn(C.notes).hidden = true;
+  ws.getRow(2).hidden = true;
   /* ROUND TRIP (Troy 2026-11-16: "When I export a budget, make changes, and then reupload it, it needs to upload formulas
      back into the system, not hard coded values. Also, the conditional formatting should bold and red any value in the
      workbook that is revised to a hard coded number"): every month a line's formula sets is written as a link to the
@@ -577,8 +581,10 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     ws.getCell(3, col + 1).font = { size: 11, bold: true };
     ws.getCell(3, col + 1).numFmt = fmt;
   };
-  ws.getCell(3, 2).value = 'Units:';
-  ws.getCell(3, 2).font = { size: 8, bold: true, color: { argb: 'FF505050' } };
+  // units and capital stay in C3 / C4 (every per-unit and cash-on-cash formula reads them) with column C hidden, so B
+  // shows them: "Units: 341", "Capital: $17,400,000"
+  ws.getCell(3, 2).value = { formula: 'CONCATENATE("Units: ",TEXT($C$3,"#,##0"))', result: `Units: ${Math.round(units).toLocaleString('en-US')}` } as any;
+  ws.getCell(3, 2).font = { size: 9, bold: true };
   ws.getCell(3, 3).value = units;
   ws.getCell(3, 3).font = { size: 11, bold: true };
   const principalRows = ['3080', '3090', '3091'].map((c) => rowOf.get(c)).filter(Boolean) as number[];
@@ -608,8 +614,8 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
       c4.value = { formula: `${L3}3/12` } as any; c4.numFmt = CUR; c4.font = { size: 8 };
     }
   }
-  ws.getCell(4, 2).value = 'Capital:';
-  ws.getCell(4, 2).font = { size: 8, bold: true, color: { argb: 'FF505050' } };
+  ws.getCell(4, 2).value = { formula: 'CONCATENATE("Capital: ",TEXT($C$4,"$#,##0"))', result: `Capital: $${Math.round(Number(inputs.capital) || 0).toLocaleString('en-US')}` } as any;
+  ws.getCell(4, 2).font = { size: 9, bold: true };
   // capital lives on the Summary (D27 Capital Contributions) — single source
   // of truth, per Troy's edited draft
   ws.getCell(4, 3).value = { formula: template ? `${SQ}C${TS.cap}` : `${SQ}D${S_CAP_ROW}` } as any;
