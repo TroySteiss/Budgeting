@@ -9,9 +9,9 @@ import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayro
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
   acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, acqDelinquency, applyT12Adjust, FIXED_ANNUAL_GLS, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
-  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, formulaOverride, formulaSetGls, corpGuidanceLine, scalePlanLines, taxFloor, uwDqBundle, fillCalMonths, mgmtFeeOnIncome, mgmtFeeRates, vacancyMonthOverride, fillDeadMonths, capUtilityRecovery, flatFeeBilling, applyShapeFrom, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, formulaOverride, formulaSetGls, corpGuidanceLine, scalePlanLines, taxFloor, uwDqBundle, fillCalMonths, mgmtFeeOnIncome, mgmtFeeRates, vacancyMonthOverride, fillDeadMonths, capUtilityRecovery, flatFeeBilling, applyShapeFrom, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee, spikeShare } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
-import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, type ReviewRule } from '../shared/review.js';
+import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, REVIEW_FIX_KINDS, type ReviewRule, type ReviewResult } from '../shared/review.js';
 import { planApply, refileReviewLine, type ApplyRow, type ApplyPlan } from '../shared/reviewApply.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
@@ -2529,9 +2529,30 @@ router.get('/summary', h(async (req, res) => {
     const calOf = (m: Months | undefined): number[] | null => (m ? Array.from({ length: 12 }, (_, c) => m[(c - (sm - 1) + 12) % 12] || 0) : null);
     const byGl = new Map(lines.map((l) => [l.gl_code, l.months]));
     const unitsR = Number(lb.budget.inputs?.units) || Number(r.units) || 0;
-    const reviewRes = review.rules.map((rule) => reviewCell(rule, { code: r.property_code, months: calOf(byGl.get(rule.gl)), t12: lb.annual && lb.actualCal ? (lb.actualCal[rule.gl] || null) : undefined, units: unitsR,
-      // RE taxes on the current accrual: the % is over that year (Troy 2026-11-13)
-      base: (() => { const d: any = lb.lines.find((l) => l.gl_code === rule.gl)?.driver; return d?.reTax?.a ? d.reTax.a / 1.03 : d?.accrual ? (d.taxYear || d.accrual * 12) : null; })() }));
+    const reviewRes = review.rules.map((rule) => {
+      let res: ReviewResult = reviewCell(rule, { code: r.property_code, months: calOf(byGl.get(rule.gl)), t12: lb.annual && lb.actualCal ? (lb.actualCal[rule.gl] || null) : undefined, units: unitsR,
+        // RE taxes on the current accrual: the % is over that year (Troy 2026-11-13)
+        base: (() => { const d: any = lb.lines.find((l) => l.gl_code === rule.gl)?.driver; return d?.reTax?.a ? d.reTax.a / 1.03 : d?.accrual ? (d.taxYear || d.accrual * 12) : null; })(),
+        // accounting: the quarterly Yardi bills (Mar / Jun / Sep / Dec) stand out beside the April fee by design
+        alsoOk: rule.gl === '6102' ? [2, 5, 8, 11] : undefined });
+      const ln = lines.find((l) => l.gl_code === rule.gl);
+      const d: any = ln?.driver || {};
+      // snow at the Minot sites is in 6924 with landscaping (the Legend contract), never 6934 (Troy 2026-11-12)
+      if (rule.gl === '6934' && rule.kind === 'present' && res.status === 'n') {
+        const d24: any = lines.find((l) => l.gl_code === '6924')?.driver || {};
+        if (d24.method === 'contract' && (d24.items || []).some((x: any) => /legend|snow/i.test(String(x.vendor || '')))) res = { status: 'y', text: 'in 6924 with landscaping (Legend)' };
+      }
+      // a line on the acquisition plan follows the UW: say so instead of a plain N
+      const planLine = res.status === 'n' && !!d.acq && REVIEW_FIX_KINDS.has(rule.kind);
+      if (planLine) res = { status: 'info', text: `UW plan · ${res.text}` };
+      // a one-time month needs a one-time amount: none in its trailing-12 (or the line itself) = nothing to move
+      const hist = lb.actualCal?.[rule.gl];
+      const noSpike = rule.kind === 'peak' && res.status === 'n' && spikeShare(hist && hist.some((v) => v) ? hist : (ln?.months || [])) <= 0;
+      if (noSpike) res = { ...res, text: `${res.text}; no one-time amount in its T12 to move` };
+      // Fix: a check it can apply, on a line not typed by hand
+      if ((res.status === 'n' || planLine) && REVIEW_FIX_KINDS.has(rule.kind) && !noSpike && !(ln?.override && !d.smooth)) res = { ...res, fix: true };
+      return res;
+    });
     out.push({ id: r.id, code: r.property_code, name: r.name, region: String(r.market || '').trim() || 'Other', type: r.budget_type, status: r.status, updatedAt: r.updated_at,
                stale: lb.budget.calc_version !== ENGINE_VERSION, ...summaryOf(lb, lines), units: Number(lb.budget.inputs?.units) || Number(r.units) || 0,
                cmp: compareOf(lb, lines), review: reviewRes });
@@ -2539,6 +2560,60 @@ router.get('/summary', h(async (req, res) => {
   const years = (await query('select distinct year from budgets order by year desc')).rows.map((x: any) => Number(x.year));
   res.json({ year, years, properties: out, guidance: await loadGuidance(), reviewRules: review.rules, reviewDefault: review.isDefault });
 }));
+/* REVIEW FIX (Troy 2026-11-18: "likely worth adjusting default formulas for some of the specific lines based on the
+   checks, or at least making it adjustable from there"): puts the ticked budgets' line on the check's pattern — a
+   one-time month (inputs.timing once), the same each quarter (timing quarters), no growth over the T12
+   (baseline.glGrowth 0; 5110 off the delinquency chain), a monthly bill's missed months filled (inputs.gapFill). A save
+   point first; a line on the acquisition plan comes off it (offPlan); a hand-typed line is left alone and said so. */
+router.post('/review-fix', h(async (req, res) => {
+  const ruleId = String(req.body?.ruleId || '');
+  const ids: number[] = [...new Set<number>((Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number).filter((n: number) => Number.isFinite(n)))];
+  const review = await loadReviewRules();
+  const rule = review.rules.find((r) => r.id === ruleId);
+  if (!rule || !REVIEW_FIX_KINDS.has(rule.kind)) return res.status(400).json({ error: 'That check has no fix' });
+  if (!ids.length) return res.status(400).json({ error: 'Pick at least one budget' });
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const user = req.session.username || '';
+  const gl = rule.gl;
+  const out: any[] = [];
+  for (const id of ids) {
+    const lb = await loadBudget(id);
+    if (!lb) continue;
+    const code = String(lb.budget.property_code).toUpperCase();
+    const ln = lb.lines.find((l) => l.gl_code === gl);
+    const d: any = ln?.driver || {};
+    if (ln?.override && !d.smooth) { out.push({ id, code, skipped: 'typed by hand — left alone' }); continue; }
+    const inp: any = JSON.parse(JSON.stringify(lb.budget.inputs || {}));
+    let what = '';
+    if (rule.kind === 'peak') {
+      const m = Math.round(Number(rule.month) || 0);
+      if (!(m >= 1 && m <= 12)) { out.push({ id, code, skipped: 'the check has no month' }); continue; }
+      inp.timing = { ...(inp.timing || {}), [gl]: { kind: 'once', month: m } }; what = `one-time part in ${MON[m - 1]}`;
+      // a line dropped under the $1,000 T12 floor comes back on its own months (a shape picked on the row), then moves
+      if (d.method === 'dropped') { inp.baseline = { ...(inp.baseline || {}), glShape: { ...((inp.baseline || {}).glShape || {}), [gl]: 'actual' } }; what += ' (budgeted again: it was under the $1,000 floor)'; }
+    } else if (rule.kind === 'quarterlySame') {
+      inp.timing = { ...(inp.timing || {}), [gl]: { kind: 'quarters' } }; what = 'the same each quarter';
+    } else if (rule.kind === 'maxOverT12' || rule.kind === 'nearT12') {
+      inp.baseline = { ...(inp.baseline || {}), glGrowth: { ...((inp.baseline || {}).glGrowth || {}), [gl]: 0 } };
+      if (gl === '5110') { inp.recoveryChain = false; delete inp.recoveryPct; }
+      what = 'no growth over the T12';
+    } else if (rule.kind === 'every') {
+      inp.gapFill = { ...(inp.gapFill || {}), [gl]: true }; what = 'missed months filled';
+    }
+    if (d.acq) inp.offPlan = [...new Set<string>([...((inp.offPlan || []) as string[]).map(String), gl])].sort();
+    const before = r2(sum(ln?.months || zero12()));
+    await captureSnapshot(lb, `Before review fix ${gl}`, user);
+    await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(inp)]);
+    const lb2 = (await loadBudget(id))!;
+    const built = buildLines(lb2, inp, lb2.lines);
+    await saveLines(id, built.lines, true);
+    const after = r2(sum(built.lines.find((l) => l.gl_code === gl)?.months || zero12()));
+    out.push({ id, code, what: `${what}${d.acq ? ' (off the UW plan)' : ''}`, before, after });
+  }
+  logChange(user, 'review fix', { rule: rule.id, gl, ids });
+  res.json({ ok: true, rule: rule.id, gl, results: out });
+}));
+
 /* Rename the Summary panel's column headers ("Nov. 23 T12" …) — no recalculation. */
 router.post('/budgets/:id/summary-labels', h(async (req, res) => {
   const id = Number(req.params.id);

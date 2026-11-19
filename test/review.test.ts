@@ -77,3 +77,12 @@ describe('budget review checklist', () => {
       .toEqual([{ id: 'a', gl: '6318', label: 'x', kind: 'peak', month: 11, amount: null, pct: null, props: ['clnd'] }]);
   });
 });
+
+describe('accounting: the quarterly bills stand out beside April by design (Troy 2026-11-18)', () => {
+  it('alsoOk months are not listed as "also high"', () => {
+    const rule = DEFAULT_REVIEW_RULES.nd.find((r) => r.id === 'acct-apr')!;
+    const m = [0, 0, 1500, 2500, 0, 1500, 0, 0, 1500, 0, 0, 1500];
+    expect(reviewCell(rule, { code: 'clnd', months: m, units: 100 }).text).toContain('also high');
+    expect(reviewCell(rule, { code: 'clnd', months: m, units: 100, alsoOk: [2, 5, 8, 11] })).toEqual({ status: 'y', text: '' });
+  });
+});

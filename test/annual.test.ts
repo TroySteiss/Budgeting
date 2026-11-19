@@ -130,15 +130,21 @@ describe('generateAnnualLines — template rules on own history', () => {
     expect(L(l, '6104').months[0]).toBe(525);                              // auto insurance: October 500 × 1.05 flat
     expect((L(l, '6104').driver as any).lastDev).toBeCloseTo(500 / (2953 / 12) - 1, 2);   // +103% vs the average → flagged
   });
-  it('T12/12 flat only above $1,000; bad-debt recovery runs on the delinquency chain, collection fees at 50% of it', () => {
+  it('T12/12 flat only above $1,000; bad-debt recovery runs on the delinquency chain when asked, collection fees at 50% of it', () => {
     expect(L(lines, '5135').months[0]).toBe(200);
     expect(sum(L(lines, '5151').months)).toBe(0);
-    // Troy 2026-11-12: recovery = the T12 recovery rate × what is still uncollected 60 days on (dqChain)
-    const rec = L(lines, '5110');
+    // the review checklist (2026-11-18): by default recovery is the T12, flat, no growth
+    const flatRec = L(lines, '5110');
+    expect((flatRec.driver as any).method).toBe('baseline');
+    expect(sum(flatRec.months)).toBeCloseTo(sum(actual['5110']), 2);
+    // Troy 2026-11-12, now opt-in: recovery = the T12 recovery rate × what is still uncollected 60 days on (dqChain)
+    const chained = generateAnnualLines(coaList, { ...inputs, recoveryChain: true }, { actual, budget: null, lastMonth: 10 });
+    const rec = L(chained, '5110');
     expect((rec.driver as any).method).toBe('badDebtRecovery');
     expect(sum(rec.months)).toBeGreaterThan(0);
     const fee = lines.find((l) => l.gl_code === '6309');
-    if (fee) expect(fee.months.map((v) => Math.round(v))).toEqual(rec.months.map((v) => Math.round(v * 0.5)));
+    const feeC = chained.find((l) => l.gl_code === '6309');
+    if (feeC) expect(feeC.months.map((v) => Math.round(v))).toEqual(rec.months.map((v) => Math.round(v * 0.5)));
   });
   it('delinquency / prior-period collections / PEP run at their ratios', () => {
     expect((L(lines, '5035').driver as any).method).toBe('pctGpr');
@@ -1235,7 +1241,8 @@ describe('payroll ratios from another property (Troy 2026-11-10): the % of wages
   it('one line can borrow from a pooled group; the other lines keep this property\'s own ratios', () => {
     // the pooled donors: wages 5,000 + 3,000 a month; the bonus line spikes in January (annual true-up) at both
     const pooled = { '6402': f(8000), '6408': cal([4000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 400]) };
-    const one = generateAnnualLines(coaList, inputs, { ...src, burdenGl: { '6408': { code: 'Minot ND', actual: pooled, budget: null } } });
+    // the borrowed monthly shape (bonuses' even-quarter default turned off to see it)
+    const one = generateAnnualLines(coaList, { ...inputs, timing: { '6408': null } }, { ...src, burdenGl: { '6408': { code: 'Minot ND', actual: pooled, budget: null } } });
     const b = L(one, '6408').months;
     expect(b[0]).toBeCloseTo(0.5 * 3000, 0);                            // January: 4,000 / 8,000 of that month's wages
     expect(b[11]).toBeCloseTo(0.05 * 3000, 0);
@@ -2768,5 +2775,43 @@ describe('cash on cash with a companion NOI (Troy 2026-11-18: "TPND COC return n
     expect(both.companionNoi).toBe(100000);
     expect(both.coc!).toBeCloseTo(own.coc! + 0.1, 6);
     expect(companionNoiOf({})).toBe(0);
+  });
+});
+
+import { spikeShare, retimeOnce, evenQuarters, fillBillGaps, timingFor } from '../shared/annual.js';
+describe('review-checklist defaults (Troy 2026-11-18: "If one time, I would like for it to say in which month")', () => {
+  it('spikeShare: a once-a-year amount is all one-time, a steady line none of it', () => {
+    expect(spikeShare([0, 0, 0, 0, 0, 0, 0, 0, 0, 1200, 0, 0])).toBe(1);
+    expect(spikeShare(Array(12).fill(100))).toBe(0);
+    expect(spikeShare([100, 100, 100, 100, 100, 100, 100, 100, 100, 700, 100, 100])).toBeCloseTo(600 / 1800, 6);
+  });
+  it('retimeOnce: the one-time part lands in its month, the rest keeps its pattern, the total to the cent', () => {
+    const m = [100, 100, 100, 100, 100, 100, 100, 100, 100, 700, 100, 100] as Months;   // calendar = budget (start Jan)
+    const out = retimeOnce(m, 2, 1, spikeShare(m))!;
+    expect(out.amount).toBe(600);
+    expect(out.months[1]).toBe(700);                  // February: its 100 + the 600
+    expect(out.months[9]).toBe(100);                  // October back to the run rate
+    expect(sum(out.months)).toBe(1800);
+    // a September-start budget: February is budget month 5
+    expect(retimeOnce(m, 2, 9, 1)!.months[5]).toBe(1800);
+  });
+  it('evenQuarters: the same each calendar quarter, inside a quarter on the average pattern', () => {
+    const m = [0, 0, 900, 0, 0, 300, 0, 0, 600, 0, 0, 200] as Months;
+    const q = evenQuarters(m, 1)!;
+    expect([0, 1, 2, 3].map((k) => q[k * 3] + q[k * 3 + 1] + q[k * 3 + 2])).toEqual([500, 500, 500, 500]);
+    expect(q[2]).toBe(500); expect(q[0]).toBe(0);     // paid in the quarter's last month, as the history
+  });
+  it('fillBillGaps: a missed month of a monthly bill, never a quarterly bill', () => {
+    const r = fillBillGaps([100, 100, 100, 100, 100, 100, 100, 100, 0, 0, 120, 100] as Months)!;
+    expect(r.filled).toEqual([9, 10]);
+    expect(r.cal[8]).toBe(110);
+    expect(fillBillGaps([300, 0, 0, 300, 0, 0, 300, 0, 0, 300, 0, 0] as Months)).toBeNull();
+  });
+  it('the defaults: rebates January, dues and 401(k) February, gift cards November, bonuses even quarters; null turns one off', () => {
+    expect(timingFor({}, '5178')).toEqual({ kind: 'once', month: 1 });
+    expect(timingFor({}, '6421')).toEqual({ kind: 'once', month: 2 });
+    expect(timingFor({}, '6408')).toEqual({ kind: 'quarters' });
+    expect(timingFor({ timing: { '6318': null } }, '6318')).toBeNull();
+    expect(timingFor({ timing: { '6318': { kind: 'once', month: 12 } } }, '6318')).toEqual({ kind: 'once', month: 12 });
   });
 });

@@ -606,6 +606,8 @@ table.rvtbl td.rv-n { background: color-mix(in srgb, var(--bad) 12%, var(--panel
 table.rvtbl td.rv-na { color: var(--dim); }
 table.rvtbl td.rv-info { color: var(--dim); }
 table.rvtbl .rvn { font-size: 10.5px; font-weight: 400; line-height: 1.25; margin-top: 1px; }
+table.rvtbl .rvfix { font-size: 10px; padding: 0 6px; margin-top: 3px; line-height: 16px; }
+table.rvtbl .rvrule .rvfix { margin: 0 0 0 6px; }
 table.rvtbl td.rvrule { white-space: normal; min-width: 240px; max-width: 320px; }
 table.rvtbl th.rvgrp { border-left: 2px solid var(--line); }
 table.rvtbl .rvp { cursor: pointer; color: var(--accent); }

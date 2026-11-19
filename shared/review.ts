@@ -125,7 +125,10 @@ export function normalizeReviewRules(v: unknown): ReviewRule[] | null {
   return out;
 }
 
-export interface ReviewResult { status: 'y' | 'n' | 'na' | 'info'; text: string }
+export interface ReviewResult { status: 'y' | 'n' | 'na' | 'info'; text: string; /** a Fix button can put the line on the pattern */ fix?: boolean }
+/** The checks a Fix button can apply (Troy 2026-11-18: "making it adjustable from there"): a one-time month, the same
+    each quarter, no growth over the T12, a monthly bill's missed months filled. */
+export const REVIEW_FIX_KINDS = new Set<ReviewKind>(['peak', 'quarterlySame', 'maxOverT12', 'nearT12', 'every']);
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const tot = (m: number[]) => m.reduce((a, v) => a + (v || 0), 0);
 const med = (xs: number[]) => { const s = xs.slice().sort((a, b) => a - b); const n = s.length; return n ? (n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2) : 0; };
@@ -133,7 +136,8 @@ const usd = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`;
 /** One rule on one property. `months` = the budget by CALENDAR month (Jan..Dec); `t12` = the GL's trailing-12 by
     calendar month (null = nothing posted on it; undefined = no trailing-12 on file at all, e.g. an acquisition
     budget — then nothing is said about last year). */
-export function reviewCell(rule: ReviewRule, p: { code: string; months: number[] | null; t12?: number[] | null; units: number; /** the year the % is over, in place of the T12 (RE taxes: the current accrual × 12) */ base?: number | null }): ReviewResult {
+export function reviewCell(rule: ReviewRule, p: { code: string; months: number[] | null; t12?: number[] | null; units: number; /** the year the % is over, in place of the T12 (RE taxes: the current accrual × 12) */ base?: number | null;
+  /** peak: calendar months (0-11) that may stand out too without a note (accounting: the quarterly Yardi bills) */ alsoOk?: number[] }): ReviewResult {
   if (rule.props && rule.props.length && !rule.props.includes(String(p.code).toLowerCase())) return { status: 'na', text: '' };
   if (rule.kind === 'note') return { status: 'info', text: 'check by eye' };
   const m = (p.months || Array(12).fill(0)).map((v) => Math.round((v || 0) * 100) / 100);
@@ -209,7 +213,7 @@ export function reviewCell(rule: ReviewRule, p: { code: string; months: number[]
       const stands = (k: number) => Math.abs(m[k]) >= 1 && Math.abs(m[k]) >= 1.5 * base && Math.abs(m[k]) > base + 0.5;
       if (stands(i)) {
         // other months that stand out as much (the workbook's "also high July")
-        const also = m.map((v, k) => (k !== i && Math.abs(v) >= 1.5 * base && Math.abs(v) >= 0.5 * Math.abs(m[i]) && Math.abs(v) > base + 0.5 ? MON[k] : '')).filter(Boolean);
+        const also = m.map((v, k) => (k !== i && !(p.alsoOk || []).includes(k) && Math.abs(v) >= 1.5 * base && Math.abs(v) >= 0.5 * Math.abs(m[i]) && Math.abs(v) > base + 0.5 ? MON[k] : '')).filter(Boolean);
         return { status: 'y', text: none(also.length ? `also high ${also.join(', ')}` : '') };
       }
       const top = m.reduce((b, v, k) => (Math.abs(v) > Math.abs(m[b]) ? k : b), 0);

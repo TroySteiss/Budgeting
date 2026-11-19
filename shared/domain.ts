@@ -260,6 +260,16 @@ export interface BudgetInputs {
   /** annual: % increase over contract cost by GL (Troy 2026-11-18): each month = that month's contract cost x (1 + %),
       the contracts' billing months kept. Applies to the contract part only ('add' lines keep their formula as built). */
   contractPct?: Record<string, number> | null;
+  /** annual: when a line's money lands (Troy 2026-11-18, the review checklist): 'once' = the one-time part of the
+      line (its T12 spike) in `month` (1-12), the rest as built; 'quarters' = the same amount each calendar quarter.
+      null turns a default off (TIMING_DEFAULTS in shared/annual.ts). */
+  timing?: Record<string, { kind: 'once' | 'quarters'; month?: number } | null> | null;
+  /** annual: fill a month the T12 missed (a zero between billed months) from the months either side, per GL; the
+      defaults cover sewer / water (GAP_FILL_GLS) */
+  gapFill?: Record<string, boolean> | null;
+  /** annual: build bad-debt recovery (5110) on the delinquency chain (T12 rate x 60-day uncollected) instead of the
+      T12 average; a typed recoveryPct does the same */
+  recoveryChain?: boolean | null;
   /** annual: share of chosen GLs allocated out to a companion property by recurring journal
       (TPND → TPNDC 41.11%). Applies to engine-built lines only (corporate rate, fee, contracts):
       history-based lines already post net of the journal. Unset = the site default (ALLOC_OUT_DEFAULTS). */

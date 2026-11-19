@@ -171,6 +171,8 @@ function driverLabel(d: any, ctx: { total?: number; units?: number; gl?: string 
   if (d?.fitT12) base += `; months ${Math.round(d.fitT12 * 100)}% fitted to its own T12 (total unchanged)`;
   if (d?.shapeFrom) base += `; months on the ${String(d.shapeFrom).toUpperCase()} curve; total = own formula`;
   if (d?.oneTime) base += `; $${Math.round(d.oneTime).toLocaleString('en-US')} of one-time items taken out of the T12 first`;
+  if (d?.timing) base += d.timing.kind === 'quarters' ? '; the same each quarter' : `; one-time part $${Math.round(d.timing.amount || 0).toLocaleString('en-US')} in ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][(d.timing.month || 1) - 1]}`;
+  if (Array.isArray(d?.gapFill) && d.gapFill.length) base += `; T12 missed ${d.gapFill.map((m: number) => ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1]).join(', ')} filled from the months either side`;
   if (d?.allocOut) base += `; ${Math.round(d.allocOut.pct * 10000) / 100}% to ${String(d.allocOut.to).toUpperCase()} by recurring journal ($${Math.round(d.allocOut.out).toLocaleString('en-US')} of $${Math.round(d.allocOut.gross).toLocaleString('en-US')})`;
   if (d?.smooth && d.method !== 'smooth') return `${base}; missed-bill smoothed x${d.smooth.passes || 0}, rounded to $${d.smooth.mult || 5}`;
   if (d?.acq || !Array.isArray(d?.y1) || !d.y1.length) return base;

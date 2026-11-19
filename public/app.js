@@ -81,6 +81,11 @@ function drvMeta(l) {
   if (l && l.driver && l.driver.fitT12) extra.push({ fit: true, cls: 'drv-t12', tag: `FIT ${Math.round(l.driver.fitT12 * 100)}%`, label: `Months lean ${Math.round(l.driver.fitT12 * 100)}% toward this GL's own trailing-12 months (year total unchanged) — row menu or section header "fit to T12"` });
   // one-time items taken out of this GL's trailing-12 before the formula read it (More → One-time items)
   if (l && l.driver && l.driver.oneTime) extra.push({ cls: 'drv-t12', tag: '−1X', label: `$${money(l.driver.oneTime)} of one-time items taken out of the trailing-12 before this formula read it (More → One-time items out of the T12…)` });
+  // when the money lands (the review checklist, 2026-11-18): the one-time part's month, or the same each quarter
+  if (l && l.driver && l.driver.timing) { const t = l.driver.timing; extra.push(t.kind === 'quarters'
+    ? { cls: 'drv-corp', tag: 'QTR =', label: 'The same amount each calendar quarter (the review checklist: bonuses). Turn off with inputs.timing or the Review tab.' }
+    : { cls: 'drv-corp', tag: `1X·${MONTHS[(t.month || 1) - 1].toUpperCase()}`, label: `One-time part $${money(t.amount || 0)} (${Math.round((t.share || 0) * 100)}% of its trailing-12 was a spike) budgeted in ${MONTHS[(t.month || 1) - 1]}; the rest stays on the line's own months. Year total unchanged.` }); }
+  if (l && l.driver && Array.isArray(l.driver.gapFill) && l.driver.gapFill.length) extra.push({ cls: 'drv-t12', tag: 'GAP FILL', label: `The trailing-12 missed ${l.driver.gapFill.map((m) => MONTHS[m - 1]).join(', ')}: filled from the months either side before the formula read it (a monthly bill hits every month).` });
   // the recurring-journal split (TPND → TPNDC)
   if (l && l.driver && l.driver.allocOut) { const a = l.driver.allocOut; extra.push({ cls: 'drv-corp', tag: `−${Math.round(a.pct * 10000) / 100}%`, label: `${Math.round(a.pct * 10000) / 100}% of this line moves to ${String(a.to).toUpperCase()} by recurring journal: $${money(a.gross)} gross, $${money(a.out)} to ${String(a.to).toUpperCase()} (Assumptions → journal split)` }); }
   return extra.length ? { ...m, extra } : m;
@@ -7388,8 +7393,10 @@ function renderReview(el, d, viewSeg) {
   const cellHtml = (res, p, r) => {
     if (!res) return '<td class="muted">—</td>';
     const tip = `${String(p.code).toUpperCase()} · ${r.gl} ${r.label}${res.text ? `: ${res.text}` : ''}`;
-    return `<td class="rv rv-${res.status}" title="${esc(tip)}"><b>${sym[res.status] || ''}</b>${res.text ? `<div class="rvn">${esc(res.text)}</div>` : ''}</td>`;
+    const fixBtn = res.fix ? `<button class="rb rvfix" data-rvfix="${esc(r.id)}" data-rvid="${p.id}" title="Put ${esc(String(p.code).toUpperCase())}'s ${esc(r.gl)} on this pattern (a save point first; hand-typed lines are left alone)">Fix</button>` : '';
+    return `<td class="rv rv-${res.status}" title="${esc(tip)}"><b>${sym[res.status] || ''}</b>${res.text ? `<div class="rvn">${esc(res.text)}</div>` : ''}${fixBtn}</td>`;
   };
+  const fixable = (i) => props.filter((p) => ((p.review || [])[i] || {}).fix);
   const misses = props.map((p) => (p.review || []).filter((x) => x && x.status === 'n').length);
   el.innerHTML = `
     <div class="card">
@@ -7404,7 +7411,7 @@ function renderReview(el, d, viewSeg) {
       ${props.length && rules.length ? `<div class="sumwrap"><table class="sumtbl rvtbl">
         <tr class="grp"><th class="l stick"></th>${regions.map((rg) => { const n = props.filter((p) => regionGroup(p.region) === rg).length; return `<th class="c rvgrp" colspan="${n}">${esc(rg)}</th>`; }).join('')}</tr>
         <tr><th class="l stick">Check</th>${props.map((p) => `<th class="c" title="${esc(p.name || '')}"><span class="rvp" data-sumopen="${p.id}">${esc(String(p.code).toUpperCase())}</span><div class="muted" style="text-transform:none; font-weight:400">${p.units ? `${xsNum(p.units)} u` : ''}</div></th>`).join('')}</tr>
-        ${rules.map((r, i) => `<tr><td class="l stick rvrule"><b>${esc(r.gl)}</b> ${esc(r.label)}${r.props && r.props.length ? ` <span class="muted">(${esc(r.props.join(', ').toUpperCase())})</span>` : ''}</td>${props.map((p) => cellHtml((p.review || [])[i], p, r)).join('')}</tr>`).join('')}
+        ${rules.map((r, i) => `<tr><td class="l stick rvrule"><b>${esc(r.gl)}</b> ${esc(r.label)}${r.props && r.props.length ? ` <span class="muted">(${esc(r.props.join(', ').toUpperCase())})</span>` : ''}${fixable(i).length > 1 ? ` <button class="rb rvfix" data-rvfixall="${esc(r.id)}" data-rvi="${i}" title="Fix every property this check flags (${fixable(i).map((p) => String(p.code).toUpperCase()).join(', ')})">Fix all ${fixable(i).length}</button>` : ''}</td>${props.map((p) => cellHtml((p.review || [])[i], p, r)).join('')}</tr>`).join('')}
         <tr class="sub"><td class="l stick">To look at</td>${misses.map((n) => `<td class="c ${n ? 'rv-n' : 'rv-y'}">${n || '✓'}</td>`).join('')}</tr>
       </table></div>
       <p class="muted" style="font-size:11.5px; margin:8px 0 0">Each row is a known pattern from the budget review workbook, checked on every property's latest ${d.year} budget (by calendar month) against its own trailing-12. <span class="gin-key">Y</span> = the budget follows it, <span class="gout-key">N</span> = it does not (the note says how), n/a = the rule is kept to other properties, · = a reminder to check by eye. "None last year" = the trailing-12 has nothing on that GL. Hover a cell for the detail; click a property to open it. ${d.reviewDefault ? 'These are the built-in rules for this region' : 'This region\'s own rules'}: edit them under Settings → Budget review checklist.</p>`
@@ -7413,4 +7420,14 @@ function renderReview(el, d, viewSeg) {
   el.querySelector('#sum-year').addEventListener('change', (e) => loadSummary(Number(e.target.value)));
   el.querySelector('#sum-refresh').addEventListener('click', () => loadSummary(d.year));
   el.querySelectorAll('[data-sumopen]').forEach((x) => x.addEventListener('click', async () => { await openBudget(Number(x.dataset.sumopen)); }));
+  // Fix / Fix all (Troy 2026-11-18): put the flagged lines on the check's pattern, then show what moved
+  const runFix = async (rule, list) => {
+    const what = { peak: `move the one-time part to ${MONTHS[(rule.month || 1) - 1]}`, quarterlySame: 'make every quarter the same', maxOverT12: 'take the growth off (0% over the T12)', nearT12: 'budget the T12 with no growth', every: "fill the months the T12 missed" }[rule.kind] || 'apply the pattern';
+    if (!confirm(`${rule.gl} ${rule.label}\n\n${what} on ${list.map((p) => String(p.code).toUpperCase()).join(', ')}?\n\nEach budget gets a save point first; a hand-typed line is left alone.`)) return;
+    const r = await POST('/review-fix', { ruleId: rule.id, ids: list.map((p) => p.id) });
+    alert((r.results || []).map((x) => `${x.code}: ${x.skipped ? x.skipped : `${x.what} — $${money(x.before)} → $${money(x.after)} for the year`}`).join('\n') || 'Nothing to fix.');
+    loadSummary(d.year);
+  };
+  el.querySelectorAll('[data-rvfix]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); const rule = rules.find((x) => x.id === b.dataset.rvfix); const p = d.properties.find((x) => String(x.id) === b.dataset.rvid); if (rule && p) runFix(rule, [p]); }));
+  el.querySelectorAll('[data-rvfixall]').forEach((b) => b.addEventListener('click', () => { const rule = rules.find((x) => x.id === b.dataset.rvfixall); if (rule) runFix(rule, fixable(Number(b.dataset.rvi))); }));
 }

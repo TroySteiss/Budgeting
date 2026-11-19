@@ -40,7 +40,8 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-18b';   // b: % increase over contract cost (inputs.contractPct)
+export const ENGINE_VERSION = '2026-11-18c';   // c: review-checklist defaults (one-time months, even bonus quarters, fixed fees, 5110 T12, gap fill)
+// b: % increase over contract cost (inputs.contractPct)
 // a: TPND split adds 6924; fee on combined TPND + TPNDC income; final fee keeps the split
 // earlier: 2026-11-17a:   // a: another property's curve on every formula (applied again at the end of a build)
 // earlier: 2026-11-16e:   // e: no $0 month on a recurring line (acquisitions); utility recovery capped by group
@@ -1356,6 +1357,86 @@ export function contractLine(cs: Contract[], units: number, startMonth: number, 
 export const ALLOC_OUT_DEFAULTS: Record<string, AllocOut> = {
   tpnd: { to: 'tpndc', pct: 0.4111, gls: ['6604', '6614', '6620', '6622', '6108', '6112', '6116', '6924'] },
 };
+/* REVIEW-CHECKLIST DEFAULTS (Troy 2026-11-18). */
+/** Fixed-dollar fees (not grown at the rent rate) and bad-debt recovery (about the T12): growth only when typed on the row. */
+export const FIXED_DOLLAR_GLS = new Set(['5117', '5126', '5155', '5168', '5140', '5110']);
+/** Bad-debt recovery: the T12 total spread flat (the delinquency chain is opt-in: inputs.recoveryChain / recoveryPct). */
+export const RECOVERY_FLAT_GLS = new Set(['5110']);
+/** Monthly bills whose missed months are filled from the months either side (inputs.gapFill turns it off / on per GL). */
+export const GAP_FILL_GLS = new Set(['6614', '6622']);
+/** When a line's money lands, by GL (inputs.timing overrides; null turns one off). */
+export const TIMING_DEFAULTS: Record<string, { kind: 'once' | 'quarters'; month?: number }> = {
+  '5178': { kind: 'once', month: 1 },    // vendor rebates: January
+  '6324': { kind: 'once', month: 2 },    // licenses: February apartment association dues
+  '6318': { kind: 'once', month: 11 },   // employee relations: November gift cards
+  '6421': { kind: 'once', month: 2 },    // 401(k): the February employer match
+  '6408': { kind: 'quarters' },          // bonuses: the same each quarter
+};
+export function timingFor(inputs: Pick<BudgetInputs, 'timing'> | null | undefined, gl: string): { kind: 'once' | 'quarters'; month?: number } | null {
+  const t = inputs?.timing?.[gl];
+  if (t === null) return null;
+  if (t && (t.kind === 'quarters' || (t.kind === 'once' && Number(t.month) >= 1 && Number(t.month) <= 12))) return t;
+  return TIMING_DEFAULTS[gl] || null;
+}
+const medianOf = (xs: number[]): number => { const s = xs.slice().sort((a, b) => a - b); const n = s.length; return n ? (n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2) : 0; };
+/** The share of a year that is one-time: the months standing out (at least 1.5x the median and $1 over it, as the
+    review check reads a spike), above the median. 1 for a once-a-year amount, 0 for a steady line. */
+export function spikeShare(cal: number[]): number {
+  const v = cal.map((x) => Math.max(0, Number(x) || 0));
+  const tot = v.reduce((a, b) => a + b, 0);
+  if (!(tot > 0)) return 0;
+  const m = medianOf(v);
+  const ex = v.reduce((a, x) => a + (x >= 1.5 * m && x > m + 1 ? x - m : 0), 0);
+  return Math.min(1, ex / tot);
+}
+/** The line with `share` of its year in calendar `month` and the rest over the year on its own pattern with its spikes
+    cut back to the run rate. Total kept to the cent. */
+export function retimeOnce(months: Months, month: number, startMonth: number, share: number): { months: Months; amount: number } | null {
+  const total = r2(months.reduce((a, b) => a + b, 0));
+  if (!(total > 0)) return null;
+  const t = (month - startMonth + 12) % 12;
+  const amount = r2(total * Math.min(1, Math.max(0, share)));
+  const pos = months.map((x) => Math.max(0, x));
+  const m = medianOf(pos);
+  const capped = pos.map((x) => (x >= 1.5 * m && x > m + 1 ? m : x));
+  const cs = capped.reduce((a, b) => a + b, 0);
+  const rest = r2(total - amount);
+  const out = capped.map((x) => (cs > 0 ? r2((rest * x) / cs) : r2(rest / 12))) as Months;
+  out[t] = r2(out[t] + amount);
+  const d = r2(total - out.reduce((a, b) => a + b, 0));
+  if (d) out[t] = r2(out[t] + d);
+  return { months: out, amount };
+}
+/** The same amount each CALENDAR quarter, months inside a quarter on the line's average quarter pattern. */
+export function evenQuarters(months: Months, startMonth: number): Months | null {
+  const total = r2(months.reduce((a, b) => a + b, 0));
+  if (!total) return null;
+  const cal = Array.from({ length: 12 }, (_, c) => months[(c - (startMonth - 1) + 12) % 12] || 0);
+  const w = [0, 1, 2].map((p) => [0, 1, 2, 3].reduce((a, q) => a + Math.abs(cal[q * 3 + p]), 0));
+  const ws = w[0] + w[1] + w[2];
+  const share = ws > 0 ? w.map((x) => x / ws) : [1 / 3, 1 / 3, 1 / 3];
+  const outCal = Array.from({ length: 12 }, (_, c) => r2((total / 4) * share[c % 3]));
+  const d = r2(total - outCal.reduce((a, b) => a + b, 0));
+  if (d) { const bi = outCal.reduce((b, v, i) => (Math.abs(v) > Math.abs(outCal[b]) ? i : b), 11); outCal[bi] = r2(outCal[bi] + d); }
+  return Array.from({ length: 12 }, (_, i) => outCal[(startMonth - 1 + i) % 12]) as Months;
+}
+/** A monthly bill's missed months (zero between billed months) filled with the average of the billed months either
+    side; only on a line billed at least 9 months of 12 (a quarterly bill is left alone). Calendar order. */
+export function fillBillGaps(cal: Months): { cal: Months; filled: number[] } | null {
+  const nz = cal.map((v, i) => (Math.abs(v) >= 1 ? i : -1)).filter((i) => i >= 0);
+  if (nz.length < 9 || nz.length === 12) return null;
+  const out = [...cal] as Months;
+  const filled: number[] = [];
+  for (let i = 0; i < 12; i++) {
+    if (Math.abs(cal[i]) >= 1) continue;
+    let p = (i + 11) % 12; while (Math.abs(cal[p]) < 1) p = (p + 11) % 12;
+    let n = (i + 1) % 12; while (Math.abs(cal[n]) < 1) n = (n + 1) % 12;
+    out[i] = r2((cal[p] + cal[n]) / 2);
+    filled.push(i + 1);
+  }
+  return { cal: out, filled };
+}
+
 /** The companion's monthly income that sits in the management-fee basis, in budget-month order
     (TPND: the fee is the agreement rate on TPND + TPNDC income, then 41.11% of it journals to TPNDC).
     `monthly` from the first month, `stepTo` from calendar month `stepMonth` (Chevron: 8/1). */
@@ -1926,6 +2007,9 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   // That 0 does not hold the new 3% default back; a 0 typed on the row / section / category still does.
   const ruleFactor = (gl: string): number | undefined => { const f = ruleOf(gl)?.factor; return gl === '6116' && f === 0 ? undefined : f; };
   const pctFor = (a: CoaAccount): number =>
+    // fixed-dollar fees and bad-debt recovery (the review checklist): no category, section or template growth — only
+    // a % typed on the row
+    FIXED_DOLLAR_GLS.has(a.code) ? (bl.glGrowth?.[a.code] ?? 0) :
     bl.glGrowth?.[a.code] ?? bl.secGrowth?.[a.section || ''] ?? userPct[a.pcode || ''] ?? ruleFactor(a.code) ?? TEMPLATE_GL_PCT[a.code] ?? userPct['*'] ?? TEMPLATE_CAT_PCT[a.pcode || ''] ?? TEMPLATE_CAT_PCT['*'] ?? 0;
   const isSet = (gl: string): boolean => (lines.get(gl)?.driver as any)?.method !== 'manual';
   /** statement line × factor on a shape; false when the property has no history on the GL.
@@ -1940,8 +2024,11 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     : tpl?.leaseExpirations?.some((v) => v) ? tpl.leaseExpirations : zero12()) as Months;
   const turnCurve: Months = lagMonths(exp, 1);
   const baseline = (a: CoaAccount, shape?: BaselineShape, pctOverride?: number): boolean => {
-    const cal = base[a.code];
+    let cal = base[a.code];
     if (!cal || !cal.some((v) => v)) return false;
+    // a monthly bill the T12 missed (sewer / water: "hits every month"): filled from the months either side
+    const gf = (GAP_FILL_GLS.has(a.code) && inputs.gapFill?.[a.code] !== false) || inputs.gapFill?.[a.code] === true ? fillBillGaps(cal) : null;
+    if (gf) cal = gf.cal;
     const rule = ruleOf(a.code);
     const pct = pctOverride ?? pctFor(a);
     // Conservice utility forecast: per-month % for the GL — opt-in (the GRKS
@@ -1949,7 +2036,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const fc = tpl?.utilForecast?.[a.code];
     const pcts = bl.useUtilForecast && fc && fc.some((v) => v) && bl.glGrowth?.[a.code] == null ? fc : null;
     const ruleShape = ruleShapeOf(rule);
-    const sh: BaselineShape = bl.glShape?.[a.code] ?? shape ?? ruleShape ?? (LAST_MONTH_FLAT_GLS.has(a.code) ? 'last' : FIXED_ANNUAL_GLS.has(a.code) || FLAT_T12_GLS.has(a.code) ? 'flat' : AVG_NZ_GLS.has(a.code) ? 'avgnz' : TURN_EXPENSE_GLS.has(a.code) && turnCurve.some((v) => v > 0) ? 'turns' : bl.shape);
+    const sh: BaselineShape = bl.glShape?.[a.code] ?? shape ?? (RECOVERY_FLAT_GLS.has(a.code) ? 'flat' : undefined) ?? ruleShape ?? (LAST_MONTH_FLAT_GLS.has(a.code) ? 'last' : FIXED_ANNUAL_GLS.has(a.code) || FLAT_T12_GLS.has(a.code) ? 'flat' : AVG_NZ_GLS.has(a.code) ? 'avgnz' : TURN_EXPENSE_GLS.has(a.code) && turnCurve.some((v) => v > 0) ? 'turns' : bl.shape);
     // T12/12 flat only when the trailing-12 exceeds $1,000 (RMC's IF(T12>1000, …, 0))
     // …unless the user picked the shape on the row: that is a decision to budget the line
     const threshold = sh === 'flat' && !shape && !bl.glShape?.[a.code] && (rule ? rule.method === 'flatT12' && !rule.noThreshold : FLAT_T12_GLS.has(a.code));
@@ -2011,7 +2098,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
         months = Array(12).fill(mult ? r2(Math.round(mo / mult) * mult) : r2(mo)) as Months;
       }
     }
-    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(accrual ? { accrual, taxYear } : {}), ...(reTax ? { reTax } : {}), ...(taxNoInputs ? { taxNoInputs: true } : {}), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(fit ? { fit } : {}), ...(lastDev != null ? { lastDev } : {}), ...(drift ? { drift } : {}), ...(noNeg.folded ? { folded: noNeg.folded } : {}) } as any);
+    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(accrual ? { accrual, taxYear } : {}), ...(reTax ? { reTax } : {}), ...(taxNoInputs ? { taxNoInputs: true } : {}), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(fit ? { fit } : {}), ...(lastDev != null ? { lastDev } : {}), ...(drift ? { drift } : {}), ...(noNeg.folded ? { folded: noNeg.folded } : {}), ...(gf ? { gapFill: gf.filled } : {}) } as any);
     return true;
   };
 
@@ -2487,7 +2574,9 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     // the chain wins over a history formula from the defaults or a formula set; a formula picked on the row itself, a
     // known contract, a review line or a deliberate zero keeps its line
     const chainMay = (gl: string): boolean => { const d = lines.get(gl)?.driver as any; return !userShaped.has(gl) && !['contract', 'review', 'zero', 'dropped'].includes(d?.method); };
-    if (coaByCode.has('5110') && chainMay('5110') && unc > 0 && recT12 > 0) {
+    // the review checklist (Troy 2026-11-18): recovery is about the T12 with no growth, so the chain is opt-in
+    const chainOn = inputs.recoveryChain === true || inputs.recoveryPct != null;
+    if (chainOn && coaByCode.has('5110') && chainMay('5110') && unc > 0 && recT12 > 0) {
       // not capped at 100%: recoveries also come off older written-off balances (CLND: $13,977 recovered on $574 left
       // uncollected), so the rate keeps the T12's level and moves with the 60-day uncollected
       const pct = inputs.recoveryPct != null ? Math.max(0, Number(inputs.recoveryPct)) : recT12 / unc;
@@ -2498,6 +2587,29 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       mk('6309', zero12(), { method: 'collectionFee', pct: fp } as any);
     }
     for (const l of dqChain([...lines.values()])) lines.set(l.gl_code, l);
+  }
+
+  /* ---- WHEN THE MONEY LANDS (Troy 2026-11-18, the review checklist: rebates in January, dues and the 401(k) match in
+     February, gift cards in November, bonuses the same each quarter; "If one time, I would like for it to say in which
+     month"): the line keeps its year total; a 'once' line's one-time part (the share of its T12 that is a spike)
+     moves to its month, a 'quarters' line carries the same amount each calendar quarter. Not on contracts, review
+     lines, hand-typed or plan lines. Before the fee, so a moved income line is in the right month's basis. ---- */
+  for (const [gl, ln] of lines) {
+    const t = timingFor(inputs, gl);
+    const d: any = ln.driver || {};
+    if (!t || ln.override || d.acq || ['contract', 'review', 'zero', 'dropped', 'manual'].includes(d.method) || !ln.months.some((v) => v)) continue;
+    if (t.kind === 'quarters') {
+      const months = evenQuarters(ln.months, startMonth);
+      if (months) { ln.months = months; ln.driver = { ...d, timing: { kind: 'quarters' } } as any; }
+      continue;
+    }
+    const month = Math.round(Number(t.month) || 0);
+    if (!(month >= 1 && month <= 12)) continue;
+    const hist = (src.actual || {})[gl];
+    const share = spikeShare(hist && hist.some((v) => v) ? hist : ln.months);   // its T12, else the line itself (order does not matter)
+    const out = retimeOnce(ln.months, month, startMonth, share);
+    // nothing one-time in its history (no spike): the line stays as built, with no chip claiming a month
+    if (out && out.amount > 0) { ln.months = out.months; ln.driver = { ...d, timing: { kind: 'once', month, amount: out.amount, share: Math.round(share * 1000) / 1000 } } as any; }
   }
 
   /* ---- management fee: % of the PRIOR month's total income, rounded to the dollar
