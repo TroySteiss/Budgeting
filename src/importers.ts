@@ -743,7 +743,8 @@ export function parseReviewDraft(buf: Buffer): { code: string | null; year: numb
   let capital: number | null = null;
   if (sSheet) {
     // the Capital Contributions row (template layout: C51; earlier exports: D27): the first number right of its label
-    const r = sSheet.g.findIndex((row) => /capital contributions/i.test(s(row?.[1])));
+    // "Capital Contributed" (the budget-comps panel, C5) or "Capital Contributions" (earlier Summary layouts)
+    const r = sSheet.g.findIndex((row) => /capital contribut/i.test(s(row?.[1])));
     const row = r >= 0 ? sSheet.g[r] : sSheet.g[26];
     const v = [2, 3, 4].map((c) => row?.[c]).find((x) => typeof x === 'number' && x > 0);
     if (typeof v === 'number') capital = Math.round(v * 100) / 100;

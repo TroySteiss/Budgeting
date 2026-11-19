@@ -121,26 +121,33 @@ describe('Budget Comps sheet (the budget-comps summary panel) and the Schedule',
       refs: [...(a.refs || []), { key: 'ann4', label: '4 mo annualized', period: '', ...refColumn(Object.fromEntries(Object.entries(actual).map(([g, m]) => [g, m[0] * 12 * k]))) }],
       noiTrend: [{ label: 'Aug.', noi: null }, { label: 'Sep.', noi: Math.round(noi * 0.98) }, { label: 'Oct.', noi }] };
   };
-  it('a property workbook has no Budget Comps tab; its Summary is the Yardi file\'s account summary off the Budget Worksheet', async () => {
+  it('a property workbook\'s Summary is the budget-comps panel (Troy\'s layout) off the Budget Worksheet, plus the extra block', async () => {
     const a = withTrend('tst', 'Minot ND', 1.02);
     const wb = await load(await buildReviewWorkbook({ ...a, inputs: { ...a.inputs, capital: 1000000 } }));
     expect(wb.getWorksheet('Budget Comps')).toBeUndefined();
     const sm = wb.getWorksheet('Summary')!, bud = wb.getWorksheet('Budget Worksheet')!;
-    const r5070 = rowOfCode(bud, '5070'), r7280 = rowOfCode(bud, '7280'), r6370 = rowOfCode(bud, '6370'), r6399 = rowOfCode(bud, '6399');
-    expect(String(sm.getCell('B9').value)).toBe('Total Rental Income');
-    expect(formulaOf(sm.getCell('G9'))).toBe(`'Budget Worksheet'!R${r5070}`);
-    expect(formulaOf(sm.getCell('G19'))).toBe(`'Budget Worksheet'!R${r6370}+'Budget Worksheet'!R${r6399}`);   // admin & corporate events
-    expect(resultOf(sm.getCell('E9'))).toBeCloseTo(refColumn(actual).totals['5070'], 0);                     // the trailing 12
-    // NOI = income - total expense, and it equals the budget's own NOI line
-    expect(formulaOf(sm.getCell('G38'))).toBe('G13-G35');
-    expect(resultOf(sm.getCell('G38'))).toBeCloseTo(resultOf(bud.getCell(r7280, 18)), 0);
-    // capital sits at C51 and the Budget Worksheet's C4 reads it; cash on cash off the cash flow
-    expect(sm.getCell('C51').value).toBe(1000000);
-    expect(formulaOf(bud.getCell(4, 3))).toBe('Summary!C51');
-    expect(resultOf(sm.getCell('G52'))).toBeCloseTo(resultOf(sm.getCell('G50')) / 1000000, 6);
-    // goal amounts and expected returns by quarter on the side
-    expect(String(sm.getCell('K8').value)).toBe('GOAL AMOUNTS');
-    expect(resultOf(sm.getCell('L52'))).toBeCloseTo(resultOf(sm.getCell('G50')), 0);
+    const r5070 = rowOfCode(bud, '5070'), r7280 = rowOfCode(bud, '7280');
+    // the panel: T12 | T4 ann. | draft, GR% over T12, its fills and number formats
+    expect(String(sm.getCell('B8').value)).toBe('Total Rental Income');
+    expect(formulaOf(sm.getCell('C8'))).toBe(`+'Budget Worksheet'!T${r5070}`);
+    expect(formulaOf(sm.getCell('E8'))).toBe(`+'Budget Worksheet'!R${r5070}`);
+    expect((sm.getCell('C8').fill as any).fgColor.argb).toBe('FFDDEBF7');
+    expect((sm.getCell('D8').fill as any).fgColor.argb).toBe('FFE2EFDA');
+    expect(sm.getCell('E8').numFmt).toBe('_("$"* #,##0_);_("$"* (#,##0);_("$"* "-"??_);_(@_)');
+    expect(sm.getCell('C3').border?.top?.style).toBe('medium');
+    expect(String(sm.getCell('F6').value)).toBe('GR% Over T12');
+    expect(resultOf(sm.getCell('E26'))).toBeCloseTo(resultOf(bud.getCell(r7280, 18)), 0);
+    // capital in C5, read by the Budget Worksheet's C4; Return = cash flow / capital
+    expect(sm.getCell('C5').value).toBe(1000000);
+    expect(formulaOf(bud.getCell(4, 3))).toBe('Summary!C5');
+    expect(resultOf(sm.getCell('E34'))).toBeCloseTo(resultOf(sm.getCell('E32')) / 1000000, 6);
+    // the extra block: special projects, cash flow and return after SP, the draft's return by quarter
+    expect(String(sm.getCell('B36').value)).toBe('Special Projects');
+    expect(String(sm.getCell('B38').value)).toBe('Return after SP');
+    expect(resultOf(sm.getCell('E38'))).toBeCloseTo((resultOf(sm.getCell('E32')) - (resultOf(sm.getCell('E36')) || 0)) / 1000000, 6);
+    const q = [40, 41, 42, 43].map((r) => Number(resultOf(sm.getCell(`E${r}`))));
+    expect(q.reduce((x, y) => x + y, 0) / 4).toBeCloseTo(resultOf(sm.getCell('E34')), 6);   // the four quarters average to the year
+    expect(sm.getCell('C36').border?.top?.style).toBe('medium');
   });
   it('TPND: cash on cash counts the companion NOI typed on the journal split (Troy 2026-11-18)', async () => {
     const a = args('tst');
@@ -148,8 +155,9 @@ describe('Budget Comps sheet (the budget-comps summary panel) and the Schedule',
     const sm = wb.getWorksheet('Summary')!, bud = wb.getWorksheet('Budget Worksheet')!;
     expect(bud.getCell(4, 20).value).toBe(120000);
     expect(resultOf(bud.getCell(3, 17))).toBeCloseTo((resultOf(bud.getCell(3, 15)) + 120000) / 1000000, 6);
-    expect(resultOf(sm.getCell('G52'))).toBeCloseTo((resultOf(sm.getCell('G50')) + 120000) / 1000000, 6);
-    expect(resultOf(sm.getCell('E52'))).toBeCloseTo(resultOf(sm.getCell('E50')) / 1000000, 6);   // history: own cash flow
+    expect(String(sm.getCell('B36').value)).toBe('TPNDC NOI (counted in Return)');
+    expect(resultOf(sm.getCell('E34'))).toBeCloseTo((resultOf(sm.getCell('E32')) + 120000) / 1000000, 6);
+    expect(resultOf(sm.getCell('C34'))).toBeCloseTo(resultOf(sm.getCell('C32')) / 1000000, 6);   // history: own cash flow
   });
   it('portfolio: a panel per property, a summed Portfolio Comps panel and a Schedule per region with the colour scale', async () => {
     const wb = await load(await buildPortfolioWorkbook([withTrend('aaa', 'Minot ND', 1.02), withTrend('bbb', 'Minot ND', 1.05), withTrend('ccc', 'Williston ND', 1)], 'Test'));
@@ -283,8 +291,8 @@ describe('export → edit → upload round trip (Troy 2026-11-16: "it needs to u
     // type over two months of 6604 and save; everything else untouched
     bud.getCell(r, 7).value = 999;
     bud.getCell(r, 9).value = 1234;
-    // an RM changes capital on the Summary (C51 in the template layout): the upload finds it by its label
-    wb.getWorksheet('Summary')!.getCell('C51').value = 2500000;
+    // an RM changes capital on the Summary (C5, the budget-comps panel's Capital Contributed): the upload finds it by its label
+    wb.getWorksheet('Summary')!.getCell('C5').value = 2500000;
     // and types a note on 6604 in the Notes column (Z): it comes back; untouched rows have none
     bud.getCell(r, 26).value = 'RM: new electric rate from Jan';
     const p = parseReviewDraft(Buffer.from(await wb.xlsx.writeBuffer() as ArrayBuffer));

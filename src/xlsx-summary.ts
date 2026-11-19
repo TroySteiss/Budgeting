@@ -43,6 +43,14 @@ export interface PanelSpec {
   t12: SummaryCol | null; t4: SummaryCol | null; bud: SummaryCol | null;
   /** the formula (no leading "=") behind an INPUT cell — null writes the cached value itself */
   src: (col: ColL, key: Key) => string | null;
+  /** the block under Return (Troy 2026-11-18: "Should look like this, plus any additional data points of importance"):
+      special projects (T12 / T4 / draft, formula + cached value each), a companion's NOI counted in the draft's return
+      (TPNDC on TPND), and the draft's return by quarter (formula + cached value) */
+  extra?: {
+    sp: Record<ColL, { formula: string | null; value: number }>;
+    companion?: { label: string; amount: number } | null;
+    quarters?: { formula: string; value: number | null }[];
+  };
 }
 
 const LINES: { r: number; code?: number; label: string; key: Key }[] = [
@@ -175,6 +183,64 @@ export function fillSummaryPanel(ws: ExcelJS.Worksheet, spec: PanelSpec): void {
   note(25, 'Total NOI Growth over T4', 26, 'IF(D26<>0,(E26-D26)/D26,"")', E && D ? gr(E.noi, D.noi) : '', GREEN);
   note(31, 'NOI Growth Excluding RE Tax (T4)', 32, 'IF((D26+(D13-E13))<>0,(E26-(D26+(D13-E13)))/(D26+(D13-E13)),"")', E && D && (D.noi + (D.tax - E.tax)) ? (E.noi - (D.noi + (D.tax - E.tax))) / (D.noi + (D.tax - E.tax)) : '', GREEN);
   note(33, 'NOI Growth Excluding RE Tax & MGMT FEE (T12)', 34, 'IF(C26<>0,((E26+(E13-C13+E14-C14))-C26)/C26,"")', E && C && C.noi ? ((E.noi + (E.tax - C.tax + E.fee - C.fee)) - C.noi) / C.noi : '', BLUE, PCT2);
+
+  /* ---- the extra block, in the panel's own style: the three-column outline, T12 blue / T4 green, GR% in F ---- */
+  const X = spec.extra;
+  if (!X) return;
+  const cap = spec.capital || 0;
+  let r = 36;
+  const first = r;
+  const rowsUsed: number[] = [];
+  // a companion's NOI (TPNDC on TPND): the draft's Return counts it (the capital bought both); history columns do not
+  let coRow: number | null = null;
+  if (X.companion && X.companion.amount) {
+    coRow = r;
+    const b = ws.getCell(`B${r}`); b.value = X.companion.label; b.font = bold;
+    put(`E${r}`, null, X.companion.amount, ACCT).font = { name: 'Calibri', size: 11, color: { argb: 'FF0000FF' } };
+    rowsUsed.push(r); r += 1;
+    // the draft's Return above now includes it
+    const ret = ws.getCell('E34');
+    ret.value = { formula: `IF(E5<>0,(E32+E${coRow})/E5,"")`, result: E && cap ? (E.cashFlow + X.companion.amount) / cap : '' } as any;
+    const rbl = ws.getCell('B34'); rbl.value = `Return (draft incl. ${X.companion.label.replace(/ NOI.*$/, '')} NOI)`;
+  }
+  // special projects
+  const spR = r;
+  ws.getCell(`A${spR}`).value = 7500;
+  { const b = ws.getCell(`B${spR}`); b.value = 'Special Projects'; b.font = bold; }
+  put(`C${spR}`, X.sp.C.formula, X.sp.C.value, ACCT).fill = solid(BLUE);
+  put(`D${spR}`, X.sp.D.formula, X.sp.D.value, ACCT).fill = solid(GREEN);
+  put(`E${spR}`, X.sp.E.formula, X.sp.E.value, ACCT);
+  { const f = put(`F${spR}`, `IF(C${spR}<>0,(E${spR}-C${spR})/C${spR},"")`, X.sp.C.value ? (X.sp.E.value - X.sp.C.value) / X.sp.C.value : '', PCT1); f.fill = solid(BLUE); f.alignment = { horizontal: 'center' }; }
+  rowsUsed.push(spR); r += 1;
+  // cash flow and return after special projects
+  const cfR = r;
+  { const b = ws.getCell(`B${cfR}`); b.value = 'Cash Flow after SP'; b.font = bold; }
+  const cfVal = (c: ColL): number | null => { const col = cols[c]; return col ? col.cashFlow - X.sp[c].value + (c === 'E' && coRow ? X.companion!.amount : 0) : null; };
+  for (const c of ['C', 'D', 'E'] as ColL[]) put(`${c}${cfR}`, `${c}32-${c}${spR}${c === 'E' && coRow ? `+E${coRow}` : ''}`, cfVal(c), ACCT);
+  { const f = put(`F${cfR}`, `IF(C${cfR}<>0,(E${cfR}-C${cfR})/C${cfR},"")`, (() => { const a = cfVal('C'), e = cfVal('E'); return a && e != null ? (e - a) / a : ''; })(), PCT1); f.fill = solid(BLUE); f.alignment = { horizontal: 'center' }; }
+  for (const c of ['C', 'D', 'E']) addBorder(`${c}${cfR}`, { top: THIN });
+  rowsUsed.push(cfR); r += 1;
+  const raR = r;
+  { const b = ws.getCell(`B${raR}`); b.value = 'Return after SP'; b.font = bold; }
+  for (const c of ['C', 'D', 'E'] as ColL[]) { const v = cfVal(c); const x = put(`${c}${raR}`, `IF(${c}5<>0,${c}${cfR}/${c}5,"")`, v != null && cap ? v / cap : '', PCT2); x.font = bold; }
+  rowsUsed.push(raR); r += 1;
+  // the draft's return by quarter (annualized: the quarter's cash flow x 4 / capital)
+  if (X.quarters && X.quarters.length === 4) {
+    r += 1;
+    X.quarters.forEach((q, k) => {
+      const b = ws.getCell(`B${r}`); b.value = `Q${k + 1} Return (annualized)`; b.font = { ...bold, bold: false, italic: true };
+      put(`E${r}`, q.formula, q.value, PCT2);
+      rowsUsed.push(r); r += 1;
+    });
+  }
+  const last = r - 1;
+  // the panel's three-column outline around the block
+  for (let k = first; k <= last; k++) {
+    addBorder(`C${k}`, { left: MED, ...(k === first ? { top: MED } : {}), ...(k === last ? { bottom: MED } : {}) });
+    addBorder(`D${k}`, { right: MED, ...(k === first ? { top: MED } : {}), ...(k === last ? { bottom: MED } : {}) });
+    addBorder(`E${k}`, { right: MED, ...(k === first ? { top: MED } : {}), ...(k === last ? { bottom: MED } : {}) });
+  }
+  addBorder(`F${spR}`, { top: MED, right: MED, left: MED }); addBorder(`F${cfR}`, { bottom: MED, right: MED, left: MED });
 }
 
 /* ---------------- the Schedule ---------------- */
