@@ -13,6 +13,9 @@
      step_month the month a price change starts 1-12             (optional)
      step_pct   the change, as a % (3 = +3%)                     (optional)
      mode       replace | add — replace the line's formula, or sit on top of it (default replace)
+                remove — take that vendor off that GL (amount blank): a contract on it from the review workbook or a
+                budget's own list is removed on every deploy (rows added or changed on the page stay). For a cost the
+                file files on another GL (ButterflyMX: 6324, not 6331 — Troy 2026-11-19)
      note       free text
      whole_gl   yes = the file's rows are the whole GL for that property and year: contracts on that GL from the review
                 workbook or carried over from a budget's own list are removed (rows added or changed on the page stay)
@@ -20,6 +23,8 @@
 import type { Contract } from './domain.js';
 
 export interface RepoContractRow { property: string; year: number; gl: string; vendor: string; contract: Contract; note: string; line: number; wholeGl: boolean }
+/** A mode=remove row: that vendor comes off that GL (see the header). */
+export interface RepoContractRemove { property: string; year: number; gl: string; vendor: string; line: number }
 
 /** RFC-4180-ish CSV: quoted fields, doubled quotes, CRLF or LF. */
 export function parseCsv(text: string): string[][] {
@@ -52,15 +57,16 @@ export function parseCsv(text: string): string[][] {
 const month = (v: string): number | null => { const n = Math.round(Number(String(v).trim())); return n >= 1 && n <= 12 ? n : null; };
 
 /** The rows of one year's file; rows with problems come back in `errors` (line number + why), never half-loaded. */
-export function parseContractsCsv(text: string, year: number): { rows: RepoContractRow[]; errors: string[] } {
+export function parseContractsCsv(text: string, year: number): { rows: RepoContractRow[]; removes: RepoContractRemove[]; errors: string[] } {
   const g = parseCsv(text);
   const errors: string[] = [];
-  if (!g.length) return { rows: [], errors };
+  const removes: RepoContractRemove[] = [];
+  if (!g.length) return { rows: [], removes, errors };
   // "Bill Month" = bill_month, "Step %" = step_pct
   const head = g[0].map((h) => h.trim().toLowerCase().replace(/\s*%\s*/g, ' pct').trim().replace(/[\s-]+/g, '_'));
   const col = (name: string) => head.indexOf(name);
   for (const need of ['property', 'gl', 'vendor', 'amount']) if (col(need) < 0) errors.push(`header: no "${need}" column`);
-  if (errors.length) return { rows: [], errors };
+  if (errors.length) return { rows: [], removes, errors };
   const rows: RepoContractRow[] = [];
   const seen = new Set<string>();
   for (let r = 1; r < g.length; r++) {
@@ -73,6 +79,13 @@ export function parseContractsCsv(text: string, year: number): { rows: RepoContr
     if (!/^[a-z0-9]{2,8}$/.test(property)) { errors.push(`line ${line}: property "${v('property')}"`); continue; }
     if (!/^\d{4}$/.test(gl)) { errors.push(`line ${line}: gl "${gl}"`); continue; }
     if (!vendor) { errors.push(`line ${line}: no vendor`); continue; }
+    if ((v('mode') || '').toLowerCase() === 'remove') {
+      const key = contractKey(property, year, gl, vendor);
+      if (seen.has(key)) { errors.push(`line ${line}: ${property} ${gl} "${vendor}" twice`); continue; }
+      seen.add(key);
+      removes.push({ property, year, gl, vendor, line });
+      continue;
+    }
     if (!kind) { errors.push(`line ${line}: kind "${kindRaw}" (monthly, annual or perUnit)`); continue; }
     if (!Number.isFinite(amount) || amount <= 0) { errors.push(`line ${line}: amount "${v('amount')}"`); continue; }
     const key = contractKey(property, year, gl, vendor);
@@ -95,7 +108,7 @@ export function parseContractsCsv(text: string, year: number): { rows: RepoContr
     } as Contract;
     rows.push({ property, year, gl, vendor, contract, note: v('note'), line, wholeGl: /^(y|yes|true|1|x)$/i.test(v('whole_gl')) });
   }
-  return { rows, errors };
+  return { rows, removes, errors };
 }
 
 /** A contract's identity across the page and the repo file: property + year + GL + vendor (case and spacing ignored). */

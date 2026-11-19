@@ -31,6 +31,20 @@ describe('contracts repo file', () => {
     expect(errors).toEqual(['line 2: gl "68"', 'line 3: no vendor', 'line 4: amount "0"', 'line 6: clnd 6808 "ken" twice']);
     expect(parseContractsCsv('gl,vendor\n6808,x', 2027).errors[0]).toMatch(/no "property" column/);
   });
+  it('mode=remove takes a vendor off a GL: no amount needed, not a contract (ButterflyMX 6331 → 6324, Troy 2026-11-19)', () => {
+    const { rows, removes, errors } = parseContractsCsv(['property,gl,vendor,amount,mode', 'cwnd,6331,ButterflyMX,,remove', 'cwnd,6324,ButterflyMX,8442,', 'cwnd,6331,butterflymx,,remove'].join('\n'), 2027);
+    expect(rows.map((r) => r.gl)).toEqual(['6324']);
+    expect(removes).toEqual([{ property: 'cwnd', year: 2027, gl: '6331', vendor: 'ButterflyMX', line: 2 }]);
+    expect(errors).toEqual(['line 4: cwnd 6331 "butterflymx" twice']);
+  });
+  it('the ND 2027 file files ButterflyMX on 6324 and takes it off 6331 at the six ND East sites', () => {
+    const { rows, removes } = parseContractsCsv(readFileSync(join(process.cwd(), 'data', 'contracts', 'nd', '2027.csv'), 'utf8'), 2027);
+    const sites = ['cwnd', 'lhnd', 'nrnd', 'rrnd', 'drnd', 'mwnd'];
+    for (const p of sites) {
+      expect(rows.some((r) => r.property === p && r.gl === '6324' && r.vendor === 'ButterflyMX'), p).toBe(true);
+      expect(removes.some((r) => r.property === p && r.gl === '6331' && r.vendor === 'ButterflyMX'), p).toBe(true);
+    }
+  });
   it('whole_gl marks the file as the whole GL for that property', () => {
     const { rows } = parseContractsCsv(['property,gl,vendor,amount,whole_gl', 'clnd,6924,A,10,yes', 'clnd,6808,B,10,', 'spnd,6924,C,10,No'].join('\n'), 2027);
     expect(rows.map((r) => r.wholeGl)).toEqual([true, false, false]);

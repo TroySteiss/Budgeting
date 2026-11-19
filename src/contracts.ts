@@ -103,7 +103,7 @@ export async function syncRepoContracts(region: string, dir = join(process.cwd()
   if (!existsSync(folder)) return { changed: [], loaded, errors };
   for (const f of readdirSync(folder).filter((x) => /^\d{4}\.csv$/i.test(x)).sort()) {
     const year = Number(f.slice(0, 4));
-    const { rows, errors: errs } = parseContractsCsv(readFileSync(join(folder, f), 'utf8'), year);
+    const { rows, removes, errors: errs } = parseContractsCsv(readFileSync(join(folder, f), 'utf8'), year);
     errors.push(...errs.map((e) => `${region}/${f} ${e}`));
     const inFile = new Set<string>();
     for (const r of rows) {
@@ -133,6 +133,17 @@ export async function syncRepoContracts(region: string, dir = join(process.cwd()
         if (o.origin === 'ui' || o.ui_edited) { errors.push(`${region}/${f} ${w.property} ${w.gl}: kept "${o.vendor}" (added or changed on the page) next to the file's rows`); continue; }
         await query(`delete from contracts where id=$1`, [o.id]);
         changed.set(`${w.property}:${year}`, { property: w.property, year });
+      }
+    }
+    // mode=remove: that vendor off that GL — a contract from the review workbook or a budget's own list (ButterflyMX
+    // filed on 6324, so the review's 6331 copy goes: Troy 2026-11-19); rows added or changed on the page stay
+    for (const rm of removes) {
+      const hits = (await query(`select id, vendor, origin, ui_edited from contracts where lower(property_code)=$1 and year=$2 and gl=$3 and origin <> 'repo' and trim(both '-' from lower(regexp_replace(vendor, '[^A-Za-z0-9]+', '-', 'g'))) = $4`,
+        [rm.property, year, rm.gl, contractKey(rm.property, year, rm.gl, rm.vendor).split(':').slice(3).join(':')])).rows as any[];
+      for (const o of hits) {
+        if (o.origin === 'ui' || o.ui_edited) { errors.push(`${region}/${f} line ${rm.line}: kept ${rm.property} ${rm.gl} "${o.vendor}" (added or changed on the page)`); continue; }
+        await query(`delete from contracts where id=$1`, [o.id]);
+        changed.set(`${rm.property}:${year}`, { property: rm.property, year });
       }
     }
     // the file's own rows it no longer lists (never one changed on the page)
