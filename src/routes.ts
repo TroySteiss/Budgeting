@@ -3350,6 +3350,8 @@ export function reviewArgs(lb: LoadedBudget, prop: any, compName: string): Revie
     noiTrend: lb.noiTrend.map((t) => ({ label: t.label, noi: t.noi })),
     t12Basis: t12BasisText(lb),
     t12End: lb.t12End || null,
+    // the % over T12 column needs a full year of the property's own history (an acquisition: months since closing)
+    histMonths: lb.annual ? Math.min(Number(lb.t12Live) || 12, lb.acquisition?.start && lb.t12End ? (postedSinceClosing(lb.actualCal, lb.t12End, lb.acquisition.start)?.months ?? 12) : 12) : undefined,
   };
 }
 

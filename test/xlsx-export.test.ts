@@ -294,6 +294,11 @@ describe('export → edit → upload round trip (Troy 2026-11-16: "it needs to u
     expect(p.glNotes['6604']).toBe('RM: new electric rate from Jan');
     expect(p.exportedNotes).not.toBeNull();
     expect(p.exportedNotes!['6604'] || '').toBe('');
+    // % over T12 in column V: (budget - T12) / |T12| off the sheet's own columns
+    expect(bud.getCell(6, 22).value).toBe('% over T12');
+    expect(formulaOf(bud.getCell(r, 22))).toBe(`IF(T${r}=0,"",(R${r}-T${r})/ABS(T${r}))`);
+    const t12v = Number(resultOf(bud.getCell(r, 20))), budv = Number(resultOf(bud.getCell(r, 18)));
+    if (t12v) expect(Number(resultOf(bud.getCell(r, 22)))).toBeCloseTo((budv - t12v) / Math.abs(t12v), 6);
     // column C (how each line is built) and row 2 (drift factors) hidden; units and capital readable in B3 / B4
     expect(bud.getColumn(3).hidden).toBe(true);
     expect(bud.getRow(2).hidden).toBe(true);

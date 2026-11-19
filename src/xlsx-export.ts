@@ -17,7 +17,7 @@ import {
 /* Budget-sheet columns (1-based), laid out like the FHND workbook: A code, B name, C notes (how the line is
    built), D increase factor (the input its month formulas read), E..P months (5..16), Q spacer, R annual,
    S spacer, T UW / T12, U comp / CY budget, V/W spacers, X $/unit, Y $/unit/mo, Z upload note */
-const C = { code: 1, name: 2, notes: 3, factor: 4, m1: 5, annual: 18, uw: 20, comp: 21, perUnit: 24, perUnitMo: 25, note: 26 };
+const C = { code: 1, name: 2, notes: 3, factor: 4, m1: 5, annual: 18, uw: 20, comp: 21, growth: 22, perUnit: 24, perUnitMo: 25, note: 26 };
 const INPUT_FONT = { size: 8, color: { argb: 'FF0000FF' } };   // org rule: blue font = an input
 
 /* MONTH FORMULAS THAT SHOW THE MATH (Troy 2026-11-18: "the cell references to the hard coded values make it hard for
@@ -261,6 +261,9 @@ export interface ReviewArgs {
   t12Basis?: string;
   /** ANNUAL: the trailing-12's last month (the T12 sheet's month labels; "last month, flat" lines) */
   t12End?: { month: number; year: number } | null;
+  /** ANNUAL: months of the trailing-12 that are the property's own posted history (an acquisition: since closing); under
+      12 the % over T12 column stays blank — not a year-over-year number */
+  histMonths?: number;
 }
 /** What a property's "Budget Comps" sheet holds, for the portfolio panel and the Schedule. */
 interface CompsInfo { site: ReviewArgs; sheet: string; t12: SummaryCol | null; t4: SummaryCol | null; bud: SummaryCol; capital: number; units: number; cyBudgetNoi: number | null; cyBudgetMonths: number; cyBudgetLabel: string | null; cyRef: string | null; trendRefs: (string | null)[] }
@@ -524,7 +527,7 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
   });
   // Troy's own widths from his edited CLND draft (2026-11-16: "I also would like export to have the same changes made to
   // width of columns so that everything can actually be read") — the row-3 KPI values fit, and so does Cash on Cash in Q
-  const widths = [8, 29.86, 24, 14, 12.43, 10.43, 13.71, 10.43, 10.86, 7.86, 11.57, 11.57, 11.57, 11.57, 11.57, 11.57, 11.57, 13, 1.43, 13, 13, 1.43, 1.43, 9.43, 9.43, 26];
+  const widths = [8, 29.86, 24, 14, 12.43, 10.43, 13.71, 10.43, 10.86, 7.86, 11.57, 11.57, 11.57, 11.57, 11.57, 11.57, 11.57, 13, 1.43, 13, 13, 9.5, 1.43, 9.43, 9.43, 26];
   widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
   // column C (how each line is built) and row 2 (the drift factors) are hidden (Troy 2026-11-18: "Column C with the
   // calculation notes needs to be somewhere else. Row 2 needs to be hidden ... Jus thide column C"); both still work
@@ -644,6 +647,8 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     [C.comp, args.annual ? (refB ? refB.label.replace(/^(\d{4}) budget$/i, '$1 Budget') : 'CY Budget') : `Minot Budget at ${units} units`],
     // column Z: the line's own note — yours or an RM's, and it comes back on upload (Troy 2026-11-18: "I dont need notes
     // for budget upload at all, most notes there are stupid")
+    // the budget's growth over the T12 (Troy 2026-11-18: "There needs to be a column for growth % over T12 in the export")
+    [C.growth, args.annual ? (args.histMonths != null && args.histMonths < 12 ? `% over T12 (only ${args.histMonths} mo of history)` : '% over T12') : '% over UW'],
     [C.perUnit, 'Total Per Unit'], [C.perUnitMo, 'Per Unit / Month'], [C.note, 'Notes'],
   ];
   for (const [col, text] of heads) {
@@ -880,6 +885,14 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     if (GRAND_TOTALS.has(a.code)) {
       annual.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRAND } };
       annual.border = { top: { style: 'thin' }, bottom: { style: 'thin' } };
+    }
+    // % over the T12 (UW on an acquisition's Year-1 budget): (budget − T12) ÷ |T12|, blank where there is no T12 or the
+    // T12 is not a full year of the property's own history (the review's YoY rule)
+    if (!(args.annual && args.histMonths != null && args.histMonths < 12)) {
+      const gc = ws.getCell(r, C.growth);
+      gc.value = { formula: `IF(T${r}=0,"",(R${r}-T${r})/ABS(T${r}))` } as any;
+      gc.numFmt = '0.0%;[Red]-0.0%;""'; gc.font = a.kind === 'total' ? f8b : f8;
+      if (GRAND_TOTALS.has(a.code)) gc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GRAND } };
     }
     const pu = ws.getCell(r, C.perUnit);
     pu.value = { formula: units ? `R${r}/$C$3` : `R${r}` } as any;
