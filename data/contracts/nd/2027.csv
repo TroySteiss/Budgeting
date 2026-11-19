@@ -147,3 +147,9 @@ drnd,6916,Elevator service,monthly,525,month,,,,,replace,2027 elevator contract 
 rrnd,6916,Elevator service,monthly,350,month,,,,,replace,2027 elevator contract $350/month (Troy 2026-11-18),yes
 nrnd,6916,Elevator service,monthly,350,month,,,,,replace,2027 elevator contract $350/month (Troy 2026-11-18),yes
 cwnd,6916,Elevator service,monthly,700,month,,,,,replace,2027 elevator contract $700/month (Troy 2026-11-18),yes
+nrnd,6324,6324 renewal (licenses),annual,2142.00,,,8,,,replace,"term ends 9/8/2027, renewal 9/9/2027; billed Aug 2027; current $2,040 + 5% (Troy 2026-11-19: whole line)",yes
+lhnd,6324,6324 renewal (licenses),annual,3748.50,,,8,,,replace,"renewal 9/9/2027 (pending); billed Aug 2027; current $3,570 + 5% (Troy 2026-11-19: whole line)",yes
+rrnd,6324,6324 renewal (licenses),annual,4599.00,,,10,,,replace,"term ends 11/14/2027, renewal 11/15/2027; billed Oct 2027; current $4,380 + 5% (Troy 2026-11-19: whole line)",yes
+cwnd,6324,6324 renewal (licenses),annual,8442.00,,,10,,,replace,"term ends 11/27/2027, renewal 11/28/2027; billed Oct 2027; current $8,040 + 5% (Troy 2026-11-19: whole line)",yes
+mwnd,6324,6324 renewal (licenses),annual,2552.00,,,10,,,replace,"term ends 12/12/2027, renewal 12/13/2027; billed Oct 2027; current $2,430 + 5% (Troy 2026-11-19: whole line)",yes
+drnd,6324,6324 renewal (licenses),annual,5648.00,,,10,,,replace,"term ends 12/15/2027, renewal 12/16/2027; billed Oct-Nov 2027 (all in Oct); current $5,379 + 5% (Troy 2026-11-19: whole line)",yes

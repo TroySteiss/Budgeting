@@ -1702,6 +1702,20 @@ function applyDependentPasses(lb: LoadedBudget, input: BudgetLine[], inputs?: Bu
 /** Full generation pipeline: ownership-year plan (UW Year 1) → income tie
     (LTL) → NOI tie (flex). The whole 12-month window ties to UW Y1 in full. */
 export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: BudgetLine[]): { lines: BudgetLine[] } {
+  /* NO SMOOTHING ON A CONTRACT LINE (Troy 2026-11-19): a GL that carries a contract is the contract's months. Smoothing
+     laid on it earlier (an override with nothing typed) is released, so the line rebuilds from its contracts and follows
+     every change to them; months typed by hand stay. */
+  const conGls = new Set(((inputs.contracts || []) as any[]).filter((c) => c && c.gl).map((c) => String(c.gl)));
+  if (existing && conGls.size) {
+    existing = existing.map((l) => {
+      const d: any = l.driver || {};
+      const smoothed = !!d.smooth || d.method === 'smooth';
+      const typed = Array.isArray(d.hard) && d.hard.length > 0;
+      if (!conGls.has(l.gl_code) || !l.override || !smoothed || typed) return l;
+      const { smooth: _s, ...rest } = d;
+      return { ...l, override: false, driver: (d.method === 'smooth' ? { method: 'manual' } : rest) as any };
+    });
+  }
   // Wages: the live Pay-rates roster when the budget follows it (the annual default) — it
   // replaces the payroll model, and supersedes a snapshot an earlier Apply left in
   // inputs.wages (wagesFromRoster); a wage typed on the budget itself still wins.

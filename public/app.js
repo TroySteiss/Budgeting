@@ -4796,7 +4796,7 @@ function openRowTools(b, gl, anchorBtn) {
     ${S.bv.annual ? `<button data-act="shapeFrom" title="Keep this line's year total, but spread it over the months on another property's trailing-12 curve for this GL (e.g. ECND's utilities). Curve, not value.">${dot('drv-base', 'shapeFrom')}Monthly shape from another property…${((S.bv.budget.inputs || {}).shapeFromGl || {})[gl] ? ` <span class="muted">(${esc(((S.bv.shapeGlSrc || {})[gl] || {}).code || ((S.bv.budget.inputs || {}).shapeFromGl[gl] || []).join('+').toUpperCase())})</span>` : ''}</button>` : ''}
     ${S.bv.annual && acc.pcode === '10' && !BUDGET_WAGE_GLS.includes(gl) && gl !== '6413' ? `<button data-act="burdenFrom" title="Take this line's % of wages and its monthly shape (annual true-ups, quarterly bonuses) from other properties — one, several pooled, or a whole region — applied to this property's own wages. Only this line; the others keep their own ratios.">${dot('drv-pay', 'burdenFrom')}% of wages from other properties…${((S.bv.budget.inputs || {}).burdenFromGl || {})[gl] ? ` <span class="muted">(${esc(((S.bv.burdenGlSrc || {})[gl] || {}).code || ((S.bv.budget.inputs || {}).burdenFromGl[gl] || []).join('+').toUpperCase())})</span>` : ''}</button>` : ''}
     <button data-act="link" title="Set this GL equal to another budget line × a weight (e.g. sewer = water × 0.8). LIVE: re-follows the source on every regeneration.">${dot('drv-fee', 'link')}= another line × weight… (moves in conjunction)</button>
-    ${line && line.months.some((v) => v) ? `<button data-act="smooth" title="Gentle: only the months that are wrong move. A spike gives its excess to the low months next to it and a credit month is netted against the nearest high month; ordinary months are not touched. A line with nothing wrong is left alone unless you ask for a light pass. No negative months; every month rounded to $5, so the total can move by a few dollars. The line keeps its formula chip and gains a SMOOTH chip.">${dot('drv-t12', 'smooth')}Smooth missed bills — spikes into surrounding months</button>` : ''}
+    ${line && line.months.some((v) => v) && !(line.driver && line.driver.method === 'contract') ? `<button data-act="smooth" title="Gentle: only the months that are wrong move. A spike gives its excess to the low months next to it and a credit month is netted against the nearest high month; ordinary months are not touched. A line with nothing wrong is left alone unless you ask for a light pass. No negative months; every month rounded to $5, so the total can move by a few dollars. The line keeps its formula chip and gains a SMOOTH chip.">${dot('drv-t12', 'smooth')}Smooth missed bills — spikes into surrounding months</button>` : ''}
     ${line && (line.driver || {}).method === 'recovery' ? `<button data-act="recmap" title="Pick exactly which utility expense lines this reimbursement recovers (recovery % × their prior month). Claims are exclusive — a line you take here is released by whichever reim had it.">${dot('drv-t12', 'recmap')}Edit what this reim recovers…</button>` : ''}
     ${((S.bv.sellerT12 || []).length || hasComp) ? `<button data-act="wavg" title="Troy's distribution formula: each month = (2×that month + prior + next)/4 of the source actuals, × (1+growth), MROUND to a multiple">${dot('drv-comp', 'wavg')}Weighted avg distribution (1-2-1) × growth → MROUND…</button>` : ''}
     <button data-act="reset">${dot('drv-uw', 'reset')}Reset to engine formula (clear override)</button>`;
@@ -4898,6 +4898,8 @@ function openRowTools(b, gl, anchorBtn) {
       return;
     }
     if (act === 'smooth') {
+      // a contract line is the contract's months: no smoothing (Troy 2026-11-19)
+      if (line && line.driver && line.driver.method === 'contract') { alert(`${gl} carries a contract: its months are the contract's billing, so it is not smoothed. Change the billing months under Contracts & known costs.`); return; }
       const cur = line ? line.months : Array(12).fill(0);
       const res = smoothMonths(cur, { gl, round: 5 });
       // nothing on the line looks wrong: leave it alone unless asked
@@ -5653,6 +5655,7 @@ async function replayFormulaSet(b, rp) {
     const d = l.driver || {};
     if (d.method === 'linkLine') { out.skipped.push(`${coaName(gl)}: follows another line, so it is not smoothed`); continue; }
     if (l.override && !RECIPE.has(d.method) && !d.smooth) { out.skipped.push(`${coaName(gl)}: typed by hand on this budget`); continue; }
+    if (d.method === 'contract') { out.skipped.push(`${coaName(gl)}: a contract line here — not smoothed`); continue; }
     const sm = smoothMonths(l.months, { gl, round: 5 });
     const { hard: _typed, ...p2 } = d;
     try {

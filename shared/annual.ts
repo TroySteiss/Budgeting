@@ -40,7 +40,8 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-19a';   // a: TPND review — utility cap on the gross bill at a split property, an annual bill on "last month" no longer drops, RE tax MF share shown
+export const ENGINE_VERSION = '2026-11-19b';   // b: no fit on a line that carries a contract
+// 2026-11-19a:   // a: TPND review — utility cap on the gross bill at a split property, an annual bill on "last month" no longer drops, RE tax MF share shown
 // 2026-11-18e:   // e: no curve or T12 fit ever on a corporate formula
 // d:   // d: November gift cards = $500 x allocated employees
 // c:   // c: review-checklist defaults (one-time months, even bonus quarters, fixed fees, 5110 T12, gap fill)
@@ -2021,6 +2022,8 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   // RE taxes: a saved formula set recorded 0% only because 0% was the old default, nobody chose it.
   // That 0 does not hold the new 3% default back; a 0 typed on the row / section / category still does.
   const ruleFactor = (gl: string): number | undefined => { const f = ruleOf(gl)?.factor; return gl === '6116' && f === 0 ? undefined : f; };
+  // GLs carrying a contract (Troy 2026-11-19: "If there is a contract, smoothing should not apply, nor should line fit")
+  const contractGls = new Set((inputs.contracts || []).filter((c) => c && c.gl).map((c) => String(c.gl)));
   const pctFor = (a: CoaAccount): number =>
     // fixed-dollar fees and bad-debt recovery (the review checklist): no category, section or template growth — only
     // a % typed on the row
@@ -2062,7 +2065,8 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       return false;
     }
     const mult = bl.glMround?.[a.code] ?? (bl.mround || rule?.mround || 0);
-    const fit = sh === 'turns' || sh === 'curve' ? Math.min(1, Math.max(0, bl.glFit?.[a.code] ?? rule?.fit ?? 0)) : 0;
+    // no fit on a GL that carries a contract: a formula under an 'add' contract keeps its own months too
+    const fit = (sh === 'turns' || sh === 'curve') && !contractGls.has(a.code) ? Math.min(1, Math.max(0, bl.glFit?.[a.code] ?? rule?.fit ?? 0)) : 0;
     /* "LAST MONTH, FLAT" ON A MONTH WITH NO BILL (TPND 2026-11-19: auto insurance $600 in the T12 budgeted $0 — October had
        no bill, the yearly one posts in another month): a default "last month" line whose last month is empty while the
        T12 is not budgets the T12's own months (same month). A shape picked on the row is taken as picked. */

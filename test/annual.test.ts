@@ -2887,3 +2887,16 @@ describe('TPND review fixes (2026-11-19)', () => {
     if (t) { expect(t.mfShare).toBeCloseTo(157006 / 266609, 4); expect(t.tax).toBeLessThan(t.a); }
   });
 });
+
+describe('a contract line is never fitted (Troy 2026-11-19)', () => {
+  it('an add-contract on a turnover-curve line keeps the formula\'s own months (no fit to the T12)', () => {
+    const actual = synthetic();
+    const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
+    const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
+    const gl = '6302';
+    const shaped = { ...inputs, baseline: { ...inputs.baseline!, glShape: { [gl]: 'curve' as const }, glFit: { [gl]: 1 } } };
+    const plain = L(generateAnnualLines(coaList, { ...shaped, baseline: { ...shaped.baseline!, glFit: {} } }, src), gl);
+    const withContract = L(generateAnnualLines(coaList, { ...shaped, contracts: [{ vendor: 'X', gl, kind: 'monthly' as const, amount: 10, mode: 'add' as const }] }, src), gl);
+    withContract.months.forEach((v, i) => expect(v).toBeCloseTo(plain.months[i] + 10, 2));
+  });
+});
