@@ -629,8 +629,8 @@ function renderDash(el) {
     const n = selectedIds().length;
     popMenu(e.currentTarget, `
       <div class="rm-head">${n ? `${n} ticked budget${n === 1 ? '' : 's'}` : `All ${yearBudgets.length} of ${year}'s budgets`}</div>
-      <button data-x="pf" title="One Budget Draft workbook per property — the same file each budget's own export gives. One budget downloads as its workbook; several come as a zip of separate files (never one combined workbook)">⬇ Budget Draft workbooks (one per property)</button>
-      <button data-x="zip" title="ZIP of every export, sorted by report type: Yardi Uploads per year + Budget Drafts — each budget saved as an iteration">⬇ All exports (zip)</button>
+      <button data-x="pf" title="One Budget Draft workbook per property — the same file each budget's own export gives. One budget downloads as its workbook; several come as a zip of separate files in one folder per region (never one combined workbook)">⬇ Budget Draft workbooks (one per property)</button>
+      <button data-x="zip" title="ZIP of every export: one folder per region (Minot, Williston-Watford, Bismarck-Jamestown), each with its Yardi Uploads per year + Budget Drafts — each budget saved as an iteration">⬇ All exports (zip)</button>
       <button data-x="recalc" title="Re-run every formula on the ticked budgets (all of the year's when none is ticked), so a changed default or formula reaches each one. Shows NOI before and after per budget first; hand-typed lines stay; each budget gets a save point.">↻ Recalculate…</button>
       <button data-x="act" title="Partial-month rule off the budget as it sits in Yardi: upload the month-end Property Comparison (Cash) + each property's budget CSV — every CSV comes back with the closed month set 1:1 to what posted">✓ Actualize from Yardi CSVs…</button>`, (menu) => {
       menu.querySelector('[data-x="recalc"]').addEventListener('click', () => { const ids = selectedIds(); openRecalcMany(ids.length ? ids.map(Number) : shownIds()); });

@@ -3411,6 +3411,20 @@ router.get('/budgets/:id/export.xlsx', h(async (req, res) => {
   res.send(buf);
 }));
 
+/* ONE FOLDER PER REGION in the download-all zips (Troy 2026-11-18: "If I download all, I want 3 folders broken down by
+   regional"): the dashboard's region groups (Minot, Williston / Watford, Bismarck / Jamestown; app.js REGION_GROUPS),
+   with "-" for the "/" a folder name cannot hold; anything else under its market, else "Other". */
+const ZIP_REGIONS: { name: string; re: RegExp }[] = [
+  { name: 'Minot', re: /minot/i },
+  { name: 'Williston-Watford', re: /williston|watford/i },
+  { name: 'Bismarck-Jamestown', re: /bismarck|jamestown/i },
+];
+export function regionFolder(market: string | null | undefined): string {
+  const m = String(market || '').trim();
+  const g = ZIP_REGIONS.find((x) => x.re.test(m));
+  return (g ? g.name : m || 'Other').replace(/[\\/:*?"<>|]+/g, '-');
+}
+
 /* One Budget Draft workbook PER PROPERTY for the ticked budgets (Troy 2026-11-18, on the Williston portfolio
    workbook: "I do not want conjoined budgets like this"): a zip of the same file each budget's own export gives,
    under its own name ("ECND 2027 Budget Draft TS 11182026.xlsx"); each budget is captured as a save point. */
@@ -3430,7 +3444,7 @@ router.get('/export/drafts.zip', h(async (req, res) => {
     let compName = '';
     if (lb.budget.comp_set_id) compName = (await query('select name from comp_sets where id=$1', [lb.budget.comp_set_id])).rows[0]?.name || '';
     const wbBuf = await buildReviewWorkbook(reviewArgs(lb, prop, compName));
-    zip.file(`${lb.budget.property_code.toUpperCase()} ${lb.budget.year} Budget Draft ${ini} ${stamp}.xlsx`, wbBuf);
+    zip.file(`${regionFolder(prop?.market)}/${lb.budget.property_code.toUpperCase()} ${lb.budget.year} Budget Draft ${ini} ${stamp}.xlsx`, wbBuf);
     await captureExportPoint(lb, user);
     n++;
   }
@@ -3459,6 +3473,8 @@ router.get('/export/bundle.zip', h(async (req, res) => {
     if (!lb) continue;
     const code = lb.budget.property_code.toUpperCase();
     const start = lb.budget.inputs?.startMonth || 1;
+    const prop = (await query('select * from properties where code=$1', [lb.budget.property_code])).rows[0];
+    const folder = regionFolder(prop?.market);   // Minot / Williston-Watford / Bismarck-Jamestown, each with its uploads and drafts
     for (const calYear of start > 1 ? [lb.budget.year, lb.budget.year + 1] : [lb.budget.year]) {
       let sliced: BudgetLine[] = effectiveLines(lb).map((l) => ({ ...l, months: calendarSlice(l.months, lb.budget.year, start, calYear) }));
       sliced = injectPreStartActuals(sliced, lb.coa, lb.budget.inputs?.actuals, lb.budget.year, start, calYear);
@@ -3469,13 +3485,12 @@ router.get('/export/bundle.zip', h(async (req, res) => {
         description: `${lb.budget.property_code} ${calYear} Budget ${kind} ${ini} ${stamp}`,
         cutoffMonth: calYear === lb.budget.year ? cutoff : 0,
       });
-      zip.file(`${calYear} Yardi Uploads/${code} ${calYear} Budget ${kind} ${ini} ${stamp}.csv`, csv);
+      zip.file(`${folder}/${calYear} Yardi Uploads/${code} ${calYear} Budget ${kind} ${ini} ${stamp}.csv`, csv);
     }
-    const prop = (await query('select * from properties where code=$1', [lb.budget.property_code])).rows[0];
     let compName = '';
     if (lb.budget.comp_set_id) compName = (await query('select name from comp_sets where id=$1', [lb.budget.comp_set_id])).rows[0]?.name || '';
     const wbBuf = await buildReviewWorkbook(reviewArgs(lb, prop, compName));
-    zip.file(`Budget Drafts/${code} ${lb.budget.year} Budget Draft ${ini} ${stamp}.xlsx`, wbBuf);
+    zip.file(`${folder}/Budget Drafts/${code} ${lb.budget.year} Budget Draft ${ini} ${stamp}.xlsx`, wbBuf);
     await captureExportPoint(lb, user);
   }
   const buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
