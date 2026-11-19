@@ -7449,9 +7449,17 @@ function renderReview(el, d, viewSeg) {
   const sym = { y: 'Y', n: 'N', na: 'n/a', info: '·' };
   const cellHtml = (res, p, r) => {
     if (!res) return '<td class="muted">—</td>';
-    const tip = `${String(p.code).toUpperCase()} · ${r.gl} ${r.label}${res.text ? `: ${res.text}` : ''}`;
-    const fixBtn = res.fix ? `<button class="rb rvfix" data-rvfix="${esc(r.id)}" data-rvid="${p.id}" title="Put ${esc(String(p.code).toUpperCase())}'s ${esc(r.gl)} on this pattern (a save point first; hand-typed lines are left alone)">Fix</button>` : '';
-    return `<td class="rv rv-${res.status}" title="${esc(tip)}"><b>${sym[res.status] || ''}</b>${res.text ? `<div class="rvn">${esc(res.text)}</div>` : ''}${fixBtn}</td>`;
+    const code = String(p.code).toUpperCase();
+    // marked n/a by hand (Troy 2026-11-18): who / when and what the check found, with Undo
+    if (res.marked) {
+      const m = res.marked;
+      const tip = `${code} · ${r.gl} ${r.label}: marked n/a by ${m.by || 'someone'} on ${new Date(m.at).toLocaleDateString()}${m.note ? ` — ${m.note}` : ''}. The check found: ${(sym[m.was] || '')}${m.wasText ? ` (${m.wasText})` : ''}.`;
+      return `<td class="rv rv-na rv-marked" title="${esc(tip)}"><b>n/a</b><div class="rvn">marked</div><button class="rb rvfix" data-rvna="${esc(r.id)}" data-rvcode="${esc(p.code)}" data-rvset="0" title="Put this check back on ${esc(code)}">Undo</button></td>`;
+    }
+    const tip = `${code} · ${r.gl} ${r.label}${res.text ? `: ${res.text}` : ''}`;
+    const fixBtn = res.fix ? `<button class="rb rvfix" data-rvfix="${esc(r.id)}" data-rvid="${p.id}" title="Put ${esc(code)}'s ${esc(r.gl)} on this pattern (a save point first; hand-typed lines are left alone)">Fix</button>` : '';
+    const naBtn = res.status !== 'na' && res.status !== 'y' ? `<button class="rb rvfix rvnab" data-rvna="${esc(r.id)}" data-rvcode="${esc(p.code)}" data-rvset="1" title="This check does not apply to ${esc(code)}: mark it n/a (kept for the property, next year's budgets too)">N/A</button>` : '';
+    return `<td class="rv rv-${res.status}" title="${esc(tip)}"><b>${sym[res.status] || ''}</b>${res.text ? `<div class="rvn">${esc(res.text)}</div>` : ''}${fixBtn || naBtn ? `<div class="rvbtns">${fixBtn}${naBtn}</div>` : ''}</td>`;
   };
   const fixable = (i) => props.filter((p) => ((p.review || [])[i] || {}).fix);
   const misses = props.map((p) => (p.review || []).filter((x) => x && x.status === 'n').length);
@@ -7484,6 +7492,15 @@ function renderReview(el, d, viewSeg) {
   const runFix = async (rule, list) => openReviewFix(rule, list, () => loadSummary(d.year));
   el.querySelectorAll('[data-rvfix]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); const rule = rules.find((x) => x.id === b.dataset.rvfix); const p = d.properties.find((x) => String(x.id) === b.dataset.rvid); if (rule && p) runFix(rule, [p]); }));
   el.querySelectorAll('[data-rvfixall]').forEach((b) => b.addEventListener('click', () => { const rule = rules.find((x) => x.id === b.dataset.rvfixall); if (rule) runFix(rule, fixable(Number(b.dataset.rvi))); }));
+  // mark / unmark n/a (Troy 2026-11-18: "Need to be able to mark NA"); the grid keeps its scroll position
+  el.querySelectorAll('[data-rvna]').forEach((b) => b.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const w = el.querySelector('.rvwrap'); const pos = w ? { t: w.scrollTop, l: w.scrollLeft } : null;
+    await POST('/review-na', { ruleId: b.dataset.rvna, code: b.dataset.rvcode, na: b.dataset.rvset === '1' });
+    S.rvScroll = pos;
+    loadSummary(d.year);
+  }));
+  if (S.rvScroll) { const w = el.querySelector('.rvwrap'); if (w) { w.scrollTop = S.rvScroll.t; w.scrollLeft = S.rvScroll.l; } S.rvScroll = null; }
   // the property row freezes right under the region row: its offset is the region row's real height
   { const t = el.querySelector('table.rvtbl'), g = t && t.querySelector('thead tr.grp'); if (t && g) t.style.setProperty('--rv-h1', `${g.getBoundingClientRect().height}px`); }
 }

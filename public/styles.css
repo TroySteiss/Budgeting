@@ -756,3 +756,6 @@ table.rftbl .rfm { display: inline-block; margin: 0 10px 2px 0; white-space: now
 table.rftbl .rfo { margin-top: 4px; font-size: 11.5px; }
 #rvfix-dlg { width: min(1150px, 96vw); max-width: 96vw; }
 table.rftbl td:nth-child(3) { min-width: 520px; }
+table.rvtbl .rvbtns { display: flex; gap: 4px; justify-content: center; flex-wrap: wrap; }
+table.rvtbl .rvnab { color: var(--dim); }
+table.rvtbl td.rv-marked { background: color-mix(in srgb, var(--dim) 8%, var(--panel)); color: var(--dim); }

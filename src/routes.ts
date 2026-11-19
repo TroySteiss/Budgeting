@@ -205,6 +205,29 @@ async function loadReviewRules(): Promise<{ rules: ReviewRule[]; isDefault: bool
   } catch { /* column not migrated yet */ }
   return { rules: DEFAULT_REVIEW_RULES[region], isDefault: true };
 }
+/* CHECKS MARKED N/A BY HAND (Troy 2026-11-18: "Need to be able to mark NA"): per region, rule id -> property code ->
+   who / when / note. For the property, so it carries to next year's budgets. */
+type ReviewNa = Record<string, Record<string, { by: string; at: string; note?: string }>>;
+async function loadReviewNa(): Promise<ReviewNa> {
+  try {
+    const v = (await query('select review_na from app_meta where id=1')).rows[0]?.review_na;
+    return v && typeof v === 'object' ? v as ReviewNa : {};
+  } catch { return {}; }   // column not migrated yet
+}
+router.post('/review-na', h(async (req, res) => {
+  const ruleId = String(req.body?.ruleId || '').slice(0, 40);
+  const code = String(req.body?.code || '').trim().toLowerCase();
+  if (!ruleId || !/^[a-z0-9]{2,8}$/.test(code)) return res.status(400).json({ error: 'ruleId and a property code are required' });
+  const na = await loadReviewNa();
+  if (req.body?.na === false) {
+    if (na[ruleId]) { delete na[ruleId][code]; if (!Object.keys(na[ruleId]).length) delete na[ruleId]; }
+  } else {
+    na[ruleId] = { ...(na[ruleId] || {}), [code]: { by: req.session.username || '', at: new Date().toISOString(), ...(req.body?.note ? { note: String(req.body.note).slice(0, 200) } : {}) } };
+  }
+  await query('update app_meta set review_na=$1 where id=1', [Object.keys(na).length ? JSON.stringify(na) : null]);
+  logChange(req.session.username || '', 'review n/a', { ruleId, code, na: req.body?.na !== false });
+  res.json({ ok: true, reviewNa: na });
+}));
 router.get('/review-rules', h(async (_req, res) => {
   const r = await loadReviewRules();
   res.json({ ...r, kinds: REVIEW_KINDS, defaults: DEFAULT_REVIEW_RULES[currentRegion() === 'kc' ? 'kc' : 'nd'] });
@@ -2520,6 +2543,7 @@ router.get('/summary', h(async (req, res) => {
       where b.year = $1 order by b.property_code, b.updated_at desc`, [year])).rows as any[];
   const out: any[] = [];
   const review = await loadReviewRules();
+  const reviewNa = await loadReviewNa();
   for (const r of rows) {
     const lb = await loadBudget(r.id);
     if (!lb) continue;
@@ -2529,10 +2553,22 @@ router.get('/summary', h(async (req, res) => {
     const calOf = (m: Months | undefined): number[] | null => (m ? Array.from({ length: 12 }, (_, c) => m[(c - (sm - 1) + 12) % 12] || 0) : null);
     const byGl = new Map(lines.map((l) => [l.gl_code, l.months]));
     const unitsR = Number(lb.budget.inputs?.units) || Number(r.units) || 0;
+    /* YEAR-OVER-YEAR ONLY ON A FULL YEAR (Troy 2026-11-18: "make sure % comparisons YoY are actually applicable and not
+       based on 5 months of data"): the months of the trailing-12 that are this property's own posted history — the
+       statement's live months, and for an acquisition only the months since closing (the rest is the seller's year
+       split over our GLs). Under 12, a % over the T12 is not a year-over-year number and the check says so. */
+    const ownedMonths = lb.annual && lb.acquisition?.start && lb.t12End ? (postedSinceClosing(lb.actualCal, lb.t12End, lb.acquisition.start)?.months ?? 12) : 12;
+    const histMonths = Math.min(Number(lb.t12Live) || 12, ownedMonths);
     const reviewRes = review.rules.map((rule) => {
+      // RE taxes on the bill or the current accrual: the % is over that year (Troy 2026-11-13) — a full year whatever the T12 holds
+      const taxBase = (() => { const d: any = lb.lines.find((l) => l.gl_code === rule.gl)?.driver; return d?.reTax?.a ? d.reTax.a / 1.03 : d?.accrual ? (d.taxYear || d.accrual * 12) : null; })();
+      if (lb.annual && histMonths < 12 && ['pctOverT12', 'nearT12', 'maxOverT12'].includes(rule.kind) && !(rule.kind === 'pctOverT12' && taxBase)) {
+        const mark = reviewNa[rule.id]?.[String(r.property_code).toLowerCase()];
+        if (mark) return { status: 'na', text: 'marked n/a', marked: { ...mark, was: 'info', wasText: '' } } as any;
+        return { status: 'info', text: `only ${histMonths} month${histMonths === 1 ? '' : 's'} of history — no YoY %` } as ReviewResult;
+      }
       let res: ReviewResult = reviewCell(rule, { code: r.property_code, months: calOf(byGl.get(rule.gl)), t12: lb.annual && lb.actualCal ? (lb.actualCal[rule.gl] || null) : undefined, units: unitsR,
-        // RE taxes on the current accrual: the % is over that year (Troy 2026-11-13)
-        base: (() => { const d: any = lb.lines.find((l) => l.gl_code === rule.gl)?.driver; return d?.reTax?.a ? d.reTax.a / 1.03 : d?.accrual ? (d.taxYear || d.accrual * 12) : null; })(),
+        base: taxBase,
         // accounting: the quarterly Yardi bills (Mar / Jun / Sep / Dec) stand out beside the April fee by design
         alsoOk: rule.gl === '6102' ? [2, 5, 8, 11] : undefined });
       const ln = lines.find((l) => l.gl_code === rule.gl);
@@ -2551,6 +2587,9 @@ router.get('/summary', h(async (req, res) => {
       if (noSpike) res = { ...res, text: `${res.text}; no one-time amount in its T12 to move` };
       // Fix: a check it can apply, on a line not typed by hand
       if ((res.status === 'n' || planLine) && REVIEW_FIX_KINDS.has(rule.kind) && !noSpike && !(ln?.override && !d.smooth)) res = { ...res, fix: true };
+      // marked not applicable by hand: n/a whatever the budget shows (what the check found stays on the hover)
+      const mark = reviewNa[rule.id]?.[String(r.property_code).toLowerCase()];
+      if (mark) return { status: 'na', text: 'marked n/a', marked: { ...mark, was: res.status, wasText: res.text } } as any;
       return res;
     });
     out.push({ id: r.id, code: r.property_code, name: r.name, region: String(r.market || '').trim() || 'Other', type: r.budget_type, status: r.status, updatedAt: r.updated_at,
