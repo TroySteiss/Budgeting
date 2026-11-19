@@ -218,6 +218,8 @@ export function reviewCell(rule: ReviewRule, p: { code: string; months: number[]
       }
       const top = m.reduce((b, v, k) => (Math.abs(v) > Math.abs(m[b]) ? k : b), 0);
       const flat = Math.max(...m.map(Math.abs)) - Math.min(...m.map(Math.abs)) <= Math.max(1, Math.abs(m[top]) * 0.01);
+      // the month IS the year's high, just not by enough to read as a one-time amount (it read "Feb not Feb")
+      if (!flat && top === i) return { status: 'n', text: `${MON[i]} only ${base ? (Math.abs(m[i]) / base).toFixed(1) : '—'}x the other months (needs 1.5x)` };
       return { status: 'n', text: flat ? `flat, no ${MON[i]} spike` : `${MON[top]} not ${MON[i]}` };
     }
   }

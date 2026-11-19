@@ -7439,6 +7439,9 @@ function renderSummary(el) {
    the workbook's columns by manager), Y / N / n/a with the workbook's kind of note ("Dec not Nov", "none last
    year", "also high Jul"). Checked by the server (shared/review.ts) on each budget and its trailing-12. Rules are
    edited under Settings -> Budget review checklist. ---- */
+// the Review grid's column widths (Troy 2026-11-18: "Spacing is wonky, and panes need to be locked"): one even width per
+// property, a fixed check column, the header rows and the check column frozen inside the grid's own scroll box
+const RV_CHECK_W = 300, RV_PROP_W = 104;
 function renderReview(el, d, viewSeg) {
   const regions = [...new Set(d.properties.map((p) => regionGroup(p.region)))].sort(regionSort);
   const props = regions.flatMap((rg) => d.properties.filter((p) => regionGroup(p.region) === rg).sort((a, b) => a.code.localeCompare(b.code)));
@@ -7462,10 +7465,13 @@ function renderReview(el, d, viewSeg) {
           <button class="btn sub sm" id="sum-refresh" title="Reload from the budgets as they stand now">↻ Refresh</button>
         </div>
       </div>
-      ${props.length && rules.length ? `<div class="sumwrap"><table class="sumtbl rvtbl">
+      ${props.length && rules.length ? `<div class="sumwrap rvwrap"><table class="sumtbl rvtbl" style="width:${RV_CHECK_W + props.length * RV_PROP_W}px">
+        <colgroup><col style="width:${RV_CHECK_W}px">${props.map(() => `<col style="width:${RV_PROP_W}px">`).join('')}</colgroup>
+        <thead>
         <tr class="grp"><th class="l stick"></th>${regions.map((rg) => { const n = props.filter((p) => regionGroup(p.region) === rg).length; return `<th class="c rvgrp" colspan="${n}">${esc(rg)}</th>`; }).join('')}</tr>
-        <tr><th class="l stick">Check</th>${props.map((p) => `<th class="c" title="${esc(p.name || '')}"><span class="rvp" data-sumopen="${p.id}">${esc(String(p.code).toUpperCase())}</span><div class="muted" style="text-transform:none; font-weight:400">${p.units ? `${xsNum(p.units)} u` : ''}</div></th>`).join('')}</tr>
-        ${rules.map((r, i) => `<tr><td class="l stick rvrule"><b>${esc(r.gl)}</b> ${esc(r.label)}${r.props && r.props.length ? ` <span class="muted">(${esc(r.props.join(', ').toUpperCase())})</span>` : ''}${fixable(i).length > 1 ? ` <button class="rb rvfix" data-rvfixall="${esc(r.id)}" data-rvi="${i}" title="Fix every property this check flags (${fixable(i).map((p) => String(p.code).toUpperCase()).join(', ')})">Fix all ${fixable(i).length}</button>` : ''}</td>${props.map((p) => cellHtml((p.review || [])[i], p, r)).join('')}</tr>`).join('')}
+        <tr class="ph"><th class="l stick">Check</th>${props.map((p) => `<th class="c" title="${esc(p.name || '')}"><span class="rvp" data-sumopen="${p.id}">${esc(String(p.code).toUpperCase())}</span><div class="muted" style="text-transform:none; font-weight:400">${p.units ? `${xsNum(p.units)} u` : ''}</div></th>`).join('')}</tr>
+        </thead><tbody>
+        ${rules.map((r, i) => `<tr><td class="l stick rvrule"><b>${esc(r.gl)}</b> ${esc(r.label)}${r.props && r.props.length ? ` <span class="muted">(${esc(r.props.join(', ').toUpperCase())})</span>` : ''}${fixable(i).length > 1 ? `<div><button class="rb rvfix" data-rvfixall="${esc(r.id)}" data-rvi="${i}" title="Fix every property this check flags (${fixable(i).map((p) => String(p.code).toUpperCase()).join(', ')})">Fix all ${fixable(i).length}</button></div>` : ''}</td>${props.map((p) => cellHtml((p.review || [])[i], p, r)).join('')}</tr>`).join('')}
         <tr class="sub"><td class="l stick">To look at</td>${misses.map((n) => `<td class="c ${n ? 'rv-n' : 'rv-y'}">${n || '✓'}</td>`).join('')}</tr>
       </table></div>
       <p class="muted" style="font-size:11.5px; margin:8px 0 0">Each row is a known pattern from the budget review workbook, checked on every property's latest ${d.year} budget (by calendar month) against its own trailing-12. <span class="gin-key">Y</span> = the budget follows it, <span class="gout-key">N</span> = it does not (the note says how), n/a = the rule is kept to other properties, · = a reminder to check by eye. "None last year" = the trailing-12 has nothing on that GL. Hover a cell for the detail; click a property to open it. ${d.reviewDefault ? 'These are the built-in rules for this region' : 'This region\'s own rules'}: edit them under Settings → Budget review checklist.</p>`
@@ -7478,4 +7484,6 @@ function renderReview(el, d, viewSeg) {
   const runFix = async (rule, list) => openReviewFix(rule, list, () => loadSummary(d.year));
   el.querySelectorAll('[data-rvfix]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); const rule = rules.find((x) => x.id === b.dataset.rvfix); const p = d.properties.find((x) => String(x.id) === b.dataset.rvid); if (rule && p) runFix(rule, [p]); }));
   el.querySelectorAll('[data-rvfixall]').forEach((b) => b.addEventListener('click', () => { const rule = rules.find((x) => x.id === b.dataset.rvfixall); if (rule) runFix(rule, fixable(Number(b.dataset.rvi))); }));
+  // the property row freezes right under the region row: its offset is the region row's real height
+  { const t = el.querySelector('table.rvtbl'), g = t && t.querySelector('thead tr.grp'); if (t && g) t.style.setProperty('--rv-h1', `${g.getBoundingClientRect().height}px`); }
 }

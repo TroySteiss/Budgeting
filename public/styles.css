@@ -600,15 +600,27 @@ table.sumtbl tr.sub td.gout, table.sumtbl tr.grand td.gout { background: color-m
 .gout-key { color: var(--bad); font-weight: 700; }
 
 /* Summary tab, Review view (2026-11-12): the budget review checklist, rules x properties */
-table.rvtbl td.rv { text-align: center; vertical-align: top; min-width: 64px; max-width: 120px; white-space: normal; }
+table.rvtbl td.rv { text-align: center; vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
+/* the Review grid (2026-11-18): fixed even columns; region + property rows and the check column frozen */
+.sumwrap.rvwrap { overflow: auto; max-height: calc(100vh - 190px); border: 1px solid var(--gridline); border-radius: 6px; }
+table.rvtbl { table-layout: fixed; border-collapse: separate; border-spacing: 0; }
+table.rvtbl th, table.rvtbl td { padding: 5px 6px; }
+table.rvtbl thead th { position: sticky; z-index: 3; background: var(--panel); }
+table.rvtbl thead tr.grp th { top: 0; }
+table.rvtbl thead tr.ph th { top: var(--rv-h1, 21px); box-shadow: inset 0 -1px 0 var(--line); }
+/* property names and unit counts centred over their column, like the Y / N and notes under them */
+table.rvtbl thead tr.ph th.c { text-align: center; }
+table.rvtbl thead th.stick { z-index: 5; }
+table.rvtbl tbody td.stick { z-index: 2; box-shadow: inset -1px 0 0 var(--line); }
+table.rvtbl td.rvrule .muted { font-weight: 400; }
 table.rvtbl td.rv-y { background: color-mix(in srgb, var(--good) 13%, var(--panel)); color: var(--good); }
 table.rvtbl td.rv-n { background: color-mix(in srgb, var(--bad) 12%, var(--panel)); color: var(--bad); }
 table.rvtbl td.rv-na { color: var(--dim); }
 table.rvtbl td.rv-info { color: var(--dim); }
 table.rvtbl .rvn { font-size: 10.5px; font-weight: 400; line-height: 1.25; margin-top: 1px; }
 table.rvtbl .rvfix { font-size: 10px; padding: 0 6px; margin-top: 3px; line-height: 16px; }
-table.rvtbl .rvrule .rvfix { margin: 0 0 0 6px; }
-table.rvtbl td.rvrule { white-space: normal; min-width: 240px; max-width: 320px; }
+table.rvtbl .rvrule .rvfix { margin: 3px 0 0 0; }
+table.rvtbl td.rvrule { white-space: normal; vertical-align: top; }
 table.rvtbl th.rvgrp { border-left: 2px solid var(--line); }
 table.rvtbl .rvp { cursor: pointer; color: var(--accent); }
 table.rvtbl tr.sub td.rv-y, table.rvtbl tr.sub td.rv-n { font-weight: 700; }

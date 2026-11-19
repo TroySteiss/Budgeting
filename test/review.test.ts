@@ -86,3 +86,11 @@ describe('accounting: the quarterly bills stand out beside April by design (Troy
     expect(reviewCell(rule, { code: 'clnd', months: m, units: 100, alsoOk: [2, 5, 8, 11] })).toEqual({ status: 'y', text: '' });
   });
 });
+
+describe('a peak month that is the year\'s high but does not stand out', () => {
+  it('says how far short it is instead of "Feb not Feb"', () => {
+    const rule = DEFAULT_REVIEW_RULES.nd.find((r) => r.id === '401k-feb')!;
+    const m = [100, 120, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100];
+    expect(reviewCell(rule, { code: 'clnd', months: m, units: 100 })).toEqual({ status: 'n', text: 'Feb only 1.2x the other months (needs 1.5x)' });
+  });
+});
