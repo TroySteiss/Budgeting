@@ -79,6 +79,16 @@ export function budgetRefLabel(period: string | null | undefined): string {
   return `budget ${m1}-${y1.slice(2)}–${m2}-${y2.slice(2)}`;
 }
 
+/** A budget statement that is the CALENDAR (fiscal) year `fy`: twelve columns Jan..Dec, all of that year (with no column
+    years on file, a "Jan fy-Dec fy" period). The Summary's NOI vs the current-year budget reads this (Troy 2026-11-19:
+    "based off of 2026 FY Budget, as opposed to T12 Nov '25 - Oct '26"), never a budget over the trailing-12 window. */
+export function isFyBudgetStmt(d: StmtData | null | undefined, period: string | null | undefined, fy: number): boolean {
+  if (!d) return false;
+  const mc = d.monthCal || [], my = d.monthYear || [];
+  if (mc.length === 12 && my.length === 12) return mc.every((m, i) => Number(m) === i + 1) && my.every((y) => Number(y) === fy);
+  return budgetRefLabel(period) === `${fy} budget`;
+}
+
 /* ---------------- statements (own trailing-12 actuals / current budget) ---------------- */
 
 export interface StmtRow { gl: string; name: string; months: number[]; total: number }

@@ -2922,3 +2922,19 @@ describe('a contract line is never fitted (Troy 2026-11-19)', () => {
     withContract.months.forEach((v, i) => expect(v).toBeCloseTo(plain.months[i] + 10, 2));
   });
 });
+
+describe('the FY budget statement (Troy 2026-11-19: NOI vs the 2026 FY budget, not the Nov-25–Oct-26 window)', () => {
+  it('a Jan..Dec statement of that year is the FY budget; a trailing-12 window is not', async () => {
+    const { isFyBudgetStmt } = await import('../shared/annual.js');
+    const cal = Array.from({ length: 12 }, (_, i) => i + 1);
+    const fy = { monthCal: cal, monthYear: Array(12).fill(2026), rows: [] };
+    const t12win = { monthCal: [11, 12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], monthYear: [2025, 2025, ...Array(10).fill(2026)], rows: [] };
+    expect(isFyBudgetStmt(fy, 'Jan 2026-Dec 2026', 2026)).toBe(true);
+    expect(isFyBudgetStmt(fy, 'Jan 2026-Dec 2026', 2025)).toBe(false);
+    expect(isFyBudgetStmt(t12win, 'Nov 2025-Oct 2026', 2026)).toBe(false);
+    // no column years on file: the period says it
+    expect(isFyBudgetStmt({ monthCal: cal, rows: [] }, 'Jan 2026-Dec 2026', 2026)).toBe(true);
+    expect(isFyBudgetStmt({ monthCal: cal, rows: [] }, 'Nov 2025-Oct 2026', 2026)).toBe(false);
+    expect(isFyBudgetStmt(null, 'Jan 2026-Dec 2026', 2026)).toBe(false);
+  });
+});

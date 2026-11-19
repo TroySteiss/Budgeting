@@ -7303,6 +7303,16 @@ function sumGuide(G, key, v, r) {
     default: return null;
   }
 }
+/* PORTFOLIO SUBTOTALS (Troy 2026-11-19): inside its region, each ownership portfolio closes with its own subtotal. Minot 4
+   leaves out WYND (it stands alone in the Minot region); TPND's commercial side (TPNDC) counts in Minot 4 when it has a
+   budget of its own. A property in no portfolio (WYND, KC East) sits under the region subtotal only. */
+const SUM_PORTFOLIOS = [
+  { name: 'Minot 4', codes: ['clnd', 'spnd', 'tpnd', 'tpndc', 'tcnd'], note: 'CLND, SPND, TPND incl. commercial, TCND' },
+  { name: 'Williston 2', codes: ['ecnd', 'bcnd'], note: 'ECND, BCND' },
+  { name: 'Basin 2', codes: ['fhnd', 'phnd'], note: 'FHND, PHND' },
+  { name: 'Bismarck 4', codes: ['cwnd', 'lhnd', 'nrnd', 'rrnd'], note: 'CWND, LHND, NRND, RRND' },
+  { name: 'Jamestown 2', codes: ['drnd', 'mwnd'], note: 'DRND, MWND' },
+];
 function renderSummary(el) {
   if (!S.sum || (!S.sum.data && !S.sum.loading && !S.sum.err)) { loadSummary(S.dashYear); el.innerHTML = '<div class="card"><p class="muted">Loading…</p></div>'; return; }
   if (S.sum.loading && !S.sum.data) { el.innerHTML = '<div class="card"><p class="muted">Loading…</p></div>'; return; }
@@ -7316,12 +7326,23 @@ function renderSummary(el) {
   if (S.sumView === 'review') { S.rvRerender = () => { renderReview(el, d, viewSeg); wireView(); }; S.rvRerender(); return; }
   if (!S.sumMode) S.sumMode = store('bt-summode') || 'pct';
   if (S.sumDetail == null) S.sumDetail = store('bt-sumdetail') === '1';
+  // dollars per unit (Troy 2026-11-19: "Instead of overall $ values ... a toggle to show per unit per year or month"):
+  // 'mo' = $ per unit per month, 'yr' = $ per unit per year, 'tot' = the whole property's dollars
+  if (!S.sumUnit) S.sumUnit = store('bt-sumunit') || 'mo';
+  const unitMode = S.sumUnit;
+  // collapsed subtotal rows (portfolio 'pf:<name>', region 'rg:<name>'): their property rows are hidden
+  if (!S.sumShut) { try { S.sumShut = new Set(JSON.parse(store('bt-sumshut') || '[]')); } catch (e) { S.sumShut = new Set(); } }
   const mode = S.sumMode;
   if (!S.sumOpen) { try { S.sumOpen = new Set(JSON.parse(store('bt-sumopen') || '[]')); } catch (e) { S.sumOpen = new Set(); } }
   const cols = SUM_COLS.filter((c) => (S.sumDetail || !c.d) && (!c.in || S.sumOpen.has(c.in)));
   const pct = (v, dp = 1) => (v == null || !Number.isFinite(v) ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(dp)}%`);
   // growth of the SIGNED reference, as on the compare card: a contra line whose loss grows reads +, like its card row
   const gr = (bud, ref) => (ref ? (bud - ref) / ref : null);
+  // a dollar figure in the chosen unit: per unit per month / per year, or the total. No units = no per-unit figure.
+  const perU = (v, units) => (v == null ? null : unitMode === 'tot' ? v : units ? v / units / (unitMode === 'mo' ? 12 : 1) : null);
+  const $u = (v, units) => { const x = perU(v, units); return x == null ? '—' : money(x); };
+  const unitTxt = { mo: '$ / unit / month', yr: '$ / unit / year', tot: 'total $' }[unitMode];
+  const unitHover = (v, units) => (unitMode === 'tot' || v == null ? '' : ` · total ${money(v)}${units ? ` on ${xsNum(units)} units` : ''}`);
   // regions in Troy's order (2026-11-16): Minot, Williston / Watford, Bismarck / Jamestown
   const regions = [...new Set(d.properties.map((p) => regionGroup(p.region)))].sort(regionSort);
 
@@ -7354,15 +7375,26 @@ function renderSummary(el) {
       const g = gr(v.bud, v.ref);
       const rg = useGuide ? sumGuide(G, c.k, v, r) : null;
       const inn = rg ? rg.ok : null;
-      const shown = mode === 'pct' ? pct(g) : mode === 'dlr' ? money(v.bud - v.ref) : mode === 'bud' ? money(v.bud) : money(v.ref);
-      const tip = `${c.t}: ${r.kind === 'T12' ? 'T12' : 'UW Y1'} ${money(v.ref)} → budget ${money(v.bud)} (Δ ${money(v.bud - v.ref)}, ${pct(g)})${rg ? ` · guidance: ${rg.text}, ${inn ? 'met' : 'missed'}` : ''}`;
+      const cu = r.ctx.units;
+      const shown = mode === 'pct' ? pct(g) : mode === 'dlr' ? $u(v.bud - v.ref, cu) : mode === 'bud' ? $u(v.bud, cu) : $u(v.ref, cu);
+      const pu = unitMode !== 'tot' && cu ? ` (${unitTxt}: ${$u(v.ref, cu)} → ${$u(v.bud, cu)})` : '';
+      const tip = `${c.t}: ${r.kind === 'T12' ? 'T12' : 'UW Y1'} ${money(v.ref)} → budget ${money(v.bud)} (Δ ${money(v.bud - v.ref)}, ${pct(g)})${pu}${rg ? ` · guidance: ${rg.text}, ${inn ? 'met' : 'missed'}` : ''}`;
       return `<td class="${i === 0 ? 'cmp1' : ''} ${c.big ? 'big' : ''} ${c.grp ? 'sgrp' : ''} ${c.in ? 'sin' : ''} ${inn == null ? '' : inn ? 'gin' : 'gout'}" title="${esc(tip)}">${shown}</td>`;
     }).join('');
   }
-  const varCell = (v, kind) => (v == null ? '<td class="muted">—</td>' : `<td class="${Math.abs(v) < 1 ? 'tied' : v < 0 ? 'neg' : ''}" title="vs ${kind === 'T12' ? 'the T12' : 'UW Year 1'}">${Math.abs(v) < 1 ? 'tied' : money(v)}</td>`);
+  const varCell = (v, kind, units) => (v == null ? '<td class="muted">—</td>' : `<td class="${Math.abs(v) < 1 ? 'tied' : v < 0 ? 'neg' : ''}" title="vs ${kind === 'T12' ? 'the T12' : 'UW Year 1'}${unitHover(v, units)}">${Math.abs(v) < 1 ? 'tied' : $u(v, units)}</td>`);
+  const dCell = (v, units, bold) => `<td title="${esc(unitHover(v, units).replace(/^ · /, ''))}">${bold ? `<b>${$u(v, units)}</b>` : $u(v, units)}</td>`;
   // special projects: the budget's dollars in every view; the T12's posted SP on hover
-  const spCell = (sp, spRef) => (sp == null ? '<td class="muted">—</td>' : `<td title="Special projects (7321-7499) budgeted${spRef != null ? `; the T12 posted ${money(spRef)}` : ''}. Cash flow and cash-on-cash are before SP.">${sp ? money(sp) : '<span class="muted">$0</span>'}</td>`);
-  const cyCell = (v) => (v == null ? '<td class="muted">—</td>' : `<td class="${v < -GUIDE_EPS ? 'gout' : 'gin'}" title="${v < -GUIDE_EPS ? 'Below the current-year budget NOI (the memo: budgets set lower than the 2026 budget are unlikely to be approved)' : 'NOI at or above the current-year budget'}">${pct(v)}</td>`);
+  const spCell = (sp, spRef, units) => (sp == null ? '<td class="muted">—</td>' : `<td title="Special projects (7321-7499) budgeted: ${money(sp)}${spRef != null ? `; the T12 posted ${money(spRef)}` : ''}. Cash flow and cash-on-cash are before SP.">${sp ? $u(sp, units) : '<span class="muted">$0</span>'}</td>`);
+  // NOI vs the FY budget: the calendar year before the budget's (Troy 2026-11-19), not a budget over the T12 window
+  const fyYear = d.year - 1;
+  const cyCell = (v, src) => {
+    if (v == null) return '<td class="muted">—</td>';
+    const notFy = src && src.isFy === false;
+    const what = src ? `${src.label}${src.period ? ` (${src.period})` : ''}${src.months && src.months < 12 ? `, annualized from ${src.months} months` : ''}: NOI ${money(src.noi)}` : `the ${fyYear} budget`;
+    const tip = `${v < -GUIDE_EPS ? `Below the ${fyYear} budget NOI (the memo: budgets set lower than the ${fyYear} budget are unlikely to be approved)` : `NOI at or above the ${fyYear} budget`} · vs ${what}${notFy ? ` · no FY ${fyYear} (Jan–Dec) budget statement on file for this property, so this is its linked budget's own window` : ''}`;
+    return `<td class="${v < -GUIDE_EPS ? 'gout' : 'gin'}" title="${esc(tip)}">${pct(v)}${notFy ? ' <span class="sch-stale">⚠</span>' : ''}</td>`;
+  };
   const guideCell = (r) => {
     if (r.kind !== 'T12' || !r.cat) return '<td class="muted">—</td>';
     const gi = gr(r.cat.egi.bud, r.cat.egi.ref), ge = gr(r.cat.toe.bud, r.cat.toe.ref), gn = gr(r.cat.noi.bud, r.cat.noi.ref);
@@ -7376,29 +7408,49 @@ function renderSummary(el) {
     const annual = p.type === 'annual';
     return `<tr class="click" data-sumopen="${p.id}">
       <td class="l stick" title="Open the budget · ${esc(sm)} ${annual ? 'annual' : 'acquisition (UW Y1)'} · ${ov ? `${ov} override${ov === 1 ? '' : 's'}` : 'no overrides'}${c.savePoints ? ` · ${c.savePoints} save pt${c.savePoints === 1 ? '' : 's'}` : ''}"><b class="plink">${esc(p.code)}</b> · <span class="plink">${esc(p.name || '')}</span>${p.stale ? ' <span class="sch-stale" title="Calculated on older formulas: recalc it">⚠</span>' : ''}<div class="muted" style="font-size:10.5px">${p.units ? `${xsNum(p.units)} units` : ''}${p.region ? ` · ${esc(p.region)}` : ''}${annual ? '' : ' · acquisition'}</div></td>
-      <td>${money(r.income)}</td><td>${money(r.expense)}</td><td><b>${money(r.noi)}</b></td>
-      ${varCell(r.noiVar, r.kind)}${varCell(r.egiVar, r.kind)}${annual && c.guide && c.guide.kind === 'uw' ? guideDashCell(c.guide).replace('class="gdash', 'class="l gdash') : annual ? guideCell(r) : '<td class="muted">—</td>'}
+      ${dCell(r.income, r.units)}${dCell(r.expense, r.units)}${dCell(r.noi, r.units, true)}
+      ${varCell(r.noiVar, r.kind, r.ctx.units)}${varCell(r.egiVar, r.kind, r.ctx.units)}${annual && c.guide && c.guide.kind === 'uw' ? guideDashCell(c.guide).replace('class="gdash', 'class="l gdash') : annual ? guideCell(r) : '<td class="muted">—</td>'}
       ${cmpCells(r, annual && r.kind === 'T12')}
-      ${spCell(c.sp, c.spRef)}
-      ${cyCell(r.overCy)}
+      ${spCell(c.sp, c.spRef, r.units)}
+      ${cyCell(r.overCy, p.cyBudgetNoi != null ? { label: p.cyBudgetLabel, period: p.cyBudgetPeriod, months: p.cyBudgetMonths, noi: p.cyBudgetNoi, isFy: p.cyBudgetIsFy } : null)}
       <td>${c.coc != null && c.capital ? `${(c.coc * 100).toFixed(1)}%<div class="muted" style="font-size:10.5px">on ${money(c.capital)}</div>` : '—'}</td>
       <td class="l">${esc(p.status || '')}</td><td class="muted">${p.updatedAt ? new Date(p.updatedAt).toLocaleDateString() : ''}</td></tr>`;
   }
-  function subRow(label, props, cls) {
+  // a subtotal row; `key` makes it collapsible (click: hide / show the rows it adds up)
+  function subRow(label, props, cls, key, note) {
     const r = rowData(props);
-    return `<tr class="${cls}">
-      <td class="l stick">${esc(label)} <span class="muted" style="font-weight:400">· ${props.length} budget${props.length === 1 ? '' : 's'}</span><div class="muted" style="font-size:10.5px; font-weight:400">${xsNum(r.units)} units${r.cat && r.nRef < r.n ? ` · compare: ${r.nRef} of ${r.n} (${r.kind === 'T12' ? 'T12-based' : 'UW-based'})` : ''}</div></td>
-      <td>${money(r.income)}</td><td>${money(r.expense)}</td><td>${money(r.noi)}</td>
-      ${varCell(r.noiVar, r.kind)}${varCell(r.egiVar, r.kind)}${guideCell(r)}
+    const shut = key ? S.sumShut.has(key) : false;
+    const caret = key ? `<span class="sumcaret">${shut ? '▸' : '▾'}</span> ` : '';
+    return `<tr class="${cls}${key ? ' sumfold' : ''}"${key ? ` data-sumshut="${esc(key)}" title="${shut ? 'Show' : 'Hide'} the ${props.length} propert${props.length === 1 ? 'y' : 'ies'} in this subtotal"` : ''}>
+      <td class="l stick">${caret}${esc(label)} <span class="muted" style="font-weight:400">· ${props.length} budget${props.length === 1 ? '' : 's'}${note ? ` · ${esc(note)}` : ''}</span><div class="muted" style="font-size:10.5px; font-weight:400">${xsNum(r.units)} units${r.cat && r.nRef < r.n ? ` · compare: ${r.nRef} of ${r.n} (${r.kind === 'T12' ? 'T12-based' : 'UW-based'})` : ''}</div></td>
+      ${dCell(r.income, r.units)}${dCell(r.expense, r.units)}${dCell(r.noi, r.units)}
+      ${varCell(r.noiVar, r.kind, r.ctx.units)}${varCell(r.egiVar, r.kind, r.ctx.units)}${guideCell(r)}
       ${cmpCells(r, r.kind === 'T12')}
-      ${spCell(props.reduce((a, p) => a + ((p.cmp && p.cmp.sp) || 0), 0), props.some((p) => p.cmp && p.cmp.spRef != null) ? props.reduce((a, p) => a + ((p.cmp && p.cmp.spRef) || 0), 0) : null)}
+      ${spCell(props.reduce((a, p) => a + ((p.cmp && p.cmp.sp) || 0), 0), props.some((p) => p.cmp && p.cmp.spRef != null) ? props.reduce((a, p) => a + ((p.cmp && p.cmp.spRef) || 0), 0) : null, r.units)}
       ${cyCell(r.overCy)}
       <td>${r.coc != null ? `${(r.coc * 100).toFixed(1)}%` : '—'}</td><td></td><td></td></tr>`;
   }
+  const portOf = (code) => SUM_PORTFOLIOS.find((x) => x.codes.includes(String(code || '').toLowerCase()));
   const body = regions.map((rg) => {
     const props = d.properties.filter((p) => regionGroup(p.region) === rg).sort((a, b) => a.code.localeCompare(b.code));
-    return props.map(propRow).join('') + subRow(`${rg} subtotal`, props, 'sub');
+    const rgKey = `rg:${rg}`;
+    let html = '';
+    if (!S.sumShut.has(rgKey)) {
+      // each portfolio's properties, then its subtotal; then the properties in no portfolio
+      for (const pf of SUM_PORTFOLIOS) {
+        const ps = props.filter((p) => pf.codes.includes(String(p.code).toLowerCase()));
+        if (!ps.length) continue;
+        const k = `pf:${pf.name}`;
+        if (!S.sumShut.has(k)) html += ps.map(propRow).join('');
+        html += subRow(pf.name, ps, 'sub psub', k, pf.note);
+      }
+      html += props.filter((p) => !portOf(p.code)).map(propRow).join('');
+    }
+    return html + subRow(`${rg} subtotal`, props, 'sub', rgKey);
   }).join('') + (regions.length > 1 ? subRow('All properties', d.properties, 'grand') : '');
+  const foldKeys = [...regions.map((rg) => `rg:${rg}`), ...SUM_PORTFOLIOS.filter((pf) => d.properties.some((p) => pf.codes.includes(String(p.code).toLowerCase()))).map((pf) => `pf:${pf.name}`)];
+  const anyShut = foldKeys.some((k) => S.sumShut.has(k));
+  const unitBtn = (m, label, tip) => `<button data-sumunit="${m}" class="${unitMode === m ? 'on' : ''}" title="${esc(tip)}">${label}</button>`;
   const modeBtn = (m, label, tip) => `<button data-summode="${m}" class="${mode === m ? 'on' : ''}" title="${esc(tip)}">${label}</button>`;
   const pp = (v) => `${+(v * 100).toFixed(2)}%`;
   const gTxt = G ? `income lines ${pp(G.incomePct)} or better; NOI ${pp(G.noiPct)} or better and not below the current-year budget; expense categories ${pp(expenseCeil(G))} or less, RE taxes ${pp(G.reTaxPct)} or less, payroll ${pp(payrollCeil(G))} or less, insurance $${G.insurancePerUnit}/unit or less; OpEx ${pp(expenseCeil(G))} or less and no more than ${Math.round(G.spreadMax * 10000)} bps over income growth; loss to lease, concessions and vacancy no bigger a share of GPR than the T12; the fee no faster than income` : '';
@@ -7410,22 +7462,24 @@ function renderSummary(el) {
         <div class="row" style="align-items:center; gap:8px; flex-wrap:wrap">
           ${viewSeg}
           <span class="edseg">${modeBtn('pct', 'Δ %', 'Growth of each subtotal over the T12 (UW Year 1 for acquisitions)')}${modeBtn('dlr', 'Δ $', 'Budget minus the T12 / UW, in dollars')}${modeBtn('bud', 'Budget $', 'The budget subtotal')}${modeBtn('ref', 'T12 $', 'The T12 (UW Year 1 for acquisitions) subtotal')}</span>
+          <span class="edseg">${unitBtn('mo', '$/unit/mo', 'Dollars per unit per month')}${unitBtn('yr', '$/unit/yr', 'Dollars per unit per year')}${unitBtn('tot', 'Total $', "The whole property's dollars")}</span>
+          <button class="btn sub sm" id="sum-fold" title="Collapse every region and portfolio to its subtotal, or open them all">${anyShut ? '▾ Expand all' : '▸ Subtotals only'}</button>
           <button class="btn sub sm" id="sum-detail" title="Show or hide GPR, loss to lease, concessions, vacancy, utility and other income">${S.sumDetail ? '▾ Hide' : '▸ Show'} income detail</button>
           <label class="muted" style="font-size:12px">Budget year</label><select id="sum-year">${[...new Set([d.year, ...d.years])].sort((a, b) => b - a).map((y) => `<option value="${y}" ${y === d.year ? 'selected' : ''}>${y}</option>`).join('')}</select>
           <button class="btn sub sm" id="sum-refresh" title="Reload from the budgets as they stand now">↻ Refresh</button>
         </div>
       </div>
       ${d.properties.length ? `<div class="sumwrap"><table class="sumtbl">
-        <tr class="grp"><th class="l stick"></th><th colspan="6"></th><th class="cmp1 c" colspan="${cols.length}">Compare to T12 <span style="text-transform:none; font-weight:400">(acquisitions: UW Year 1) · ${modeName}</span></th><th colspan="5"></th></tr>
+        <tr class="grp"><th class="l stick"></th><th class="c" colspan="5"><span style="text-transform:none; font-weight:400">${unitTxt}</span></th><th></th><th class="cmp1 c" colspan="${cols.length}">Compare to T12 <span style="text-transform:none; font-weight:400">(acquisitions: UW Year 1) · ${modeName}${mode === 'pct' ? '' : `, ${unitTxt}`}</span></th><th colspan="5"></th></tr>
         <tr><th class="l stick">Property</th><th>Income</th><th>OpEx</th><th>NOI</th><th title="NOI vs the T12 (UW Year 1 for acquisitions)">Δ NOI</th><th title="Total income vs the T12 (UW Year 1 for acquisitions)">Δ EGI</th><th class="l" title="Exec-team guidance: growth over the T12">Guidance</th>
           ${cols.map((c, i) => c.grp
             ? `<th class="${i === 0 ? 'cmp1' : ''} sgrp sgrph" data-sumgrp="${c.grp}" title="${esc(c.t)} · click to ${S.sumOpen.has(c.grp) ? 'condense' : 'break out'}">${S.sumOpen.has(c.grp) ? '▾' : '▸'} ${esc(c.h)}</th>`
             : `<th class="${i === 0 ? 'cmp1' : ''} ${c.in ? 'sin' : ''}" title="${esc(c.t)}">${esc(c.h)}</th>`).join('')}
-          <th title="Special projects budgeted (7321-7499), in dollars in every view; hover for the T12's posted SP">SP $</th>
-          <th title="NOI over the current-year budget (the guidance: never below it)">NOI vs CY bud</th><th>CoC</th><th class="l">Status</th><th class="l">Updated</th></tr>
+          <th title="Special projects budgeted (7321-7499), in the chosen dollars in every view; hover for the totals and the T12's posted SP">SP $</th>
+          <th title="NOI over the FY ${fyYear} budget (Jan–Dec ${fyYear}; the guidance: never below it). Hover a cell for the budget it reads">NOI vs ${fyYear} bud</th><th>CoC</th><th class="l">Status</th><th class="l">Updated</th></tr>
         ${body}
       </table></div>
-      <p class="muted" style="font-size:11.5px; margin:8px 0 0">Each property's latest ${d.year} budget. The compare columns are the compare card's subtotals with the same math, always against the trailing-12 for annual budgets (the guidance is growth over the T12, whatever a budget's own compare card is set to) and against UW Year 1 for acquisitions. <span class="gin-key">Green</span> = meets the 2027 guidance memo, <span class="gout-key">red</span> = misses it${gTxt ? `: ${esc(gTxt)}` : ''}. Hover a cell for the exact target and why. The colours stay on in every view. Numbers typed in a budget's own target boxes are not used here. A region subtotal adds its properties' dollars, and its growth is on those sums. Hover a cell for the T12 and budget dollars; click a property to open it.</p>`
+      <p class="muted" style="font-size:11.5px; margin:8px 0 0">Each property's latest ${d.year} budget. The compare columns are the compare card's subtotals with the same math, always against the trailing-12 for annual budgets (the guidance is growth over the T12, whatever a budget's own compare card is set to) and against UW Year 1 for acquisitions. <span class="gin-key">Green</span> = meets the 2027 guidance memo, <span class="gout-key">red</span> = misses it${gTxt ? `: ${esc(gTxt)}` : ''}. Hover a cell for the exact target and why. The colours stay on in every view. Numbers typed in a budget's own target boxes are not used here. Dollars show as ${unitTxt}${unitMode === 'tot' ? '' : " (a subtotal's dollars over its units)"}; hover for the totals. Each portfolio (Minot 4, Williston 2, Basin 2, Bismarck 4, Jamestown 2) and each region closes with a subtotal that adds its properties' dollars, its growth on those sums; click a subtotal to collapse or open it. NOI vs ${fyYear} budget reads each property's FY ${fyYear} budget statement (Jan–Dec). Click a property to open it.</p>`
       : `<p class="muted">No ${d.year} budgets yet.</p>`}
     </div>`;
   el.querySelector('#sum-year').addEventListener('change', (e) => loadSummary(Number(e.target.value)));
@@ -7437,6 +7491,19 @@ function renderSummary(el) {
     store('bt-sumopen', JSON.stringify([...S.sumOpen])); render();
   }));
   el.querySelectorAll('[data-summode]').forEach((b) => b.addEventListener('click', () => { S.sumMode = b.dataset.summode; store('bt-summode', S.sumMode); render(); }));
+  el.querySelectorAll('[data-sumunit]').forEach((b) => b.addEventListener('click', () => { S.sumUnit = b.dataset.sumunit; store('bt-sumunit', S.sumUnit); render(); }));
+  const saveShut = () => { store('bt-sumshut', JSON.stringify([...S.sumShut])); render(); };
+  el.querySelectorAll('[data-sumshut]').forEach((tr) => tr.addEventListener('click', () => {
+    const k = tr.dataset.sumshut;
+    if (S.sumShut.has(k)) S.sumShut.delete(k); else S.sumShut.add(k);
+    saveShut();
+  }));
+  const foldBtn = el.querySelector('#sum-fold');
+  if (foldBtn) foldBtn.addEventListener('click', () => {
+    // subtotals only = every portfolio folded (regions stay open, so the portfolio and region subtotals all show)
+    S.sumShut = S.sumShut.size ? new Set() : new Set(foldKeys.filter((k) => k.startsWith('pf:')));
+    saveShut();
+  });
   el.querySelectorAll('[data-sumopen]').forEach((tr) => tr.addEventListener('click', async () => { await openBudget(Number(tr.dataset.sumopen)); }));
   wireView();
 }

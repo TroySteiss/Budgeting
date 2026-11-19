@@ -259,6 +259,8 @@ export interface ReviewArgs {
   noiTrend?: { label: string; noi: number | null }[];
   /** how the trailing-12 was built, printed under the Budget Comps title (spec 1.5) */
   t12Basis?: string;
+  /** ANNUAL: the FY budget (the calendar year before the budget's) the Schedule's NOI vs current-year budget reads */
+  fyBudget?: { label: string; totals: Record<string, number>; nMonths: number } | null;
   /** ANNUAL: the trailing-12's last month (the T12 sheet's month labels; "last month, flat" lines) */
   t12End?: { month: number; year: number } | null;
   /** the companion NOI cash on cash counts (TPNDC on TPND): typed on the split, else the companion's T12 */
@@ -1251,7 +1253,7 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     const T4KEYS: [string, string][] = [['rental', '5070 Total Rental Income'], ['other', '5190 Total Other Income'], ['fixedLess', '6170 Fixed Admin less RE taxes & mgmt fee'], ['tax', '6116 Real Estate Taxes'], ['fee', '6112 Management Fee'], ['admin', '6370 + 6399 Admin'], ['payroll', '6470 Payroll'], ['marketing', '6570 Marketing'], ['utilities', '6670 Utilities'], ['inHouse', '6770 In-House'], ['exterior', '6870 Exterior / CAM'], ['contract', '6970 Contract Services'], ['rehab', '7070 Rehab / Replace']];
     for (const [k, label] of T4KEYS) { t4Row[k] = rrw; rawRow([label, t4 ? (t4 as any)[k] : 0]); }
     // Schedule inputs: the current-year budget NOI and the trailing-12 NOI windows on file (the Schedule sheet reads column B)
-    const cyb = refs.find((x) => x.key === 'budget');
+    const cyb = args.fyBudget || refs.find((x) => x.key === 'budget');
     // spec 1.4: a CY budget covering only the months owned is annualized: NOI × 12 ÷ its months with NOI
     const cyN = cyb?.nMonths && cyb.nMonths < 12 ? cyb.nMonths : 12;
     const cyNoi = cyb ? r2((cyb.totals['7280'] || 0) * 12 / cyN) : null;

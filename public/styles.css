@@ -594,6 +594,11 @@ table.sumtbl td.gin { background: color-mix(in srgb, var(--good) 15%, var(--pane
 table.sumtbl td.gout { background: color-mix(in srgb, var(--bad) 13%, var(--panel)); color: var(--bad); }
 table.sumtbl tr.sub td { background: var(--total-bg); font-weight: 700; border-top: 1px solid var(--line); border-bottom: 3px solid var(--line); }
 table.sumtbl tr.grand td { background: var(--grand-bg); font-weight: 800; border-top: 2px solid var(--line); }
+/* portfolio subtotals (Troy 2026-11-19): lighter than the region subtotal they sit inside; any subtotal with a caret folds */
+table.sumtbl tr.sub.psub td { background: color-mix(in srgb, var(--total-bg) 55%, var(--panel)); font-weight: 600; border-bottom: 1px solid var(--line); }
+table.sumtbl tr.sumfold { cursor: pointer; }
+table.sumtbl tr.sumfold:hover td.stick { text-decoration: underline; }
+table.sumtbl .sumcaret { display: inline-block; width: 12px; color: var(--dim); }
 table.sumtbl tr.sub td.gin, table.sumtbl tr.grand td.gin { background: color-mix(in srgb, var(--good) 22%, var(--total-bg)); }
 table.sumtbl tr.sub td.gout, table.sumtbl tr.grand td.gout { background: color-mix(in srgb, var(--bad) 20%, var(--total-bg)); }
 .gin-key { color: var(--good); font-weight: 700; }

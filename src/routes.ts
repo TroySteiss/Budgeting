@@ -9,7 +9,7 @@ import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayro
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
   acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, acqDelinquency, applyT12Adjust, FIXED_ANNUAL_GLS, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
-  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, formulaOverride, formulaSetGls, corpGuidanceLine, scalePlanLines, taxFloor, uwDqBundle, fillCalMonths, mgmtFeeOnIncome, mgmtFeeRates, vacancyMonthOverride, fillDeadMonths, capUtilityRecovery, flatFeeBilling, applyShapeFrom, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee, spikeShare } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, formulaOverride, formulaSetGls, corpGuidanceLine, scalePlanLines, taxFloor, uwDqBundle, fillCalMonths, mgmtFeeOnIncome, mgmtFeeRates, vacancyMonthOverride, fillDeadMonths, capUtilityRecovery, flatFeeBilling, applyShapeFrom, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee, spikeShare, isFyBudgetStmt } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, REVIEW_FIX_KINDS, type ReviewRule, type ReviewResult } from '../shared/review.js';
 import { planApply, refileReviewLine, type ApplyRow, type ApplyPlan } from '../shared/reviewApply.js';
@@ -86,6 +86,12 @@ router.get('/state', h(async (_req, res) => {
   const stmtById = new Map<number, any>();
   if (refIds.length) for (const r of (await query('select id, data from stmt_snapshots where id = any($1)', [refIds])).rows) stmtById.set(r.id, r.data);
   // every actual statement per property — the trailing-12 window is composed across them
+  // budget statements per property: the guidance's NOI vs the current-year budget reads the FY one (Troy 2026-11-19)
+  const budStmtsByProp = new Map<string, any[]>();
+  if (refIds.length) for (const r of (await query(`select id, property_code, period, data from stmt_snapshots where kind='budget' order by created_at desc`)).rows) {
+    if (!budStmtsByProp.has(r.property_code)) budStmtsByProp.set(r.property_code, []);
+    budStmtsByProp.get(r.property_code)!.push(r);
+  }
   const actualsByProp = new Map<string, any[]>();
   if (refIds.length) for (const r of (await query(`select id, property_code, data from stmt_snapshots where kind='actual' order by created_at desc`)).rows) {
     if (!actualsByProp.has(r.property_code)) actualsByProp.set(r.property_code, []);
@@ -120,7 +126,10 @@ router.get('/state', h(async (_req, res) => {
       const py = stmtById.get(b.py_stmt_id);
       const own = actualsByProp.get(b.property_code) || [];
       const t12g = py ? trailing12([py, ...own.filter((r) => r.id !== b.py_stmt_id).map((r) => r.data)]) : null;
-      const cyd = stmtById.get(b.cy_budget_stmt_id);
+      const fyStmts = budStmtsByProp.get(b.property_code) || [];
+      const linkedB = fyStmts.find((r) => r.id === b.cy_budget_stmt_id);
+      const fyRow = linkedB && isFyBudgetStmt(linkedB.data, linkedB.period, Number(b.year) - 1) ? linkedB : fyStmts.find((r) => isFyBudgetStmt(r.data, r.period, Number(b.year) - 1));
+      const cyd = fyRow?.data || stmtById.get(b.cy_budget_stmt_id);
       // the site's own UW insurance rate (its acquisition budget's UW model), as in the editor's scorecard
       const acqAny = (budgets.rows as any[]).filter((x) => x.property_code === b.property_code && x.budget_type !== 'annual' && x.uw_snapshot_id)
         .sort((x, y) => (y.year - x.year) || (new Date(y.updated_at).getTime() - new Date(x.updated_at).getTime()))[0];
@@ -793,6 +802,11 @@ interface LoadedBudget {
   /** the CY budget as a REFERENCE (column, compare card, history rows): a new acquisition's part-year budget with the
       months before closing taken from the trailing-12 (the seller's actuals by GL). The engine still reads budgetCal. */
   budgetRefCal: Record<string, Months> | null;
+  /** THE FY BUDGET (Troy 2026-11-19): the calendar year before this budget's (2026 for a 2027 budget), for the Summary's
+      NOI vs the current-year budget and the guidance check. The linked CY budget when it is that calendar year, else the
+      newest budget statement on file that is; none on file = the linked one (isFy false, its own window). `cal` carries a
+      new acquisition's pre-closing months from the T12, as budgetRefCal does; `rawCal` does not. Nothing is built from it. */
+  fyBudget: { stmtId: number; label: string; period: string; cal: Record<string, Months>; rawCal: Record<string, Months>; nMonths: number; isFy: boolean; linked: boolean } | null;
   /** NOI of the T12 windows ending 2 / 1 / 0 months before the last posted month (null = not fully on file) */
   noiTrend: { back: number; label: string; noi: number | null }[]; t12End: { month: number; year: number } | null; t12Live: number;
   /** the companion NOI cash on cash counts (TPNDC on TPND) and where it came from */
@@ -946,6 +960,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   const annual = budget.budget_type === 'annual' || budget.inputs?.mode === 'annual';
   let stmtActual: StmtData | null = null, stmtBudget: StmtData | null = null, template: TemplateData | null = null;
   let actualCal: Record<string, Months> | null = null, budgetCal: Record<string, Months> | null = null, budgetRefCal: Record<string, Months> | null = null;
+  let fyBudget: LoadedBudget['fyBudget'] = null;
   let lastMonth = 10, ref: UwSnapshotData | null = null, refLabel = 'UW', refKey = 'uw';
   let t12Missing: string[] = [], t12Dead: string[] = [], t12Live = 12, t12Startup: string[] = [], t12Early: string[] = [];
   let t12SellerShaped: string[] = [];
@@ -1165,9 +1180,33 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
         refs.push({ key: 'ann3', label: 'T3 annualized', period: `${mo[0]}–${mo[2]} actuals × 4`, ...refColumn(a3), cat: { y1: c.y1, egi: c.egi, toe: c.toe, noi: c.noi } });
       }
     }
+    // spec 1.4: how many months of the CY budget carry NOI (a 2026 acquisition budget covers only the months owned)
+    const covered = (cal: Record<string, Months>) => Array.from({ length: 12 }, (_, i) => Object.entries(cal).some(([gl, m]) => feedsNoiGl(gl) && Math.abs(Number(m[i]) || 0) > 0.5));
+    /* the FY budget (see LoadedBudget.fyBudget): the linked statement when it is the calendar year before the budget's,
+       else the newest one on file that is */
+    {
+      const fy = Number(budget.year) - 1;
+      let pick: any = sb && isFyBudgetStmt(sb.data, sb.period, fy) ? sb : null;
+      if (!pick) pick = ((await query(`select id, period, data from stmt_snapshots where property_code=$1 and kind='budget' order by created_at desc`, [budget.property_code])).rows as any[])
+        .find((r) => isFyBudgetStmt(r.data, r.period, fy)) || null;
+      const use: any = pick || sb;
+      const raw = use?.data ? stmtCalendar(use.data) : null;
+      if (raw && Object.keys(raw).length) {
+        let cal = raw, fillLabel = '';
+        const first = covered(raw).indexOf(true);
+        if (y1Plan && actualCal && t12End && t12End.year === fy && first > 0) {
+          const fill = Array.from({ length: Math.min(first, t12End.month) }, (_, i) => i);
+          if (fill.length) {
+            cal = fillCalMonths(raw, actualCal, fill);
+            const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            fillLabel = `${MON[fill[0]]}–${MON[fill[fill.length - 1]]} ${t12End.year} actuals (seller before closing) + `;
+          }
+        }
+        fyBudget = { stmtId: Number(use.id), label: budgetRefLabel(use.period), period: `${fillLabel}${use.period || ''}`, cal, rawCal: raw,
+          nMonths: covered(cal).filter(Boolean).length, isFy: !!pick, linked: Number(use.id) === Number(budget.cy_budget_stmt_id) };
+      }
+    }
     if (budgetCal) {
-      // spec 1.4: how many months of the CY budget carry NOI (a 2026 acquisition budget covers only the months owned)
-      const covered = (cal: Record<string, Months>) => Array.from({ length: 12 }, (_, i) => Object.entries(cal).some(([gl, m]) => feedsNoiGl(gl) && Math.abs(Number(m[i]) || 0) > 0.5));
       const cov = covered(budgetCal);
       /* A NEW ACQUISITION'S CY BUDGET, WHOLE YEAR (Troy 2026-11-16: "I would like for those brand new properties to have
          Jan-Aug pulled into the 2026 budget comparison/reference per line"): the months of the CY before the budget's first
@@ -1231,7 +1270,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     : typedCo ? { amount: typedCo, from: 'typed', to: coSplit.to }
     : await companionT12Noi(coSplit.to);
   return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, companionNoi, rollAsOf, rollMarket, sellerUtil, charges, sellerRows, defaultRules, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, uwBasisLatest, burdenSrc, burdenGlSrc, shapeGlSrc, guidance, refKey,
-           annual, stmtActual, stmtBudget, template, actualCal, budgetCal, budgetRefCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs, priorT12 };
+           annual, stmtActual, stmtBudget, template, actualCal, budgetCal, budgetRefCal, fyBudget, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs, priorT12 };
 }
 
 /* SAVING A BUDGET'S LINES IN ONE STATEMENT (Troy 2026-11-18: "Changes are getting extremely slow"): the lines used to go
@@ -1374,7 +1413,9 @@ function summaryOf(lb: LoadedBudget, lines: BudgetLine[]) {
   let t4 = colOf('ann4');
   // the workbook carries the T12's interest in the T4 column (interest is not annualized off four months)
   if (t4 && t12) t4 = { ...t4, interest: t12.interest, cashFlow: r2(t4.noi - t12.interest + t4.mtg1 + t4.mtg2) };
-  const cyb = lb.refs.find((x) => x.key === 'budget');
+  // NOI vs the FY budget (the calendar year before this budget's: Troy 2026-11-19), not a budget over the T12 window
+  const fyb = lb.fyBudget;
+  const fyNoi = fyb ? refColumn(fyb.cal).totals['7280'] || 0 : 0;
   return {
     labels: summaryLabels(lb.t12End?.month, lb.t12End?.year, lb.budget.inputs?.summaryLabels),
     capital: Number(lb.budget.inputs?.capital) || 0,
@@ -1383,9 +1424,11 @@ function summaryOf(lb: LoadedBudget, lines: BudgetLine[]) {
     noiTrend: lb.noiTrend,
     priorT12: (lb.priorT12 || []).map((p) => { const st = Number(lb.budget.inputs?.startMonth) || 1; return { label: p.label, noi: rotate12(p.noi, st), income: rotate12(p.income, st), expense: rotate12(p.expense, st) }; }),
     // a part-year CY budget is annualized for the comparison (spec 1.4): NOI × 12 ÷ the months it covers
-    cyBudgetNoi: cyb ? r2((cyb.totals['7280'] || 0) * (cyb.nMonths && cyb.nMonths < 12 ? 12 / cyb.nMonths : 1)) : null,
-    cyBudgetMonths: cyb?.nMonths ?? null,
-    cyBudgetLabel: cyb ? cyb.label : null,
+    cyBudgetNoi: fyb ? r2(fyNoi * (fyb.nMonths && fyb.nMonths < 12 ? 12 / fyb.nMonths : 1)) : null,
+    cyBudgetMonths: fyb?.nMonths ?? null,
+    cyBudgetLabel: fyb ? fyb.label : null,
+    cyBudgetPeriod: fyb ? fyb.period : null,
+    cyBudgetIsFy: fyb ? fyb.isFy : null,
   };
 }
 
@@ -1409,7 +1452,7 @@ function compareOf(lb: LoadedBudget, lines: BudgetLine[]) {
   cat.toe = { ref: t.toe.uw, bud: t.toe.budget };
   cat.noi = { ref: t.noi.uw, bud: t.noi.budget };
   const k = kpis(new Map(lines.map((l) => [l.gl_code, l.months])), Number(lb.budget.inputs?.capital) || 0, lb.companionNoi?.amount || 0);
-  const gr = uwOn && lb.y1Plan ? uwGuide(lb, lines) : lb.annual && lb.actualCal ? guidanceCheck({ lines, coaList: lb.coa, t12: lb.actualCal, cyBudget: lb.budgetCal, lastMonth: lb.lastMonth || 10,
+  const gr = uwOn && lb.y1Plan ? uwGuide(lb, lines) : lb.annual && lb.actualCal ? guidanceCheck({ lines, coaList: lb.coa, t12: lb.actualCal, cyBudget: lb.fyBudget?.rawCal ?? lb.budgetCal, lastMonth: lb.lastMonth || 10,
     startMonth: Number(lb.budget.inputs?.startMonth) || 1, units, capital: Number(lb.budget.inputs?.capital) || 0, guidance: lb.guidance, insurancePerUnit: uwInsuranceRate(lb) }) : null;
   const ovF = lb.lines.filter((l: any) => l.override && l.driver?.method && !['manual', 'setTotal', 'zero'].includes(l.driver.method)).length;
   return {
@@ -1501,7 +1544,7 @@ function budgetView(lb: LoadedBudget) {
     // the exec team's 2027 guidance as a scorecard: growth vs the October T12, NOI vs the current budget,
     // March vs October rental income, insurance / taxes / payroll / SP (shared/annual.ts guidanceCheck)
     // a new acquisition's year runs off its plan: the UW scorecard, not the T12 guidance (Troy 2026-11-12)
-    guide: lb.annual ? (acqPlanOn(lb.budget.inputs, lb.y1Plan) ? uwGuide(lb, lines) : guidanceCheck({ lines, coaList: lb.coa, t12: lb.actualCal, cyBudget: lb.budgetCal, lastMonth: lb.lastMonth || 10,
+    guide: lb.annual ? (acqPlanOn(lb.budget.inputs, lb.y1Plan) ? uwGuide(lb, lines) : guidanceCheck({ lines, coaList: lb.coa, t12: lb.actualCal, cyBudget: lb.fyBudget?.rawCal ?? lb.budgetCal, lastMonth: lb.lastMonth || 10,
       startMonth: start, units: Number(lb.budget.inputs?.units) || 0, capital: Number(lb.budget.inputs?.capital) || 0, guidance: lb.guidance, insurancePerUnit: uwInsuranceRate(lb) })) : null,
     guidance: lb.guidance,
     // the site's own UW insurance $/unit (the insurance target when above the guidance rate)
@@ -3391,6 +3434,7 @@ export function reviewArgs(lb: LoadedBudget, prop: any, compName: string): Revie
     region: String(prop?.market || '').trim() || 'Other',
     noiTrend: lb.noiTrend.map((t) => ({ label: t.label, noi: t.noi })),
     t12Basis: t12BasisText(lb),
+    fyBudget: lb.fyBudget ? { label: lb.fyBudget.label, totals: refColumn(lb.fyBudget.cal).totals, nMonths: lb.fyBudget.nMonths } : null,
     t12End: lb.t12End || null,
     companionNoi: lb.companionNoi,
     // the % over T12 column needs a full year of the property's own history (an acquisition: months since closing)
