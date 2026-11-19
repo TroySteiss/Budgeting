@@ -157,7 +157,9 @@ describe('Budget Comps sheet (the budget-comps summary panel) and the Schedule',
     expect(resultOf(bud.getCell(3, 17))).toBeCloseTo((resultOf(bud.getCell(3, 15)) + 120000) / 1000000, 6);
     expect(String(sm.getCell('B36').value)).toBe('TPNDC NOI (counted in Return)');
     expect(resultOf(sm.getCell('E34'))).toBeCloseTo((resultOf(sm.getCell('E32')) + 120000) / 1000000, 6);
-    expect(resultOf(sm.getCell('C34'))).toBeCloseTo(resultOf(sm.getCell('C32')) / 1000000, 6);   // history: own cash flow
+    // the same year's companion NOI on every column, so T12 / T4 / draft returns compare like with like
+    expect(resultOf(sm.getCell('C34'))).toBeCloseTo((resultOf(sm.getCell('C32')) + 120000) / 1000000, 6);
+    expect(resultOf(sm.getCell('D36'))).toBe(120000);
   });
   it('portfolio: a panel per property, a summed Portfolio Comps panel and a Schedule per region with the colour scale', async () => {
     const wb = await load(await buildPortfolioWorkbook([withTrend('aaa', 'Minot ND', 1.02), withTrend('bbb', 'Minot ND', 1.05), withTrend('ccc', 'Williston ND', 1)], 'Test'));

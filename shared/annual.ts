@@ -40,7 +40,8 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-18e';   // e: no curve or T12 fit ever on a corporate formula
+export const ENGINE_VERSION = '2026-11-19a';   // a: TPND review — utility cap on the gross bill at a split property, an annual bill on "last month" no longer drops, RE tax MF share shown
+// 2026-11-18e:   // e: no curve or T12 fit ever on a corporate formula
 // d:   // d: November gift cards = $500 x allocated employees
 // c:   // c: review-checklist defaults (one-time months, even bonus quarters, fixed fees, 5110 T12, gap fill)
 // b: % increase over contract cost (inputs.contractPct)
@@ -566,8 +567,10 @@ export function reTaxFromInputs(t: ReTaxInputs | null | undefined): { tax: numbe
     b = (t.marketValue * (t.reassessRatio ?? RE_TAX_REASSESS) * t.adValRate2025 * (1 - (t.discount ?? RE_TAX_DISCOUNT)) + (t.specials2025 || 0)) * (1 + g);
   }
   let tax = b != null && b > a ? b : a;
-  if (t.mfShare && t.mfShare > 0 && t.mfShare < 1) tax *= t.mfShare;
-  return { tax: r2(tax), branch: b != null && b > a ? 'B' : 'A', a: r2(a), b: b == null ? null : r2(b) };
+  const share = t.mfShare && t.mfShare > 0 && t.mfShare < 1 ? t.mfShare : null;
+  if (share) tax *= share;
+  // the MF share rides along so the label can say A / B are the whole property's (TPND: 58.89%, the rest is TPNDC's)
+  return { tax: r2(tax), branch: b != null && b > a ? 'B' : 'A', a: r2(a), b: b == null ? null : r2(b), ...(share ? { mfShare: Math.round(share * 10000) / 10000 } : {}) };
 }
 /** This year's RE tax cost (checked across all 17 sites, Troy 2026-11-13: "Check on multiple sites, not just one"):
     the months posted so far this calendar year (Jan..lastMonth of the trailing-12) plus the rest of the year at the
@@ -1847,12 +1850,17 @@ export const RECOVERY_GROUPS_FLAT_FEE: { key: string; reims: string[]; expenses:
   { key: 'flat fee (all but trash and pest)', reims: ['5170', '5174', '5167', '5171', '5172'], expenses: ['6622', '6614', '6608', '6604', '6606'] },
 ];
 export const RECOVERY_CAP = 1, RECOVERY_RESET = 0.9;
-export function capUtilityRecovery(lines: BudgetLine[], opts: { flatFee?: boolean } = {}): { lines: BudgetLine[]; groups: { key: string; reim: number; expense: number; ratio: number | null; reset: boolean; locked: boolean }[] } {
+export function capUtilityRecovery(lines: BudgetLine[], opts: { flatFee?: boolean; split?: { pct: number; gls: string[] } | null } = {}): { lines: BudgetLine[]; groups: { key: string; reim: number; expense: number; ratio: number | null; reset: boolean; locked: boolean }[] } {
   let out = lines;
   const groups: { key: string; reim: number; expense: number; ratio: number | null; reset: boolean; locked: boolean }[] = [];
-  const tot = (ls: BudgetLine[], gls: string[]) => ls.filter((l) => gls.includes(l.gl_code)).reduce((a, l) => a + Math.abs(sum(l.months)), 0);
+  /* A SPLIT PROPERTY'S BILL (TPND 2026-11-19): residents are billed (RUBS) on the whole bill, while the property's own
+     expense lines carry only its share after the recurring journal (58.89%); the recovery is tested against the bill
+     grossed back up, else TPND reads 103-111% recovered and its income was cut to 90% of its share. */
+  const sp = opts.split && opts.split.pct > 0 && opts.split.pct < 1 ? opts.split : null;
+  const tot = (ls: BudgetLine[], gls: string[], gross = false) => ls.filter((l) => gls.includes(l.gl_code))
+    .reduce((a, l) => a + Math.abs(sum(l.months)) / (gross && sp && sp.gls.includes(l.gl_code) ? 1 - sp.pct : 1), 0);
   for (const g of opts.flatFee ? RECOVERY_GROUPS_FLAT_FEE : RECOVERY_GROUPS) {
-    const R = tot(out, g.reims), E = tot(out, g.expenses);
+    const R = tot(out, g.reims), E = tot(out, g.expenses, true);
     const ratio = E > 0 ? R / E : null;
     if (ratio == null || ratio <= RECOVERY_CAP + 1e-9) { groups.push({ key: g.key, reim: r2(R), expense: r2(E), ratio, reset: false, locked: false }); continue; }
     const free = out.filter((l) => g.reims.includes(l.gl_code) && !l.override && Math.abs(sum(l.months)) > 0);
@@ -2055,7 +2063,11 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     }
     const mult = bl.glMround?.[a.code] ?? (bl.mround || rule?.mround || 0);
     const fit = sh === 'turns' || sh === 'curve' ? Math.min(1, Math.max(0, bl.glFit?.[a.code] ?? rule?.fit ?? 0)) : 0;
-    let months = annualBaseline(cal, { pct, pcts, shape: sh, startMonth, lastMonth, curve: CURVES[a.curve || 'flat'], mult, turns: turnCurve, fit });
+    /* "LAST MONTH, FLAT" ON A MONTH WITH NO BILL (TPND 2026-11-19: auto insurance $600 in the T12 budgeted $0 — October had
+       no bill, the yearly one posts in another month): a default "last month" line whose last month is empty while the
+       T12 is not budgets the T12's own months (same month). A shape picked on the row is taken as picked. */
+    const lastEmpty = sh === 'last' && !bl.glShape?.[a.code] && !shape && !(Math.abs(cal[lastMonth - 1] || 0) >= 1) && cal.some((v) => Math.abs(v) >= 1);
+    let months = annualBaseline(cal, { pct, pcts, shape: lastEmpty ? 'actual' : sh, startMonth, lastMonth, curve: CURVES[a.curve || 'flat'], mult, turns: turnCurve, fit });
     if (rule?.method === 'wavg' && sh === 'wavg' && !bl.glShape?.[a.code] && startMonth === 1) {
       // RMC's Excel weighted average can't wrap the year: January and December
       // fall back to the plain same-month × factor, MROUND $10 (the GRKS cells)
@@ -2105,7 +2117,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
         months = Array(12).fill(mult ? r2(Math.round(mo / mult) * mult) : r2(mo)) as Months;
       }
     }
-    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(accrual ? { accrual, taxYear } : {}), ...(reTax ? { reTax } : {}), ...(taxNoInputs ? { taxNoInputs: true } : {}), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(fit ? { fit } : {}), ...(lastDev != null ? { lastDev } : {}), ...(drift ? { drift } : {}), ...(noNeg.folded ? { folded: noNeg.folded } : {}), ...(gf ? { gapFill: gf.filled } : {}) } as any);
+    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(accrual ? { accrual, taxYear } : {}), ...(reTax ? { reTax } : {}), ...(taxNoInputs ? { taxNoInputs: true } : {}), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(fit ? { fit } : {}), ...(lastDev != null ? { lastDev } : {}), ...(drift ? { drift } : {}), ...(noNeg.folded ? { folded: noNeg.folded } : {}), ...(gf ? { gapFill: gf.filled } : {}), ...(lastEmpty ? { lastEmpty: true, shape: 'actual' } : {}) } as any);
     return true;
   };
 

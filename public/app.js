@@ -198,9 +198,10 @@ function drvMetaBase(l) {
       const d = l.driver;
       // RE taxes from the current accrual (Troy 2026-11-13: "revisit taxes as a whole for all formats")
       // RE tax from the bill (change spec §2)
-      if (d.reTax) { const t = d.reTax; return { cls: 'drv-base', tag: t.branch === 'UW' ? 'TAX·UW Y2' : `TAX·${t.branch}`, label: t.branch === 'UW' ? `RE taxes = the UW book's Taxes tab, Ryan PP, Year 2: $${money(t.tax)} (the sale is already in that number), ÷ 12 flat${t.source ? ` · ${t.source}` : ''}` : `RE taxes from the bill: A = the year-before estimate × 1.03 = $${money(t.a || 0)}${t.b != null ? `; B = the sale reassessed (market × 90.5% × the 2025 ad valorem rate × 95% + specials) × 1.03 = $${money(t.b)}` : ''}; the higher wins${t.branch === 'B' ? ' (B)' : ''}: $${money(t.tax)}, ÷ 12 flat${t.source ? ` · ${t.source}` : ''}` }; }
+      if (d.reTax) { const t = d.reTax; return { cls: 'drv-base', tag: t.branch === 'UW' ? 'TAX·UW Y2' : `TAX·${t.branch}`, label: t.branch === 'UW' ? `RE taxes = the UW book's Taxes tab, Ryan PP, Year 2: $${money(t.tax)} (the sale is already in that number), ÷ 12 flat${t.source ? ` · ${t.source}` : ''}` : `RE taxes from the bill${t.mfShare ? ` (this property's ${(t.mfShare * 100).toFixed(2)}% share of the whole property's bill: $${money(t.tax)})` : ''}: A = the year-before estimate × 1.03 = $${money(t.a || 0)}${t.b != null ? `; B = the sale reassessed (market × 90.5% × the 2025 ad valorem rate × 95% + specials) × 1.03 = $${money(t.b)}` : ''}; the higher wins${t.branch === 'B' ? ' (B)' : ''}: $${money(t.tax)}, ÷ 12 flat${t.source ? ` · ${t.source}` : ''}` }; }
       if (d.accrual) return { cls: 'drv-base', tag: d.taxNoInputs ? '⚠ACCRUAL' : 'ACCRUAL', label: `RE taxes: this year's cost $${money(d.taxYear || d.accrual * 12)} (what has posted this calendar year + the rest at the current monthly accrual $${money(d.accrual)}, the latest posted month that repeats; a one-off true-up month is skipped; a property bought this year: the accrual × 12) × ${(1 + (d.pct || 0)).toFixed(3)}, spread evenly · T12 ${Math.round(d.base || 0).toLocaleString('en-US')}. Type a % on the row to change the increase; pick a formula on the row to leave the accrual.` };
-      let shape = { actual: 'same calendar month', wavg: '1-2-1 weighted distribution', flat: 'T12 ÷ 12 flat', curve: `T12 total on the GL curve${d.fit ? `, fit ${Math.round(d.fit * 100)}% to its own T12 months` : ''}`, last: 'last actual month, flat', avgnz: 'average of active months, flat', turns: `turnover curve: T12 total on lease expirations + 1 mo lag${d.turns ? ` (${Math.round(d.turns)} expirations)` : ''}${d.fit ? `, fit ${Math.round(d.fit * 100)}% to its own T12 months` : ''}` }[d.shape] || d.shape;
+      // "last month, flat" whose last month had no bill budgets the T12's own months (TPND 6104, 2026-11-19)
+      let shape = { actual: d.lastEmpty ? "same calendar month (its last month had no bill, so not 'last month, flat')" : 'same calendar month', wavg: '1-2-1 weighted distribution', flat: 'T12 ÷ 12 flat', curve: `T12 total on the GL curve${d.fit ? `, fit ${Math.round(d.fit * 100)}% to its own T12 months` : ''}`, last: 'last actual month, flat', avgnz: 'average of active months, flat', turns: `turnover curve: T12 total on lease expirations + 1 mo lag${d.turns ? ` (${Math.round(d.turns)} expirations)` : ''}${d.fit ? `, fit ${Math.round(d.fit * 100)}% to its own T12 months` : ''}` }[d.shape] || d.shape;
       const factor = d.pcts ? `+ Conservice forecast ${(Math.min(...d.pcts) * 100).toFixed(0)}–${(Math.max(...d.pcts) * 100).toFixed(0)}% by month` : `× ${(1 + (d.pct || 0)).toFixed(3)}`;
       // a GL with no seasonal curve on "curve" is exactly T12 ÷ 12 — show it as that, not CURVE (Troy 2026-11-11)
       const flatCurve = d.shape === 'curve' && !glHasCurve(l.gl_code);
@@ -1348,7 +1349,7 @@ function renderEditor(el) {
       ${kpiCard('NOI', k.noi, prop.units)}
       ${kpiCard('Interest', k.interest, prop.units)}
       ${kpiCard(k.sp ? 'Cash flow before SP' : 'Cash flow · no SP budgeted', k.cashFlow, prop.units)}
-      <div class="kpi" title="(NOI − interest − principal${k.companionNoi ? ` + ${String((S.bv.allocOut || {}).to || 'companion').toUpperCase()} NOI $${money(k.companionNoi)}` : ''}) ÷ capital. Special projects are NOT deducted${k.sp ? '' : ' and none are budgeted yet'}${k.principal ? '' : '; no principal is budgeted'}."><div class="lbl">Cash on cash${k.sp ? ' before SP' : ''}</div><div class="val">${k.coc != null ? pctf(k.coc) : '—'}</div><div class="sub">${inp.capital ? 'on ' + money(inp.capital) : 'set capital'}</div></div>
+      <div class="kpi" title="(NOI − interest − principal${k.companionNoi ? ` + ${String((S.bv.companionNoi || {}).to || 'companion').toUpperCase()} NOI $${money(k.companionNoi)}${(S.bv.companionNoi || {}).from === 't12' ? ' (its trailing-12 statement)' : ''}` : ''}) ÷ capital. Special projects are NOT deducted${k.sp ? '' : ' and none are budgeted yet'}${k.principal ? '' : '; no principal is budgeted'}."><div class="lbl">Cash on cash${k.sp ? ' before SP' : ''}</div><div class="val">${k.coc != null ? pctf(k.coc) : '—'}</div><div class="sub">${inp.capital ? 'on ' + money(inp.capital) : 'set capital'}${S.bv.allocOut ? (S.bv.companionNoi ? ` · incl. ${String(S.bv.companionNoi.to).toUpperCase()} NOI ${money(S.bv.companionNoi.amount)}${S.bv.companionNoi.from === 't12' ? ' (T12)' : ''}` : ` · <span style="color:var(--bad)">${String(S.bv.allocOut.to).toUpperCase()} NOI not counted — More → Journal split</span>`) : ''}</div></div>
     </div>
     <div class="editor${localStorage.getItem('bt-side') === '0' ? ' noside' : ''}" style="--side-w:${sideWidth()}px">
       <div>
@@ -2105,13 +2106,13 @@ function gridHtml(bv, totals) {
         const prinM = Array(12).fill(0);
         for (const l of bv.lines || []) { const n = Number(l.gl_code); if (n >= 3080 && n <= 3091) l.months.forEach((v, i) => { prinM[i] += Math.abs(v || 0); }); }
         // a companion's NOI counted in cash on cash (TPNDC on TPND), a twelfth a month
-        const coNoi = Number((bv.allocOut || {}).cocNoi) || 0;
+        const coNoi = Number((bv.companionNoi || {}).amount) || 0;
         const cf = m.map((v, i) => (v || 0) - (intM[i] || 0) - prinM[i] + coNoi / 12);
         const cfY = sumM(cf);
         const pct = (v) => `${(v * 100).toFixed(2)}%`;
         const byQ = S.cocView === 'q';
         const toggle = `<span class="cocview">${['m', 'q'].map((k) => `<button class="rb${(byQ ? 'q' : 'm') === k ? ' on' : ''}" data-cocview="${k}" title="${k === 'm' ? 'By month: each month × 12' : 'By quarter: each quarter × 4'}">${k === 'm' ? 'mo' : 'qtr'}</button>`).join('')}</span>`;
-        const capTxt = cap ? `$${money(cap)} capital${bv.returnsCapital.from === 'uw' ? ' (UW capital to close)' : ''}${coNoi ? `; includes ${String(bv.allocOut.to || 'companion').toUpperCase()} NOI $${money(coNoi)}/yr` : ''}` : '';
+        const capTxt = cap ? `$${money(cap)} capital${bv.returnsCapital.from === 'uw' ? ' (UW capital to close)' : ''}${coNoi ? `; includes ${String(bv.companionNoi.to || 'companion').toUpperCase()} NOI $${money(coNoi)}/yr${bv.companionNoi.from === 't12' ? ' (its T12)' : ''}` : ''}` : '';
         const cells = !cap ? `<td colspan="${monthIdx.length}" class="l muted">no capital on file — set Capital under Assumptions</td>`
           : byQ ? [0, 1, 2, 3].map((q) => {
             const vis = monthIdx.filter((i) => Math.floor(i / 3) === q).length;

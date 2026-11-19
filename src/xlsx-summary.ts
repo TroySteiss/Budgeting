@@ -193,15 +193,23 @@ export function fillSummaryPanel(ws: ExcelJS.Worksheet, spec: PanelSpec): void {
   const rowsUsed: number[] = [];
   // a companion's NOI (TPNDC on TPND): the draft's Return counts it (the capital bought both); history columns do not
   let coRow: number | null = null;
+  // the companion's NOI on all three columns (TPND 2026-11-19): one year's figure (its T12, or typed), so the T12, the T4
+  // and the draft returns compare like with like; Return and the after-SP rows count it
+  const coIn = (_c: ColL): number => (coRow ? X.companion!.amount : 0);
   if (X.companion && X.companion.amount) {
     coRow = r;
     const b = ws.getCell(`B${r}`); b.value = X.companion.label; b.font = bold;
-    put(`E${r}`, null, X.companion.amount, ACCT).font = { name: 'Calibri', size: 11, color: { argb: 'FF0000FF' } };
+    put(`C${r}`, null, X.companion.amount, ACCT).fill = solid(BLUE);
+    put(`D${r}`, `+C${r}`, X.companion.amount, ACCT).fill = solid(GREEN);
+    put(`E${r}`, `+C${r}`, X.companion.amount, ACCT);
+    ws.getCell(`C${r}`).font = { name: 'Calibri', size: 11, color: { argb: 'FF0000FF' } };
     rowsUsed.push(r); r += 1;
-    // the draft's Return above now includes it
-    const ret = ws.getCell('E34');
-    ret.value = { formula: `IF(E5<>0,(E32+E${coRow})/E5,"")`, result: E && cap ? (E.cashFlow + X.companion.amount) / cap : '' } as any;
-    const rbl = ws.getCell('B34'); rbl.value = `Return (draft incl. ${X.companion.label.replace(/ NOI.*$/, '')} NOI)`;
+    for (const c of ['C', 'D', 'E'] as ColL[]) {
+      const col = cols[c];
+      const ret = ws.getCell(`${c}34`);
+      ret.value = { formula: `IF(${c}5<>0,(${c}32+${c}${coRow})/${c}5,"")`, result: col && cap ? (col.cashFlow + X.companion.amount) / cap : '' } as any;
+    }
+    const rbl = ws.getCell('B34'); rbl.value = `Return (incl. ${X.companion.label.replace(/ NOI.*$/, '')} NOI)`;
   }
   // special projects
   const spR = r;
@@ -215,8 +223,8 @@ export function fillSummaryPanel(ws: ExcelJS.Worksheet, spec: PanelSpec): void {
   // cash flow and return after special projects
   const cfR = r;
   { const b = ws.getCell(`B${cfR}`); b.value = 'Cash Flow after SP'; b.font = bold; }
-  const cfVal = (c: ColL): number | null => { const col = cols[c]; return col ? col.cashFlow - X.sp[c].value + (c === 'E' && coRow ? X.companion!.amount : 0) : null; };
-  for (const c of ['C', 'D', 'E'] as ColL[]) put(`${c}${cfR}`, `${c}32-${c}${spR}${c === 'E' && coRow ? `+E${coRow}` : ''}`, cfVal(c), ACCT);
+  const cfVal = (c: ColL): number | null => { const col = cols[c]; return col ? col.cashFlow - X.sp[c].value + coIn(c) : null; };
+  for (const c of ['C', 'D', 'E'] as ColL[]) put(`${c}${cfR}`, `${c}32-${c}${spR}${coRow ? `+${c}${coRow}` : ''}`, cfVal(c), ACCT);
   { const f = put(`F${cfR}`, `IF(C${cfR}<>0,(E${cfR}-C${cfR})/C${cfR},"")`, (() => { const a = cfVal('C'), e = cfVal('E'); return a && e != null ? (e - a) / a : ''; })(), PCT1); f.fill = solid(BLUE); f.alignment = { horizontal: 'center' }; }
   for (const c of ['C', 'D', 'E']) addBorder(`${c}${cfR}`, { top: THIN });
   rowsUsed.push(cfR); r += 1;

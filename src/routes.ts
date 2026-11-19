@@ -111,7 +111,7 @@ router.get('/state', h(async (_req, res) => {
   for (const b of budgets.rows as any[]) {
     const ls = byBudget.get(b.id) || [];
     const monthsMap = new Map(ls.map((l: any) => [l.gl_code, l.months]));
-    const k = kpis(monthsMap as any, Number(b.inputs?.capital) || 0, companionNoiOf(b.inputs));
+    const k = kpis(monthsMap as any, Number(b.inputs?.capital) || 0, companionNoiOf(b.inputs) || (b.budget_type === 'annual' ? (await companionT12Noi(allocOutFor(b.inputs, b.property_code)?.to))?.amount || 0 : 0));
     let uw: any = b.uw_snapshot_id ? uwById.get(b.uw_snapshot_id) : null;
     let refLabel = 'UW';
     let guide: any = null;
@@ -795,6 +795,8 @@ interface LoadedBudget {
   budgetRefCal: Record<string, Months> | null;
   /** NOI of the T12 windows ending 2 / 1 / 0 months before the last posted month (null = not fully on file) */
   noiTrend: { back: number; label: string; noi: number | null }[]; t12End: { month: number; year: number } | null; t12Live: number;
+  /** the companion NOI cash on cash counts (TPNDC on TPND) and where it came from */
+  companionNoi: { amount: number; from: 'typed' | 't12'; to: string; period?: string } | null;
   /** prior-year trailing-12s (windows ending 12 / 24 / 36 months before the current one) with every month on
       file: monthly NOI by calendar month, for the trend chart's dotted lines (Troy 2026-11-11) */
   priorT12: { label: string; noi: Months; income: Months; expense: Months }[];
@@ -1221,7 +1223,14 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     if (stmtActual?.rows?.length || actualCal) sellerRows = ownT12Rows(stmtActual, actualCal, (gl) => coaMap.get(gl) || null);
   }
   const guidance = await loadGuidance();
-  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, rollAsOf, rollMarket, sellerUtil, charges, sellerRows, defaultRules, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, uwBasisLatest, burdenSrc, burdenGlSrc, shapeGlSrc, guidance, refKey,
+  // TPND COC (Troy 2026-11-18/19): the companion's NOI counted in cash on cash — typed on the journal split, else the
+  // companion's own newest trailing-12 statement (TPNDC); none = the KPI tile says the commercial side is missing
+  const coSplit = annual ? allocOutFor(budget.inputs, budget.property_code) : null;
+  const typedCo = companionNoiOf(budget.inputs);
+  const companionNoi: LoadedBudget['companionNoi'] = !coSplit ? null
+    : typedCo ? { amount: typedCo, from: 'typed', to: coSplit.to }
+    : await companionT12Noi(coSplit.to);
+  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, companionNoi, rollAsOf, rollMarket, sellerUtil, charges, sellerRows, defaultRules, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, uwBasisLatest, burdenSrc, burdenGlSrc, shapeGlSrc, guidance, refKey,
            annual, stmtActual, stmtBudget, template, actualCal, budgetCal, budgetRefCal, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs, priorT12 };
 }
 
@@ -1399,7 +1408,7 @@ function compareOf(lb: LoadedBudget, lines: BudgetLine[]) {
   cat.egi = { ref: t.egi.uw, bud: t.egi.budget };
   cat.toe = { ref: t.toe.uw, bud: t.toe.budget };
   cat.noi = { ref: t.noi.uw, bud: t.noi.budget };
-  const k = kpis(new Map(lines.map((l) => [l.gl_code, l.months])), Number(lb.budget.inputs?.capital) || 0, companionNoiOf(lb.budget.inputs));
+  const k = kpis(new Map(lines.map((l) => [l.gl_code, l.months])), Number(lb.budget.inputs?.capital) || 0, lb.companionNoi?.amount || 0);
   const gr = uwOn && lb.y1Plan ? uwGuide(lb, lines) : lb.annual && lb.actualCal ? guidanceCheck({ lines, coaList: lb.coa, t12: lb.actualCal, cyBudget: lb.budgetCal, lastMonth: lb.lastMonth || 10,
     startMonth: Number(lb.budget.inputs?.startMonth) || 1, units, capital: Number(lb.budget.inputs?.capital) || 0, guidance: lb.guidance, insurancePerUnit: uwInsuranceRate(lb) }) : null;
   const ovF = lb.lines.filter((l: any) => l.override && l.driver?.method && !['manual', 'setTotal', 'zero'].includes(l.driver.method)).length;
@@ -1442,7 +1451,9 @@ function budgetView(lb: LoadedBudget) {
     actualMonths,
     tieout: computeTieout(lines, lb.coaMap, refOf(lb)),
     monthLabels: monthLabels(lb.budget.year, start),
-    kpis: kpis(monthsMap, Number(lb.budget.inputs?.capital) || 0, companionNoiOf(lb.budget.inputs)),
+    kpis: kpis(monthsMap, Number(lb.budget.inputs?.capital) || 0, lb.companionNoi?.amount || 0),
+    // the companion NOI cash on cash counts (TPNDC on TPND): typed on the split, else the companion's own T12 statement
+    companionNoi: lb.companionNoi,
     // the capital the returns row under NOI divides by: the budget's own, else (a new acquisition) the UW capital to close
     returnsCapital: Number(lb.budget.inputs?.capital) > 0 ? { capital: Number(lb.budget.inputs.capital), from: 'budget' }
       : lb.y1Plan?.uw?.capital ? { capital: Number(lb.y1Plan.uw.capital), from: 'uw' }
@@ -1832,7 +1843,7 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
     lines = fillDeadMonths(lines, { posted: lb.actualCal, liveIdx: acqLive.length ? acqLive : acqHistoryOf(lb.y1Plan, lb.actualCal, lb.t12End, lb.acquisition?.start).history.ownedIdx || [],
       filledIdx: lb.y1Plan.t12Filled, pcodeOf: (gl) => String(lb.coaMap.get(gl)?.pcode || ''), curveOf: (gl) => (lb.coaMap.get(gl) as any)?.curve || null });
   }
-  if (lb.annual) lines = capUtilityRecovery(lines, { flatFee: flatFeeBilling(inputs as any, lb.budget.property_code) }).lines;
+  if (lb.annual) lines = capUtilityRecovery(lines, { flatFee: flatFeeBilling(inputs as any, lb.budget.property_code), split: allocOutFor(inputs, lb.budget.property_code) }).lines;
   // the fee on the final income (Troy 2026-11-16: "Management fee needs to be adjusted to prior month income"): the plan,
   // the DQ chain and the ties above all move income after the generator built the fee
   if (lb.annual) {
@@ -1866,6 +1877,20 @@ export function ownT12Rows(stmt: StmtData | null, cal: Record<string, Months> | 
   }
   for (const gl of Object.keys(cal || {})) if (!seen.has(gl)) { seen.add(gl); out.push(calRow(gl, '')); }
   return out;
+}
+
+/** A companion property's NOI for cash on cash: its newest actual statement on file (the trailing-12 the Data page took
+    in for it — TPNDC), NOI = total income less operating expense. Null when it has none. */
+async function companionT12Noi(code: string | null | undefined): Promise<{ amount: number; from: 't12'; to: string; period?: string } | null> {
+  if (!code) return null;
+  try {
+    const r = (await query(`select period, data from stmt_snapshots where property_code=$1 and kind='actual' order by created_at desc limit 1`, [String(code).toLowerCase()])).rows[0];
+    if (!r?.data) return null;
+    const cal = stmtCalendar(r.data as StmtData);
+    const noiM = rollup(new Map(Object.entries(cal) as [string, Months][])).get('7280');
+    const noi = noiM ? r2(sum(noiM)) : 0;
+    return noi ? { amount: noi, from: 't12', to: String(code).toLowerCase(), period: r.period || '' } : null;
+  } catch { return null; }
 }
 
 async function composeT12(propertyCode: string, preferredId: number | null, preferred: StmtData, excludeStartup?: number, back = 0) {
@@ -3350,6 +3375,7 @@ export function reviewArgs(lb: LoadedBudget, prop: any, compName: string): Revie
     noiTrend: lb.noiTrend.map((t) => ({ label: t.label, noi: t.noi })),
     t12Basis: t12BasisText(lb),
     t12End: lb.t12End || null,
+    companionNoi: lb.companionNoi,
     // the % over T12 column needs a full year of the property's own history (an acquisition: months since closing)
     histMonths: lb.annual ? Math.min(Number(lb.t12Live) || 12, lb.acquisition?.start && lb.t12End ? (postedSinceClosing(lb.actualCal, lb.t12End, lb.acquisition.start)?.months ?? 12) : 12) : undefined,
   };

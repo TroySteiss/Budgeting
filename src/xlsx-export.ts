@@ -161,7 +161,7 @@ function acqLabel(d: any): string {
     total and the units, so a per-unit line can show the rate it actually came to (spec 1.6). */
 function driverLabel(d: any, ctx: { total?: number; units?: number; gl?: string } = {}): string {
   let base = d?.reTax ? (d.reTax.branch === 'UW' ? `RE tax = UW book Taxes tab, Ryan PP Year 2 ($${Math.round(d.reTax.tax).toLocaleString('en-US')}), ÷ 12`
-      : `RE tax from the bill: A $${Math.round(d.reTax.a || 0).toLocaleString('en-US')}${d.reTax.b != null ? ` / B (sale reassessed) $${Math.round(d.reTax.b).toLocaleString('en-US')}` : ''} — the higher (${d.reTax.branch}), ÷ 12`)
+      : `RE tax from the bill: A $${Math.round(d.reTax.a || 0).toLocaleString('en-US')}${d.reTax.b != null ? ` / B (sale reassessed) $${Math.round(d.reTax.b).toLocaleString('en-US')}` : ''} — the higher (${d.reTax.branch})${d.reTax.mfShare ? ` x ${(d.reTax.mfShare * 100).toFixed(2)}% (this property's share; A / B are the whole property's)` : ''} = $${Math.round(d.reTax.tax || 0).toLocaleString('en-US')}, ÷ 12`)
     : d?.accrual ? `RE tax: this year's cost $${Math.round(d.taxYear || d.accrual * 12).toLocaleString('en-US')} (accrual $${Math.round(d.accrual).toLocaleString('en-US')}/mo) × ${(1 + (d.pct || 0)).toFixed(3)}${d.taxNoInputs ? ' — no bill inputs on file: review' : ''}`
     : d?.acq ? acqLabel(d) : driverLabelBase(d);
   // insurance: the $/unit the line actually comes to (CWND / RRND carry a lender rate above the $275 guidance)
@@ -261,6 +261,8 @@ export interface ReviewArgs {
   t12Basis?: string;
   /** ANNUAL: the trailing-12's last month (the T12 sheet's month labels; "last month, flat" lines) */
   t12End?: { month: number; year: number } | null;
+  /** the companion NOI cash on cash counts (TPNDC on TPND): typed on the split, else the companion's T12 */
+  companionNoi?: { amount: number; from: 'typed' | 't12'; to: string; period?: string } | null;
   /** ANNUAL: months of the trailing-12 that are the property's own posted history (an acquisition: since closing); under
       12 the % over T12 column stays blank — not a year-over-year number */
   histMonths?: number;
@@ -604,11 +606,11 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     const rSP = rowOf.get('7500');
     const lab = ws.getCell(3, 18); lab.value = 'CoC after SP -'; lab.font = { size: 9, bold: true }; lab.alignment = { horizontal: 'right' };
     const v = ws.getCell(3, 20); v.value = { formula: `IF($C$4>0,(O3+$T$4-${rSP ? `R${rSP}` : '0'})/$C$4,"")` } as any; v.font = { size: 11, bold: true }; v.numFmt = PCT;
-    const coNoi = Number((inputs as any).allocOut?.cocNoi) || 0;
+    const coNoi = Number(args.companionNoi?.amount) || Number((inputs as any).allocOut?.cocNoi) || 0;
     if (coNoi) {
-      const to = String((inputs as any).allocOut?.to || 'companion').toUpperCase();
+      const to = String(args.companionNoi?.to || (inputs as any).allocOut?.to || 'companion').toUpperCase();
       const l4 = ws.getCell(4, 18); l4.value = `${to} NOI -`; l4.font = { size: 8, bold: true }; l4.alignment = { horizontal: 'right' };
-      (l4 as any).note = `${to}'s NOI for the year, counted in cash on cash (the capital bought both). Typed under Journal split in the tool.`;
+      (l4 as any).note = `${to}'s NOI for the year, counted in cash on cash (the capital bought both). ${args.companionNoi?.from === 't12' ? `From ${to}'s trailing-12 statement${args.companionNoi.period ? ` (${args.companionNoi.period})` : ''}; type a figure under Journal split to override.` : 'Typed under Journal split in the tool.'}`;
       const v4 = ws.getCell(4, 20); v4.value = coNoi; v4.numFmt = CUR; v4.font = INPUT_FONT;
     }
     // row 4: monthly averages under each KPI (the template's "monthly av ->")
@@ -1288,8 +1290,8 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     const refT = (key: string) => refs.find((x) => x.key === key) || null;
     const spT12 = r2(refT('actual')?.totals['7500'] || 0), spT4 = r2(refT('ann4')?.totals['7500'] || 0), spBud = r2(sum((() => { const acc = zero12(); for (const [g, m] of monthsMap) { const n = parseInt(g, 10); if (n >= 7321 && n <= 7499) m.forEach((v, i) => { acc[i] += v || 0; }); } return acc as Months; })()));
     const spT4Row = rrw; rawRow(['7500 Special Projects (4 months annualized)', spT4]);
-    const coNoi = Number((inputs as any).allocOut?.cocNoi) || 0;
-    const coLabel = `${String((inputs as any).allocOut?.to || 'companion').toUpperCase()} NOI (counted in Return)`;
+    const coNoi = Number(args.companionNoi?.amount) || Number((inputs as any).allocOut?.cocNoi) || 0;
+    const coLabel = `${String(args.companionNoi?.to || (inputs as any).allocOut?.to || 'companion').toUpperCase()} NOI (counted in Return)${args.companionNoi?.from === 't12' ? ' - T12' : ''}`;
     const noiR = rowOf.get('7280'), intR = rowOf.get('7315');
     const qSum = (row: number | undefined, q: number) => (row ? `SUM(${BQ}${colLetter(C.m1 + q * 3)}${row}:${colLetter(C.m1 + q * 3 + 2)}${row})` : '0');
     const mSum = (code: string, q: number) => sum(((monthsMap.get(code) || zero12()) as Months).slice(q * 3, q * 3 + 3) as any);

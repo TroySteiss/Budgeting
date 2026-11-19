@@ -2858,3 +2858,32 @@ describe('corporate formulas never take a curve (Troy 2026-11-18)', () => {
     expect(fitted.months).toEqual(corp.months);
   });
 });
+
+describe('TPND review fixes (2026-11-19)', () => {
+  const ln = (gl: string, total: number): BudgetLine => ({ gl_code: gl, months: Array(12).fill(total / 12) as Months, driver: { method: 'baseline' } as any, override: false, note: '' });
+  it('the utility recovery cap tests a split property against the whole bill, not its share after the journal', () => {
+    // TPND: sewer reimbursement 11,930 on a 58.89% share of 10,713 — 111% of the share, 66% of the bill
+    const lines = [ln('5167', 11930), ln('6614', 10713)];
+    const plain = capUtilityRecovery(lines);
+    expect(sum(plain.lines.find((l) => l.gl_code === '5167')!.months)).toBeLessThan(11930);   // capped at 90% of the share
+    const split = capUtilityRecovery(lines, { split: { pct: 0.4111, gls: ['6604', '6614', '6620', '6622'] } });
+    expect(sum(split.lines.find((l) => l.gl_code === '5167')!.months)).toBeCloseTo(11930, 2);   // left alone
+  });
+  it('"last month, flat" whose last month had no bill budgets the T12 months (auto insurance $600 billed once)', () => {
+    const actual = synthetic();
+    actual['6104'] = [0, 0, 0, 0, 0, 0, 0, 600, 0, 0, 0, 0] as Months;   // August bill, October (the last month) empty
+    const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
+    const l = L(generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10 }), '6104');
+    expect(sum(l.months)).toBeGreaterThan(0);
+    expect(l.months[7]).toBeGreaterThan(0);
+    expect((l.driver as any).lastEmpty).toBe(true);
+  });
+  it('the RE tax from the bill carries the property\'s share of a whole-property bill (TPND 58.89%)', () => {
+    const actual = synthetic();
+    actual['6116'] = Array(12).fill(13000) as Months;
+    const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
+    const l = L(generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10, propertyCode: 'tpnd' }), '6116');
+    const t = (l.driver as any).reTax;
+    if (t) { expect(t.mfShare).toBeCloseTo(157006 / 266609, 4); expect(t.tax).toBeLessThan(t.a); }
+  });
+});
