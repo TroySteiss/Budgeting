@@ -261,7 +261,9 @@ describe('export → edit → upload round trip (Troy 2026-11-16: "it needs to u
     const wb = await load(await buildReviewWorkbook(a));
     const bud = wb.getWorksheet('Budget Worksheet')!, fx = wb.getWorksheet('Formulas')!, t12 = wb.getWorksheet('Raw Data')!;
     expect(fx.state).toBe('hidden');
-    expect(t12.state).not.toBe('hidden');
+    expect(t12.state).toBe('hidden');                                   // Raw Data and Payroll hidden on export (Troy 2026-11-18)
+    expect(wb.getWorksheet('Payroll')!.state).toBe('hidden');
+    expect(wb.worksheets.filter((w) => w.state === 'visible').map((w) => w.name)).toEqual(['Budget Worksheet', 'Summary']);
     const r = rowOfCode(bud, '6604');
     // the T12 history and the increase factor, both on view: no link to the Formulas sheet anywhere on the Budget sheet
     const f = formulaOf(bud.getCell(r, 5));

@@ -548,6 +548,7 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
   const payGls = args.annual ? ordered.filter((a) => a.kind === 'detail' && a.pcode === '10') : [];
   const payName = `${prefix}Payroll`;
   const wsPay = payGls.length ? wb.addWorksheet(payName, { properties: { tabColor: { argb: 'FFB4A0E0' }, defaultRowHeight: 12 }, views: [{ state: 'frozen', xSplit: 2, ySplit: 5 }] }) : null;
+  if (wsPay) wsPay.state = 'hidden';   // the Budget Worksheet's payroll rows still read it (Troy 2026-11-18)
   const PQ = prefix ? `'${payName}'!` : 'Payroll!';
   const PAY_FIRST = 6;
   const payRowOf = new Map<string, number>();
@@ -1103,6 +1104,8 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
 
   /* ================= Raw Data sheet ================= */
   const wsR = wb.addWorksheet(rawName);
+  // hidden, still in the file (Troy 2026-11-18: "Hide raw data tab and payroll tab on export"): right-click a tab, Unhide
+  wsR.state = 'hidden';
   [26, 42, 12, 60].forEach((w, i) => { wsR.getColumn(i + 1).width = w; });
   /* the trailing-12 by month, row for row with the Budget Worksheet (columns H..V): what its month formulas read */
   if (t12Cal) {
