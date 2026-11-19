@@ -1506,7 +1506,8 @@ function renderEditor(el) {
     try {
       S.bv = await POST(`/budgets/${b.id}/import-draft`, fd);
       const ir = S.bv.importResult || {};
-      alert(`Imported: ${ir.cells || 0} changed cell(s) on ${ir.changed || 0} line(s), now hard-coded (bold); every other line stays on its formula${ir.capitalChanged ? ` · capital set to ${money(ir.capital)}` : ''}.\nCompared with ${ir.base || 'the export'}.\nPrior iteration saved under ⎘ Save points.`);
+      const nl = (ir.notes || []);
+      alert(`Imported: ${ir.cells || 0} changed cell(s) on ${ir.changed || 0} line(s), now hard-coded (bold); every other line stays on its formula${ir.capitalChanged ? ` · capital set to ${money(ir.capital)}` : ''}.${nl.length ? `\n\n${nl.length} note${nl.length === 1 ? '' : 's'} brought back:\n${nl.slice(0, 12).map((x) => `${x.gl} ${x.name}: ${x.note || '(cleared)'}`).join('\n')}${nl.length > 12 ? `\n… and ${nl.length - 12} more` : ''}` : ''}\nCompared with ${ir.base || 'the export'}.\nPrior iteration saved under ⎘ Save points.`);
       render();
     } catch (e2) { alert('Import failed: ' + e2.message); }
     e.target.value = '';

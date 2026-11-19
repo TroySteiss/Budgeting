@@ -283,8 +283,21 @@ describe('export → edit → upload round trip (Troy 2026-11-16: "it needs to u
     // type over two months of 6604 and save; everything else untouched
     bud.getCell(r, 7).value = 999;
     bud.getCell(r, 9).value = 1234;
+    // an RM changes capital on the Summary (C51 in the template layout): the upload finds it by its label
+    wb.getWorksheet('Summary')!.getCell('C51').value = 2500000;
+    // and types a note on 6604 in the Notes column (Z): it comes back; untouched rows have none
+    bud.getCell(r, 26).value = 'RM: new electric rate from Jan';
     const p = parseReviewDraft(Buffer.from(await wb.xlsx.writeBuffer() as ArrayBuffer));
     expect(p.exported).not.toBeNull();
+    expect(p.code).toBe('tst');
+    expect(p.capital).toBe(2500000);
+    expect(p.glNotes['6604']).toBe('RM: new electric rate from Jan');
+    expect(p.exportedNotes).not.toBeNull();
+    expect(p.exportedNotes!['6604'] || '').toBe('');
+    // column Z is "Notes" and carries no automatic REVIEW flags (Troy 2026-11-18)
+    expect(bud.getCell(6, 26).value).toBe('Notes');
+    let flags = 0; bud.eachRow((row) => { if (/^REVIEW:/.test(String(row.getCell(26).value || ''))) flags++; });
+    expect(flags).toBe(0);
     expect(p.glFormula['6604'][0]).toBe(true);
     expect(p.glFormula['6604'][2]).toBe(false);
     const detail = new Set(coaList.filter((c) => c.kind === 'detail').map((c) => c.code));

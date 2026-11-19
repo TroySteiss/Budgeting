@@ -693,7 +693,11 @@ export function parseReviewDraft(buf: Buffer): { code: string | null; year: numb
   /** per GL, per month: the Budget cell is a formula (Troy 2026-11-16: formulas come back as formulas) */
   glFormula: Record<string, boolean[]>;
   /** the Formulas sheet: what each line's formula came to when the file was exported (null = an older export without it) */
-  exported: Record<string, number[]> | null } {
+  exported: Record<string, number[]> | null;
+  /** the Budget sheet's "Notes for Budget Upload" (column Z) per GL row, trimmed (Troy 2026-11-18: RMs' notes come back) */
+  glNotes: Record<string, string>;
+  /** each line's note as exported (the Formulas sheet's column Z); null = an export without it */
+  exportedNotes: Record<string, string> | null } {
   const all = grids(buf);
   // "Budget Worksheet" (the Yardi-template layout, 2026-11-18), "Budget" (earlier exports), "CWND Budget" (all-sites)
   const bSheet = all.find((x) => x.name.trim().toLowerCase() === 'budget worksheet')
@@ -708,6 +712,7 @@ export function parseReviewDraft(buf: Buffer): { code: string | null; year: numb
   const year = ym ? 2000 + Number(ym[1]) : null;
   const glMonths: Record<string, number[]> = {};
   const glFormula: Record<string, boolean[]> = {};
+  const glNotes: Record<string, string> = {};
   for (let r = 6; r < g.length; r++) {
     const gl = s(g[r]?.[0]);
     if (!/^\d{4}$/.test(gl)) continue;
@@ -716,17 +721,21 @@ export function parseReviewDraft(buf: Buffer): { code: string | null; year: numb
       return typeof v === 'number' ? Math.round(v * 100) / 100 : num(v);
     });
     glFormula[gl] = Array.from({ length: 12 }, (_, i) => cellIsFormula(bSheet.ws, r, 4 + i));
+    glNotes[gl] = s(g[r]?.[25]).trim();
   }
   // the Formulas sheet beside this Budget sheet (same prefix in an all-sites workbook)
   const prefix = bSheet.name.replace(/budget(\s+worksheet)?\s*$/i, '');
   const fSheet = all.find((x) => x.name.trim().toLowerCase() === `${prefix}formulas`.trim().toLowerCase());
   let exported: Record<string, number[]> | null = null;
+  let exportedNotes: Record<string, string> | null = null;
   if (fSheet) {
     exported = {};
+    if (/^note$/i.test(s(fSheet.g[5]?.[25]).trim())) exportedNotes = {};
     for (let r = 6; r < fSheet.g.length; r++) {
       const gl = s(fSheet.g[r]?.[0]);
       if (!/^\d{4}$/.test(gl)) continue;
       exported[gl] = Array.from({ length: 12 }, (_, i) => { const v = fSheet.g[r]?.[4 + i]; return typeof v === 'number' ? Math.round(v * 100) / 100 : num(v); });
+      if (exportedNotes) exportedNotes[gl] = s(fSheet.g[r]?.[25]).trim();
     }
   }
   if (!Object.keys(glMonths).length) throw new Error('Budget tab has no GL rows');
@@ -739,7 +748,7 @@ export function parseReviewDraft(buf: Buffer): { code: string | null; year: numb
     const v = [2, 3, 4].map((c) => row?.[c]).find((x) => typeof x === 'number' && x > 0);
     if (typeof v === 'number') capital = Math.round(v * 100) / 100;
   }
-  return { code, year, glMonths, capital, glFormula, exported };
+  return { code, year, glMonths, capital, glFormula, exported, glNotes, exportedNotes };
 }
 
 /* ========================= ND PAYROLL MODEL ========================= */

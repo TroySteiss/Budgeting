@@ -636,7 +636,9 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     [C.annual, args.annual ? `Total ${args.year} Budget` : 'Total Year 1 Budget'],
     [C.uw, args.annual ? (refA ? `T12 Actuals${refA.period ? ` (${refA.period})` : ''}` : 'T12 Actuals') : 'Year 1 UW Budget'],
     [C.comp, args.annual ? (refB ? refB.label.replace(/^(\d{4}) budget$/i, '$1 Budget') : 'CY Budget') : `Minot Budget at ${units} units`],
-    [C.perUnit, 'Total Per Unit'], [C.perUnitMo, 'Per Unit / Month'], [C.note, 'Notes for Budget Upload'],
+    // column Z: the line's own note — yours or an RM's, and it comes back on upload (Troy 2026-11-18: "I dont need notes
+    // for budget upload at all, most notes there are stupid")
+    [C.perUnit, 'Total Per Unit'], [C.perUnitMo, 'Per Unit / Month'], [C.note, 'Notes'],
   ];
   for (const [col, text] of heads) {
     const cell = ws.getCell(6, col);
@@ -807,15 +809,8 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
       if (ln?.note) {
         ws.getCell(r, C.note).value = ln.note;
         ws.getCell(r, C.note).font = { size: 8, italic: true, color: { argb: 'FF505050' } };
-      } else if (ln && args.annual) {
-        // spec 1.6: a line that moves more than $25K against its T12 with no note says so (a flag; nothing changes)
-        const t12 = refVal(refA, a.code, 'detail');
-        const mv = t12 != null ? sum(ln.months) - t12 : null;
-        if (mv != null && Math.abs(mv) > 25000) {
-          ws.getCell(r, C.note).value = `REVIEW: ${mv > 0 ? '+' : '−'}$${Math.round(Math.abs(mv)).toLocaleString('en-US')} vs the T12 and no note`;
-          ws.getCell(r, C.note).font = { size: 8, bold: true, color: { argb: 'FFC00000' } };
-        }
       }
+      // (no automatic "REVIEW: +$X vs the T12 and no note" flag in the notes column any more — Troy 2026-11-18)
       if (args.compWeights && args.compUnits && args.compWeights[a.code]) {
         const cc = ws.getCell(r, C.comp);
         cc.value = r2((args.compWeights[a.code] / args.compUnits) * units);
@@ -1291,7 +1286,8 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     wsF.state = 'hidden';   // a reference point only: no Budget cell reads it (Troy 2026-11-18)
     wsF.getCell(2, 2).value = 'Hidden reference: what the tool had for every line when this file was exported. Nothing on the Budget sheet reads it. On upload, a Budget month that differs from it comes back as a hard-coded cell; while editing, such a month shows bold red. Leave it as it is.';
     wsF.getCell(2, 2).font = { size: 8, italic: true, color: { argb: 'FF505050' } };
-    for (const [col, text] of [[C.code, 'GL Code'], [C.name, 'GL Name'], [C.notes, 'Formula'], ...labels.map((m, i) => [C.m1 + i, m] as [number, string]), [C.annual, 'Total']] as [number, string][]) {
+    // column Z "Note": each line's note as exported, so an upload can tell an RM's note from what was there (2026-11-18)
+    for (const [col, text] of [[C.code, 'GL Code'], [C.name, 'GL Name'], [C.notes, 'Formula'], ...labels.map((m, i) => [C.m1 + i, m] as [number, string]), [C.annual, 'Total'], [C.note, 'Note']] as [number, string][]) {
       const cell = wsF.getCell(6, col);
       cell.value = text; cell.font = f8b;
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD } };
@@ -1300,6 +1296,7 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
     for (const a of ordered) {
       if (a.kind !== 'detail') continue;
       const ln = byGl.get(a.code);
+      if (ln?.note) { const r0 = rowOf.get(a.code)!; wsF.getCell(r0, C.code).value = a.code; wsF.getCell(r0, C.note).value = ln.note; }
       if (!ln || !ln.months.some((v) => v)) continue;
       const r = rowOf.get(a.code)!;
       wsF.getCell(r, C.code).value = a.code;

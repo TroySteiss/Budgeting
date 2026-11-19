@@ -3582,6 +3582,24 @@ router.post('/budgets/:id/import-draft', upload.single('file'), h(async (req, re
     if (!wasOverride || Array.isArray(prev.hard) || smoothed) (l.driver as any).hard = [...new Set<number>([...(wasOverride && Array.isArray(prev.hard) ? prev.hard : []), ...typed])].sort((x, y) => x - y);
     changed++; cells += typed.length;
   }
+  /* RMs' NOTES COME BACK (Troy 2026-11-18): a note typed in the Budget sheet's "Notes for Budget Upload" column replaces the
+     line's note when it differs from what the file was exported with (its Formulas sheet; an older export: the line's
+     note now). A cleared note clears it. The export's own "REVIEW: ... and no note" flag is not a note. */
+  const notes: { gl: string; name: string; note: string }[] = [];
+  for (const [gl, raw] of Object.entries(parsed.glNotes || {})) {
+    const a = lb.coaMap.get(gl);
+    if (!a || a.kind !== 'detail') continue;
+    const txt = String(raw || '').trim().slice(0, 500);
+    if (/^REVIEW: .* vs the T12 and no note$/.test(txt)) continue;
+    const l0 = byGl.get(gl);
+    const cur = String(l0?.note || '').trim();
+    const was = parsed.exportedNotes ? String(parsed.exportedNotes[gl] || '').trim() : cur;
+    if (txt === was || txt === cur) continue;
+    let l = l0;
+    if (!l) { if (!txt) continue; l = { gl_code: gl, months: zero12(), driver: { method: 'manual' } as any, override: false, note: '' }; lb.lines.push(l); byGl.set(gl, l); }
+    l.note = txt;
+    notes.push({ gl, name: a.name, note: txt });
+  }
   const inputs: BudgetInputs = { ...lb.budget.inputs };
   let capitalChanged = false;
   if (parsed.capital != null && Math.abs(parsed.capital - (Number(inputs.capital) || 0)) >= 1) {
@@ -3591,9 +3609,9 @@ router.post('/budgets/:id/import-draft', upload.single('file'), h(async (req, re
   await query('update budgets set inputs=$2, updated_at=now() where id=$1', [lb.budget.id, JSON.stringify(inputs)]);
   const built = buildLines({ ...lb, budget: { ...lb.budget, inputs } }, inputs, lb.lines);
   await saveLines(lb.budget.id, built.lines, true);
-  logChange(user, 'import draft workbook', { id: lb.budget.id, file: req.file.originalname, changed, cells, base: baseFrom, capitalChanged });
+  logChange(user, 'import draft workbook', { id: lb.budget.id, file: req.file.originalname, changed, cells, base: baseFrom, capitalChanged, notes: notes.length });
   const view: any = budgetView((await loadBudget(lb.budget.id))!);
-  view.importResult = { changed, cells, base: baseFrom, capitalChanged, capital: parsed.capital };
+  view.importResult = { changed, cells, base: baseFrom, capitalChanged, capital: parsed.capital, notes };
   res.json(view);
 }));
 
