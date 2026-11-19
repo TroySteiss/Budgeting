@@ -2815,3 +2815,46 @@ describe('review-checklist defaults (Troy 2026-11-18: "If one time, I would like
     expect(timingFor({ timing: { '6318': { kind: 'once', month: 12 } } }, '6318')).toEqual({ kind: 'once', month: 12 });
   });
 });
+
+describe('November gift cards (Troy 2026-11-18: "$500 per employee * allocation for november")', () => {
+  const actual = synthetic();
+  actual['6318'] = [50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 1500] as Months;   // last year's gift cards in December
+  const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
+  const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
+  it('$500 x the allocated employees in November; the rest of the line on its own months, last year\'s spike out', () => {
+    const l = L(generateAnnualLines(coaList, inputs, { ...src, staffHeads: 6.5 }), '6318');
+    const g = (l.driver as any).giftCards;
+    expect(g).toMatchObject({ perEmployee: 500, heads: 6.5, amount: 3250, month: 11 });
+    expect(l.months[11]).toBeLessThan(200);                               // December back to the run rate
+    expect(l.months[10]).toBeGreaterThan(3250);                           // November: the run rate + 3,250
+    expect(sum(l.months) - 3250).toBeCloseTo(sum(L(generateAnnualLines(coaList, { ...inputs, giftCards: false, timing: { '6318': null } }, src), '6318').months) - g.replaced, 0);
+  });
+  it('a typed $ per employee wins; no roster falls back to moving the spike; false turns it off', () => {
+    expect((L(generateAnnualLines(coaList, { ...inputs, giftCards: { perEmployee: 400 } }, { ...src, staffHeads: 2 }), '6318').driver as any).giftCards.amount).toBe(800);
+    const noRoster = L(generateAnnualLines(coaList, inputs, src), '6318');
+    expect((noRoster.driver as any).giftCards).toBeUndefined();
+    expect((noRoster.driver as any).timing).toMatchObject({ kind: 'once', month: 11 });
+    expect((L(generateAnnualLines(coaList, { ...inputs, giftCards: false }, { ...src, staffHeads: 2 }), '6318').driver as any).giftCards).toBeUndefined();
+  });
+});
+
+describe('corporate formulas never take a curve (Troy 2026-11-18)', () => {
+  const ln = (gl: string, method: string): BudgetLine => ({ gl_code: gl, months: Array(12).fill(1000) as Months, driver: { method } as any, override: false, note: '' });
+  const curve = { code: 'ecnd', months: [2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 2] as Months };
+  it('another property\'s curve leaves corporate rates and suggestions flat, and reshapes a history line', () => {
+    const out = applyShapeFrom([ln('6108', 'corpRate'), ln('6102', 'suggested'), ln('6302', 'baseline')], { '6108': curve, '6102': curve, '6302': curve }, 1);
+    expect(out[0].months.every((v) => v === 1000)).toBe(true);
+    expect((out[0].driver as any).shapeFrom).toBeUndefined();
+    expect(out[1].months.every((v) => v === 1000)).toBe(true);
+    expect(out[2].months[0]).toBeGreaterThan(out[2].months[5]);
+  });
+  it('fit to T12 is not applied to a corporate rate', () => {
+    const actual = synthetic();
+    const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
+    const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
+    const plain = generateAnnualLines(coaList, inputs, src);
+    const corp = plain.find((l) => (l.driver as any)?.method === 'corpRate' && l.months.some((v) => v))!;
+    const fitted = L(generateAnnualLines(coaList, { ...inputs, baseline: { ...inputs.baseline!, glFit: { [corp.gl_code]: 1 } } }, src), corp.gl_code);
+    expect(fitted.months).toEqual(corp.months);
+  });
+});

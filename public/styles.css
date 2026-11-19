@@ -736,3 +736,11 @@ table.ctreg tr.draft td { background: color-mix(in srgb, var(--accent) 8%, var(-
 .sumtbl th.sgrph:hover { text-decoration: underline; }
 .sumtbl td.sgrp, .sumtbl th.sgrp { font-weight: 600; }
 .sumtbl td.sin, .sumtbl th.sin { font-size: 11px; opacity: .85; }
+/* review fix preview (Troy 2026-11-18) */
+table.rftbl { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+table.rftbl th, table.rftbl td { padding: 5px 8px; border-bottom: 1px solid var(--line, #e5e7eb); vertical-align: top; text-align: left; }
+table.rftbl th.r, table.rftbl td.r { text-align: right; white-space: nowrap; }
+table.rftbl .rfm { display: inline-block; margin: 0 10px 2px 0; white-space: nowrap; }
+table.rftbl .rfo { margin-top: 4px; font-size: 11.5px; }
+#rvfix-dlg { width: min(1150px, 96vw); max-width: 96vw; }
+table.rftbl td:nth-child(3) { min-width: 520px; }

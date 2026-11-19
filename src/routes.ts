@@ -1655,7 +1655,7 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
   let lines: BudgetLine[];
   if (lb.annual) {
     // ANNUAL: the property's own statements + the Yardi template rules (shared/annual.ts)
-    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: effectiveRules(inputs, loadAnnualRules() as any, lb.defaultRules) as any, comps: lb.comps, payrollWages: wages, wagesLive: live ? { label: live.label, effective: live.effective, draft: live.draft, monthly: live.monthly as Record<string, Months> } : null, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code, acquisition: lb.acquisition,
+    const src: AnnualSources = { actual: lb.actualCal, budget: lb.budgetCal, lastMonth: lb.lastMonth, template: lb.template, rules: effectiveRules(inputs, loadAnnualRules() as any, lb.defaultRules) as any, comps: lb.comps, payrollWages: wages, wagesLive: live ? { label: live.label, effective: live.effective, draft: live.draft, monthly: live.monthly as Record<string, Months> } : null, leases: lb.leases, rollAsOf: lb.rollAsOf, charges: lb.charges, propertyCode: lb.budget.property_code, staffHeads: lb.rosterLink?.heads ?? null, acquisition: lb.acquisition,
       burdenSrc: lb.burdenSrc && lb.burdenSrc.found && String(inputs.burdenFrom || '').toLowerCase() === lb.burdenSrc.code ? { code: lb.burdenSrc.code, actual: lb.burdenSrc.actual, budget: lb.burdenSrc.budget } : null,
       // the borrowed curve is laid on once, at the end of buildLines (applyShapeFrom), on the final months
       shapeGl: {},
@@ -2568,6 +2568,9 @@ router.get('/summary', h(async (req, res) => {
 router.post('/review-fix', h(async (req, res) => {
   const ruleId = String(req.body?.ruleId || '');
   const ids: number[] = [...new Set<number>((Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number).filter((n: number) => Number.isFinite(n)))];
+  // PREVIEW FIRST (Troy 2026-11-18: "need better insight when hitting fix into what it is changing in what month for
+  // which properties, with ability to exclude some of the fixes"): dryRun = what each budget's lines would do, by month
+  const dryRun = req.body?.dryRun === true;
   const review = await loadReviewRules();
   const rule = review.rules.find((r) => r.id === ruleId);
   if (!rule || !REVIEW_FIX_KINDS.has(rule.kind)) return res.status(400).json({ error: 'That check has no fix' });
@@ -2588,7 +2591,7 @@ router.post('/review-fix', h(async (req, res) => {
     if (rule.kind === 'peak') {
       const m = Math.round(Number(rule.month) || 0);
       if (!(m >= 1 && m <= 12)) { out.push({ id, code, skipped: 'the check has no month' }); continue; }
-      inp.timing = { ...(inp.timing || {}), [gl]: { kind: 'once', month: m } }; what = `one-time part in ${MON[m - 1]}`;
+      inp.timing = { ...(inp.timing || {}), [gl]: { kind: 'once', month: m } }; what = `one-time part to ${MON[m - 1]}`;
       // a line dropped under the $1,000 T12 floor comes back on its own months (a shape picked on the row), then moves
       if (d.method === 'dropped') { inp.baseline = { ...(inp.baseline || {}), glShape: { ...((inp.baseline || {}).glShape || {}), [gl]: 'actual' } }; what += ' (budgeted again: it was under the $1,000 floor)'; }
     } else if (rule.kind === 'quarterlySame') {
@@ -2600,18 +2603,38 @@ router.post('/review-fix', h(async (req, res) => {
     } else if (rule.kind === 'every') {
       inp.gapFill = { ...(inp.gapFill || {}), [gl]: true }; what = 'missed months filled';
     }
-    if (d.acq) inp.offPlan = [...new Set<string>([...((inp.offPlan || []) as string[]).map(String), gl])].sort();
-    const before = r2(sum(ln?.months || zero12()));
+    if (d.acq) { inp.offPlan = [...new Set<string>([...((inp.offPlan || []) as string[]).map(String), gl])].sort(); what += ' (off the UW plan)'; }
+    // the fix's own effect: the budget rebuilt on its current inputs vs rebuilt with the fix — so a budget on older
+    // formulas does not show every other recalculation change as part of the fix
+    const now = buildLines(lb, lb.budget.inputs, lb.lines).lines;
+    const built = buildLines(lb, inp, lb.lines).lines;
+    const labels = monthLabels(Number(lb.budget.year), Number(lb.budget.inputs?.startMonth) || 1);
+    const nowBy = new Map(now.map((l) => [l.gl_code, l.months]));
+    const changes = built.map((l) => {
+      const o = nowBy.get(l.gl_code) || zero12();
+      const ms = l.months.map((v, i) => ({ i, b: Number(o[i]) || 0, a: Number(v) || 0 })).filter((x) => Math.abs(x.a - x.b) >= 1);
+      if (!ms.length) return null;
+      return { gl: l.gl_code, name: lb.coaMap.get(l.gl_code)?.name || '', main: l.gl_code === gl,
+        months: ms.map((x) => ({ m: labels[x.i], before: r2(x.b), after: r2(x.a) })), before: r2(sum(o)), after: r2(sum(l.months)) };
+    }).filter(Boolean).sort((a: any, b: any) => (b.main ? 1 : 0) - (a.main ? 1 : 0) || Math.abs(b.after - b.before) - Math.abs(a.after - a.before));
+    // lines a recalculation alone would move (the budget was last built on older formulas)
+    const savedBy = new Map(lb.lines.map((l) => [l.gl_code, l.months]));
+    const stale = now.filter((l) => { const o = savedBy.get(l.gl_code) || zero12(); return l.months.some((v, i) => Math.abs((Number(v) || 0) - (Number(o[i]) || 0)) >= 1); }).length;
+    const noi = (ls: BudgetLine[]) => r2(sum(rollup(new Map(ls.map((l) => [l.gl_code, l.months]))).get('7280') || zero12()));
+    // the check's line as SAVED vs as it would be saved: when the fix is already the default, this is what the save moves
+    const savedL = savedBy.get(gl) || zero12(), builtL = built.find((l) => l.gl_code === gl)?.months || zero12();
+    const recalcMain = builtL.map((v, i) => ({ i, b: Number(savedL[i]) || 0, a: Number(v) || 0 })).filter((x) => Math.abs(x.a - x.b) >= 1)
+      .map((x) => ({ m: labels[x.i], before: r2(x.b), after: r2(x.a) }));
+    const row = { id, code, what, changes, stale, recalcMain, savedBefore: r2(sum(savedL)), noiSaved: noi(lb.lines), noiBefore: noi(now), noiAfter: noi(built) };
+    if (dryRun) { out.push(row); continue; }
     await captureSnapshot(lb, `Before review fix ${gl}`, user);
     await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(inp)]);
     const lb2 = (await loadBudget(id))!;
-    const built = buildLines(lb2, inp, lb2.lines);
-    await saveLines(id, built.lines, true);
-    const after = r2(sum(built.lines.find((l) => l.gl_code === gl)?.months || zero12()));
-    out.push({ id, code, what: `${what}${d.acq ? ' (off the UW plan)' : ''}`, before, after });
+    await saveLines(id, buildLines(lb2, inp, lb2.lines).lines, true);
+    out.push(row);
   }
-  logChange(user, 'review fix', { rule: rule.id, gl, ids });
-  res.json({ ok: true, rule: rule.id, gl, results: out });
+  if (!dryRun) logChange(user, 'review fix', { rule: rule.id, gl, ids });
+  res.json({ ok: true, dryRun, rule: rule.id, gl, results: out });
 }));
 
 /* Rename the Summary panel's column headers ("Nov. 23 T12" …) — no recalculation. */

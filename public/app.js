@@ -85,6 +85,7 @@ function drvMeta(l) {
   if (l && l.driver && l.driver.timing) { const t = l.driver.timing; extra.push(t.kind === 'quarters'
     ? { cls: 'drv-corp', tag: 'QTR =', label: 'The same amount each calendar quarter (the review checklist: bonuses). Turn off with inputs.timing or the Review tab.' }
     : { cls: 'drv-corp', tag: `1X·${MONTHS[(t.month || 1) - 1].toUpperCase()}`, label: `One-time part $${money(t.amount || 0)} (${Math.round((t.share || 0) * 100)}% of its trailing-12 was a spike) budgeted in ${MONTHS[(t.month || 1) - 1]}; the rest stays on the line's own months. Year total unchanged.` }); }
+  if (l && l.driver && l.driver.giftCards) { const g = l.driver.giftCards; extra.push({ cls: 'drv-pay', tag: `GIFT·${MONTHS[(g.month || 11) - 1].toUpperCase()}`, label: `Gift cards: $${money(g.perEmployee)} × ${(+g.heads).toFixed(2).replace(/\.?0+$/, '')} employees allocated here (Pay-rates roster, each at its allocation) = $${money(g.amount)} in ${MONTHS[(g.month || 11) - 1]}${g.replaced ? `, in place of last year's $${money(g.replaced)} spike` : ''}; the rest of the line on its own months.` }); }
   if (l && l.driver && Array.isArray(l.driver.gapFill) && l.driver.gapFill.length) extra.push({ cls: 'drv-t12', tag: 'GAP FILL', label: `The trailing-12 missed ${l.driver.gapFill.map((m) => MONTHS[m - 1]).join(', ')}: filled from the months either side before the formula read it (a monthly bill hits every month).` });
   // the recurring-journal split (TPND → TPNDC)
   if (l && l.driver && l.driver.allocOut) { const a = l.driver.allocOut; extra.push({ cls: 'drv-corp', tag: `−${Math.round(a.pct * 10000) / 100}%`, label: `${Math.round(a.pct * 10000) / 100}% of this line moves to ${String(a.to).toUpperCase()} by recurring journal: $${money(a.gross)} gross, $${money(a.out)} to ${String(a.to).toUpperCase()} (Assumptions → journal split)` }); }
@@ -3415,7 +3416,8 @@ function openBurdenFrom(b, gl, acc) {
    Seasonal lines = other income, concessions, utility income and every expense category but insurance, the fee, taxes and
    payroll; contracts, review lines, zero-outs and the delinquency chain are left out (their months are their own). */
 const SHAPE_PCODES = new Set(['2', '4', '5', '9', '11', '12', '13', '14']);
-const SHAPE_SKIP_M = new Set(['contract', 'zero', 'dropped', 'review', 'collections', 'badDebtRecovery', 'collectionFee', 'mgmtPct', 'debtService', 'interest']);
+// corporate formulas never take another property's curve (Troy 2026-11-18); mirrors SHAPE_SKIP in shared/annual.ts
+const SHAPE_SKIP_M = new Set(['contract', 'zero', 'dropped', 'review', 'collections', 'badDebtRecovery', 'collectionFee', 'mgmtPct', 'debtService', 'interest', 'corpRate', 'suggested']);
 function shapeEligible(scope, section) {
   const coa = new Map((S.state.coa || []).map((a) => [a.code, a]));
   return S.bv.lines.filter((l) => {
@@ -3969,6 +3971,58 @@ function openAllocSplit(b) {
     await saveInputs(b, patch);
   });
   dlg.showModal();
+}
+
+/* REVIEW FIX PREVIEW (Troy 2026-11-18: "need better insight when hitting fix into what it is changing in what month for
+   which properties, with ability to exclude some of the fixes"): what each property's line would do, month by month,
+   with the lines it moves along with it (the fee follows income) and NOI before / after; untick a property to leave it
+   out, then apply to the ticked ones. */
+async function openReviewFix(rule, list, done) {
+  const dlg = ensureDlg('rvfix-dlg');
+  dlg.innerHTML = `<h2>${esc(rule.gl)} ${esc(rule.label)}</h2><p class="muted">Working out what the fix changes on ${list.length} propert${list.length === 1 ? 'y' : 'ies'}…</p>`;
+  dlg.showModal();
+  let r;
+  try { r = await POST('/review-fix', { ruleId: rule.id, ids: list.map((p) => p.id), dryRun: true }); }
+  catch (e) { dlg.innerHTML = `<h2>Fix</h2><p>${esc(e.message || String(e))}</p><div class="row" style="justify-content:flex-end"><button class="btn sub" id="rf-x">Close</button></div>`; dlg.querySelector('#rf-x').addEventListener('click', () => dlg.close()); return; }
+  const rows = r.results || [];
+  const usd = (v) => `$${money(Math.round(v))}`;
+  const monthsTxt = (c) => c.months.map((x) => `<span class="rfm"><b>${esc(x.m)}</b> ${usd(x.before)} → ${usd(x.after)}</span>`).join(' ');
+  const body = rows.map((x, k) => {
+    if (x.skipped) return `<tr class="muted"><td></td><td><b>${esc(x.code)}</b></td><td colspan="3">${esc(x.skipped)}</td></tr>`;
+    const main = (x.changes || []).find((c) => c.main);
+    const others = (x.changes || []).filter((c) => !c.main);
+    // already the default: the fix itself moves nothing, but saving recalculates a budget built on older formulas
+    const already = !(x.changes || []).length && (x.recalcMain || []).length > 0;
+    const none = !(x.changes || []).length && !already;
+    return `<tr>
+      <td><input type="checkbox" data-rfk="${k}" ${none ? '' : 'checked'} ${none ? 'disabled' : ''}></td>
+      <td><b>${esc(x.code)}</b><div class="muted" style="font-size:11px">${esc(x.what)}</div></td>
+      <td>${already ? `<span class="muted">Already the default — the budget was built on older formulas. Saving recalculates it, which moves ${esc(rule.gl)}:</span><div>${monthsTxt({ months: x.recalcMain })}</div><div class="muted" style="font-size:11px">${esc(rule.gl)} year ${usd(x.savedBefore)} → ${usd((x.recalcMain || []).reduce((a, m) => a + m.after - m.before, x.savedBefore))}</div>`
+        : none ? '<span class="muted">nothing changes</span>' : main ? `${monthsTxt(main)}<div class="muted" style="font-size:11px">${esc(rule.gl)} year ${usd(main.before)} → ${usd(main.after)}</div>` : '<span class="muted">this line does not move</span>'}
+        ${others.length ? `<div class="rfo">${others.slice(0, 4).map((c) => `<div><span class="muted">also ${esc(c.gl)} ${esc(c.name)}:</span> ${monthsTxt(c)}</div>`).join('')}${others.length > 4 ? `<div class="muted">+ ${others.length - 4} more line${others.length - 4 === 1 ? '' : 's'}</div>` : ''}</div>` : ''}</td>
+      <td class="r">${usd(already ? x.noiSaved : x.noiBefore)} → ${usd(x.noiAfter)}</td>
+      <td class="muted" style="font-size:11px">${x.stale ? `on older formulas: saving also recalculates ${x.stale} other line${x.stale === 1 ? '' : 's'}` : ''}</td>
+    </tr>`;
+  }).join('');
+  dlg.innerHTML = `<h2>${esc(rule.gl)} ${esc(rule.label)}</h2>
+    <p class="muted" style="font-size:12px; margin:0 0 8px">What the fix changes on each property, by month (the line itself, then anything it moves along with it). Untick a property to leave it out. Each one gets a save point first; hand-typed lines are left alone.</p>
+    <div style="max-height:60vh; overflow:auto"><table class="rftbl"><tr><th></th><th>Property</th><th>Months that change</th><th class="r">NOI for the year</th><th></th></tr>${body}</table></div>
+    <div class="row" style="justify-content:space-between; margin-top:10px">
+      <span class="muted" id="rf-n"></span>
+      <span><button class="btn sub" id="rf-x">Cancel</button> <button class="btn" id="rf-go">Apply</button></span>
+    </div>`;
+  const picked = () => [...dlg.querySelectorAll('input[data-rfk]:checked')].map((b) => rows[Number(b.dataset.rfk)]).filter(Boolean);
+  const count = () => { const n = picked().length; dlg.querySelector('#rf-n').textContent = `${n} of ${rows.filter((x) => !x.skipped).length} ticked`; dlg.querySelector('#rf-go').textContent = `Apply to ${n}`; dlg.querySelector('#rf-go').disabled = !n; };
+  dlg.querySelectorAll('input[data-rfk]').forEach((b) => b.addEventListener('change', count)); count();
+  dlg.querySelector('#rf-x').addEventListener('click', () => dlg.close());
+  dlg.querySelector('#rf-go').addEventListener('click', async () => {
+    const ids = picked().map((x) => x.id);
+    if (!ids.length) return;
+    dlg.querySelector('#rf-go').disabled = true; dlg.querySelector('#rf-go').textContent = 'Applying…';
+    await POST('/review-fix', { ruleId: rule.id, ids });
+    dlg.close();
+    if (done) done();
+  });
 }
 
 /* ---- before a Yardi export: say what is unfinished ---- */
@@ -7421,13 +7475,7 @@ function renderReview(el, d, viewSeg) {
   el.querySelector('#sum-refresh').addEventListener('click', () => loadSummary(d.year));
   el.querySelectorAll('[data-sumopen]').forEach((x) => x.addEventListener('click', async () => { await openBudget(Number(x.dataset.sumopen)); }));
   // Fix / Fix all (Troy 2026-11-18): put the flagged lines on the check's pattern, then show what moved
-  const runFix = async (rule, list) => {
-    const what = { peak: `move the one-time part to ${MONTHS[(rule.month || 1) - 1]}`, quarterlySame: 'make every quarter the same', maxOverT12: 'take the growth off (0% over the T12)', nearT12: 'budget the T12 with no growth', every: "fill the months the T12 missed" }[rule.kind] || 'apply the pattern';
-    if (!confirm(`${rule.gl} ${rule.label}\n\n${what} on ${list.map((p) => String(p.code).toUpperCase()).join(', ')}?\n\nEach budget gets a save point first; a hand-typed line is left alone.`)) return;
-    const r = await POST('/review-fix', { ruleId: rule.id, ids: list.map((p) => p.id) });
-    alert((r.results || []).map((x) => `${x.code}: ${x.skipped ? x.skipped : `${x.what} — $${money(x.before)} → $${money(x.after)} for the year`}`).join('\n') || 'Nothing to fix.');
-    loadSummary(d.year);
-  };
+  const runFix = async (rule, list) => openReviewFix(rule, list, () => loadSummary(d.year));
   el.querySelectorAll('[data-rvfix]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); const rule = rules.find((x) => x.id === b.dataset.rvfix); const p = d.properties.find((x) => String(x.id) === b.dataset.rvid); if (rule && p) runFix(rule, [p]); }));
   el.querySelectorAll('[data-rvfixall]').forEach((b) => b.addEventListener('click', () => { const rule = rules.find((x) => x.id === b.dataset.rvfixall); if (rule) runFix(rule, fixable(Number(b.dataset.rvi))); }));
 }

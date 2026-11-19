@@ -54,6 +54,9 @@ export interface RosterLink {
   draft: boolean;
   /** the regions whose raise entries feed this property, with their latest iteration */
   regions: { region: string; num: number | null; finalized: boolean }[];
+  /** employees booked to the property, each counted at its allocation (two people at 50% = 1.0): the November
+      gift cards are $500 x this (Troy 2026-11-18). A count only — no pay data. */
+  heads: number;
 }
 
 /** THE DEFAULT WAGE SOURCE for an annual budget (Troy 2026-11-09: "wages should be coming
@@ -90,6 +93,7 @@ export async function rosterWagesFor(code: string, year: number): Promise<Roster
     monthly: monthlyWagesByGl(people, code, raises, cycle.effective, year),
     cycleId: cycle.id, label: cycle.label, effective: cycle.effective,
     draft: regions.some((r) => !r.finalized), regions,
+    heads: Math.round(here.reduce((a, p) => a + (p.allocations || []).filter((x) => x.code === code).reduce((b, x) => b + (Number(x.pct) || 0), 0), 0) * 1000) / 1000,
   };
 }
 

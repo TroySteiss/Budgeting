@@ -270,6 +270,10 @@ export interface BudgetInputs {
   /** annual: build bad-debt recovery (5110) on the delinquency chain (T12 rate x 60-day uncollected) instead of the
       T12 average; a typed recoveryPct does the same */
   recoveryChain?: boolean | null;
+  /** annual: the November gift cards on 6318 (Troy 2026-11-18: "$500 per employee * allocation for november"): $ per
+      employee (default GIFT_CARD_PER_EMPLOYEE), x the employees the Pay-rates roster allocates to the property; false
+      turns it off (the line keeps its own months) */
+  giftCards?: { perEmployee?: number | null; month?: number | null } | false | null;
   /** annual: share of chosen GLs allocated out to a companion property by recurring journal
       (TPND → TPNDC 41.11%). Applies to engine-built lines only (corporate rate, fee, contracts):
       history-based lines already post net of the journal. Unset = the site default (ALLOC_OUT_DEFAULTS). */

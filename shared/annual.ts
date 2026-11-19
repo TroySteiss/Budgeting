@@ -40,7 +40,9 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-18c';   // c: review-checklist defaults (one-time months, even bonus quarters, fixed fees, 5110 T12, gap fill)
+export const ENGINE_VERSION = '2026-11-18e';   // e: no curve or T12 fit ever on a corporate formula
+// d:   // d: November gift cards = $500 x allocated employees
+// c:   // c: review-checklist defaults (one-time months, even bonus quarters, fixed fees, 5110 T12, gap fill)
 // b: % increase over contract cost (inputs.contractPct)
 // a: TPND split adds 6924; fee on combined TPND + TPNDC income; final fee keeps the split
 // earlier: 2026-11-17a:   // a: another property's curve on every formula (applied again at the end of a build)
@@ -1202,6 +1204,8 @@ export interface AnnualSources {
   budget: Record<string, Months> | null;    // current-year budget as it sits in Yardi
   lastMonth?: number;                        // last actual calendar month (1-12), default 10
   template?: TemplateData | null;
+  /** employees the Pay-rates roster books to the property, each at its allocation (the November gift cards) */
+  staffHeads?: number | null;
   /** per-GL foundation rules (the GRKS draft's formulas); built-in template
       rules apply where a GL has none */
   rules?: Record<string, AnnualRule> | null;
@@ -1364,6 +1368,9 @@ export const FIXED_DOLLAR_GLS = new Set(['5117', '5126', '5155', '5168', '5140',
 export const RECOVERY_FLAT_GLS = new Set(['5110']);
 /** Monthly bills whose missed months are filled from the months either side (inputs.gapFill turns it off / on per GL). */
 export const GAP_FILL_GLS = new Set(['6614', '6622']);
+/** November gift cards (Troy 2026-11-18): $ per employee x the employees allocated to the property. */
+export const GIFT_CARD_GL = '6318';
+export const GIFT_CARD_PER_EMPLOYEE = 500;
 /** When a line's money lands, by GL (inputs.timing overrides; null turns one off). */
 export const TIMING_DEFAULTS: Record<string, { kind: 'once' | 'quarters'; month?: number }> = {
   '5178': { kind: 'once', month: 1 },    // vendor rebates: January
@@ -2543,7 +2550,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
      blended inside annualBaseline. Not on contracts (known billing), debt, zero / dropped / empty
      lines. Before the fee so a fitted income line is in the fee's basis; the fee itself after. ---- */
   squareGpr();
-  const FIT_SKIP = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest']);
+  const FIT_SKIP = new Set(['manual', 'zero', 'dropped', 'contract', 'debtService', 'interest', ...CORP_FORMULA_METHODS]);
   const fitOf = (gl: string): number => Math.min(1, Math.max(0, Number(bl.glFit?.[gl] ?? (rules[gl] as any)?.fit ?? 0) || 0));
   const fitLine = (gl: string): void => {
     const ln = lines.get(gl); const d: any = ln?.driver || {};
@@ -2594,7 +2601,32 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
      month"): the line keeps its year total; a 'once' line's one-time part (the share of its T12 that is a spike)
      moves to its month, a 'quarters' line carries the same amount each calendar quarter. Not on contracts, review
      lines, hand-typed or plan lines. Before the fee, so a moved income line is in the right month's basis. ---- */
+  /* NOVEMBER GIFT CARDS (Troy 2026-11-18: "$500 per employee * allocation for november"): 6318 keeps its own months
+     with last year's gift-card spike taken out, and November carries $ per employee x the employees the Pay-rates
+     roster allocates here (two people at 50% count as one). No roster on file: the line falls back to moving its
+     own spike to November (the timing default). */
+  const giftDone = (() => {
+    const gc = inputs.giftCards;
+    const heads = Number(src.staffHeads) || 0;
+    if (gc === false || !(heads > 0) || !coaByCode.has(GIFT_CARD_GL)) return false;
+    const per = Number(gc?.perEmployee) > 0 ? Number(gc!.perEmployee) : GIFT_CARD_PER_EMPLOYEE;
+    const month = Number(gc?.month) >= 1 && Number(gc?.month) <= 12 ? Math.round(Number(gc!.month)) : 11;
+    const ln = lines.get(GIFT_CARD_GL);
+    const d: any = ln?.driver || {};
+    if (ln && (ln.override || d.acq || ['contract', 'review', 'zero'].includes(d.method))) return false;
+    const cur = ln && ln.months.some((v) => v) && d.method !== 'dropped' ? ln.months : zero12();
+    const hist = (src.actual || {})[GIFT_CARD_GL];
+    const share = spikeShare(hist && hist.some((v) => v) ? hist : cur);
+    const rest = cur.some((v) => v) ? (retimeOnce(cur, month, startMonth, share)?.months || cur) : zero12();
+    const t = (month - startMonth + 12) % 12;
+    const amount = r2(per * heads);
+    const old = rest.some((v) => v) && share > 0 ? r2(sum(cur) * share) : 0;
+    const months = rest.map((v, i) => r2(i === t ? v - old + amount : v)) as Months;
+    mk(GIFT_CARD_GL, months, { ...(ln && d.method !== 'dropped' ? d : { method: 'baseline', shape: 'actual', pct: 0 }), giftCards: { perEmployee: per, heads, amount, month, replaced: old } } as any);
+    return true;
+  })();
   for (const [gl, ln] of lines) {
+    if (gl === GIFT_CARD_GL && giftDone) continue;
     const t = timingFor(inputs, gl);
     const d: any = ln.driver || {};
     if (!t || ln.override || d.acq || ['contract', 'review', 'zero', 'dropped', 'manual'].includes(d.method) || !ln.months.some((v) => v)) continue;
@@ -2751,7 +2783,11 @@ export function perOccupiedMonths(rate: number, units: number, vacPct: Months, s
    property's own level — level = its own months' total ÷ the curve's share of those months — so a winter month comes out
    winter-sized, not the average of the summer it does have. The year total moves with it (the fills were placeholders).
    The driver records `shapeFrom` and, then, `shapeMissing` (the months filled). Pure. */
-const SHAPE_SKIP = new Set(['contract', 'zero', 'dropped', 'review', 'collections', 'badDebtRecovery', 'collectionFee', 'mgmtPct', 'debtService', 'interest']);
+/** Corporate formulas (Troy 2026-11-18: "Curve should not ever be applied to corporate formulas"): the corporate per-unit
+    / flat rates and the BudgetSuggestions amounts keep the months corporate sets — no other property's curve, no fit
+    to the T12. */
+export const CORP_FORMULA_METHODS = new Set(['corpRate', 'suggested']);
+const SHAPE_SKIP = new Set(['contract', 'zero', 'dropped', 'review', 'collections', 'badDebtRecovery', 'collectionFee', 'mgmtPct', 'debtService', 'interest', ...CORP_FORMULA_METHODS]);
 export function applyShapeFrom(lines: BudgetLine[], shapeGl: Record<string, { code: string; months: Months }>, startMonth: number, opts: { liveIdx?: number[] | null } = {}): BudgetLine[] {
   if (!shapeGl || !Object.keys(shapeGl).length) return lines;
   const live = (opts.liveIdx || []).filter((i) => i >= 0 && i < 12);
