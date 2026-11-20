@@ -782,3 +782,5 @@ table.rftbl td:nth-child(3) { min-width: 520px; }
 table.rvtbl .rvbtns { display: flex; gap: 4px; justify-content: center; flex-wrap: wrap; }
 table.rvtbl .rvnab { color: var(--dim); }
 table.rvtbl td.rv-marked { background: color-mix(in srgb, var(--dim) 8%, var(--panel)); color: var(--dim); }
+/* prior-year distributions under the cash-on-cash row (Troy 2026-11-19): the same family, quieter */
+table.grid tr.returns.dist td, table.grid tr.returns.dist td.code, table.grid tr.returns.dist td.name { background: color-mix(in srgb, var(--good) 6%, var(--panel)); font-weight: 500; border-top: 0; border-bottom: 1px solid color-mix(in srgb, var(--good) 45%, var(--panel)); }

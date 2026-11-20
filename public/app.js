@@ -2146,6 +2146,34 @@ function gridHtml(bv, totals) {
           <td class="code">CoC</td><td class="name" title="Cash-on-cash return, annualized">CASH-ON-CASH (annualized)${cols.fx ? '' : ' ' + toggle}</td>${cols.fx ? `<td>${toggle}</td>` : ''}
           ${cells}
           ${cols.annual ? `<td class="${cfY < 0 ? 'neg' : ''}"><b>${cap ? pct(cfY / cap) : ''}</b></td>` : ''}${refBlank}${cols.punit ? '<td></td>' : ''}${cols.note ? '<td></td>' : ''}</tr>`);
+        /* PRIOR-YEAR DISTRIBUTIONS BY QUARTER (Troy 2026-11-19: "add prior year returns distributed per quarter below the
+           cash on cash line"): the template's DistHist, the 12 months before the budget starts, each distribution in the
+           budget quarter its date falls in, at its annualized % as recorded. Specials are named on hover, not in the quarters. */
+        const dh = ((bv.template && bv.template.distHist) || []).filter((x) => x && /^\d{4}-\d{2}/.test(String(x.date)));
+        const startAbs = Number(bv.budget.year) * 12 + (((bv.budget.inputs || {}).startMonth || 1) - 1);
+        const inWin = dh.map((x) => ({ ...x, idx: Number(String(x.date).slice(0, 4)) * 12 + Number(String(x.date).slice(5, 7)) - 1 - (startAbs - 12) })).filter((x) => x.idx >= 0 && x.idx < 12);
+        const qd = inWin.filter((x) => /quarter/i.test(String(x.type)));
+        const sp = inWin.filter((x) => !/quarter/i.test(String(x.type)));
+        if (qd.length || sp.length) {
+          const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+          const when = (x) => `${MON[Number(String(x.date).slice(5, 7)) - 1]} ${String(x.date).slice(0, 4)}`;
+          const q4 = [0, 1, 2, 3].map((q) => qd.filter((x) => Math.floor(x.idx / 3) === q));
+          const dCells = [0, 1, 2, 3].map((q) => {
+            const vis = monthIdx.filter((i) => Math.floor(i / 3) === q).length;
+            if (!vis) return '';
+            const xs = q4[q];
+            if (!xs.length) return `<td colspan="${vis}" class="muted" title="No quarterly distribution dated in this quarter a year earlier">—</td>`;
+            const p = xs.reduce((a, x) => a + (Number(x.pct) || 0), 0), amt = xs.reduce((a, x) => a + (Number(x.amount) || 0), 0);
+            return `<td colspan="${vis}" title="${esc(xs.map((x) => `${when(x)}: $${money(x.amount)} (${pct(Number(x.pct) || 0)} annualized)`).join(' · '))}${xs.length > 1 ? ` · together $${money(amt)}` : ''}">${pct(p)}</td>`;
+          }).join('');
+          const totQ = qd.reduce((a, x) => a + (Number(x.amount) || 0), 0);
+          const spTxt = sp.length ? `Special distributions (not in the quarters): ${sp.map((x) => `${when(x)} $${money(x.amount)}`).join(', ')}` : '';
+          const yr = cap ? totQ / cap : null;
+          rows.push(`<tr class="returns dist" title="Distributions paid in the 12 months before the budget starts (the Yardi template's distribution history), each in the quarter it was paid, at its annualized %.${spTxt ? ' ' + spTxt + '.' : ''}">
+            <td class="code"></td><td class="name" title="Prior-year distributions by quarter, annualized">${((bv.budget.inputs || {}).startMonth || 1) > 1 ? 'PY' : Number(bv.budget.year) - 1} DISTRIBUTIONS${sp.length ? ` <span class="muted" title="${esc(spTxt)}">+ ${sp.length} special</span>` : ''}</td>${cols.fx ? '<td></td>' : ''}
+            ${dCells}
+            ${cols.annual ? `<td title="${esc(`Quarterly distributions $${money(totQ)}${cap ? ` ÷ $${money(cap)} capital` : ''}${spTxt ? ` · ${spTxt}` : ''}`)}"><b>${yr != null ? pct(yr) : ''}</b></td>` : ''}${refBlank}${cols.punit ? '<td></td>' : ''}${cols.note ? '<td></td>' : ''}</tr>`);
+        }
       }
       // the seller T12 by UW category under the subtotal it belongs to (a new acquisition)
       const sellerAt = SELLER_AT[a.code];
