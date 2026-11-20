@@ -7519,23 +7519,25 @@ function renderSummary(el) {
       <td>${r.coc != null ? `${(r.coc * 100).toFixed(1)}%` : '—'}</td><td></td><td></td></tr>`;
   }
   const portOf = (code) => SUM_PORTFOLIOS.find((x) => x.codes.includes(String(code || '').toLowerCase()));
-  const body = regions.map((rg) => {
+  const bodyRows = regions.map((rg) => {
     const props = d.properties.filter((p) => regionGroup(p.region) === rg).sort((a, b) => a.code.localeCompare(b.code));
     const rgKey = `rg:${rg}`;
-    let html = '';
+    // subtotals head their rows (Troy 2026-11-19: "Move subtotal rows on summary page to the top"): the region subtotal,
+    // then each portfolio's subtotal over its properties, then the properties in no portfolio
+    let html = subRow(`${rg} subtotal`, props, 'sub', rgKey);
     if (!S.sumShut.has(rgKey)) {
-      // each portfolio's properties, then its subtotal; then the properties in no portfolio
       for (const pf of SUM_PORTFOLIOS) {
         const ps = props.filter((p) => pf.codes.includes(String(p.code).toLowerCase()));
         if (!ps.length) continue;
         const k = `pf:${pf.name}`;
-        if (!S.sumShut.has(k)) html += ps.map(propRow).join('');
         html += subRow(pf.name, ps, 'sub psub', k, pf.note);
+        if (!S.sumShut.has(k)) html += ps.map(propRow).join('');
       }
       html += props.filter((p) => !portOf(p.code)).map(propRow).join('');
     }
-    return html + subRow(`${rg} subtotal`, props, 'sub', rgKey);
-  }).join('') + (regions.length > 1 ? subRow('All properties', d.properties, 'grand') : '');
+    return html;
+  }).join('');
+  const body = (regions.length > 1 ? subRow('All properties', d.properties, 'grand') : '') + bodyRows;
   const foldKeys = [...regions.map((rg) => `rg:${rg}`), ...SUM_PORTFOLIOS.filter((pf) => d.properties.some((p) => pf.codes.includes(String(p.code).toLowerCase()))).map((pf) => `pf:${pf.name}`)];
   const anyShut = foldKeys.some((k) => S.sumShut.has(k));
   const unitBtn = (m, label, tip) => `<button data-sumunit="${m}" class="${unitMode === m ? 'on' : ''}" title="${esc(tip)}">${label}</button>`;
@@ -7567,7 +7569,7 @@ function renderSummary(el) {
           <th title="NOI over the FY ${fyYear} budget (Jan–Dec ${fyYear}; the guidance: never below it). Hover a cell for the budget it reads">NOI vs ${fyYear} bud</th><th>CoC</th><th class="l">Status</th><th class="l">Updated</th></tr>
         ${body}
       </table></div>
-      <p class="muted" style="font-size:11.5px; margin:8px 0 0">Each property's latest ${d.year} budget. The compare columns are the compare card's subtotals with the same math, always against the trailing-12 for annual budgets (the guidance is growth over the T12, whatever a budget's own compare card is set to) and against UW Year 1 for acquisitions. <span class="gin-key">Green</span> = meets the 2027 guidance memo, <span class="gout-key">red</span> = misses it${gTxt ? `: ${esc(gTxt)}` : ''}. Hover a cell for the exact target and why. The colours stay on in every view. Numbers typed in a budget's own target boxes are not used here. Dollars show as ${unitTxt}${unitMode === 'tot' ? '' : " (a subtotal's dollars over its units)"}; hover for the totals. Each portfolio (Minot 4, Williston 2, Basin 2, Bismarck 4, Jamestown 2) and each region closes with a subtotal that adds its properties' dollars, its growth on those sums; click a subtotal to collapse or open it. NOI vs ${fyYear} budget reads each property's FY ${fyYear} budget statement (Jan–Dec). Click a property to open it.</p>`
+      <p class="muted" style="font-size:11.5px; margin:8px 0 0">Each property's latest ${d.year} budget. The compare columns are the compare card's subtotals with the same math, always against the trailing-12 for annual budgets (the guidance is growth over the T12, whatever a budget's own compare card is set to) and against UW Year 1 for acquisitions. <span class="gin-key">Green</span> = meets the 2027 guidance memo, <span class="gout-key">red</span> = misses it${gTxt ? `: ${esc(gTxt)}` : ''}. Hover a cell for the exact target and why. The colours stay on in every view. Numbers typed in a budget's own target boxes are not used here. Dollars show as ${unitTxt}${unitMode === 'tot' ? '' : " (a subtotal's dollars over its units)"}; hover for the totals. Each portfolio (Minot 4, Williston 2, Basin 2, Bismarck 4, Jamestown 2) and each region opens with a subtotal (above its properties) that adds its properties' dollars, its growth on those sums; click a subtotal to collapse or open it. NOI vs ${fyYear} budget reads each property's FY ${fyYear} budget statement (Jan–Dec). Click a property to open it.</p>`
       : `<p class="muted">No ${d.year} budgets yet.</p>`}
     </div>`;
   el.querySelector('#sum-year').addEventListener('change', (e) => loadSummary(Number(e.target.value)));
