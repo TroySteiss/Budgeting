@@ -1942,6 +1942,12 @@ describe('HAP inside GPR', () => {
     expect((L(ls, '4994').driver as any).hap).toBe(800);
     expect(L(ls, '5003').months[0]).toBe(-(100 + 50));               // (1200−300−800) + (1200−1150)
   });
+  it('LTL market growth is the rent roll GPR %, not 4994 net of HAP (AGMO, 2026-11-19)', () => {
+    // a 1% step in March on the roll, nothing burns (all renew at 0%): each lease's gap deepens 1% of its market
+    const hold = { ...roll, ltl: { ...roll.ltl, mode: 'leases' as const, renewalPct: 1, burnoffRenew: 0, burnoffNew: 0, followGpr: true } };
+    const l = L(generateAnnualLines(coaList, hold, { actual, budget: null, lastMonth: 10, leases, charges: { subsidy: 800 } }), '5003');
+    expect(l.months[2]).toBeCloseTo(-(150 + 0.01 * 2400), 2);      // not (12120 − 800) / (12000 − 800) − 1 = 1.07%
+  });
   it('GPR off the last actual month is already net of HAP: nothing comes out', () => {
     const ls = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10 });
     expect(L(ls, '4994').months[0]).toBe(10000);

@@ -40,7 +40,8 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-19d';   // d: 5157 = move-ins × setup fee ($150) + VCR admin fees
+export const ENGINE_VERSION = '2026-11-19e';   // e: LTL market growth off the rent roll GPR, not GPR net of HAP
+// 2026-11-19d: 5157 = move-ins × setup fee ($150) + VCR admin fees
 // 2026-11-19c: per-move-in income follows turnover from the T12
 // 2026-11-19b: no fit on a line that carries a contract
 // 2026-11-19a:   // a: TPND review — utility cap on the gross bill at a split property, an annual bill on "last month" no longer drops, RE tax MF share shown
@@ -2218,6 +2219,11 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   // the HAP / subsidy share of each lease is held out of the burnable loss to lease (withHap, domain.ts)
   const hapL = src.leases && src.leases.length ? withHap(src.leases, src.charges) : null;
   const hapInfo = hapL && hapL.hap ? { hap: hapL.hap, ...(hapL.estimated ? { hapEst: true } : {}), ...(hapL.unplaced ? { hapUnplaced: hapL.unplaced } : {}) } : {};
+  /* market growth as a factor of month 0, for the per-lease model (every lease's market rent × it). Off the RENT ROLL GPR
+     (gprGross), not 4994: 4994 is the roll less a flat HAP, so its ratio overstates the % (AGMO, Kara 2026-11-19: HAP
+     $76K of a $317K roll turned each +0.5% step into +0.66% on every lease, ~$13K more loss to lease than the template
+     at the same inputs). With no HAP taken out the two are the same. */
+  const mktGrowth = !followGpr ? null : gprGross[0] > 0 ? gprGross.map((v) => v / gprGross[0]) : gpr[0] ? gpr.map((v) => v / gpr[0]) : null;
   if (isSet('5003')) {
     // a shape chosen on the row: already built above
   } else if (ltl.mode === 'flat') {
@@ -2227,7 +2233,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const model = hapL ? ltlModel(hapL.leases, inputs.year, startMonth, { ...ltl, renewalPct: 1, burnoffRenew: 0, burnoffNew: 0, asOf: src.rollAsOf }) : null;
     const L0 = typed0 != null ? typed0 : ltl.startMonthly ? -Math.abs(ltl.startMonthly) : (model && model.months[0]) || lastOf('5003');
     // market growth deepens the gap on the occupied units' market (all units when the roll is summary-only)
-    const deepen = (i: number) => (!followGpr || !gpr[0] ? 0 : model ? (gpr[i] / gpr[0] - 1) * model.occupiedMarket : gpr[i] - gpr[0]);
+    const deepen = (i: number) => (!followGpr || !gpr[0] ? 0 : model ? ((mktGrowth?.[i] ?? 1) - 1) * model.occupiedMarket : gpr[i] - gpr[0]);
     mk('5003', gpr.map((v, i) => r2(Math.min(0, L0 - deepen(i)))) as Months, { method: 'ltl', ...hapInfo } as any);
   } else if (ltl.mode === 'ramp') {
     const out = zero12();
@@ -2242,7 +2248,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     // rent is fixed until it resets); a reset burns only the burnoff share of that gap. Before
     // 2026-11-09 a reset wiped the growth part entirely whatever the burnoff % — so at 100%
     // renewal / 0% burnoff the February step still "burned off" through the year.
-    const model = ltlModel(hapL!.leases, inputs.year, startMonth, { ...ltl, asOf: src.rollAsOf, growth: followGpr && gpr[0] ? gpr.map((v) => v / gpr[0]) : null, month0: typed0 });
+    const model = ltlModel(hapL!.leases, inputs.year, startMonth, { ...ltl, asOf: src.rollAsOf, growth: mktGrowth, month0: typed0 });
     mk('5003', model.months.map((v) => r2(Math.min(0, v))) as Months, { method: 'ltl', ...hapInfo, ...(typed0 != null ? { month0: typed0, k: model.k } : {}) } as any);
   } else if (lastGpr || ltl.startMonthly || typed0 != null) {
     // template: last actual month's LTL, deepened by the market-rent change,
