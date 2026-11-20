@@ -1268,11 +1268,12 @@ export interface AnnualSources {
     The fee bills a month in arrears, so the rate follows the month the INCOME was earned: the
     fee posted the month after ownership month 12 is still at the first-year rate.
     Returns each budget month's rate, and how many of them are first-year. */
-export function mgmtFeeRates(year: number, startMonth: number, regular: number, first?: { pct?: number | null; start?: string | null } | null): { rates: Months; firstMonths: number; through: string | null } {
-  const rates = Array(12).fill(regular) as Months;
+export function mgmtFeeRates(year: number, startMonth: number, regular: number | Months, first?: { pct?: number | null; start?: string | null } | null): { rates: Months; firstMonths: number; through: string | null } {
+  // `regular` may differ by month (the quarterly returns below); the first-year months take the first-year rate either way
+  const rates = (Array.isArray(regular) ? regular.slice() : Array(12).fill(regular)) as Months;
   const m = /^(\d{4})-(\d{1,2})/.exec(String(first?.start || ''));
   const pct = first?.pct;
-  if (!m || pct == null || !(pct > 0) || Math.abs(pct - regular) < 1e-9) return { rates, firstMonths: 0, through: null };
+  if (!m || pct == null || !(pct > 0) || (!Array.isArray(regular) && Math.abs(pct - regular) < 1e-9)) return { rates, firstMonths: 0, through: null };
   const acq = Number(m[1]) * 12 + (Number(m[2]) - 1);            // first month of ownership
   const lastFirst = acq + 11;                                    // 12th month of ownership
   let n = 0;
@@ -1282,6 +1283,18 @@ export function mgmtFeeRates(year: number, startMonth: number, regular: number, 
   }
   const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   return { rates, firstMonths: n, through: `${MON[lastFirst % 12]} ${Math.floor(lastFirst / 12)}` };
+}
+
+/** THE FEE MATRIX (the Yardi template's ManFeeMatrix: the fee % at each annualized return, columns 5% … 17%). A column
+    covers the returns above the column before it, the way the template's Summary reads its thresholds ("5% Threshold" =
+    the first 5% column − 1%): with CLND's 4% … 4% | 13%: 5% … | 17%: 6%, a 12.5% return earns 5% and 16.5% earns 6%.
+    Above the last column: the last column. null = no matrix (or no usable return). */
+export function mgmtFeeFromMatrix(matrix: Record<string, number> | null | undefined, ret: number | null | undefined): number | null {
+  const cols = Object.entries(matrix || {}).map(([k, v]) => [parseFloat(k) / 100, Number(v)] as [number, number])
+    .filter(([h, v]) => Number.isFinite(h) && Number.isFinite(v) && v > 0).sort((a, b) => a[0] - b[0]);
+  if (!cols.length || ret == null || !Number.isFinite(Number(ret))) return null;
+  for (const [h, v] of cols) if (Number(ret) <= h + 1e-9) return v;
+  return cols[cols.length - 1][1];
 }
 
 /* ============================================================================
@@ -2751,8 +2764,18 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     // first twelve months of ownership at the first-year rate (typed on the budget, else the
     // property's acquisition budget), the regular rate after
     const fy = { pct: inputs.mgmtFirstYear?.pct !== undefined ? inputs.mgmtFirstYear.pct : src.acquisition?.firstYearPct, start: inputs.mgmtFirstYear?.start || src.acquisition?.start };
-    const fr = mgmtFeeRates(inputs.year, startMonth, feePct, fy);
-    mk('6112', basis.map((v, i) => Math.round(v * fr.rates[i])) as Months, { method: 'mgmtPct', pct: feePct, priorMonth: true, ...(extra ? { feeExtra: extra, feeExtraFrom: feeExtraFrom } : {}), ...(fr.firstMonths ? { firstYear: { pct: fy.pct, months: fr.firstMonths, through: fr.through } } : {}) } as any);
+    /* RETURNS BY QUARTER (Troy 2026-11-19: "an assumptions line that lets me enter % returns (shown as annualized) for
+       each quarter. The fee should then follow suit based on those"): a typed quarter's fee % = the template's fee matrix
+       at that return, on that quarter's fee months (budget months 1-3, 4-6, ...). A blank quarter keeps the fee %. */
+    const rets = Array.isArray(inputs.mgmtReturns) ? [0, 1, 2, 3].map((q) => { const v = inputs.mgmtReturns![q]; return v == null || !Number.isFinite(Number(v)) ? null : Number(v); }) : null;
+    const matrix = tpl?.mgmtFee?.matrix || null;
+    const byQ = rets && rets.some((v) => v != null) ? rets.map((r) => (r == null ? null : { ret: r, pct: mgmtFeeFromMatrix(matrix, r) })) : null;
+    const regular = byQ ? Array.from({ length: 12 }, (_, i) => byQ[Math.floor(i / 3)]?.pct ?? feePct) as Months : feePct;
+    const fr = mgmtFeeRates(inputs.year, startMonth, regular, fy);
+    mk('6112', basis.map((v, i) => Math.round(v * fr.rates[i])) as Months, { method: 'mgmtPct', pct: feePct, priorMonth: true, ...(extra ? { feeExtra: extra, feeExtraFrom: feeExtraFrom } : {}), ...(fr.firstMonths ? { firstYear: { pct: fy.pct, months: fr.firstMonths, through: fr.through } } : {}),
+      ...(byQ ? { byQuarter: byQ, ...(byQ.some((q) => q && q.pct == null) ? { noMatrix: true } : {}) } : {}),
+      // each month's rate when they differ (quarterly returns, the first year): the workbook export writes it per month
+      ...(byQ || fr.firstMonths ? { rates: fr.rates } : {}) } as any);
   };
   if (isSet('6112')) {
     // a shape chosen on the row: already built above

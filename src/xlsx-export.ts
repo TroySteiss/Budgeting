@@ -758,7 +758,10 @@ function addReviewSheets(wb: ExcelJS.Workbook, args: ReviewArgs, prefix: string)
         return {
           factor: { value: Number(d.pct), fmt: '0.00%' },
           month: (i) => {
-            let f = `ROUND(${basis(i)}*${D},0)`;
+            // a month on another rate (a quarter's return, the first year): that month's own rate, not the factor cell
+            const rt = Array.isArray(d.rates) && d.rates.length === 12 ? Number(d.rates[i]) : NaN;
+            const rate = Number.isFinite(rt) && Math.abs(rt - Number(d.pct)) > 1e-9 ? String(rt) : D;
+            let f = `ROUND(${basis(i)}*${rate},0)`;
             if (sp) f = `ROUND(${f}*(1-${sp}),2)`;
             return mr > 0 ? `ROUND(${f}/${mr},0)*${mr}` : f;
           },

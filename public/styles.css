@@ -264,6 +264,16 @@ button.rowtool:hover { background: var(--soft); color: var(--ink); }
 .rowmenu .rm-head { font-size: 11px; color: var(--dim); padding: 5px 9px; border-bottom: 1px solid var(--gridline); margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 340px; }
 .rowmenu button { display: block; width: 100%; text-align: left; background: none; border: none; padding: 6px 9px; border-radius: 6px; font-size: 12.5px; }
 .rowmenu button:hover { background: var(--hover); color: var(--accent); }
+/* a group of options in the row menu (Flatline) and its options, indented */
+.rowmenu .rm-more { font-size: 11px; color: var(--dim); font-weight: 400; margin-left: 4px; }
+.rowmenu .rm-subs { margin: 0 0 3px 18px; border-left: 2px solid var(--gridline); }
+.rowmenu button.rm-sub { padding: 5px 9px; font-size: 12px; }
+.rowmenu button.rm-sub.on { font-weight: 600; }
+.rowmenu .rm-cur { font-size: 10.5px; color: var(--accent); font-weight: 600; margin-left: 4px; }
+/* a formula chip opens options: a small caret says so */
+.drv.drv-has { cursor: pointer; }
+.drv .drv-more { font-size: 7.5px; margin-left: 3px; opacity: .65; vertical-align: 1px; }
+.drv.drv-has:hover .drv-more { opacity: 1; }
 .rowmenu label { display: block; padding: 5px 9px; font-size: 12.5px; border-radius: 6px; cursor: pointer; }
 .rowmenu label:hover { background: var(--hover); }
 

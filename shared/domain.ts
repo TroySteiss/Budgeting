@@ -165,6 +165,9 @@ export interface BudgetInputs {
       `start` ('YYYY-MM'). Unset = the property's acquisition budget / the template's acquisition
       date; pct null or 0 = no first-year rate. */
   mgmtFirstYear?: { pct?: number | null; start?: string | null };
+  /** returns by budget quarter (annualized cash-on-cash, e.g. 0.16), typed on the budget (Troy 2026-11-19). A typed
+      quarter's fee % comes off the template's fee matrix; a blank quarter keeps mgmtPct. */
+  mgmtReturns?: (number | null)[] | null;
   /** annual: false = do NOT take the months still inside ownership Year 1 from the property's Y1 budget (default: take them) */
   y1Plan?: boolean;
   /** annual, new acquisition (Troy 2026-11-12): how far the posted months since closing move each category's GL mix

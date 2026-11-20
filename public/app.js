@@ -94,7 +94,7 @@ function drvMeta(l) {
 /* The chip a formula choice produces, shown BESIDE the choice wherever formulas are picked (Troy
    2026-11-11: "colored chips … next to different formula options when picking out, so that the
    code/color for each is more clear"). Same tag + colour as the grid's Fx chip. */
-const SHAPE_CHIP = { actual: ['drv-base', 'SAME MO'], wavg: ['drv-base', 'WAVG'], flat: ['drv-base', 'T12/12'], curve: ['drv-base', 'CURVE'], avgnz: ['drv-base', 'AVG≠0'], last: ['drv-base', 'LAST'], turns: ['drv-base', 'TURNS'] };
+const SHAPE_CHIP = { actual: ['drv-base', 'SAME MO'], wavg: ['drv-base', 'WAVG'], flat: ['drv-base', 'FLATLINE'], curve: ['drv-base', 'CURVE'], avgnz: ['drv-base', 'AVG≠0'], last: ['drv-base', 'LAST'], turns: ['drv-base', 'TURNS'] };
 const chipHtml = (cls, tag) => `<span class="drv ${cls} optchip">${esc(tag)}</span>`;
 const shapeChip = (k) => (SHAPE_CHIP[k] ? chipHtml(SHAPE_CHIP[k][0], SHAPE_CHIP[k][1]) : '');
 /** does this GL have a real seasonal curve (electric, heat, snow …)? With none, "seasonal curve" is just T12 ÷ 12 */
@@ -177,6 +177,10 @@ function drvMetaBase(l) {
     case 'burdenRatio': { const bs = l.driver.basis === 'budget' ? 'CY budget ratio' : l.driver.basis === 'mix' ? 'avg of T12 actual & CY budget ratios' : 'T12 actual ratio';
       return { cls: 'drv-pay', tag: l.driver.from ? `%WAGES·${String(l.driver.from).toUpperCase()}` : '%WAGES', label: `${((l.driver.ratio || 0) * 100).toFixed(1)}% of wages (${S.bv && S.bv.annual ? `same-month ${bs} × that month's budgeted wages — keeps the quarterly / seasonal shape` : 'Minot ratio'})${l.driver.from ? ` — the % and the monthly shape are taken from ${String(l.driver.from).toUpperCase()}'s history, applied to this property's own wages` : ''}` }; }
     case 'mgmtPct': { const fy = l.driver.firstYear;
+      const bq = Array.isArray(l.driver.byQuarter) ? l.driver.byQuarter : null;
+      const qLab = quarterLabels();
+      const qTxt = bq ? ` · by quarter: ${bq.map((q, i) => (q ? `${qLab[i]} ${q.pct != null ? `${(q.pct * 100).toFixed(2)}%` : 'fee %'} (return ${(q.ret * 100).toFixed(1)}%)` : `${qLab[i]} ${((l.driver.pct || 0) * 100).toFixed(2)}%`)).join(', ')}${l.driver.noMatrix ? " · ⚠ the linked template has no fee matrix, so a typed return can't set the fee" : ''}` : '';
+      if (bq) return { cls: 'drv-fee', tag: fy ? '%INC·Y1·RET' : '%INC·RET', label: `Management fee on the prior month's income${fy ? `; ${((fy.pct || 0) * 100).toFixed(2)}% for the first 12 months of ownership (through ${fy.through})` : ''}${qTxt}. Each typed return reads the template's fee matrix` };
       return { cls: 'drv-fee', tag: fy ? '%INC·Y1' : '%INC', label: fy ? `Management fee: ${((fy.pct || 0) * 100).toFixed(2)}% for the first 12 months of ownership (income through ${fy.through}; ${fy.months} fee month${fy.months === 1 ? '' : 's'} of this budget), then ${((l.driver.pct || 0) * 100).toFixed(2)}% — on the prior month's income` : `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.priorMonth ? 'prior-month ' : ''}income${Array.isArray(l.driver.feeExtra) ? ` — basis includes ${String(l.driver.feeExtraFrom || 'companion').toUpperCase()} income ($${money(l.driver.feeExtra.reduce((a, b) => a + (Number(b) || 0), 0))} for the year)` : ''}` }; }
     case 'interest': return { cls: 'drv-int', tag: 'INT', label: 'Interest (loan × rate × days)' };
     case 'sellerUtil': return { cls: 'drv-t12', tag: 'SLR', label: 'Seller statement level (× growth)' };
@@ -192,6 +196,7 @@ function drvMetaBase(l) {
     case 'yardiCsv': return { cls: 'drv-man', tag: 'YARDI', label: `Adopted from the Yardi budget CSV${l.driver.file ? ` (${l.driver.file})` : ''} — the month as it sits in Yardi` };
     case 'imported': return { cls: 'drv-man', tag: 'IMP', label: `Imported from draft workbook${l.driver.file ? ` (${l.driver.file})` : ''}` };
     case 'smooth': return { cls: 'drv-t12', tag: 'SMOOTH', label: `Missed-bill smoothing ×${l.driver.passes || 0}${l.driver.of ? ` of ${String(l.driver.of).toUpperCase()}${l.driver.srcName ? ' ' + l.driver.srcName : ''}` : ''} — spikes spread into surrounding months, total kept` };
+    case 'flatline': return { cls: 'drv-base', tag: 'FLATLINE', label: l.driver.per === 'year' ? `Flatline: $${money(l.driver.amount || 0)} per year typed, ÷ 12 = $${money((l.driver.amount || 0) / 12)} every month` : `Flatline: $${money(l.driver.amount || 0)} per month typed, every month ($${money((l.driver.amount || 0) * 12)} a year)` };
     case 'setTotal': return { cls: 'drv-man', tag: 'TOTAL', label: `Total set to ${Math.round(l.driver.total || 0).toLocaleString()} — ${l.driver.of ? `${String(l.driver.of).toUpperCase()} distribution kept` : 'prior distribution kept'}` };
     /* ---- annual (template) rules ---- */
     case 'baseline': {
@@ -2248,7 +2253,7 @@ function gridHtml(bv, totals) {
     rows.push(`<tr${trCls ? ` class="${trCls}"` : ''}>
       <td class="code">${a.code}</td>
       <td class="name${histFor(a.code).length ? ' hashist' : ''}" ${histFor(a.code).length ? `data-hist="${a.code}"` : ''} title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}${histFor(a.code).length ? ' — click for the prior T12 / CY budget by month' : ''}">${histFor(a.code).length ? `<span class="hx">${histOpen(a.code) ? '▾' : '▸'}</span>` : ''}${esc(a.name)}${smell ? ` <span class="warnflag" title="Seller billing looks NON-ACCRUAL: ${esc(smell.join('; '))}. Likely bad bills — review, or smooth via WAVG / flat / Minot seasonal.">⚠</span>` : ''}${a.active === false ? ' <span class="badge" title="Deactivated GL still carrying dollars — Recalc zeroes it">inactive — recalc to zero</span>' : ''}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
-      ${cols.fx ? `<td style="white-space:nowrap"><button class="drv ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click to change">${dm.tag}</button>${drvExtraHtml({ extra: (dm.extra || []).filter((x) => !x.fit) })}${fitChipHtml(a.code, l)}${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? (prm.steps ? `<button class="fxp fxp-steps" data-steps="${a.code}" title="${esc(prm.label)} — click to place increases in specific months">${esc(prm.value)}</button>` : prm.multi ? `<button class="fxp fxp-steps" data-multi="${a.code}" title="${esc(prm.title || '')} — click to edit every input">${esc(prm.summary)}</button>` : `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">${/%/.test(prm.label) ? '<span class="fxu" title="percent">%</span>' : ''}`) : ''}</td>` : ''}
+      ${cols.fx ? `<td style="white-space:nowrap"><button class="drv drv-has ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click for this line's formula options">${dm.tag}<span class="drv-more" aria-hidden="true">▾</span></button>${drvExtraHtml({ extra: (dm.extra || []).filter((x) => !x.fit) })}${fitChipHtml(a.code, l)}${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? (prm.steps ? `<button class="fxp fxp-steps" data-steps="${a.code}" title="${esc(prm.label)} — click to place increases in specific months">${esc(prm.value)}</button>` : prm.multi ? `<button class="fxp fxp-steps" data-multi="${a.code}" title="${esc(prm.title || '')} — click to edit every input">${esc(prm.summary)}</button>` : `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">${/%/.test(prm.label) ? '<span class="fxu" title="percent">%</span>' : ''}`) : ''}</td>` : ''}
       ${monthIdx.map((i) => `<td class="m ${actIdx.has(i) ? 'drv-act' : sp ? '' : dm.cls}${isHard(i) && !actIdx.has(i) ? ' hard' : ''}${revAt(i) && !actIdx.has(i) ? ' rev' : ''}"${isHard(i) && !actIdx.has(i) ? ' title="Hard-coded: this cell was typed or fixed by hand. 🔓 in the row tools puts the line back on its formula."' : revAt(i) && !actIdx.has(i) ? ` title="${esc(revTip(i))}"` : ''}><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money(Math.round(m[i]) || 0) : ''}"></td>`).join('')}
       ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}${hard && ann ? ' hard' : ''}"><input data-ann="${a.code}" value="${ann ? money(Math.round(ann) || 0) : ''}" title="${bv.annual ? bv.budget.year : 'Year 1'} total — type a new total and the months rescale proportionally (distribution kept)"></td>` : ''}
       ${refCells(a.code, 'detail', ann, !!(l && l.override))}
@@ -2484,9 +2489,12 @@ function openMultiParams(b, gl, anchorBtn) {
     for (const box of menu.querySelectorAll('input.pop-multi')) {
       const p0 = prm.multi.find((x) => x.k === box.dataset.k);
       const v = parseFloat(String(box.value).replace(/[$,%\s]/g, ''));
-      if (!p0 || !Number.isFinite(v) || String(box.value).trim() === String(p0.value)) continue;
+      const raw = String(box.value).trim();
+      // a box that may be blank (the fee's quarterly returns): emptying it clears that input
+      const cleared = !!(p0 && p0.blank) && raw === '';
+      if (!p0 || raw === String(p0.value) || (!cleared && !Number.isFinite(v))) continue;
       const p = paramFor(gl, line, cur).multi.find((x) => x.k === box.dataset.k);
-      const d = p.patch(v);
+      const d = p.patch(cleared ? null : v);
       patch = { ...patch, ...d };
       cur = { ...cur, ...d };
     }
@@ -2498,6 +2506,28 @@ function openMultiParams(b, gl, anchorBtn) {
   menu.querySelector('[data-act="x"]').addEventListener('click', close);
   menu.querySelector('[data-act="save"]').addEventListener('click', () => save().catch((err) => alert(err.message)));
   menu.querySelectorAll('input.pop-multi').forEach((x) => x.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save().catch((err) => alert(err.message)); } if (e.key === 'Escape') close(); }));
+}
+
+/* the budget's quarters as month ranges ("Jan–Mar"), in budget order */
+function quarterLabels() {
+  const lab = (S.bv && S.bv.monthLabels) || MONTHS;
+  return [0, 1, 2, 3].map((q) => `${String(lab[q * 3]).split(/[-\s]/)[0]}–${String(lab[q * 3 + 2]).split(/[-\s]/)[0]}`);
+}
+/* each quarter's cash-on-cash as the budget stands, annualized: (NOI − interest − principal) × 4 ÷ capital */
+function budgetQuarterReturns() {
+  const cap = Number(((S.bv && S.bv.budget && S.bv.budget.inputs) || {}).capital) || 0;
+  const cf = S.bv && S.bv.kpis && S.bv.kpis.monthly && S.bv.kpis.monthly.cashFlow;
+  if (!cap || !Array.isArray(cf)) return null;
+  return [0, 1, 2, 3].map((q) => ((cf[q * 3] || 0) + (cf[q * 3 + 1] || 0) + (cf[q * 3 + 2] || 0)) * 4 / cap);
+}
+/* the template's fee matrix in words, its thresholds read the template's way: "4% · 5% over 12% · 6% over 16%" */
+function feeMatrixText() {
+  const mx = (S.bv && S.bv.template && S.bv.template.mgmtFee && S.bv.template.mgmtFee.matrix) || {};
+  const cols = Object.entries(mx).map(([k, v]) => [parseFloat(k), Number(v)]).filter(([h, v]) => Number.isFinite(h) && v > 0).sort((a, b) => a[0] - b[0]);
+  if (!cols.length) return '';
+  const out = [`${+(cols[0][1] * 100).toFixed(2)}%`];
+  for (let i = 1; i < cols.length; i++) if (cols[i][1] !== cols[i - 1][1]) out.push(`${+(cols[i][1] * 100).toFixed(2)}% over ${cols[i][0] - 1}%`);
+  return out.join(' · ');
 }
 
 /* Inline formula parameter for a row: shown next to the Fx chip so e.g.
@@ -2586,7 +2616,21 @@ function paramFor(gl, line, inp) {
     return { label: d.shaped === 'expirations' ? 'average vacancy % for the year — the months follow move-outs and carry-over from the last actual month' : 'vacancy % (annual average)', value: pct(d.avg != null ? d.avg : (vac[0] || 0)), patch: (v) => ({ vacancyPct: Array(12).fill(v / 100) }) };
   }
   if (gl === '6112' && m === 'mgmtPct') {
-    return { label: '% of prior-month income', value: pct(inp.mgmtPct || 0), patch: (v) => ({ mgmtPct: v / 100 }) };
+    // the fee % and the four quarterly returns on the row (Troy 2026-11-19: "tie the Quarterly return inputs into the GL,
+    // similar to LTL"); the same inputs as Assumptions
+    const mr = Array.isArray(inp.mgmtReturns) ? inp.mgmtReturns : [];
+    const ql = quarterLabels(), proj = budgetQuarterReturns();
+    const mx = feeMatrixText();
+    const retPatch = (q) => (v) => ({ mgmtReturns: [0, 1, 2, 3].map((j) => (j === q ? (v == null ? null : v / 100) : (mr[j] ?? null))) });
+    return {
+      title: `6112 Management fee — % of the prior month's income. Type a quarter's return (annualized) and that quarter's fee follows the template's fee matrix${mx ? ` (${mx})` : ' (none on the linked template)'}. Blank = the fee %.`,
+      summary: `${pct(inp.mgmtPct || 0)}%${mr.some((v) => v != null) ? ` · returns ${[0, 1, 2, 3].map((q) => (mr[q] == null ? '—' : `${+(mr[q] * 100).toFixed(1)}%`)).join(' / ')}` : ' · returns'}`,
+      multi: [
+        { k: 'mgmtPct', short: 'Fee %', unit: '%', label: 'Of the prior month\'s income; any quarter left blank', value: pct(inp.mgmtPct || 0), patch: (v) => ({ mgmtPct: v / 100 }) },
+        ...[0, 1, 2, 3].map((q) => ({ k: `ret${q}`, short: `${ql[q]} return`, unit: '%', blank: true,
+          label: `Annualized. Blank = the fee %${proj && proj[q] != null ? `. The budget projects ${(proj[q] * 100).toFixed(1)}%` : ''}`,
+          value: mr[q] == null ? '' : +(mr[q] * 100).toFixed(2), patch: retPatch(q) })),
+      ] };
   }
   if (m === 'sellerUtil') {
     return { label: 'growth %', value: pct((inp.utilities || {}).growthPct ?? 0.03), patch: (v) => ({ utilities: { ...(inp.utilities || {}), growthPct: v / 100 } }) };
@@ -2659,7 +2703,7 @@ const TAG_KEY = [
   ['%PRIOR DQ', "Prior-period collections: a % of the PREVIOUS month's delinquency."],
   ['SAME MO', 'The same calendar month of the trailing-12 × the increase factor.'],
   ['WAVG', '1-2-1 weighted average of the month before, the month and the month after × the factor.'],
-  ['T12/12', 'The trailing-12 total ÷ 12, the same every month × the factor.'],
+  ['FLATLINE', 'The same amount every month: the trailing-12 total ÷ 12 × the factor, or a $ per month / $ per year you type.'],
   ['LAST', 'The last actual month, the same every month. ⚠LAST = that month is far off the average.'],
   ['TURNS', 'The trailing-12 total placed on lease expirations, one month later.'],
   ['T12·TURNS', "Last year's dollars placed on the months with projected move-ins; the year total stays at the T12."],
@@ -4856,19 +4900,30 @@ function openRowTools(b, gl, anchorBtn) {
   const menu = document.createElement('div');
   menu.className = 'rowmenu';
   // the chip each tool leaves on the row — same tag and colour as the grid (Troy 2026-11-11)
-  const TOOL_CHIP = { undrop: ['drv-base', 'T12/12'], flatGrow: ['drv-base', 'T12/12'], ownFormula: ['drv-uw', 'OWN'], zero: ['drv-int', 'ZERO'], flatAnnual: ['drv-man', 'MAN'], flatMonthly: ['drv-man', 'MAN'], grow: ['drv-man', 'MAN'], minot: ['drv-comp', 'MINOT'], t3avg: ['drv-comp', 'T3'], shape: ['drv-base', 'SHAPE'], pctgpr: ['drv-base', '%GPR'], suggest: ['drv-corp', 'CORP'], seller: ['drv-t12', 'SLR'], ownBudget: ['drv-t12', 'CY BUD'], t12curve: ['drv-t12', 'T12C'], link: ['drv-fee', 'LINK'], smooth: ['drv-t12', 'SMOOTH'], recmap: ['drv-t12', 'REC'], wavg: ['drv-comp', 'WAVG'], reset: ['drv-uw', 'ENGINE'], burdenFrom: ['drv-pay', '%WAGES'] };
+  const TOOL_CHIP = { undrop: ['drv-base', 'FLATLINE'], flatGrow: ['drv-base', 'FLATLINE'], flatMonthly: ['drv-base', 'FLATLINE'], flatAnnual: ['drv-base', 'FLATLINE'], ownFormula: ['drv-uw', 'OWN'], zero: ['drv-int', 'ZERO'], grow: ['drv-man', 'MAN'], minot: ['drv-comp', 'MINOT'], t3avg: ['drv-comp', 'T3'], shape: ['drv-base', 'SHAPE'], pctgpr: ['drv-base', '%GPR'], suggest: ['drv-corp', 'CORP'], seller: ['drv-t12', 'SLR'], ownBudget: ['drv-t12', 'CY BUD'], t12curve: ['drv-t12', 'T12C'], link: ['drv-fee', 'LINK'], smooth: ['drv-t12', 'SMOOTH'], recmap: ['drv-t12', 'REC'], wavg: ['drv-comp', 'WAVG'], reset: ['drv-uw', 'ENGINE'], burdenFrom: ['drv-pay', '%WAGES'] };
   const dot = (cls, act) => { const c = act && TOOL_CHIP[act]; return c ? `${chipHtml(c[0], c[1])} ` : `<span class="dot ${cls}" style="margin-right:6px"></span>`; };
   menu.innerHTML = `
     <div class="rm-head">${gl} ${esc(acc.name || '')}<br>
       <span class="drv ${dm.cls}" style="margin-top:3px; display:inline-block">${dm.tag}</span>${drvExtraHtml(dm)}
       <span style="margin-left:5px">${esc(dm.label)}</span></div>
     ${line && (line.driver || {}).method === 'dropped' ? `<button data-act="undrop" title="The template dropped this line because its trailing-12 is at or under $1,000. This budgets it at T12 ÷ 12 with the line's usual increase factor."><b>${dot('drv-base', 'undrop')}Budget this line — T12 ÷ 12 ($${money(line.driver.t12 || 0)} a year before the factor)</b></button>` : ''}
-    ${S.bv.annual && rowT12(gl) ? `<button data-act="flatGrow" title="This line = its trailing-12 total ÷ 12, the same every month, × (1 + the growth % you type). Works on ANY line with history — rent, loss to lease, vacancy, payroll, the fee, corporate lines included. It replaces the line's own formula until you put it back."><b>${dot('drv-base', 'flatGrow')}Flat + growth over T12… (T12 ${money(rowT12(gl))})</b></button>` : ''}
+    ${(() => {
+      /* FLATLINE (Troy 2026-11-19: "for T12/12 chip, title flatline, and show the current method as well as a $ per month
+         and $ per year option"): one chip, three ways to set a flat line. The one the row is on now is marked. */
+      const d0 = (line && line.driver) || {};
+      const cur = d0.method === 'flatline' ? d0.per : d0.method === 'baseline' && d0.shape === 'flat' ? 't12' : null;
+      const sub = (act, text, on, tip) => `<button class="rm-sub${on ? ' on' : ''}" data-act="${act}" title="${esc(tip)}">${text}${on ? ' <span class="rm-cur">● current</span>' : ''}</button>`;
+      const t12 = S.bv.annual ? rowT12(gl) : 0;
+      return `<button class="rm-grp" data-flgrp title="The same amount every month. Click to show the ways to set it.">${dot('drv-base', 'flatGrow')}<b>Flatline</b> <span class="rm-more">${cur ? '▾' : '▸'} ${t12 ? 3 : 2} options</span></button>
+      <div class="rm-subs"${cur ? '' : ' hidden'}>
+        ${t12 ? sub('flatGrow', `T12 ÷ 12 × growth… <span class="muted">(T12 ${money(t12)})</span>`, cur === 't12', "Every month = this line's trailing-12 total ÷ 12 × (1 + the growth % you type). Works on any line with history. It replaces the line's own formula until you put it back.") : ''}
+        ${sub('flatMonthly', `$ per month…${cur === 'month' ? ` <span class="muted">(${money(d0.amount || 0)})</span>` : ''}`, cur === 'month', 'Type a dollar amount; every month gets it.')}
+        ${sub('flatAnnual', `$ per year…${cur === 'year' ? ` <span class="muted">(${money(d0.amount || 0)})</span>` : ''}`, cur === 'year', 'Type a yearly dollar amount; it is spread evenly, ÷ 12.')}
+      </div>`;
+    })()}
     ${S.bv.annual && ((inp.baseline || {}).glShape || {})[gl] ? `<button data-act="ownFormula" title="Drop the shape chosen on this row; the line goes back to its usual formula">${dot('drv-uw', 'ownFormula')}Back to this line's own formula</button>` : ''}
     <button data-act="zero">${dot('drv-int', 'zero')}Zero out row</button>
-    ${S.bv.annual ? '' : `<button data-act="flatAnnual">${dot('drv-man', 'flatAnnual')}Flat — annual $ over the year…</button>
-    <button data-act="flatMonthly">${dot('drv-man', 'flatMonthly')}Flat — $ per month…</button>
-    <button data-act="grow">${dot('drv-man', 'grow')}Start $ /mo + growth %/mo…</button>`}
+    ${S.bv.annual ? '' : `<button data-act="grow">${dot('drv-man', 'grow')}Start $ /mo + growth %/mo…</button>`}
     ${hasComp ? `<button data-act="minot">${dot('drv-comp', 'minot')}Minot $/unit × units (${money((S.bv.compWeights[gl] / S.bv.compUnits) * inp.units)}/yr, seasonal)</button>` : ''}
     ${hasComp && S.bv.compShapes && S.bv.compShapes[gl] ? `<button data-act="t3avg" title="Weighted average of the comp's last 3 months (1-2-1), per-unit scaled, × (1+growth), rounded to $250 — your MROUND formula">${dot('drv-comp', 't3avg')}T3 actuals avg × growth → MROUND $250…</button>` : ''}
     ${S.bv.annual ? `<button data-act="shape" title="Pick how this GL's own trailing-12 history becomes the budget: same month × factor (template), 1-2-1 weighted distribution, the turnover curve, or the T12 total on the GL's seasonal curve (GLs that have one). Flat is the first item of this menu: Flat + growth over T12">${dot('drv-base', 'shape')}Own T12 → shape × factor…</button>` : ''}
@@ -4893,6 +4948,15 @@ function openRowTools(b, gl, anchorBtn) {
   document.body.appendChild(menu);
   const close = () => menu.remove();
   setTimeout(() => document.addEventListener('click', close, { once: true }), 0);
+  // a group of options (Flatline): open / close it in place
+  menu.querySelectorAll('[data-flgrp]').forEach((g) => g.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const subs = g.nextElementSibling;
+    if (!subs) return;
+    subs.hidden = !subs.hidden;
+    const more = g.querySelector('.rm-more');
+    if (more) more.textContent = more.textContent.replace(/^[▸▾]/, subs.hidden ? '▸' : '▾');
+  }));
 
   const put = async (months, driver) => {
     pushUndo();
@@ -4920,15 +4984,16 @@ function openRowTools(b, gl, anchorBtn) {
       const s = S.bv.template.suggestions[gl];
       return put(s.map((v) => Math.round(v * 100) / 100), { method: 'suggested', note: (S.bv.template.suggestionNotes[gl] || []).join('; ') });
     }
-    if (act === 'flatAnnual') {
-      const v = parseFloat(String(prompt('Annual amount ($) — spread evenly over the 12 months:') || '').replace(/,/g, ''));
+    if (act === 'flatAnnual' || act === 'flatMonthly') {
+      // Flatline at a typed $: the row keeps the FLATLINE chip and says what was typed
+      const yr = act === 'flatAnnual';
+      const now = line ? line.months.reduce((a, v) => a + (Number(v) || 0), 0) : 0;
+      const ans = prompt(`${gl} ${acc.name || ''}\nFlatline: ${yr ? 'a yearly $, spread evenly over the 12 months' : 'the same $ every month'}.\n\n${yr ? '$ per year' : '$ per month'}:`, String(Math.round(yr ? now : now / 12)));
+      if (ans == null) return;
+      const v = parseFloat(String(ans).replace(/[$,]/g, ''));
       if (!Number.isFinite(v)) return;
-      return put(Array(12).fill(Math.round((v / 12) * 100) / 100));
-    }
-    if (act === 'flatMonthly') {
-      const v = parseFloat(String(prompt('Amount per month ($):') || '').replace(/,/g, ''));
-      if (!Number.isFinite(v)) return;
-      return put(Array(12).fill(v));
+      const mo = Math.round((yr ? v / 12 : v) * 100) / 100;
+      return put(Array(12).fill(mo), { method: 'flatline', per: yr ? 'year' : 'month', amount: v });
     }
     if (act === 'grow') {
       const base = parseFloat(String(prompt('Starting amount for the first month ($/mo):') || '').replace(/,/g, ''));
@@ -6885,6 +6950,13 @@ function annualInputsHtml(inp) {
     f('Capital $', `<input id="in-cap" value="${inp.capital ?? 0}" style="width:110px">`, 'The capital the cash-on-cash return is measured on.'),
     f('Ownership began', `<input id="in-acq" value="${esc(fyStart)}" placeholder="YYYY-MM" style="width:90px">`, `The first month of ownership (YYYY-MM).${acq.start ? ' On file: ' + acq.start + '.' : ''} Sets the first-year fee months and what counts as posted since closing.`),
     f('Mgmt fee %', `<input id="in-mgmt" value="${((inp.mgmtPct || 0) * 100).toFixed(2)}" style="width:70px">`, `% of the PRIOR month's total income (billed a month in arrears).${tpl && tpl.mgmtFee && tpl.mgmtFee.actualPct ? ` Q4 actual ${(tpl.mgmtFee.actualPct * 100).toFixed(2)}%.` : ''}`),
+    (() => {
+      // returns by quarter (Troy 2026-11-19): the fee follows the template's fee matrix in each typed quarter
+      const mr = Array.isArray(inp.mgmtReturns) ? inp.mgmtReturns : [];
+      const ql = quarterLabels(), proj = budgetQuarterReturns(), mx = feeMatrixText();
+      return f('Returns by quarter % (annualized)', `<span class="row" style="gap:4px; flex-wrap:nowrap">${[0, 1, 2, 3].map((q) => `<input id="in-mret${q}" value="${mr[q] == null ? '' : +(mr[q] * 100).toFixed(2)}" placeholder="${esc(ql[q])}" title="${esc(`${ql[q]} return, annualized${proj && proj[q] != null ? ` · the budget projects ${(proj[q] * 100).toFixed(1)}%` : ''}`)}" style="width:58px">`).join('')}</span>`,
+        `Each typed quarter's fee comes off the template's fee matrix${mx ? `: ${mx}` : ' (none on the linked template: the fee % stays)'}. Blank = the Mgmt fee %.${proj ? ` The budget projects ${proj.map((v, q) => `${ql[q]} ${(v * 100).toFixed(1)}%`).join(', ')}.` : ''}`, 'wide');
+    })(),
     f('First-year fee %', `<input id="in-mgmt1" value="${fyPct != null && fyPct > 0 ? +(fyPct * 100).toFixed(2) : ''}" placeholder="none" style="width:70px">`, `The first 12 months of ownership (from Ownership began) bill at this rate, then the Mgmt fee %. Blank = none.${acq.firstYearPct != null ? ' On file from the acquisition budget: ' + (acq.firstYearPct * 100).toFixed(2) + '%.' : ''}`),
     debtSched ? `<div class="fld"><label>Debt</label><span class="muted" style="font-size:11.5px">Yardi amortization schedule (${esc((tpl.debt.loans || []).join(', '))}: interest ${money(tpl.debt.interest.reduce((a, b) => a + b, 0))}/yr)</span></div>`
       : f('Loan $', `<input id="in-loan" value="${inp.loan ?? 0}" style="width:110px">`, 'No amortization schedule on file: interest = loan × rate.') + f('Rate %', `<input id="in-rate" value="${((inp.rate || 0) * 100).toFixed(2)}" style="width:70px">`),
@@ -7031,6 +7103,11 @@ async function applyAnnualInputs(b, el) {
     vacancyPct: parse12(q('#in-vac').value, cur.vacancyPct || Array(12).fill(0.05)),
     vacancyExpWeight: q('#in-vacw') ? Math.min(1, Math.max(0, num('#in-vacw', 100) / 100)) : (cur.vacancyExpWeight ?? 1),
     mgmtPct: num('#in-mgmt') / 100,
+    mgmtReturns: (() => {
+      if (!q('#in-mret0')) return cur.mgmtReturns ?? null;
+      const r = [0, 1, 2, 3].map((i) => { const t = String(q(`#in-mret${i}`).value || '').trim().replace(/[%,]/g, ''); const v = parseFloat(t); return t === '' || !Number.isFinite(v) ? null : v / 100; });
+      return r.some((v) => v != null) ? r : null;
+    })(),
     // first-year fee: only stored when it differs from what is on file (the acquisition budget /
     // the template's acquisition date), so an untouched box keeps following those
     mgmtFirstYear: (() => {

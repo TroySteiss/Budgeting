@@ -1913,7 +1913,9 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
     const feePct = inputs.mgmtPct || (lb.template as any)?.mgmtFee?.actualPct || 0;
     if (feePct) {
       const fy = { pct: inputs.mgmtFirstYear?.pct !== undefined ? inputs.mgmtFirstYear.pct : lb.acquisition?.firstYearPct, start: inputs.mgmtFirstYear?.start || lb.acquisition?.start };
-      const rates = mgmtFeeRates(Number(inputs.year), startMonth, feePct, fy).rates;
+      // the rates the engine set month by month (quarterly returns, the first year) stand; else the fee % (+ first year)
+      const dr = (lines.find((l) => l.gl_code === '6112')?.driver || {}) as any;
+      const rates = Array.isArray(dr.rates) && dr.rates.length === 12 ? dr.rates.map((v: any) => Number(v) || 0) : mgmtFeeRates(Number(inputs.year), startMonth, feePct, fy).rates;
       const budInc = lb.budgetCal && Object.keys(lb.budgetCal).length ? rollup(new Map(Object.entries(lb.budgetCal) as [string, Months][])).get('5500') : null;
       const prevCal = (startMonth + 10) % 12;
       lines = mgmtFeeOnIncome(lines, rates, budInc && budInc[prevCal] ? budInc[prevCal] : null);

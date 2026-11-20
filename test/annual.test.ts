@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, formulaOverride, acqTieKeysOf, corpGuidanceLine, mgmtFeeRates, summaryColumn, sumSummaryCols, summaryLabels, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
   refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, contractMonths, flatFeeFromSchedule, guidanceCheck, elevatedInsuranceRate, fitToT12, noiQuarters, qShiftTargets, normalizeGuidance, type TemplateData, type AnnualSources,
-  refollowMgmtFee, allocFeeIncome,
+  refollowMgmtFee, allocFeeIncome, mgmtFeeFromMatrix,
 } from '../shared/annual.js';
 import { sum, zero12, rollup, CURVES, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
 import { parseYardiBudgetTemplate, parseRentRoll, parseMonarchStatement, detectUploadKind } from '../src/importers.js';
@@ -2973,5 +2973,41 @@ describe('5157 admin fee = move-ins × setup fee + VCR admin fees (Troy 2026-11-
     const l = run(tplWith(null));
     expect(sum(l.months)).toBeCloseTo(5 * 150, 2);
     expect((l.driver as any).vcr).toBeNull();
+  });
+});
+
+describe('management fee by quarterly return (Troy 2026-11-19)', () => {
+  // CLND's 2027 matrix: 4% through the 12% column, 5% from 13%, 6% at 17%
+  const matrix: Record<string, number> = { '5%': 0.04, '6%': 0.04, '7%': 0.04, '8%': 0.04, '9%': 0.04, '10%': 0.04, '11%': 0.04, '12%': 0.04, '13%': 0.05, '14%': 0.05, '15%': 0.05, '16%': 0.05, '17%': 0.06 };
+  it('reads the matrix like the template: a column covers the returns above the one before it', () => {
+    expect(mgmtFeeFromMatrix(matrix, 0.12)).toBe(0.04);
+    expect(mgmtFeeFromMatrix(matrix, 0.125)).toBe(0.05);
+    expect(mgmtFeeFromMatrix(matrix, 0.16)).toBe(0.05);
+    expect(mgmtFeeFromMatrix(matrix, 0.165)).toBe(0.06);
+    expect(mgmtFeeFromMatrix(matrix, 0.30)).toBe(0.06);
+    expect(mgmtFeeFromMatrix(matrix, 0.02)).toBe(0.04);
+    expect(mgmtFeeFromMatrix({}, 0.15)).toBeNull();
+  });
+  const actual = synthetic();
+  const tpl = { lastActual: { month: 10, year: 2025 }, units: 10, mgmtFee: { actualPct: 0.04, actualFee: 0, actualIncome: 0, matrix, override: null, notes: '' } } as any;
+  const run = (patch: Record<string, any>, t: any = tpl) => {
+    const b = baseInputs(2026, 10, actual, null, coaList, null, 10);
+    return L(generateAnnualLines(coaList, { ...b, mgmtPct: 0.04, ...patch }, { actual, budget: null, lastMonth: 10, template: t }), '6112');
+  };
+  it("each typed quarter's fee follows its return; a blank quarter keeps the fee %", () => {
+    const base = run({});
+    const l = run({ mgmtReturns: [0.16, null, 0.18, 0.10] });
+    const ratio = (i: number) => l.months[i] / base.months[i];
+    expect(ratio(1)).toBeCloseTo(0.05 / 0.04, 2);      // Q1 at 16% → 5%
+    expect(l.months[4]).toBe(base.months[4]);          // Q2 blank → 4%
+    expect(ratio(7)).toBeCloseTo(0.06 / 0.04, 2);      // Q3 at 18% → 6%
+    expect(l.months[10]).toBe(base.months[10]);        // Q4 at 10% → 4%
+    expect((l.driver as any).byQuarter[0]).toEqual({ ret: 0.16, pct: 0.05 });
+    expect((l.driver as any).byQuarter[1]).toBeNull();
+  });
+  it('no matrix on the template: the fee % stands and the driver says so', () => {
+    const l = run({ mgmtReturns: [0.16, 0.16, 0.16, 0.16] }, { ...tpl, mgmtFee: { ...tpl.mgmtFee, matrix: {} } });
+    expect(sum(l.months)).toBeCloseTo(sum(run({}).months), 2);
+    expect((l.driver as any).noMatrix).toBe(true);
   });
 });
