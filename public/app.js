@@ -7289,12 +7289,39 @@ const xsNum = (v) => (v == null ? '' : Math.round(v).toLocaleString('en-US'));
 
 /* One summary panel. `s` = { labels, capital, units, t12, t4, bud }; `opts.budgetId` makes the
    three column headers editable (they are saved on that budget, no recalculation). */
+/* The Summary view's toggles (Troy 2026-11-20: "customization options for the property level summary page… columns
+   like budget from Current Year, Subtotal maint exp growth, returns, etc. Make them toggles"): optional columns
+   between the draft and GR% over T12, and optional rows — remembered per browser. The email picture and the
+   workbook keep the fixed layout. */
+const SUM_OPTS = [
+  { k: 'cy', t: 'Current-year budget', hint: 'The current-year budget beside the draft, with the draft\'s growth over it' },
+  { k: 'delta', t: 'Δ vs T12 ($)', hint: 'The draft minus the trailing-12, in dollars' },
+  { k: 'pu', t: 'Per unit / month', hint: 'The draft per unit per month' },
+  { k: 't4gr', t: 'GR% over T4', hint: 'The draft\'s growth over the four months annualized, every row' },
+  { k: 'maint', t: 'Maintenance subtotal', hint: 'In-House + Exterior / CAM + Contract Services + Rehab / Replace as a row, with its growth', row: true },
+  { k: 'sp', t: 'Special projects & return after SP', hint: 'Special projects (7500) per column, cash flow after them and the return after them', row: true },
+];
+function sumOpts() { try { return JSON.parse(localStorage.getItem('bt-sumopts') || '{}') || {}; } catch { return {}; } }
+function setSumOpt(k, on) { const o = sumOpts(); if (on) o[k] = true; else delete o[k]; localStorage.setItem('bt-sumopts', JSON.stringify(o)); }
 function summaryPanelHtml(title, s, opts = {}) {
-  const C = s.t12, D = s.t4, E = s.bud;
-  const v = (col, k) => (col ? col[k] : null);
+  const C = s.t12, D = s.t4, E = s.bud; const o = opts.cols || {}; const CY = o.cy && s.cy ? s.cy : null;
   const cap = s.capital || 0;
-  const ret = (col) => (col && cap ? col.cashFlow / cap : null);
   const maint = (col) => (col ? col.inHouse + col.exterior + col.contract + col.rehab : null);
+  const spOf = (col) => (col === C ? s.sp?.t12 : col === D ? s.sp?.t4 : col === E ? s.sp?.bud : col === CY ? s.sp?.cy : null);
+  // a row's value in a column: the summary line, or one of the optional rows
+  const v = (col, k) => (!col ? null : k === 'maint' ? maint(col) : k === 'sp' ? spOf(col) : k === 'cfsp' ? (spOf(col) == null ? null : col.cashFlow - spOf(col)) : col[k]);
+  const ret = (col) => (col && cap ? col.cashFlow / cap : null);
+  const retSp = (col) => (col && cap && spOf(col) != null ? (col.cashFlow - spOf(col)) / cap : null);
+  // the optional columns, between the draft and GR% over T12
+  const ext = [];
+  if (CY) { ext.push({ k: 'cy', h: s.cyLabel || 'CY Budget', cls: 'xs-x xs-cy', cell: (k) => xsAcct(v(CY, k)) }); ext.push({ k: 'cygr', h: 'GR% over CY Bud.', cls: 'xs-x xs-pct xs-cy', gr: true, cell: (k) => xsPct(E ? xsGr(v(E, k), v(CY, k)) : null) }); }
+  if (o.delta) ext.push({ k: 'delta', h: 'Δ vs T12', cls: 'xs-x', gr: true, cell: (k) => xsAcct(E && C && v(E, k) != null && v(C, k) != null ? v(E, k) - v(C, k) : null) });
+  if (o.pu) ext.push({ k: 'pu', h: 'Per unit / mo', cls: 'xs-x xs-pct', gr: true, cell: (k) => (E && s.units && v(E, k) != null ? `$${Math.round(v(E, k) / s.units / 12).toLocaleString('en-US')}` : '') });
+  if (o.t4gr) ext.push({ k: 't4gr', h: 'GR% over T4', cls: 'xs-x xs-pct xs-green', gr: true, cell: (k) => xsPct(E && D ? xsGr(v(E, k), v(D, k)) : null) });
+  const xh = ext.map((x) => `<td class="${x.cls} xs-h">${esc(x.h)}</td>`).join('');
+  const xe = ext.map((x) => `<td class="${x.cls}"></td>`).join('');
+  const xc = (k, noGr) => ext.map((x) => `<td class="${x.cls}">${noGr && x.gr ? '' : x.cell(k)}</td>`).join('');
+  const xp = (fn) => ext.map((x) => `<td class="${x.cls} xs-r xs-bold">${x.k === 'cy' ? fn(x) : ''}</td>`).join('');
   // right-hand notes: label on one row, the green / blue figure on the next (the workbook's column G)
   const G = {};
   const note = (labelRow, text, valueRow, value, cls, dp = 1) => { G[labelRow] = `<td class="xs-g xs-glabel">${esc(text)}</td>`; G[valueRow] = `<td class="xs-g xs-gval ${cls}">${xsPct(value, dp)}</td>`; };
@@ -7307,24 +7334,24 @@ function summaryPanelHtml(title, s, opts = {}) {
   note(31, 'NOI Growth Excluding RE Tax (T4)', 32, E && D && (D.noi + (D.tax - E.tax)) ? (E.noi - (D.noi + (D.tax - E.tax))) / (D.noi + (D.tax - E.tax)) : null, 'xs-green');
   note(33, 'NOI Growth Excluding RE Tax & MGMT FEE (T12)', 34, E && C && C.noi ? ((E.noi + (E.tax - C.tax + E.fee - C.fee)) - C.noi) / C.noi : null, 'xs-blue', 2);
   const g = (r) => G[r] || '<td class="xs-g"></td>';
-  const fpct = (k, extra = '') => `<td class="xs-f xs-blue ${extra}">${xsPct(E && C ? xsGr(E[k], C[k]) : null)}</td>`;
   // a data row: T12 on light blue, T4 on light green, the draft plain
+  const fpct = (k, extra = '') => `<td class="xs-f xs-blue ${extra}">${xsPct(E && C ? xsGr(v(E, k), v(C, k)) : null)}</td>`;
   const line = (r, code, label, k, o = {}) => `<tr class="${o.tr || ''}">
     <td class="xs-a">${code || ''}</td><td class="xs-b">${label}</td>
     <td class="xs-c ${o.plain ? '' : 'xs-blue'} ${o.dbl ? 'xs-dbl' : ''} ${o.dtop ? 'xs-dtop' : ''}">${xsAcct(v(C, k))}</td>
     <td class="xs-d2 ${o.plain ? '' : o.dBlue ? 'xs-blue' : 'xs-green'} ${o.dbl ? 'xs-dbl' : ''} ${o.dtop ? 'xs-dtop' : ''}">${o.noD ? '' : xsAcct(v(D, k))}</td>
-    <td class="xs-e ${o.dbl ? 'xs-dbl' : ''}">${xsAcct(v(E, k))}</td>
+    <td class="xs-e ${o.dbl ? 'xs-dbl' : ''}">${xsAcct(v(E, k))}</td>${xc(k, o.noF)}
     ${o.noF ? '<td class="xs-f0"></td>' : fpct(k, o.f || '')}${g(r)}</tr>`;
-  const blank = (r) => `<tr class="xs-blank"><td class="xs-a"></td><td class="xs-b"></td><td class="xs-c"></td><td class="xs-d2"></td><td class="xs-e"></td><td class="xs-f0"></td>${g(r)}</tr>`;
+  const blank = (r) => `<tr class="xs-blank"><td class="xs-a"></td><td class="xs-b"></td><td class="xs-c"></td><td class="xs-d2"></td><td class="xs-e"></td>${xe}<td class="xs-f0"></td>${g(r)}</tr>`;
   const hdr = (k, cls) => `<td class="${cls} xs-h" ${opts.budgetId ? `data-xslabel="${k}" title="Click to rename this column header — for example the T12 you are comparing to"` : ''}>${esc(s.labels[k])}</td>`;
   return `<div class="xsum"><table>
-    <tr><td class="xs-a"></td><td class="xs-b xs-title" colspan="6">${esc(title)}</td></tr>
-    <tr class="xs-blank"><td colspan="7"></td></tr>
-    <tr class="xs-hrow"><td class="xs-a"></td><td class="xs-b"></td>${hdr('t12', 'xs-c')}${hdr('t4', 'xs-d2 xs-left')}${hdr('draft', 'xs-e')}<td class="xs-f0"></td><td class="xs-g"></td></tr>
-    <tr class="xs-blank"><td class="xs-a"></td><td class="xs-b"></td><td class="xs-c"></td><td class="xs-d2"></td><td class="xs-e"></td><td class="xs-f0"></td><td class="xs-g"></td></tr>
-    <tr><td class="xs-a"></td><td class="xs-b">Capital Contributed</td><td class="xs-c">${xsAcct(cap || null)}</td><td class="xs-d2">${xsAcct(cap || null)}</td><td class="xs-e">${xsAcct(cap || null)}</td><td class="xs-f0"></td><td class="xs-g"></td></tr>
-    <tr><td class="xs-a"></td><td class="xs-b">Unit Count</td><td class="xs-c xs-r">${xsNum(s.units)}</td><td class="xs-d2 xs-r">${xsNum(s.units)}</td><td class="xs-e xs-r">${xsNum(s.units)}</td><td class="xs-f xs-fhead" rowspan="2">GR% Over T12</td><td class="xs-g"></td></tr>
-    <tr class="xs-blank"><td class="xs-a"></td><td class="xs-b"></td><td class="xs-c"></td><td class="xs-d2"></td><td class="xs-e"></td>${g(7)}</tr>
+    <tr><td class="xs-a"></td><td class="xs-b xs-title" colspan="${6 + ext.length}">${esc(title)}</td></tr>
+    <tr class="xs-blank"><td colspan="${7 + ext.length}"></td></tr>
+    <tr class="xs-hrow"><td class="xs-a"></td><td class="xs-b"></td>${hdr('t12', 'xs-c')}${hdr('t4', 'xs-d2 xs-left')}${hdr('draft', 'xs-e')}${xh}<td class="xs-f0"></td><td class="xs-g"></td></tr>
+    <tr class="xs-blank"><td class="xs-a"></td><td class="xs-b"></td><td class="xs-c"></td><td class="xs-d2"></td><td class="xs-e"></td>${xe}<td class="xs-f0"></td><td class="xs-g"></td></tr>
+    <tr><td class="xs-a"></td><td class="xs-b">Capital Contributed</td><td class="xs-c">${xsAcct(cap || null)}</td><td class="xs-d2">${xsAcct(cap || null)}</td><td class="xs-e">${xsAcct(cap || null)}</td>${xp(() => xsAcct(cap || null))}<td class="xs-f0"></td><td class="xs-g"></td></tr>
+    <tr><td class="xs-a"></td><td class="xs-b">Unit Count</td><td class="xs-c xs-r">${xsNum(s.units)}</td><td class="xs-d2 xs-r">${xsNum(s.units)}</td><td class="xs-e xs-r">${xsNum(s.units)}</td>${xp(() => xsNum(s.units))}<td class="xs-f xs-fhead" rowspan="2">GR% Over T12</td><td class="xs-g"></td></tr>
+    <tr class="xs-blank"><td class="xs-a"></td><td class="xs-b"></td><td class="xs-c"></td><td class="xs-d2"></td><td class="xs-e"></td>${xe}${g(7)}</tr>
     ${line(8, '5070', 'Total Rental Income', 'rental', { f: 'xs-ftop' })}
     ${line(9, '5190', 'Total Other Income', 'other', { dbl: true, f: 'xs-fbot' })}
     ${line(10, '', 'Total Income', 'income', { plain: true, f: 'xs-fbox' })}
@@ -7340,6 +7367,7 @@ function summaryPanelHtml(title, s, opts = {}) {
     ${line(20, '6870', 'Exterior / CAM', 'exterior', { f: 'xs-fl' })}
     ${line(21, '6970', 'Contract Services', 'contract', { f: 'xs-fl' })}
     ${line(22, '7070', 'Rehab / Replace', 'rehab', { dbl: true, f: 'xs-fl xs-fbot' })}
+    ${o.maint ? line('m1', '', '&nbsp;&nbsp;&nbsp;Maintenance subtotal (6770 + 6870 + 6970 + 7070)', 'maint', { plain: true, f: 'xs-fbox', tr: 'xs-sub' }) : ''}
     ${line(23, '', 'Total Expense', 'expense', { plain: true, dtop: true, f: 'xs-fbox' })}
     ${blank(24)}
     ${blank(25)}
@@ -7350,8 +7378,11 @@ function summaryPanelHtml(title, s, opts = {}) {
     ${line(30, '3090', '2nd MTGE', 'mtg2', { dBlue: true, noF: true })}
     ${blank(31)}
     ${line(32, '', 'Cash Flow', 'cashFlow', { plain: true, f: 'xs-fbox' })}
+    ${o.sp && s.sp ? `${line('s1', '7500', 'Special Projects', 'sp', { dBlue: true, noF: true })}
+    ${line('s2', '', 'Cash Flow after SP', 'cfsp', { plain: true, f: 'xs-fbox' })}
+    <tr class="xs-ret xs-retsp"><td class="xs-a"></td><td class="xs-b">Return after SP</td><td class="xs-c xs-bold xs-r">${xsPct(retSp(C), 2)}</td><td class="xs-d2 xs-bold xs-r">${xsPct(retSp(D), 2)}</td><td class="xs-e xs-bold xs-r">${xsPct(retSp(E), 2)}</td>${xp(() => xsPct(retSp(CY), 2))}<td class="xs-f0"></td><td class="xs-g"></td></tr>` : ''}
     ${blank(33)}
-    <tr class="xs-ret"><td class="xs-a"></td><td class="xs-b">Return</td><td class="xs-c xs-bold xs-r">${xsPct(ret(C), 2)}</td><td class="xs-d2 xs-bold xs-r">${xsPct(ret(D), 2)}</td><td class="xs-e xs-bold xs-r">${xsPct(ret(E), 2)}</td><td class="xs-f0"></td>${g(34)}</tr>
+    <tr class="xs-ret"><td class="xs-a"></td><td class="xs-b">Return</td><td class="xs-c xs-bold xs-r">${xsPct(ret(C), 2)}</td><td class="xs-d2 xs-bold xs-r">${xsPct(ret(D), 2)}</td><td class="xs-e xs-bold xs-r">${xsPct(ret(E), 2)}</td>${xp(() => xsPct(ret(CY), 2))}<td class="xs-f0"></td>${g(34)}</tr>
   </table></div>`;
 }
 /* THE SUMMARY PANEL AS A PICTURE (Troy 2026-11-20: "Add in a screenshot of this" — the budget summary email): the same
@@ -7473,14 +7504,17 @@ function editorViewToggle(main) {
   const prop = (S.state.properties.find((p) => p.code === b.property_code) || {});
   const holder = document.createElement('div');
   holder.className = 'xsum-holder';
+  const so = sumOpts();
+  const optBar = S.bv.summary ? `<div class="sum-opts"><span class="sum-opts-l">Show</span>${SUM_OPTS.map((x) => `<label class="sum-opt${x.k === 'cy' && !S.bv.summary.cy ? ' off' : ''}" title="${esc(x.hint)}${x.k === 'cy' && !S.bv.summary.cy ? ' — no current-year budget on file for this property' : ''}"><input type="checkbox" data-sumopt="${x.k}" ${so[x.k] ? 'checked' : ''} ${x.k === 'cy' && !S.bv.summary.cy ? 'disabled' : ''}> ${esc(x.t)}</label>`).join('')}</div>` : '';
   holder.innerHTML = S.bv.summary
-    ? `${summaryPanelHtml(String(b.property_code).toUpperCase() + (prop.name && prop.name.toUpperCase() !== String(b.property_code).toUpperCase() ? ` — ${prop.name}` : ''), S.bv.summary, { budgetId: b.id })}
+    ? `${optBar}${summaryPanelHtml(String(b.property_code).toUpperCase() + (prop.name && prop.name.toUpperCase() !== String(b.property_code).toUpperCase() ? ` — ${prop.name}` : ''), S.bv.summary, { budgetId: b.id, cols: so })}
        <p class="muted" style="font-size:11.5px; margin:8px 0 0">Click a column header to rename it. Blue = the trailing-12 and growth over it; green = the last four months annualized and growth over that. ${S.bv.summary.t12 ? '' : 'No trailing-12 statement is linked to this budget, so only the budget column is filled.'}</p>`
     : '<p class="muted">No summary for this budget.</p>';
   ed.replaceWith(holder);
   // the legend row above the grid belongs to the grid view
   main.querySelectorAll('.legend').forEach((x) => { x.style.display = 'none'; });
   wireSummaryLabels(holder, b.id, (bv) => { S.bv = bv; render(); });
+  holder.querySelectorAll('[data-sumopt]').forEach((cb) => cb.addEventListener('change', () => { setSumOpt(cb.dataset.sumopt, cb.checked); render(); }));
 }
 
 /* ---- the Summary tab (Troy 2026-11-12: "should look more like the 'Budgets' [list]. It should have all of

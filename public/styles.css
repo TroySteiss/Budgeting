@@ -520,6 +520,17 @@ td.m.drv-drop input { color: var(--dim); }
 .xsum .xs-glabel { border-top: 2px solid #000; border-left: 2px solid #000; border-right: 2px solid #000; }
 .xsum .xs-gval { text-align: center; border-left: 2px solid #000; border-right: 2px solid #000; border-bottom: 2px solid #000; }
 .xsum-holder { margin-top: 4px; }
+/* the Summary view's toggles and its optional columns (Troy 2026-11-20) */
+.sum-opts { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin: 0 0 8px; font-size: 12.5px; }
+.sum-opts-l { color: var(--muted); font-weight: 600; }
+.sum-opt { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px; cursor: pointer; }
+.sum-opt.off { opacity: .5; cursor: default; }
+.xsum .xs-x { width: 118px; min-width: 118px; border-right: 2px solid #000; }
+.xsum .xs-x.xs-pct { text-align: center; }
+.xsum .xs-cy { background: #FFF2CC; }   /* the current-year budget: Office "Gold, Accent 4, Lighter 80%" */
+.xsum .xs-h.xs-x { white-space: normal; }
+.xsum .xs-sub td.xs-b { font-weight: 600; font-style: italic; }
+.xsum .xs-retsp td.xs-c, .xsum .xs-retsp td.xs-d2, .xsum .xs-retsp td.xs-e { border-bottom: 0; }
 /* Schedule table */
 .xsum.sch td { border: 1px solid #000; text-align: center; padding: 2px 10px; }
 .xsum.sch .sch-h td { font-weight: 700; white-space: normal; height: 88px; vertical-align: middle; border-top: 2px solid #000; min-width: 84px; max-width: 120px; }

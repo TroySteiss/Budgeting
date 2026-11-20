@@ -1416,8 +1416,17 @@ function summaryOf(lb: LoadedBudget, lines: BudgetLine[]) {
   if (t4 && t12) t4 = { ...t4, interest: t12.interest, cashFlow: r2(t4.noi - t12.interest + t4.mtg1 + t4.mtg2) };
   // NOI vs the FY budget (the calendar year before this budget's: Troy 2026-11-19), not a budget over the T12 window
   const fyb = lb.fyBudget;
-  const fyNoi = fyb ? refColumn(fyb.cal).totals['7280'] || 0 : 0;
+  const fyRc = fyb ? refColumn(fyb.cal) : null;
+  const fyNoi = fyRc ? fyRc.totals['7280'] || 0 : 0;
+  // the optional columns of the Summary view (Troy 2026-11-20: "add in columns like budget from Current Year, Subtotal
+  // maint exp growth, returns, etc. Make them toggles"): the current-year budget as a summary column (the FY budget when
+  // on file, else the CY budget reference), and special projects (7500) per column for the return after SP
+  const budRef = lb.refs.find((x) => x.key === 'budget') || null;
+  const cy = fyRc ? summaryColumn((c) => fyRc.totals[c] || 0, (g) => fyRc.byGl[g] || 0) : colOf('budget');
+  const spOf = (rf: { totals: Record<string, number> } | null | undefined) => (rf ? r2(rf.totals['7500'] || 0) : null);
+  const sp = { t12: spOf(lb.refs.find((x) => x.key === 'actual')), t4: spOf(lb.refs.find((x) => x.key === 'ann4')), bud: r2(sum(totals.get('7500') || zero12())), cy: fyRc ? spOf(fyRc) : spOf(budRef) };
   return {
+    cy, cyLabel: fyb ? fyb.label : budRef ? budRef.label : null, sp,
     labels: summaryLabels(lb.t12End?.month, lb.t12End?.year, lb.budget.inputs?.summaryLabels),
     capital: Number(lb.budget.inputs?.capital) || 0,
     units: Number(lb.budget.inputs?.units) || 0,
