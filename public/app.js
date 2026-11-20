@@ -1467,6 +1467,7 @@ function renderEditor(el) {
     const fixed = ov.filter((l) => !l.driver || !l.driver.method || l.driver.method === 'manual' || l.driver.method === 'setTotal').length;
     const sideOn = localStorage.getItem('bt-side') !== '0';
     popMenu(anchor, `
+      <button data-x="email" title="Riley's &quot;<Property> <Year> Budget Summary&quot; email to Andy, written from this budget: return, income, expenses, NOI and special projects against the T12 and T4, with the budget workbook attached. Downloads an .eml that opens in Outlook as an unsent draft to edit; yellow = fill in.">✉ Budget summary email (.eml)</button>
       <button data-x="sp" title="Named, permanent save points for this budget — capture the current iteration, restore any earlier one">⎘ Save points${(bv.savePoints || []).length ? ` (${bv.savePoints.length})` : ''}</button>
       <button data-x="round" title="Round selected lines' months to a multiple">⌁ MROUND lines…</button>
       ${bv.annual ? `<button data-x="dform" title="The formula and seasonal curve every line uses by default, for ALL budgets on the defaults (this one ${bv.followsDefaults ? 'is' : 'is on a named saved set, so it is not'} among them). One pick sets a whole section.">ƒ Default formulas (all budgets)…</button>` : ''}
@@ -1489,6 +1490,7 @@ function renderEditor(el) {
       <label><input type="checkbox" data-x="zero" ${S.showZero ? 'checked' : ''}> Show zero rows</label>
       <label title="Show each total row's monthly % of the year"><input type="checkbox" data-x="dist" ${S.showDist ? 'checked' : ''}> % distribution on totals — by month</label>
       <label title="Show each total row's quarterly % of the year"><input type="checkbox" data-x="qdist" ${S.showQDist ? 'checked' : ''}> % distribution on totals — by quarter</label>`, (menu) => {
+      menu.querySelector('[data-x="email"]').addEventListener('click', () => window.open(rUrl(`/api/budgets/${b.id}/summary-email.eml`), '_blank'));
       menu.querySelector('[data-x="sp"]').addEventListener('click', () => openSavePoints(b));
       menu.querySelector('[data-x="round"]').addEventListener('click', () => openRoundDialog(b));
       { const bs = menu.querySelector('[data-x="bshape"]'); if (bs) bs.addEventListener('click', () => openBulkFormula(b)); }

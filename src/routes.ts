@@ -15,6 +15,7 @@ import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, R
 import { planApply, refileReviewLine, type ApplyRow, type ApplyPlan } from '../shared/reviewApply.js';
 import { buildBudgetCsv, reviseBudgetCsv } from './csv-export.js';
 import { buildReviewWorkbook, buildPortfolioWorkbook, type ReviewArgs } from './xlsx-export.js';
+import { budgetEmail, toEml, BUDGET_EMAIL_TO, BUDGET_EMAIL_CC } from './budget-email.js';
 import {
   CoaAccount, BudgetLine, BudgetInputs, UwSnapshotData, CompWeights, Months,
   generateLines, regenerate, rebalanceCategory, defaultInputs, computeTieout, PCODES,
@@ -3502,6 +3503,59 @@ router.get('/budgets/:id/export.xlsx', h(async (req, res) => {
   // Troy's naming convention: "CWND 2026 Budget Draft TS 08212026.xlsx"
   res.setHeader('Content-Disposition', `attachment; filename="${lb.budget.property_code.toUpperCase()} ${lb.budget.year} Budget Draft ${initialsOf(req.session.username || '')} ${mmddyyyy()}.xlsx"`);
   res.send(buf);
+}));
+
+/* THE BUDGET SUMMARY EMAIL as an .eml draft (Troy 2026-11-19: Riley's "<Property> <Year> Budget Summary" emails to Andy):
+   the notes off the Summary sheet's columns (src/budget-email.ts), the budget workbook attached under the email's name. */
+const EMAIL_SENDERS: { re: RegExp; name: string; title: string; email: string }[] = [
+  { re: /troy|steiss|^ts$/i, name: 'Troy Steiss', title: 'Multifamily Analyst', email: 'tsteiss@monarchinvestment.com' },
+];
+router.get('/budgets/:id/summary-email.eml', h(async (req, res) => {
+  const lb = await loadBudget(Number(req.params.id));
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  const prop = (await query('select * from properties where code=$1', [lb.budget.property_code])).rows[0] || {};
+  let compName = '';
+  if (lb.budget.comp_set_id) compName = (await query('select name from comp_sets where id=$1', [lb.budget.comp_set_id])).rows[0]?.name || '';
+  const lines = effectiveLines(lb);
+  const s = summaryOf(lb, lines);
+  const inputs = lb.budget.inputs || {};
+  const capital = Number(inputs.capital) || 0;
+  const k = kpis(new Map(lines.map((l) => [l.gl_code, l.months])), capital, lb.companionNoi?.amount || 0);
+  const year = Number(lb.budget.year);
+  const startAbs = year * 12 + ((Number(inputs.startMonth) || 1) - 1);
+  // the latest quarterly distribution before the budget starts; a distribution paid in October is Q3's (Riley: "8% Q3 2025
+  // distribution" in December 2025)
+  const dist = ((lb.template as any)?.distHist || [])
+    .map((x: any) => { const m = /^(\d{4})-(\d{2})/.exec(String(x?.date || '')); return m && /quarter/i.test(String(x.type)) ? { abs: +m[1] * 12 + +m[2] - 1, pct: Number(x.pct) || 0 } : null; })
+    .filter((x: any) => x && x.abs < startAbs).sort((a: any, b: any) => b.abs - a.abs)[0] || null;
+  const distQ = dist ? (() => { const a = dist.abs - 1; return { pct: dist.pct, label: `Q${Math.floor((a % 12) / 3) + 1} ${Math.floor(a / 12)}` }; })() : null;
+  const fee = lines.find((l) => l.gl_code === '6112');
+  const feeD = (fee?.driver || {}) as any;
+  const tax = (lines.find((l) => l.gl_code === '6116')?.driver || {}) as any;
+  const taxBasis = tax.reTax ? `from the ${tax.reTax.branch === 'UW' ? 'UW' : 'tax bill'}` : tax.accrual ? `the current accrual + ${Math.round((tax.pct || 0) * 1000) / 10}%` : null;
+  const sp = lines.filter((l) => { const n = Number(l.gl_code); return n >= 7321 && n <= 7499; })
+    .map((l) => ({ name: lb.coaMap.get(l.gl_code)?.name || l.gl_code, amount: r2(sum(l.months)), note: l.note || null }))
+    .filter((x) => Math.abs(x.amount) >= 1);
+  const sender = EMAIL_SENDERS.find((x) => x.re.test(req.session.username || '')) || null;
+  const mon = s.labels.t12.match(/^([A-Za-z]+\.)/)?.[1] || '';
+  const mail = budgetEmail({
+    propName: String(prop.name || lb.budget.property_code.toUpperCase()), propCode: lb.budget.property_code,
+    city: String(prop.market || '').replace(/,?\s+[A-Z]{2}$/, '').trim(), year, units: s.units, capital,
+    t12Mon: mon, t12: s.t12, t4: s.t4, bud: s.bud, coc: k.coc,
+    fy: s.cyBudgetNoi != null ? { year: year - 1, noi: s.cyBudgetNoi } : null,
+    dist: distQ,
+    fee: { pct: Number(inputs.mgmtPct || feeD.pct || 0), byQuarter: Array.isArray(feeD.byQuarter) ? feeD.byQuarter : null },
+    sp, taxBasis, sender: sender ? { name: sender.name, title: sender.title, email: sender.email } : null,
+  });
+  const wb = await buildReviewWorkbook(reviewArgs(lb, prop, compName));
+  await captureExportPoint(lb, req.session.username || '');
+  const safe = mail.subject.replace(/[\\/:*?"<>|]+/g, '-');
+  const eml = toEml({ to: BUDGET_EMAIL_TO, cc: BUDGET_EMAIL_CC, subject: mail.subject, html: mail.html, text: mail.text,
+    attachment: { filename: `${safe}.xlsx`, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', data: Buffer.from(wb as any) } });
+  logChange(req.session.username || '', 'budget summary email', { id: lb.budget.id });
+  res.setHeader('Content-Type', 'message/rfc822');
+  res.setHeader('Content-Disposition', `attachment; filename="${safe}.eml"`);
+  res.send(eml);
 }));
 
 /* ONE FOLDER PER REGION in the download-all zips (Troy 2026-11-18: "If I download all, I want 3 folders broken down by
