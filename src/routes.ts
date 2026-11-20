@@ -3510,7 +3510,8 @@ router.get('/budgets/:id/export.xlsx', h(async (req, res) => {
 const EMAIL_SENDERS: { re: RegExp; name: string; title: string; email: string }[] = [
   { re: /troy|steiss|^ts$/i, name: 'Troy Steiss', title: 'Multifamily Analyst', email: 'tsteiss@monarchinvestment.com' },
 ];
-router.get('/budgets/:id/summary-email.eml', h(async (req, res) => {
+// POST carries the Summary table drawn by the browser (a PNG data URL, `png`), placed under the text; GET has no picture
+const summaryEmailRoute = h(async (req, res) => {
   const lb = await loadBudget(Number(req.params.id));
   if (!lb) return res.status(404).json({ error: 'Not found' });
   const prop = (await query('select * from properties where code=$1', [lb.budget.property_code])).rows[0] || {};
@@ -3537,6 +3538,9 @@ router.get('/budgets/:id/summary-email.eml', h(async (req, res) => {
     .map((l) => ({ name: lb.coaMap.get(l.gl_code)?.name || l.gl_code, amount: r2(sum(l.months)), note: l.note || null }))
     .filter((x) => Math.abs(x.amount) >= 1);
   const sender = EMAIL_SENDERS.find((x) => x.re.test(req.session.username || '')) || null;
+  const pm = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(String((req.body || {}).png || ''));
+  const png = pm && pm[1].length < 12e6 ? Buffer.from(pm[1], 'base64') : null;
+  const pngW = Math.max(400, Math.min(1000, Number((req.body || {}).width) || 760));
   const mon = s.labels.t12.match(/^([A-Za-z]+\.)/)?.[1] || '';
   const mail = budgetEmail({
     propName: String(prop.name || lb.budget.property_code.toUpperCase()), propCode: lb.budget.property_code,
@@ -3546,17 +3550,20 @@ router.get('/budgets/:id/summary-email.eml', h(async (req, res) => {
     dist: distQ,
     fee: { pct: Number(inputs.mgmtPct || feeD.pct || 0), byQuarter: Array.isArray(feeD.byQuarter) ? feeD.byQuarter : null },
     sp, taxBasis, sender: sender ? { name: sender.name, title: sender.title, email: sender.email } : null,
-  });
+  }, { imageCid: png ? 'budget-summary@nd-budget-tool' : null, imageWidth: png ? pngW : undefined });
   const wb = await buildReviewWorkbook(reviewArgs(lb, prop, compName));
   await captureExportPoint(lb, req.session.username || '');
   const safe = mail.subject.replace(/[\\/:*?"<>|]+/g, '-');
   const eml = toEml({ to: BUDGET_EMAIL_TO, cc: BUDGET_EMAIL_CC, subject: mail.subject, html: mail.html, text: mail.text,
-    attachment: { filename: `${safe}.xlsx`, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', data: Buffer.from(wb as any) } });
+    attachment: { filename: `${safe}.xlsx`, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', data: Buffer.from(wb as any) },
+    inline: png ? { cid: 'budget-summary@nd-budget-tool', filename: `${safe}.png`, contentType: 'image/png', data: png } : null });
   logChange(req.session.username || '', 'budget summary email', { id: lb.budget.id });
   res.setHeader('Content-Type', 'message/rfc822');
   res.setHeader('Content-Disposition', `attachment; filename="${safe}.eml"`);
   res.send(eml);
-}));
+});
+router.get('/budgets/:id/summary-email.eml', summaryEmailRoute);
+router.post('/budgets/:id/summary-email.eml', summaryEmailRoute);
 
 /* ONE FOLDER PER REGION in the download-all zips (Troy 2026-11-18: "If I download all, I want 3 folders broken down by
    regional"): the dashboard's region groups (Minot, Williston / Watford, Bismarck / Jamestown; app.js REGION_GROUPS),

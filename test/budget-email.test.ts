@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { budgetEmail, budgetEmailItems, toEml, BUDGET_EMAIL_TO } from '../src/budget-email.js';
+import { budgetEmail, budgetEmailItems, toEml, BUDGET_EMAIL_TO, BUDGET_EMAIL_CC } from '../src/budget-email.js';
 import type { SummaryCol } from '../shared/annual.js';
 
 const col = (o: Partial<SummaryCol>): SummaryCol => {
@@ -18,7 +18,7 @@ describe('budget summary email (Riley\'s template)', () => {
     expect(flat).toContain('Rental income is growing 4.2% over Oct. T12, 2.2% over T4.');
     expect(flat).toContain('Total expenses are growing 3% over Oct. T12, 1.7% taxes and management fee adjusted.');
     expect(flat).toContain('Payroll is growing 2%, budgeted around $2k/door.');
-    expect(flat).toContain("SPND's NOI is growing 4.7% over Oct. T12");
+    expect(flat).toContain("SPND's NOI is **growing 4.7% over Oct. T12**");
     expect(flat).toContain("and 4.7% over 2026's budget");
     expect(flat).toContain('$60K is tentatively budgeted in Special Projects.');
     expect(flat).toContain('concrete ($40K), roof repairs, building 3 ($20K)');
@@ -27,8 +27,24 @@ describe('budget summary email (Riley\'s template)', () => {
     const m = budgetEmail(base);
     expect(m.subject).toBe('South Pointe 2027 Budget Summary');
     expect(m.text).toContain('due to going to a 4% management fee for all of 2027');   // T12 ran 3.64%
-    expect(m.html).toContain('<span style="background:yellow">$___k</span>');
+    const noSp = budgetEmail({ ...base, sp: [] });
+    expect(noSp.html).toContain('<span style="background:yellow;mso-highlight:yellow">projects</span>');
+    expect(m.text).not.toContain('accretion');
     expect(m.text).toContain('Attached please find the 2027 budget analysis for South Pointe in Minot.');
+  });
+  it('NOI sits in the top section with the return, its T12 growth in bold; Troy is copied', () => {
+    const secs = budgetEmailItems(base);
+    expect(secs[0].length).toBe(2);
+    expect(JSON.stringify(secs[0][1])).toContain('NOI');
+    expect(budgetEmail(base).html).toContain('<b>growing 4.7% over Oct. T12</b>');
+    expect(BUDGET_EMAIL_CC.map((x) => x.email)).toContain('tsteiss@monarchinvestment.com');
+  });
+  it('the Summary picture rides inline under the text', () => {
+    const m = budgetEmail(base, { imageCid: 'summary@budget' });
+    expect(m.html.indexOf('cid:summary@budget')).toBeGreaterThan(m.html.indexOf('Special Projects'));
+    const eml = toEml({ to: BUDGET_EMAIL_TO, subject: m.subject, html: m.html, text: m.text, inline: { cid: 'summary@budget', filename: 'summary.png', contentType: 'image/png', data: Buffer.from('png') }, boundary: 't' });
+    expect(eml).toContain('Content-Type: multipart/related; boundary="=_rel_t"; type="text/html"');
+    expect(eml).toContain('Content-ID: <summary@budget>');
   });
   it('the .eml is an unsent draft to Andy with the workbook attached', () => {
     const m = budgetEmail(base);

@@ -43,11 +43,14 @@ const moves = (g: number | null, up = 'growing', down = 'decreasing'): string =>
 const esc = (s: string): string => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 export const BUDGET_EMAIL_TO = [{ name: 'Andy Miller', email: 'amiller@monarchinvestment.com' }];
-export const BUDGET_EMAIL_CC = [{ name: 'Riley Combs', email: 'rcombs@monarchinvestment.com' }, { name: 'Kara Garrison', email: 'kgarrison@monarchinvestment.com' }];
+export const BUDGET_EMAIL_CC = [{ name: 'Riley Combs', email: 'rcombs@monarchinvestment.com' }, { name: 'Kara Garrison', email: 'kgarrison@monarchinvestment.com' },
+  { name: 'Troy Steiss', email: 'tsteiss@monarchinvestment.com' }];
 
 type Item = string | { text: string; sub: Item[] };
-/** The email's bullets, as plain items (a `{ text, sub }` nests); `[[...]]` marks a placeholder to fill in. */
-export function budgetEmailItems(d: BudgetEmailInput): Item[] {
+/** The email's bullets in SECTIONS (a blank line between sections, none inside one): plain items, a `{ text, sub }`
+    nests; `[[...]]` marks a placeholder to fill in, `**...**` bold. Troy 2026-11-20: NOI moves up into the top section
+    with the return, its growth over the T12 in bold; no accretion bullet. */
+export function budgetEmailItems(d: BudgetEmailInput): Item[][] {
   const t12Lab = `${d.t12Mon} T12`.trim();
   const { bud, t12, t4 } = d;
   const vsBoth = (b: number, k: (c: SummaryCol) => number): string => {
@@ -55,16 +58,25 @@ export function budgetEmailItems(d: BudgetEmailInput): Item[] {
     return `${moves(g12)} over ${t12Lab}${g4 != null ? `, ${pctTxt(g4)} over T4` : ''}`;
   };
   const items: Item[] = [];
+  const sections: Item[][] = [];
 
-  // overall return
+  // overall return, then NOI (the top section)
   const t12Ret = t12 && d.capital ? t12.cashFlow / d.capital : null;
   items.push(`Overall return is ${d.coc != null ? pctTxt(d.coc, 2) : '[[return]]'}${t12Ret != null ? ` vs. ${pctTxt(t12Ret, 2)} T12 actual return` : ''}${d.dist ? `${t12Ret != null ? ' and' : ' vs.'} ${pctTxt(d.dist.pct)} ${d.dist.label} distribution` : ''}.`);
 
+  const noiAdj = (c: SummaryCol) => c.noi + c.tax + c.fee;
+  const gN = t12 ? growth(bud.noi, t12.noi) : null, gNa = t12 ? growth(noiAdj(bud), noiAdj(t12)) : null;
+  const gFy = d.fy && d.fy.noi ? growth(bud.noi, d.fy.noi) : null;
+  items.push({ text: 'NOI', sub: [
+    `${d.propCode.toUpperCase()}'s NOI is **${moves(gN)} over ${t12Lab}**${gNa != null ? `, ${pctTxt(gNa)} RE tax and management fee adjusted` : ''}${gFy != null ? ` and ${pctTxt(gFy)} ${gFy >= 0 ? 'over' : 'under'} ${d.fy!.year}'s budget` : ''}.`,
+  ] });
+  sections.push(items.splice(0));
+
   // income
-  items.push({ text: 'Income', sub: [
+  sections.push([{ text: 'Income', sub: [
     `Rental income is ${vsBoth(bud.rental, (c) => c.rental)}.`,
     `Total income is ${vsBoth(bud.income, (c) => c.income)}.`,
-  ] });
+  ] }]);
 
   // expenses
   const adj = (c: SummaryCol) => c.expense - c.tax - c.fee;
@@ -86,51 +98,47 @@ export function budgetEmailItems(d: BudgetEmailInput): Item[] {
     const g12 = t12 ? growth(mnt(bud), mnt(t12)) : null, g4 = t4 ? growth(mnt(bud), mnt(t4)) : null;
     ex.push(`Total maintenance is budgeted at ${d.units ? `${kTxt(mnt(bud) / d.units)}/door` : KTXT(mnt(bud))}${g12 != null ? `, ${moves(g12, 'increasing', 'decreasing')} over ${t12Lab}` : ''}${g4 != null ? ` and ${moves(g4, 'increasing', 'decreasing')} over T4` : ''}.`);
   }
-  items.push({ text: 'Expenses', sub: ex });
-
-  // NOI
-  const noiAdj = (c: SummaryCol) => c.noi + c.tax + c.fee;
-  const gN = t12 ? growth(bud.noi, t12.noi) : null, gNa = t12 ? growth(noiAdj(bud), noiAdj(t12)) : null;
-  const gFy = d.fy && d.fy.noi ? growth(bud.noi, d.fy.noi) : null;
-  items.push({ text: 'NOI', sub: [
-    `${d.propCode.toUpperCase()}'s NOI is ${moves(gN)} over ${t12Lab}${gNa != null ? `, ${pctTxt(gNa)} RE tax and management fee adjusted` : ''}${gFy != null ? ` and ${pctTxt(gFy)} ${gFy >= 0 ? 'over' : 'under'} ${d.fy!.year}'s budget` : ''}.`,
-  ] });
+  sections.push([{ text: 'Expenses', sub: ex }]);
 
   // special projects
   const spTot = d.sp.reduce((a, x) => a + x.amount, 0);
   const named = d.sp.filter((x) => x.amount).sort((a, b) => b.amount - a.amount)
     .map((x) => `${(x.note && x.note.trim()) || x.name.replace(/^\s*SP\s+/i, '').toLowerCase()} (${KTXT(x.amount)})`);
-  items.push({ text: 'Special Projects', sub: [
+  sections.push([{ text: 'Special Projects', sub: [
     spTot ? `${KTXT(spTot)} is tentatively budgeted in Special Projects.` : 'Nothing is budgeted in Special Projects yet: [[SP amount]].',
     named.length ? `These projects could include: ${named.join(', ')}.` : 'These projects could include: [[projects]].',
-    'I anticipate ending around [[$___k]] in cash by year end with minimal accretion.',
-  ] });
-  return items;
+  ] }]);
+  return sections;
 }
 
 /** The email: subject, HTML body (Outlook's own look: Calibri 11pt, nested bullets) and a plain-text copy. */
-export function budgetEmail(d: BudgetEmailInput): { subject: string; html: string; text: string } {
+export function budgetEmail(d: BudgetEmailInput, opts: { imageCid?: string | null; imageWidth?: number } = {}): { subject: string; html: string; text: string } {
   const subject = `${d.propName} ${d.year} Budget Summary`;
-  const items = budgetEmailItems(d);
-  const ph = (s: string, html: boolean) => s.replace(/\[\[(.+?)\]\]/g, (_, x) => (html ? `<span style="background:yellow">${esc(x)}</span>` : `[${x}]`));
+  const sections = budgetEmailItems(d);
+  const ph = (s: string, html: boolean) => (html
+    ? s.replace(/\[\[(.+?)\]\]/g, (_, x) => `<span style="background:yellow;mso-highlight:yellow">${x}</span>`).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+    : s.replace(/\[\[(.+?)\]\]/g, '[$1]').replace(/\*\*(.+?)\*\*/g, '$1'));
+  const FONT = 'font-size:11.0pt;font-family:&quot;Calibri&quot;,sans-serif';
+  const LI = `style="margin:0in;margin-bottom:.0001pt;line-height:normal;${FONT}"`;
+  const UL = 'style="margin-top:0in;margin-bottom:0in"';
   const li = (it: Item): string => (typeof it === 'string'
-    ? `<li>${ph(esc(it), true)}</li>`
-    : `<li>${ph(esc(it.text), true)}<ul style="margin-top:0in">${it.sub.map(li).join('')}</ul></li>`);
+    ? `<li ${LI}>${ph(esc(it), true)}</li>`
+    : `<li ${LI}>${ph(esc(it.text), true)}<ul ${UL} type="circle">${it.sub.map(li).join('')}</ul></li>`);
   const intro = `Attached please find the ${d.year} budget analysis for ${d.propName}${d.city ? ` in ${d.city}` : ''}. I’ve listed a few notes/comments below regarding the budget.`;
   const sig = d.sender ? [d.sender.name, d.sender.title, 'Monarch Investment & Management Group', d.sender.email] : [];
-  const P = (s: string) => `<p class="MsoNormal">${s}</p>`;
-  const html = `<html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><style>
-p.MsoNormal, li { margin:0in; font-size:11.0pt; font-family:"Calibri",sans-serif; }
-ul { margin-top:0in; margin-bottom:0in; }
-</style></head><body lang="EN-US"><div class="WordSection1">
-${P('Andy-')}${P('&nbsp;')}${P(esc(intro))}${P('&nbsp;')}
-${items.map((it) => `<ul style="margin-top:0in">${li(it)}</ul>${P('&nbsp;')}`).join('\n')}
-${P('&nbsp;')}${sig.length ? `${P(`<b>${esc(sig[0])}</b>`)}${sig.slice(1, 3).map((s) => P(esc(s))).join('')}${P(`<a href="mailto:${esc(sig[3])}">${esc(sig[3])}</a>`)}` : ''}
+  const P = (s: string) => `<p class="MsoNormal" style="margin:0in;margin-bottom:.0001pt;line-height:normal;${FONT}">${s}</p>`;
+  const GAP = P('&nbsp;');
+  const img = opts.imageCid ? `${GAP}${P(`<img src="cid:${opts.imageCid}" width="${opts.imageWidth || 760}" style="width:${(opts.imageWidth || 760) / 96}in" alt="${esc(subject)}">`)}` : '';
+  const html = `<html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"></head><body lang="EN-US"><div class="WordSection1">
+${P('Andy-')}${GAP}${P(esc(intro))}${GAP}
+${sections.map((sec) => `<ul ${UL} type="disc">${sec.map(li).join('')}</ul>`).join(GAP)}
+${img}
+${GAP}${sig.length ? `${P(`<b>${esc(sig[0])}</b>`)}${sig.slice(1, 3).map((s) => P(esc(s))).join('')}${P(`<a href="mailto:${esc(sig[3])}">${esc(sig[3])}</a>`)}` : ''}
 </div></body></html>`;
   const tx = (it: Item, lvl: number): string => (typeof it === 'string'
     ? `${'    '.repeat(lvl)}${lvl ? 'o' : '•'} ${ph(it, false)}`
     : `${'    '.repeat(lvl)}${lvl ? 'o' : '•'} ${it.text}\n${it.sub.map((s) => tx(s, lvl + 1)).join('\n')}`);
-  const text = ['Andy-', '', intro, '', ...items.map((it) => `${tx(it, 0)}\n`), ...sig].join('\n');
+  const text = ['Andy-', '', intro, '', sections.map((sec) => sec.map((it) => tx(it, 0)).join('\n')).join('\n\n'), '', ...sig].join('\n');
   return { subject, html, text };
 }
 
@@ -139,8 +147,9 @@ const b64 = (buf: Buffer): string => buf.toString('base64').replace(/.{76}(?=.)/
 const hdr = (s: string): string => (/^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${Buffer.from(s, 'utf8').toString('base64')}?=`);
 const addr = (xs: { name: string; email: string }[]): string => xs.map((x) => `${hdr(x.name)} <${x.email}>`).join(', ');
 export function toEml(m: { to: { name: string; email: string }[]; cc?: { name: string; email: string }[]; subject: string; html: string; text: string;
-  attachment?: { filename: string; contentType: string; data: Buffer } | null; boundary?: string }): string {
-  const b1 = `=_mixed_${m.boundary || Date.now().toString(36)}`, b2 = `=_alt_${m.boundary || Date.now().toString(36)}`;
+  attachment?: { filename: string; contentType: string; data: Buffer } | null; inline?: { cid: string; filename: string; contentType: string; data: Buffer } | null; boundary?: string }): string {
+  const b1 = `=_mixed_${m.boundary || Date.now().toString(36)}`, b2 = `=_alt_${m.boundary || Date.now().toString(36)}`, b3 = `=_rel_${m.boundary || Date.now().toString(36)}`;
+  const htmlPart = ['Content-Type: text/html; charset="utf-8"', 'Content-Transfer-Encoding: base64', '', b64(Buffer.from(m.html, 'utf8'))];
   const lines = [
     'X-Unsent: 1',
     `To: ${addr(m.to)}`,
@@ -158,10 +167,11 @@ export function toEml(m: { to: { name: string; email: string }[]; cc?: { name: s
     '',
     b64(Buffer.from(m.text, 'utf8')),
     `--${b2}`,
-    'Content-Type: text/html; charset="utf-8"',
-    'Content-Transfer-Encoding: base64',
-    '',
-    b64(Buffer.from(m.html, 'utf8')),
+    ...(m.inline
+      ? [`Content-Type: multipart/related; boundary="${b3}"; type="text/html"`, '', `--${b3}`, ...htmlPart, `--${b3}`,
+        `Content-Type: ${m.inline.contentType}; name="${m.inline.filename}"`, `Content-ID: <${m.inline.cid}>`, `Content-Disposition: inline; filename="${m.inline.filename}"`,
+        'Content-Transfer-Encoding: base64', '', b64(m.inline.data), `--${b3}--`]
+      : htmlPart),
     `--${b2}--`,
   ];
   if (m.attachment) {

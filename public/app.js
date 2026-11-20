@@ -1466,31 +1466,37 @@ function renderEditor(el) {
     const ov = bv.lines.filter((l) => l.override);
     const fixed = ov.filter((l) => !l.driver || !l.driver.method || l.driver.method === 'manual' || l.driver.method === 'setTotal').length;
     const sideOn = localStorage.getItem('bt-side') !== '0';
+    /* MORE, IN GROUPS (Troy 2026-11-20: "Please sort out the more menu. Its kind of a mess currently"): share / export,
+       formulas, inputs that shape the lines, and the view. Same actions as before; only the order and the headings. */
+    const inp0 = bv.budget.inputs || {};
+    const grp = (t) => `<div class="rm-head rm-grp-head">${t}</div>`;
     popMenu(anchor, `
-      <button data-x="email" title="Riley's &quot;<Property> <Year> Budget Summary&quot; email to Andy, written from this budget: return, income, expenses, NOI and special projects against the T12 and T4, with the budget workbook attached. Downloads an .eml that opens in Outlook as an unsent draft to edit; yellow = fill in.">✉ Budget summary email (.eml)</button>
+      ${grp('Share &amp; save')}
+      <button data-x="email" title="Riley's &quot;<Property> <Year> Budget Summary&quot; email to Andy, written from this budget: return, NOI, income, expenses and special projects against the T12 and T4, the Summary table as a picture, the budget workbook attached. Downloads an .eml that opens in Outlook as an unsent draft to edit; yellow = fill in.">✉ Budget summary email (.eml)</button>
       <button data-x="sp" title="Named, permanent save points for this budget — capture the current iteration, restore any earlier one">⎘ Save points${(bv.savePoints || []).length ? ` (${bv.savePoints.length})` : ''}</button>
-      <button data-x="round" title="Round selected lines' months to a multiple">⌁ MROUND lines…</button>
-      ${bv.annual ? `<button data-x="dform" title="The formula and seasonal curve every line uses by default, for ALL budgets on the defaults (this one ${bv.followsDefaults ? 'is' : 'is on a named saved set, so it is not'} among them). One pick sets a whole section.">ƒ Default formulas (all budgets)…</button>` : ''}
+      ${grp('Formulas')}
       ${bv.annual ? `<button data-x="bshape" title="Pick one formula (turn curve, 1-2-1 weighted, T12 ÷ 12…) and tick the lines it applies to, across any sections">∿ Formula for lines…</button>` : ''}
+      <button data-x="round" title="Round selected lines' months to a multiple">⌁ MROUND lines…</button>
+      ${ov.length ? `<button data-x="ovr" title="Audit this budget's overridden lines — release old MROUND-locks back to live formulas">🔓 Overrides: ${ov.length - fixed} formula · ${fixed} fixed</button>` : ''}
       ${bv.annual ? `<button data-x="fsave" title="Save every formula on this budget — each line's shape, increase factor and rounding, the zero-outs and the formula settings — under a name, to start other budgets from. Hand-typed cells and dollar amounts are NOT saved.">★ Save formulas as…</button>
       <button data-x="fapply" title="Give this budget a saved formula set. Its own per-line shape / factor choices are replaced by the set's; overrides, dollars, GPR and the vacancy average stay.">☆ Apply a saved formula set…</button>` : ''}
-      ${bv.annual ? `<div class="rm-head" style="margin-top:4px">Known costs</div>
-      <button data-x="contracts" title="Signed contracts and recurring costs (snow, elevators, SmartRent, annual invoices, a commercial lease…). A line with a contract on it takes the contract amounts instead of its history.">✎ Contracts & known costs…${((bv.budget.inputs || {}).contracts || []).length ? ` (${bv.budget.inputs.contracts.length})` : ''}</button>
-      ${bv.annual ? `<button data-x="shapeall" title="Spread every seasonal line (other income, utilities, R&M, admin, marketing…) on another property's monthly curve in one step — e.g. ECND for PHND / FHND's months before they were owned. Each line keeps its own year total.">〰 Seasonality from another property…${Object.keys((bv.budget.inputs || {}).shapeFromGl || {}).length ? ` (${Object.keys(bv.budget.inputs.shapeFromGl).length} lines)` : ''}</button>` : ''}
-      <button data-x="onetime" title=""Take one-time items (an unreversed accrual, a one-off repair, a catch-up bill) out of the trailing-12 before the formulas read it">✂ One-time items out of the T12…${((bv.budget.inputs || {}).t12Adjust || []).length ? ` (${bv.budget.inputs.t12Adjust.length})` : ''}</button>
-      <button data-x="feesched" title="Flat-fee utility package by bedroom count: reimbursement income from fee × occupied units, with RUBS leases switching at expiration">⌂ Flat-fee package schedule…</button>
-      <button data-x="split" title="Recurring journal split to a companion property (TPND → TPNDC 41.11%)">⇄ Journal split to another property…</button>
-      <button data-x="qshift" title="Move NOI share between quarters on the lines you pick (aggressive Q4, conservative Q1…); the year's NOI stays the same. Also on the NOI row's % by quarter.">◫ Shift NOI between quarters…${(bv.budget.inputs || {}).qShift ? ' ✓' : ''}</button>` : ''}
-      ${bv.annual ? `<button data-x="fpush" title="Give the way this budget builds whole sections (e.g. Contract Services) to the other budgets you pick. Only those sections change there; preview first.">⇉ Copy section formulas to other budgets…</button>` : ''}
       <button data-x="copy" title="Replay another budget's named formulas here, re-evaluated on this property's own data">⧉ Copy formulas from another budget…</button>
-      ${ov.length ? `<button data-x="ovr" title="Audit this budget's overridden lines — release old MROUND-locks back to live formulas">🔓 Overrides: ${ov.length - fixed} formula · ${fixed} fixed</button>` : ''}
-      <div class="rm-head" style="margin-top:4px">View</div>
+      ${bv.annual ? `<button data-x="fpush" title="Give the way this budget builds whole sections (e.g. Contract Services) to the other budgets you pick. Only those sections change there; preview first.">⇉ Copy section formulas to other budgets…</button>
+      <button data-x="dform" title="The formula and seasonal curve every line uses by default, for ALL budgets on the defaults (this one ${bv.followsDefaults ? 'is' : 'is on a named saved set, so it is not'} among them). One pick sets a whole section.">ƒ Default formulas (all budgets)…</button>` : ''}
+      ${bv.annual ? `${grp('Costs &amp; adjustments')}
+      <button data-x="contracts" title="Signed contracts and recurring costs (snow, elevators, SmartRent, annual invoices, a commercial lease…). A line with a contract on it takes the contract amounts instead of its history.">✎ Contracts &amp; known costs…${(inp0.contracts || []).length ? ` (${inp0.contracts.length})` : ''}</button>
+      <button data-x="onetime" title="Take one-time items (an unreversed accrual, a one-off repair, a catch-up bill) out of the trailing-12 before the formulas read it">✂ One-time items out of the T12…${(inp0.t12Adjust || []).length ? ` (${inp0.t12Adjust.length})` : ''}</button>
+      <button data-x="shapeall" title="Spread every seasonal line (other income, utilities, R&amp;M, admin, marketing…) on another property's monthly curve in one step — e.g. ECND for PHND / FHND's months before they were owned. Each line keeps its own year total.">〰 Seasonality from another property…${Object.keys(inp0.shapeFromGl || {}).length ? ` (${Object.keys(inp0.shapeFromGl).length} lines)` : ''}</button>
+      <button data-x="qshift" title="Move NOI share between quarters on the lines you pick (aggressive Q4, conservative Q1…); the year's NOI stays the same. Also on the NOI row's % by quarter.">◫ Shift NOI between quarters…${inp0.qShift ? ' ✓' : ''}</button>
+      <button data-x="feesched" title="Flat-fee utility package by bedroom count: reimbursement income from fee × occupied units, with RUBS leases switching at expiration">⌂ Flat-fee package schedule…</button>
+      <button data-x="split" title="Recurring journal split to a companion property (TPND → TPNDC 41.11%)">⇄ Journal split to another property…</button>` : ''}
+      ${grp('View')}
       <button data-x="cols">▦ Columns…</button>
       <button data-x="side">${sideOn ? '⏵ Hide side panel' : '⏴ Show side panel'}</button>
       <label><input type="checkbox" data-x="zero" ${S.showZero ? 'checked' : ''}> Show zero rows</label>
       <label title="Show each total row's monthly % of the year"><input type="checkbox" data-x="dist" ${S.showDist ? 'checked' : ''}> % distribution on totals — by month</label>
       <label title="Show each total row's quarterly % of the year"><input type="checkbox" data-x="qdist" ${S.showQDist ? 'checked' : ''}> % distribution on totals — by quarter</label>`, (menu) => {
-      menu.querySelector('[data-x="email"]').addEventListener('click', () => window.open(rUrl(`/api/budgets/${b.id}/summary-email.eml`), '_blank'));
+      menu.querySelector('[data-x="email"]').addEventListener('click', () => downloadSummaryEmail(b));
       menu.querySelector('[data-x="sp"]').addEventListener('click', () => openSavePoints(b));
       menu.querySelector('[data-x="round"]').addEventListener('click', () => openRoundDialog(b));
       { const bs = menu.querySelector('[data-x="bshape"]'); if (bs) bs.addEventListener('click', () => openBulkFormula(b)); }
@@ -7347,6 +7353,96 @@ function summaryPanelHtml(title, s, opts = {}) {
     ${blank(33)}
     <tr class="xs-ret"><td class="xs-a"></td><td class="xs-b">Return</td><td class="xs-c xs-bold xs-r">${xsPct(ret(C), 2)}</td><td class="xs-d2 xs-bold xs-r">${xsPct(ret(D), 2)}</td><td class="xs-e xs-bold xs-r">${xsPct(ret(E), 2)}</td><td class="xs-f0"></td>${g(34)}</tr>
   </table></div>`;
+}
+/* THE SUMMARY PANEL AS A PICTURE (Troy 2026-11-20: "Add in a screenshot of this" — the budget summary email): the same
+   rows, fills and notes as summaryPanelHtml, drawn on a canvas so Outlook shows it exactly. Returns a PNG data URL and
+   its width in CSS pixels. */
+function summaryPanelPng(title, s) {
+  const C = s.t12, D = s.t4, E = s.bud, cap = s.capital || 0;
+  const SC = 2, W = 1086, RH = 23;
+  const X = { b: 18, c: 278, d: 418, e: 558, f: 702, g: 784 }, WD = { c: 140, d: 140, e: 140, f: 76, g: 286 };
+  const rows = 34, top = 10, H = top + 40 + (rows - 1) * RH + 14;
+  const cv = document.createElement('canvas'); cv.width = W * SC; cv.height = H * SC;
+  const x = cv.getContext('2d'); x.scale(SC, SC);
+  x.fillStyle = '#fff'; x.fillRect(0, 0, W, H);
+  const FONT = 'Calibri, "Segoe UI", Arial, sans-serif';
+  const yOf = (r) => top + 40 + (r - 2) * RH;                    // row r's top (row 1 = the title)
+  const BLUE = '#DDEBF7', GREEN = '#E2EFDA';
+  const fill = (col, r, color) => { x.fillStyle = color; x.fillRect(X[col], yOf(r), WD[col], RH); };
+  const text = (t, px, r, o = {}) => { x.font = `${o.bold ? 'bold ' : ''}${o.size || 14}px ${FONT}`; x.fillStyle = '#000'; x.textAlign = o.align || 'left'; x.textBaseline = 'middle'; x.fillText(t, px, yOf(r) + RH / 2 + 1); };
+  const acct = (col, r, v, bold) => {
+    if (v == null) return;
+    const n = Math.round(v);
+    text('$', X[col] + 8, r, { bold });
+    text(n === 0 ? '-' : n < 0 ? `(${Math.abs(n).toLocaleString('en-US')})` : n.toLocaleString('en-US'), X[col] + WD[col] - 8, r, { align: 'right', bold });
+  };
+  const line = (x1, y1, x2, y2, w = 1.5) => { x.strokeStyle = '#000'; x.lineWidth = w; x.beginPath(); x.moveTo(x1, y1); x.lineTo(x2, y2); x.stroke(); };
+  const box = (x0, y0, w, h, lw = 1.5) => { x.strokeStyle = '#000'; x.lineWidth = lw; x.strokeRect(x0, y0, w, h); };
+  const pct = (v, dp = 1) => (v == null || !Number.isFinite(v) ? '' : `${(v * 100).toFixed(dp)}%`);
+  const gr = (a, b) => (b ? (a - b) / b : null);
+  const maint = (c) => (c ? c.inHouse + c.exterior + c.contract + c.rehab : null);
+  // title + column headers
+  x.font = `bold 24px ${FONT}`; x.fillStyle = '#000'; x.textAlign = 'left'; x.textBaseline = 'middle'; x.fillText(title, X.b, top + 18);
+  [['c', s.labels.t12], ['d', s.labels.t4], ['e', s.labels.draft]].forEach(([k, t]) => text(t, X[k] + WD[k] / 2, 3, { bold: true, align: 'center' }));
+  // the rows (workbook row numbers, as summaryPanelHtml)
+  const R = [
+    [5, 'Capital Contributed', null, { cap: true }], [6, 'Unit Count', null, { units: true }],
+    [8, 'Total Rental Income', 'rental'], [9, 'Total Other Income', 'other', { dbl: true }], [10, 'Total Income', 'income', { plain: true }],
+    [12, 'Fixed Admin Less RE TAXES & MGMT FEE', 'fixedLess'], [13, '     Real Estate Taxes', 'tax'], [14, '     Management Fee', 'fee'],
+    [15, 'Admin', 'admin'], [16, 'Payroll', 'payroll'], [17, 'Marketing', 'marketing'], [18, 'Utilities', 'utilities'],
+    [19, 'In-House', 'inHouse'], [20, 'Exterior / CAM', 'exterior'], [21, 'Contract Services', 'contract'], [22, 'Rehab / Replace', 'rehab', { dbl: true }],
+    [23, 'Total Expense', 'expense', { plain: true, dtop: true }], [26, 'NOI', 'noi', { plain: true }],
+    [28, 'Int Expense', 'interest', { debt: true }], [29, '1st MTGE', 'mtg1', { debt: true }], [30, '2nd MTGE', 'mtg2', { debt: true }],
+    [32, 'Cash Flow', 'cashFlow', { plain: true }],
+  ];
+  for (const [r, label, k, o = {}] of R) {
+    if (k && !o.plain) { if (C) fill('c', r, BLUE); if (D) fill('d', r, o.debt ? BLUE : GREEN); }
+    text(label, X.b, r, { bold: true });
+    if (o.cap) { ['c', 'd', 'e'].forEach((c) => acct(c, r, cap || null)); continue; }
+    if (o.units) { ['c', 'd', 'e'].forEach((c) => text((s.units || 0).toLocaleString('en-US'), X[c] + WD[c] - 8, r, { align: 'right' })); continue; }
+    acct('c', r, C ? C[k] : null); acct('d', r, D ? D[k] : null); acct('e', r, E ? E[k] : null);
+    if (o.dbl) ['c', 'd', 'e'].forEach((c) => { line(X[c], yOf(r) + RH - 1, X[c] + WD[c], yOf(r) + RH - 1, 1); line(X[c], yOf(r) + RH + 2, X[c] + WD[c], yOf(r) + RH + 2, 1); });
+    if (!o.debt) { fill('f', r, BLUE); text(pct(E && C ? gr(E[k], C[k]) : null), X.f + WD.f / 2, r, { align: 'center' }); box(X.f, yOf(r), WD.f, RH, o.plain ? 2 : 1); }
+  }
+  text('GR% Over', X.f + WD.f / 2, 6, { bold: true, align: 'center' }); text('T12', X.f + WD.f / 2, 7, { bold: true, align: 'center' }); box(X.f, yOf(6), WD.f, RH * 2, 2);
+  // the return row
+  text('Return', X.b, 34, { bold: true });
+  [['c', C], ['d', D], ['e', E]].forEach(([c, col]) => text(pct(col && cap ? col.cashFlow / cap : null, 2), X[c] + WD[c] - 8, 34, { bold: true, align: 'right' }));
+  // the column frames: T12 + T4 together, the draft on its own, header to the return row
+  box(X.c, yOf(3) - 6, WD.c + WD.d, yOf(35) - yOf(3) + 6, 2); box(X.e, yOf(3) - 6, WD.e, yOf(35) - yOf(3) + 6, 2);
+  // the notes on the right: a label row, then its figure (green over T4, blue over T12)
+  const note = (r, label, v, color, dp = 1) => {
+    text(label, X.g + 8, r); box(X.g, yOf(r), WD.g, RH, 2);
+    x.fillStyle = color; x.fillRect(X.g, yOf(r + 1), WD.g, RH); text(pct(v, dp), X.g + WD.g / 2, r + 1, { align: 'center' }); box(X.g, yOf(r + 1), WD.g, RH, 2);
+  };
+  if (E && D) {
+    note(7, 'Rental Income Growth over T4', gr(E.rental, D.rental), GREEN);
+    note(9, 'Total Income Growth over T4', gr(E.income, D.income), GREEN);
+    note(15, 'Payroll Growth over T4', gr(E.payroll, D.payroll), GREEN);
+    note(18, 'Maintenance Expense Growth over T4', gr(maint(E), maint(D)), GREEN);
+    note(25, 'Total NOI Growth over T4', gr(E.noi, D.noi), GREEN);
+    note(31, 'NOI Growth Excluding RE Tax (T4)', (D.noi + (D.tax - E.tax)) ? (E.noi - (D.noi + (D.tax - E.tax))) / (D.noi + (D.tax - E.tax)) : null, GREEN);
+  }
+  if (E && C) {
+    note(22, 'Total Expense Growth net of MGMT and RE Tax', C.expense ? ((E.expense - (E.tax - C.tax + E.fee - C.fee)) - C.expense) / C.expense : null, GREEN);
+    note(33, 'NOI Growth Excluding RE Tax & MGMT FEE (T12)', C.noi ? ((E.noi + (E.tax - C.tax + E.fee - C.fee)) - C.noi) / C.noi : null, BLUE, 2);
+  }
+  return { png: cv.toDataURL('image/png'), width: W };
+}
+/* More → Budget summary email: the Summary panel drawn as a picture rides with the request, the .eml comes back */
+async function downloadSummaryEmail(b) {
+  try {
+    const sum = S.bv && S.bv.summary;
+    const pic = sum ? summaryPanelPng(String(b.property_code).toUpperCase(), sum) : null;
+    const r = await fetch(rUrl(`/api/budgets/${b.id}/summary-email.eml`), { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Region': S.region }, body: JSON.stringify(pic ? { png: pic.png, width: 880 } : {}) });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || r.statusText); }
+    const blob = await r.blob();
+    const m = /filename="([^"]+)"/.exec(r.headers.get('content-disposition') || '');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = m ? m[1] : 'Budget Summary.eml';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  } catch (e) { alert('Could not build the email: ' + e.message); }
 }
 function wireSummaryLabels(root, budgetId, after) {
   root.querySelectorAll('[data-xslabel]').forEach((td) => td.addEventListener('click', async () => {
