@@ -79,6 +79,8 @@ function drvMeta(l) {
   if (l && l.driver && l.driver.taxFloor) { const f = l.driver.taxFloor; extra.push({ cls: 'drv-man', tag: 'FLOOR T12+3%', label: `Taxes never go down: this line's formula came to $${money(f.was)}, under the trailing-12 $${money(f.t12)} × ${(1 + (f.pct || 0.03)).toFixed(2)} = $${money(f.floor)}, so it is raised to that (its monthly pattern kept). Type over the line to set it by hand.` }); }
   if (l && l.driver && l.driver.shapeFrom) extra.push({ cls: 'drv-base', tag: `SHAPE·${String(l.driver.shapeFrom).toUpperCase()}`, label: l.driver.shapeMissing ? `The months this property does not have (${l.driver.shapeMissing.map((i) => (S.bv.monthLabels || MONTHS)[i]).join(', ')}) follow the ${String(l.driver.shapeFrom).toUpperCase()} curve at this property's own level (its own months stay as its formula made them). Row menu → Monthly shape from another property…, or More → Seasonality from another property…` : `Months on the ${String(l.driver.shapeFrom).toUpperCase()} curve; the year total is this line's own formula (row menu → Monthly shape from another property…)` });
   if (l && l.driver && l.driver.fitT12) extra.push({ fit: true, cls: 'drv-t12', tag: `FIT ${Math.round(l.driver.fitT12 * 100)}%`, label: `Months lean ${Math.round(l.driver.fitT12 * 100)}% toward this GL's own trailing-12 months (year total unchanged) — row menu or section header "fit to T12"` });
+  // small T12 lines moved onto this GL before its formula read the history (More → Small T12 lines)
+  if (l && l.driver && l.driver.movedIn) { const mi = l.driver.movedIn; extra.push({ cls: 'drv-int', tag: `+${(mi.from || []).length} MOVED`, label: `$${money(mi.t12 || 0)} of trailing-12 moved in from ${(mi.from || []).map((g) => `${g} ${glName(g)}`).join(', ')} (small T12 lines) before this formula read the history (More → Small T12 lines…)` }); }
   // one-time items taken out of this GL's trailing-12 before the formula read it (More → One-time items)
   if (l && l.driver && l.driver.oneTime) extra.push({ cls: 'drv-t12', tag: '−1X', label: `$${money(l.driver.oneTime)} of one-time items taken out of the trailing-12 before this formula read it (More → One-time items out of the T12…)` });
   // when the money lands (the review checklist, 2026-11-18): the one-time part's month, or the same each quarter
@@ -189,7 +191,12 @@ function drvMetaBase(l) {
       : { cls: 'drv-t12', tag: 'SLR', label: `${S.bv && S.bv.annual ? 'T12 actuals' : 'Seller'}: ${l.driver.name || ''} × ${(l.driver.pct || 0).toFixed(1)}%` };
     case 'recovery': return { cls: 'drv-t12', tag: 'REC', label: `${((l.driver.pct || 0) * 100).toFixed(1)}% of prior-month ${l.driver.src ? `← ${l.driver.src}` : 'billing'}` };
     case 'charges': return { cls: 'drv-rr', tag: 'CHG', label: 'Rent-roll charges × 12' };
-    case 'zero': return { cls: 'drv-int', tag: 'ZERO', label: 'Zeroed out — this GL carries nothing' };
+    case 'zero': {
+      const sm = l.driver.small;
+      if (sm && sm.to) return { cls: 'drv-int', tag: `MOVED→${sm.to}`, label: `Small T12 line: its trailing-12 ($${money(sm.t12 || 0)}) is moved onto ${sm.to} ${glName(sm.to)}, whose own formula budgets it. This line carries nothing (More → Small T12 lines…)` };
+      if (sm) return { cls: 'drv-int', tag: 'ZERO·SMALL', label: `Small T12 line ($${money(sm.t12 || 0)} of trailing-12) zeroed out: nothing budgeted. Its history stays as it posted (More → Small T12 lines…)` };
+      return { cls: 'drv-int', tag: 'ZERO', label: 'Zeroed out — this GL carries nothing' };
+    }
     case 'dropped': return { cls: 'drv-drop', tag: '<$1K', label: `NOT budgeted: the trailing-12 was $${money(l.driver.t12 || 0)}, and the template drops lines at or under $${money(l.driver.limit || 1000)}. Click to budget it at T12 ÷ 12` };
     case 't12curve': return { cls: 'drv-t12', tag: 'T12C', label: `${l.driver.basis === 'budget' ? 'Current-year budget' : S.bv && S.bv.annual ? 'Own' : 'Seller'} ${l.driver.name || ''} ${l.driver.basis === 'budget' ? '' : 'T12 '}TOTAL × ${(l.driver.pct || 0).toFixed(1)}% on ${l.driver.shape === 'minot' ? 'the Minot' : l.driver.shape || 'flat'} curve${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
     case 'linkLine': return { cls: 'drv-fee', tag: 'LINK', label: `= ${l.driver.src || ''} ${l.driver.srcName || ''} × ${l.driver.weight ?? 1} — follows it live on every regeneration` };
@@ -1485,6 +1492,7 @@ function renderEditor(el) {
       <button data-x="dform" title="The formula and seasonal curve every line uses by default, for ALL budgets on the defaults (this one ${bv.followsDefaults ? 'is' : 'is on a named saved set, so it is not'} among them). One pick sets a whole section.">ƒ Default formulas (all budgets)…</button>` : ''}
       ${bv.annual ? `${grp('Costs &amp; adjustments')}
       <button data-x="contracts" title="Signed contracts and recurring costs (snow, elevators, SmartRent, annual invoices, a commercial lease…). A line with a contract on it takes the contract amounts instead of its history.">✎ Contracts &amp; known costs…${(inp0.contracts || []).length ? ` (${inp0.contracts.length})` : ''}</button>
+      <button data-x="smallt12" title="Every line whose trailing-12 is under $200 (or the limit you set): zero them out, or move their balances onto another GL (one for all, or a different GL per line). Only the lines you pick change.">⊘ Small T12 lines (under $${money(Number(inp0.smallT12Limit) || 200)})…${Object.keys(inp0.smallT12 || {}).length ? ` (${Object.keys(inp0.smallT12).length})` : ''}</button>
       <button data-x="onetime" title="Take one-time items (an unreversed accrual, a one-off repair, a catch-up bill) out of the trailing-12 before the formulas read it">✂ One-time items out of the T12…${(inp0.t12Adjust || []).length ? ` (${inp0.t12Adjust.length})` : ''}</button>
       <button data-x="shapeall" title="Spread every seasonal line (other income, utilities, R&amp;M, admin, marketing…) on another property's monthly curve in one step — e.g. ECND for PHND / FHND's months before they were owned. Each line keeps its own year total.">〰 Seasonality from another property…${Object.keys(inp0.shapeFromGl || {}).length ? ` (${Object.keys(inp0.shapeFromGl).length} lines)` : ''}</button>
       <button data-x="qshift" title="Move NOI share between quarters on the lines you pick (aggressive Q4, conservative Q1…); the year's NOI stays the same. Also on the NOI row's % by quarter.">◫ Shift NOI between quarters…${inp0.qShift ? ' ✓' : ''}</button>
@@ -1507,6 +1515,7 @@ function renderEditor(el) {
       { const fs3 = menu.querySelector('[data-x="fpush"]'); if (fs3) fs3.addEventListener('click', () => openCopyFormulasOut(b)); }
       { const c1 = menu.querySelector('[data-x="contracts"]'); if (c1) c1.addEventListener('click', () => openContracts(b)); }
       { const c2 = menu.querySelector('[data-x="onetime"]'); if (c2) c2.addEventListener('click', () => openOneTime(b)); }
+      { const c3 = menu.querySelector('[data-x="smallt12"]'); if (c3) c3.addEventListener('click', () => openSmallT12(b)); }
       { const c3 = menu.querySelector('[data-x="shapeall"]'); if (c3) c3.addEventListener('click', () => openShapeFrom(b, null, null)); }
       { const c3 = menu.querySelector('[data-x="feesched"]'); if (c3) c3.addEventListener('click', () => openFeeSchedule(b)); }
       { const c4 = menu.querySelector('[data-x="split"]'); if (c4) c4.addEventListener('click', () => openAllocSplit(b)); }
@@ -2249,7 +2258,7 @@ function gridHtml(bv, totals) {
     const hasRef = (refA && refA.byGl[a.code]) || (refB && refB.byGl[a.code]) || (bv.hist && bv.hist.payroll && bv.hist.payroll.cal[a.code]);   // a payroll-template row (even a 0) keeps the GL visible
     const isZero = !ann && !m.some((v) => v) && !(l && l.note) && !hasRef;
     if (isZero && !S.showZero && !sp) continue;
-    const isDropped = !!(l && l.driver && l.driver.method === 'dropped');
+    const isDropped = !!(l && l.driver && (l.driver.method === 'dropped' || l.driver.small));   // a small-T12 pick shows its chip at $0 too
     const dm = drvMeta(l && (ann || l.override || isDropped) ? l : null);
     // hard-coded CELLS: the months typed by hand when the line recorded them; every non-zero month when a tool
     // rewrote the whole line (typed total, Smooth, import) or the line was fixed before cells were recorded
@@ -2761,6 +2770,9 @@ const TAG_KEY = [
   ['%WAGES', "A payroll line as a % of that month's budgeted wages (same-month historical ratio)."],
   ['DEBT', 'Interest / principal from the Yardi amortization schedule.'],
   ['ZERO', 'Zeroed on purpose.'],
+  ['ZERO·SMALL', 'A small trailing-12 line zeroed out (More → Small T12 lines).'],
+  ['MOVED→gl', "A small trailing-12 line whose history was moved onto another GL; that GL's formula budgets it."],
+  ['+n MOVED', 'A second chip: this GL took the history of n small T12 lines before its formula read it.'],
 
   ['+ SMOOTH', 'A second chip: missed-bill smoothing applied on top of the line formula (months fixed, rounded to $5).'],
   ['MAN', 'Typed by hand; formulas do not touch it until it is unlocked.'],
@@ -3395,6 +3407,7 @@ function defaultsInUse(bv) {
   for (const r of missingRequired(bv)) add('req' + r.gl, `Required: ${r.gl} ${r.name}`, 'nothing budgeted', false, r.why || 'required on every budget');
   const ncon = (inp.contracts || []).length, nadj = (inp.t12Adjust || []).length;
   if (ncon) add('contracts', 'Known contracts', `${ncon} on ${new Set(inp.contracts.map((c) => c.gl)).size} GLs, $${money(inp.contracts.reduce((a, c) => a + contractAnnual(c, bv), 0))} a year`, false);
+  { const st = Object.entries(inp.smallT12 || {}); if (st.length) { const mv = st.filter(([, v]) => v !== 'zero'); add('smallt12', 'Small T12 lines', `${st.length - mv.length} zeroed, ${mv.length} moved onto ${new Set(mv.map(([, v]) => v)).size} GL${new Set(mv.map(([, v]) => v)).size === 1 ? '' : 's'} (under $${money(Number(inp.smallT12Limit) || 200)} of T12)`, false); } }
   if (nadj) add('onetime', 'One-time items out of the T12', `${nadj} items, $${money(inp.t12Adjust.reduce((a, x) => a + (Number(x.amount) || 0), 0))} removed`, false);
   if (bv.allocOut) add('alloc', 'Journal split', `${Math.round(bv.allocOut.pct * 10000) / 100}% of ${bv.allocOut.gls.join(', ')} to ${String(bv.allocOut.to).toUpperCase()} (engine-built lines; history lines already post net)`, inp.allocOut === undefined);
   add('sp', 'Special projects', `${money(sp)} budgeted${spT12 ? ` (T12 posted ${money(spT12)})` : ''} — cash flow and cash-on-cash are before special projects${(bv.kpis || {}).principal ? '' : ' and principal'}`, !sp, !sp && Math.abs(spT12) > 1000 ? 'none entered' : '');
@@ -3930,6 +3943,94 @@ function openOneTime(b) {
     dlg.querySelector('#ot-save').addEventListener('click', async () => {
       dlg.close();
       await saveInputs(b, { t12Adjust: rows.filter((r) => glName(r.gl) && Number(r.amount)) });
+    });
+  };
+  draw();
+  dlg.showModal();
+}
+
+/* SMALL T12 LINES (Troy 2026-11-23: "Add a button to each property that allows for me to either zero out any T12 item
+   under $200 in total, or move all of those balances into another GL (or multiple)"). Lists every operating line whose
+   trailing-12 (as posted) is under the limit; each row is left as is, zeroed, or moved onto a GL of the same side
+   (income onto income, expense onto expense). "Zero all" / "Move all to" set every row at once; any row can then be
+   changed, so the balances can go to several GLs. Saved as inputs.smallT12 (applySmallT12 in shared/annual.ts); a row
+   set back to "leave" goes back to its own formula. */
+const SMALL_T12_INCOME = new Set(['1', 'loss', '2', '3', '4', '5']);
+function openSmallT12(b) {
+  const dlg = ensureDlg('smallt12-dlg');
+  const inp = S.bv.budget.inputs || {};
+  let limit = Number(inp.smallT12Limit) || 200;
+  const picks = { ...(inp.smallT12 || {}) };
+  const coa = (S.state.coa || []).filter((a) => a.kind === 'detail' && a.pcode != null && a.active !== false);
+  const sideOf = (a) => (SMALL_T12_INCOME.has(String(a.pcode)) ? 'inc' : 'exp');
+  const byCode = new Map(coa.map((a) => [a.code, a]));
+  const lineOf = (gl) => S.bv.lines.find((l) => l.gl_code === gl);
+  const conGls = new Set((inp.contracts || []).map((c) => String(c.gl)));
+  const yr = (gl) => { const l = lineOf(gl); return l ? sumM(l.months) : 0; };
+  const rowsNow = () => coa.filter((a) => {
+    if (picks[a.code]) return true;
+    const t = rowT12(a.code);
+    return t && Math.abs(t) < limit && !conGls.has(a.code);
+  });
+  const optsFor = (a, sel) => {
+    const same = coa.filter((x) => x.code !== a.code && sideOf(x) === sideOf(a));
+    const opt = (x) => `<option value="${x.code}" ${sel === x.code ? 'selected' : ''}>→ ${x.code} ${esc(x.name)}</option>`;
+    return `<option value="" ${!sel ? 'selected' : ''}>Leave as is</option><option value="zero" ${sel === 'zero' ? 'selected' : ''}>Zero out</option>
+      <optgroup label="Move to (same section)">${same.filter((x) => x.section === a.section).map(opt).join('')}</optgroup>
+      <optgroup label="Move to (other ${sideOf(a) === 'inc' ? 'income' : 'expense'} GLs)">${same.filter((x) => x.section !== a.section).map(opt).join('')}</optgroup>`;
+  };
+  const bulkOpts = (side) => `<option value="">pick a GL…</option>${coa.filter((x) => sideOf(x) === side).map((x) => `<option value="${x.code}">${x.code} ${esc(x.name)}</option>`).join('')}`;
+  const draw = () => {
+    const rows = rowsNow();
+    const sides = new Set(rows.map(sideOf));
+    const listed = new Set(rows.map((a) => a.code));
+    const zeroT = rows.filter((a) => picks[a.code] === 'zero').reduce((t, a) => t + rowT12(a.code), 0);
+    const mv = rows.filter((a) => picks[a.code] && picks[a.code] !== 'zero');
+    const mvT = mv.reduce((t, a) => t + rowT12(a.code), 0);
+    const into = {};
+    for (const a of mv) (into[picks[a.code]] = into[picks[a.code]] || []).push(a.code);
+    dlg.innerHTML = `<h2>Small T12 lines</h2>
+      <p class="muted" style="font-size:12px; margin:0 0 8px; max-width:820px">Lines whose trailing-12 (as posted) is under the limit. <b>Zero out</b>: nothing is budgeted; the history stays as it posted. <b>Move to</b>: the line's T12 is added, month by month, to the GL you pick before any formula reads the history, so that GL's own formula budgets it (chip <b>+n MOVED</b>); this line carries nothing (chip <b>MOVED→</b>). Only rows you set change; "Leave as is" puts a row back on its own formula. Lines with a contract are not listed.</p>
+      <div class="row" style="gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:8px">
+        <label>Under $<input id="st-limit" value="${limit}" style="width:64px; text-align:right"> of T12</label>
+        <button class="btn sub sm" id="st-zero">Zero out all ${rows.length}</button>
+        ${sides.has('exp') ? `<span>Move all expense lines to <select id="st-mv-exp">${bulkOpts('exp')}</select></span>` : ''}
+        ${sides.has('inc') ? `<span>Move all income lines to <select id="st-mv-inc">${bulkOpts('inc')}</select></span>` : ''}
+        <button class="btn sub sm" id="st-clear">Leave all as is</button>
+      </div>
+      <div style="max-height:420px; overflow:auto"><table class="list" style="font-size:12.5px">
+        <tr><th>GL</th><th>Account</th><th class="num">T12</th><th class="num">Budget now</th><th>Do</th><th></th></tr>
+        ${rows.map((a) => {
+          const l = lineOf(a.code), to = picks[a.code] || '';
+          const tl = to && to !== 'zero' ? lineOf(to) : null;
+          const notes = [];
+          if (l && l.override && !inp.smallT12?.[a.code]) notes.push('hand-typed: setting it releases the typed value');
+          if (tl && tl.override) notes.push(`${to} is hand-typed, so the moved money will not show there until it is reset`);
+          if (to && to !== 'zero' && listed.has(to) && picks[to]) notes.push(`${to} is itself ${picks[to] === 'zero' ? 'zeroed — the money goes nowhere' : `moved on to ${picks[to]}`}`);
+          if (picks[a.code] && Math.abs(rowT12(a.code)) >= limit) notes.push('over the limit now — still set');
+          return `<tr><td>${a.code}</td><td>${esc(a.name)}</td><td class="num">${money(rowT12(a.code))}</td><td class="num">${money(yr(a.code))}</td>
+            <td><select data-st="${a.code}" style="max-width:300px">${optsFor(a, to)}</select></td>
+            <td class="muted" style="font-size:11px; max-width:260px">${esc(notes.join('; '))}</td></tr>`;
+        }).join('') || `<tr><td colspan="6" class="muted">No operating line has a trailing-12 under $${money(limit)}.</td></tr>`}
+      </table></div>
+      <p style="font-size:12px; margin:8px 0 0">${rows.filter((a) => picks[a.code] === 'zero').length} zeroed ($${money(zeroT)} of T12) · ${mv.length} moved ($${money(mvT)})${Object.keys(into).length ? `: ${Object.entries(into).map(([to, f]) => `${to} ← ${f.join(', ')}`).join(' · ')}` : ''}</p>
+      <div class="row" style="justify-content:flex-end; gap:6px; margin-top:10px">
+        <button class="btn sub" id="st-x">Cancel</button> <button class="btn" id="st-save">Save &amp; recalculate</button>
+      </div>`;
+    dlg.querySelector('#st-limit').addEventListener('change', (e) => { const v = Number(String(e.target.value).replace(/[$,]/g, '')); if (v > 0) limit = v; draw(); });
+    dlg.querySelectorAll('[data-st]').forEach((el) => el.addEventListener('change', () => { if (el.value) picks[el.dataset.st] = el.value; else delete picks[el.dataset.st]; draw(); }));
+    dlg.querySelector('#st-zero').addEventListener('click', () => { for (const a of rows) picks[a.code] = 'zero'; draw(); });
+    dlg.querySelector('#st-clear').addEventListener('click', () => { for (const a of rows) delete picks[a.code]; draw(); });
+    for (const side of ['exp', 'inc']) {
+      const sel = dlg.querySelector(`#st-mv-${side}`);
+      if (sel) sel.addEventListener('change', () => { if (!sel.value) return; for (const a of rows) if (sideOf(a) === side && a.code !== sel.value) picks[a.code] = sel.value; draw(); });
+    }
+    dlg.querySelector('#st-x').addEventListener('click', () => dlg.close());
+    dlg.querySelector('#st-save').addEventListener('click', async () => {
+      dlg.close();
+      // a GL that is no longer an operating line can't be kept
+      const clean = Object.fromEntries(Object.entries(picks).filter(([gl, v]) => byCode.has(gl) && (v === 'zero' || byCode.has(v))));
+      await saveInputs(b, { smallT12: clean, smallT12Limit: limit });
     });
   };
   draw();
@@ -4940,7 +5041,7 @@ function openRowTools(b, gl, anchorBtn) {
   const acc = S.state.coa.find((a) => a.code === gl) || {};
   const hasComp = S.bv.compWeights && S.bv.compUnits && S.bv.compWeights[gl];
   const line = S.bv.lines.find((l) => l.gl_code === gl);
-  const dm = drvMeta(line && (sumM(line.months) || line.override || (line.driver || {}).method === 'dropped') ? line : null);
+  const dm = drvMeta(line && (sumM(line.months) || line.override || (line.driver || {}).method === 'dropped' || (line.driver || {}).small) ? line : null);
   const menu = document.createElement('div');
   menu.className = 'rowmenu';
   // the chip each tool leaves on the row — same tag and colour as the grid (Troy 2026-11-11)
@@ -7659,10 +7760,9 @@ function renderSummary(el) {
   if (S.sumView === 'review') { S.rvRerender = () => { renderReview(el, d, viewSeg); wireView(); }; S.rvRerender(); return; }
   if (!S.sumMode) S.sumMode = store('bt-summode') || 'pct';
   if (S.sumDetail == null) S.sumDetail = store('bt-sumdetail') === '1';
-  // dollars per unit (Troy 2026-11-19: "Instead of overall $ values ... a toggle to show per unit per year or month"):
-  // 'mo' = $ per unit per month, 'yr' = $ per unit per year, 'tot' = the whole property's dollars
-  if (!S.sumUnit) S.sumUnit = store('bt-sumunit') || 'mo';
-  const unitMode = S.sumUnit;
+  // dollars are per unit per year, as subtext under each growth % (Troy 2026-11-23: "instead of the per property per year
+  // showing here, just put it in subtext under the % increase for each category. Then we can remove those columns and
+  // toggles completely"): the Income / OpEx / NOI / Δ NOI / Δ EGI columns and the $/unit/mo · /yr · Total $ toggle are gone.
   // collapsed subtotal rows (portfolio 'pf:<name>', region 'rg:<name>'): their property rows are hidden
   if (!S.sumShut) { try { S.sumShut = new Set(JSON.parse(store('bt-sumshut') || '[]')); } catch (e) { S.sumShut = new Set(); } }
   const mode = S.sumMode;
@@ -7671,11 +7771,10 @@ function renderSummary(el) {
   const pct = (v, dp = 1) => (v == null || !Number.isFinite(v) ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(dp)}%`);
   // growth of the SIGNED reference, as on the compare card: a contra line whose loss grows reads +, like its card row
   const gr = (bud, ref) => (ref ? (bud - ref) / ref : null);
-  // a dollar figure in the chosen unit: per unit per month / per year, or the total. No units = no per-unit figure.
-  const perU = (v, units) => (v == null ? null : unitMode === 'tot' ? v : units ? v / units / (unitMode === 'mo' ? 12 : 1) : null);
+  // a dollar figure per unit per year. No units = no per-unit figure.
+  const perU = (v, units) => (v == null || !units ? null : v / units);
   const $u = (v, units) => { const x = perU(v, units); return x == null ? '—' : money(x); };
-  const unitTxt = { mo: '$ / unit / month', yr: '$ / unit / year', tot: 'total $' }[unitMode];
-  const unitHover = (v, units) => (unitMode === 'tot' || v == null ? '' : ` · total ${money(v)}${units ? ` on ${xsNum(units)} units` : ''}`);
+  const unitTxt = '$ / unit / year';
   // regions in Troy's order (2026-11-16): Minot, Williston / Watford, Bismarck / Jamestown
   const regions = [...new Set(d.properties.map((p) => regionGroup(p.region)))].sort(regionSort);
 
@@ -7709,14 +7808,13 @@ function renderSummary(el) {
       const rg = useGuide ? sumGuide(G, c.k, v, r) : null;
       const inn = rg ? rg.ok : null;
       const cu = r.ctx.units;
-      const shown = mode === 'pct' ? pct(g) : mode === 'dlr' ? $u(v.bud - v.ref, cu) : mode === 'bud' ? $u(v.bud, cu) : $u(v.ref, cu);
-      const pu = unitMode !== 'tot' && cu ? ` (${unitTxt}: ${$u(v.ref, cu)} → ${$u(v.bud, cu)})` : '';
+      // the growth %, with the budget's $ per unit per year under it
+      const shown = mode === 'pct' ? `${pct(g)}${cu ? `<div class="sumsub">${$u(v.bud, cu)}</div>` : ''}` : mode === 'dlr' ? $u(v.bud - v.ref, cu) : mode === 'bud' ? $u(v.bud, cu) : $u(v.ref, cu);
+      const pu = cu ? ` (${unitTxt}: ${$u(v.ref, cu)} → ${$u(v.bud, cu)} on ${xsNum(cu)} units)` : '';
       const tip = `${c.t}: ${r.kind === 'T12' ? 'T12' : 'UW Y1'} ${money(v.ref)} → budget ${money(v.bud)} (Δ ${money(v.bud - v.ref)}, ${pct(g)})${pu}${rg ? ` · guidance: ${rg.text}, ${inn ? 'met' : 'missed'}` : ''}`;
       return `<td class="${i === 0 ? 'cmp1' : ''} ${c.big ? 'big' : ''} ${c.grp ? 'sgrp' : ''} ${c.in ? 'sin' : ''} ${inn == null ? '' : inn ? 'gin' : 'gout'}" title="${esc(tip)}">${shown}</td>`;
     }).join('');
   }
-  const varCell = (v, kind, units) => (v == null ? '<td class="muted">—</td>' : `<td class="${Math.abs(v) < 1 ? 'tied' : v < 0 ? 'neg' : ''}" title="vs ${kind === 'T12' ? 'the T12' : 'UW Year 1'}${unitHover(v, units)}">${Math.abs(v) < 1 ? 'tied' : $u(v, units)}</td>`);
-  const dCell = (v, units, bold) => `<td title="${esc(unitHover(v, units).replace(/^ · /, ''))}">${bold ? `<b>${$u(v, units)}</b>` : $u(v, units)}</td>`;
   // special projects: the budget's dollars in every view; the T12's posted SP on hover
   const spCell = (sp, spRef, units) => (sp == null ? '<td class="muted">—</td>' : `<td title="Special projects (7321-7499) budgeted: ${money(sp)}${spRef != null ? `; the T12 posted ${money(spRef)}` : ''}. Cash flow and cash-on-cash are before SP.">${sp ? $u(sp, units) : '<span class="muted">$0</span>'}</td>`);
   // NOI vs the FY budget: the calendar year before the budget's (Troy 2026-11-19), not a budget over the T12 window
@@ -7741,8 +7839,7 @@ function renderSummary(el) {
     const annual = p.type === 'annual';
     return `<tr class="click" data-sumopen="${p.id}">
       <td class="l stick" title="Open the budget · ${esc(sm)} ${annual ? 'annual' : 'acquisition (UW Y1)'} · ${ov ? `${ov} override${ov === 1 ? '' : 's'}` : 'no overrides'}${c.savePoints ? ` · ${c.savePoints} save pt${c.savePoints === 1 ? '' : 's'}` : ''}"><b class="plink">${esc(p.code)}</b> · <span class="plink">${esc(p.name || '')}</span>${p.stale ? ' <span class="sch-stale" title="Calculated on older formulas: recalc it">⚠</span>' : ''}<div class="muted" style="font-size:10.5px">${p.units ? `${xsNum(p.units)} units` : ''}${p.region ? ` · ${esc(p.region)}` : ''}${annual ? '' : ' · acquisition'}</div></td>
-      ${dCell(r.income, r.units)}${dCell(r.expense, r.units)}${dCell(r.noi, r.units, true)}
-      ${varCell(r.noiVar, r.kind, r.ctx.units)}${varCell(r.egiVar, r.kind, r.ctx.units)}${annual && c.guide && c.guide.kind === 'uw' ? guideDashCell(c.guide).replace('class="gdash', 'class="l gdash') : annual ? guideCell(r) : '<td class="muted">—</td>'}
+      ${annual && c.guide && c.guide.kind === 'uw' ? guideDashCell(c.guide).replace('class="gdash', 'class="l gdash') : annual ? guideCell(r) : '<td class="muted">—</td>'}
       ${cmpCells(r, annual && r.kind === 'T12')}
       ${spCell(c.sp, c.spRef, r.units)}
       ${cyCell(r.overCy, p.cyBudgetNoi != null ? { label: p.cyBudgetLabel, period: p.cyBudgetPeriod, months: p.cyBudgetMonths, noi: p.cyBudgetNoi, isFy: p.cyBudgetIsFy } : null)}
@@ -7756,8 +7853,7 @@ function renderSummary(el) {
     const caret = key ? `<span class="sumcaret">${shut ? '▸' : '▾'}</span> ` : '';
     return `<tr class="${cls}${key ? ' sumfold' : ''}"${key ? ` data-sumshut="${esc(key)}" title="${shut ? 'Show' : 'Hide'} the ${props.length} propert${props.length === 1 ? 'y' : 'ies'} in this subtotal"` : ''}>
       <td class="l stick">${caret}${esc(label)} <span class="muted" style="font-weight:400">· ${props.length} budget${props.length === 1 ? '' : 's'}${note ? ` · ${esc(note)}` : ''}</span><div class="muted" style="font-size:10.5px; font-weight:400">${xsNum(r.units)} units${r.cat && r.nRef < r.n ? ` · compare: ${r.nRef} of ${r.n} (${r.kind === 'T12' ? 'T12-based' : 'UW-based'})` : ''}</div></td>
-      ${dCell(r.income, r.units)}${dCell(r.expense, r.units)}${dCell(r.noi, r.units)}
-      ${varCell(r.noiVar, r.kind, r.ctx.units)}${varCell(r.egiVar, r.kind, r.ctx.units)}${guideCell(r)}
+      ${guideCell(r)}
       ${cmpCells(r, r.kind === 'T12')}
       ${spCell(props.reduce((a, p) => a + ((p.cmp && p.cmp.sp) || 0), 0), props.some((p) => p.cmp && p.cmp.spRef != null) ? props.reduce((a, p) => a + ((p.cmp && p.cmp.spRef) || 0), 0) : null, r.units)}
       ${cyCell(r.overCy)}
@@ -7785,7 +7881,6 @@ function renderSummary(el) {
   const body = (regions.length > 1 ? subRow('All properties', d.properties, 'grand') : '') + bodyRows;
   const foldKeys = [...regions.map((rg) => `rg:${rg}`), ...SUM_PORTFOLIOS.filter((pf) => d.properties.some((p) => pf.codes.includes(String(p.code).toLowerCase()))).map((pf) => `pf:${pf.name}`)];
   const anyShut = foldKeys.some((k) => S.sumShut.has(k));
-  const unitBtn = (m, label, tip) => `<button data-sumunit="${m}" class="${unitMode === m ? 'on' : ''}" title="${esc(tip)}">${label}</button>`;
   const modeBtn = (m, label, tip) => `<button data-summode="${m}" class="${mode === m ? 'on' : ''}" title="${esc(tip)}">${label}</button>`;
   const pp = (v) => `${+(v * 100).toFixed(2)}%`;
   const gTxt = G ? `income lines ${pp(G.incomePct)} or better; NOI ${pp(G.noiPct)} or better and not below the current-year budget; expense categories ${pp(expenseCeil(G))} or less, RE taxes ${pp(G.reTaxPct)} or less, payroll ${pp(payrollCeil(G))} or less, insurance $${G.insurancePerUnit}/unit or less; OpEx ${pp(expenseCeil(G))} or less and no more than ${Math.round(G.spreadMax * 10000)} bps over income growth; loss to lease, concessions and vacancy no bigger a share of GPR than the T12; the fee no faster than income` : '';
@@ -7797,7 +7892,6 @@ function renderSummary(el) {
         <div class="row" style="align-items:center; gap:8px; flex-wrap:wrap">
           ${viewSeg}
           <span class="edseg">${modeBtn('pct', 'Δ %', 'Growth of each subtotal over the T12 (UW Year 1 for acquisitions)')}${modeBtn('dlr', 'Δ $', 'Budget minus the T12 / UW, in dollars')}${modeBtn('bud', 'Budget $', 'The budget subtotal')}${modeBtn('ref', 'T12 $', 'The T12 (UW Year 1 for acquisitions) subtotal')}</span>
-          <span class="edseg">${unitBtn('mo', '$/unit/mo', 'Dollars per unit per month')}${unitBtn('yr', '$/unit/yr', 'Dollars per unit per year')}${unitBtn('tot', 'Total $', "The whole property's dollars")}</span>
           <button class="btn sub sm" id="sum-fold" title="Collapse every region and portfolio to its subtotal, or open them all">${anyShut ? '▾ Expand all' : '▸ Subtotals only'}</button>
           <button class="btn sub sm" id="sum-detail" title="Show or hide GPR, loss to lease, concessions, vacancy, utility and other income">${S.sumDetail ? '▾ Hide' : '▸ Show'} income detail</button>
           <label class="muted" style="font-size:12px">Budget year</label><select id="sum-year">${[...new Set([d.year, ...d.years])].sort((a, b) => b - a).map((y) => `<option value="${y}" ${y === d.year ? 'selected' : ''}>${y}</option>`).join('')}</select>
@@ -7805,16 +7899,16 @@ function renderSummary(el) {
         </div>
       </div>
       ${d.properties.length ? `<div class="sumwrap"><table class="sumtbl">
-        <tr class="grp"><th class="l stick"></th><th class="c" colspan="5"><span style="text-transform:none; font-weight:400">${unitTxt}</span></th><th></th><th class="cmp1 c" colspan="${cols.length}">Compare to T12 <span style="text-transform:none; font-weight:400">(acquisitions: UW Year 1) · ${modeName}${mode === 'pct' ? '' : `, ${unitTxt}`}</span></th><th colspan="5"></th></tr>
-        <tr><th class="l stick">Property</th><th>Income</th><th>OpEx</th><th>NOI</th><th title="NOI vs the T12 (UW Year 1 for acquisitions)">Δ NOI</th><th title="Total income vs the T12 (UW Year 1 for acquisitions)">Δ EGI</th><th class="l" title="Exec-team guidance: growth over the T12">Guidance</th>
+        <tr class="grp"><th class="l stick"></th><th></th><th class="cmp1 c" colspan="${cols.length}">Compare to T12 <span style="text-transform:none; font-weight:400">(acquisitions: UW Year 1) · ${modeName}${mode === 'pct' ? `, ${unitTxt} under each %` : `, ${unitTxt}`}</span></th><th colspan="5"></th></tr>
+        <tr><th class="l stick">Property</th><th class="l" title="Exec-team guidance: growth over the T12">Guidance</th>
           ${cols.map((c, i) => c.grp
             ? `<th class="${i === 0 ? 'cmp1' : ''} sgrp sgrph" data-sumgrp="${c.grp}" title="${esc(c.t)} · click to ${S.sumOpen.has(c.grp) ? 'condense' : 'break out'}">${S.sumOpen.has(c.grp) ? '▾' : '▸'} ${esc(c.h)}</th>`
             : `<th class="${i === 0 ? 'cmp1' : ''} ${c.in ? 'sin' : ''}" title="${esc(c.t)}">${esc(c.h)}</th>`).join('')}
-          <th title="Special projects budgeted (7321-7499), in the chosen dollars in every view; hover for the totals and the T12's posted SP">SP $</th>
+          <th title="Special projects budgeted (7321-7499), $ per unit per year; hover for the totals and the T12's posted SP">SP $</th>
           <th title="NOI over the FY ${fyYear} budget (Jan–Dec ${fyYear}; the guidance: never below it). Hover a cell for the budget it reads">NOI vs ${fyYear} bud</th><th>CoC</th><th class="l">Status</th><th class="l">Updated</th></tr>
         ${body}
       </table></div>
-      <p class="muted" style="font-size:11.5px; margin:8px 0 0">Each property's latest ${d.year} budget. The compare columns are the compare card's subtotals with the same math, always against the trailing-12 for annual budgets (the guidance is growth over the T12, whatever a budget's own compare card is set to) and against UW Year 1 for acquisitions. <span class="gin-key">Green</span> = meets the 2027 guidance memo, <span class="gout-key">red</span> = misses it${gTxt ? `: ${esc(gTxt)}` : ''}. Hover a cell for the exact target and why. The colours stay on in every view. Numbers typed in a budget's own target boxes are not used here. Dollars show as ${unitTxt}${unitMode === 'tot' ? '' : " (a subtotal's dollars over its units)"}; hover for the totals. Each portfolio (Minot 4, Williston 2, Basin 2, Bismarck 4, Jamestown 2) and each region opens with a subtotal (above its properties) that adds its properties' dollars, its growth on those sums; click a subtotal to collapse or open it. NOI vs ${fyYear} budget reads each property's FY ${fyYear} budget statement (Jan–Dec). Click a property to open it.</p>`
+      <p class="muted" style="font-size:11.5px; margin:8px 0 0">Each property's latest ${d.year} budget. The compare columns are the compare card's subtotals with the same math, always against the trailing-12 for annual budgets (the guidance is growth over the T12, whatever a budget's own compare card is set to) and against UW Year 1 for acquisitions. <span class="gin-key">Green</span> = meets the 2027 guidance memo, <span class="gout-key">red</span> = misses it${gTxt ? `: ${esc(gTxt)}` : ''}. Hover a cell for the exact target and why. The colours stay on in every view. Numbers typed in a budget's own target boxes are not used here. Under each growth % is the budget's dollars per unit per year (a subtotal's dollars over its units); hover a cell for the T12 / UW and budget totals. Each portfolio (Minot 4, Williston 2, Basin 2, Bismarck 4, Jamestown 2) and each region opens with a subtotal (above its properties) that adds its properties' dollars, its growth on those sums; click a subtotal to collapse or open it. NOI vs ${fyYear} budget reads each property's FY ${fyYear} budget statement (Jan–Dec). Click a property to open it.</p>`
       : `<p class="muted">No ${d.year} budgets yet.</p>`}
     </div>`;
   el.querySelector('#sum-year').addEventListener('change', (e) => loadSummary(Number(e.target.value)));
@@ -7826,7 +7920,6 @@ function renderSummary(el) {
     store('bt-sumopen', JSON.stringify([...S.sumOpen])); render();
   }));
   el.querySelectorAll('[data-summode]').forEach((b) => b.addEventListener('click', () => { S.sumMode = b.dataset.summode; store('bt-summode', S.sumMode); render(); }));
-  el.querySelectorAll('[data-sumunit]').forEach((b) => b.addEventListener('click', () => { S.sumUnit = b.dataset.sumunit; store('bt-sumunit', S.sumUnit); render(); }));
   const saveShut = () => { store('bt-sumshut', JSON.stringify([...S.sumShut])); render(); };
   el.querySelectorAll('[data-sumshut]').forEach((tr) => tr.addEventListener('click', () => {
     const k = tr.dataset.sumshut;

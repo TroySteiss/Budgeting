@@ -783,6 +783,7 @@ table.ctreg tr.draft td { background: color-mix(in srgb, var(--accent) 8%, var(-
 .sumtbl th.sgrph:hover { text-decoration: underline; }
 .sumtbl td.sgrp, .sumtbl th.sgrp { font-weight: 600; }
 .sumtbl td.sin, .sumtbl th.sin { font-size: 11px; opacity: .85; }
+.sumtbl td .sumsub { font-size: 10.5px; font-weight: 400; color: var(--dim); margin-top: 1px; }
 /* review fix preview (Troy 2026-11-18) */
 table.rftbl { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 table.rftbl th, table.rftbl td { padding: 5px 8px; border-bottom: 1px solid var(--line, #e5e7eb); vertical-align: top; text-align: left; }

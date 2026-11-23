@@ -259,6 +259,13 @@ export interface BudgetInputs {
       KB 2027 Budget notes A4 — e.g. MWND October one-timers, ECND unreversed accruals). Each removes
       `amount` from the posted figure of calendar month `month` (1-12) of `gl`. Picked by hand only. */
   t12Adjust?: T12Adjust[] | null;
+  /** annual: small trailing-12 lines (Troy 2026-11-23: "zero out any T12 item under $200 in total, or move all of those
+      balances into another GL (or multiple)"). gl → 'zero' (budgeted at nothing; its history stays) or another GL code
+      (its trailing-12 is moved onto that GL, month by month, before any formula reads the history; the line itself is
+      budgeted at nothing). Only the lines picked in More → Small T12 lines (applySmallT12). */
+  smallT12?: Record<string, string> | null;
+  /** the "under $X of T12" limit the Small T12 lines dialog lists by (default SMALL_T12_LIMIT, $200) */
+  smallT12Limit?: number | null;
   /** annual: known contracts and recurring costs (snow, elevators, SmartRent, annual invoices, a
       commercial lease…) — see contractMonths in shared/annual.ts */
   contracts?: Contract[] | null;

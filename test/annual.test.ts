@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, tiltMonths, COST_DRIFT_DEFAULT, formulaSetFromBudget, applyFormulaSet, formulaOverride, acqTieKeysOf, corpGuidanceLine, mgmtFeeRates, summaryColumn, sumSummaryCols, summaryLabels, stmtCalendar, stmtLastMonth, stmtAnnualized, trailing12, annualizedFromCal,
-  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, contractMonths, flatFeeFromSchedule, guidanceCheck, elevatedInsuranceRate, fitToT12, noiQuarters, qShiftTargets, normalizeGuidance, type TemplateData, type AnnualSources,
+  refFromCalendar, refColumn, annualBaseline, expirationsFromLeases, CORP_RATES, corpRatesFor, vacancyByMonth, budgetRefLabel, gprStepsForTarget, gprStepsSummary, lagMonths, TURN_EXPENSE_GLS, applyT12Adjust, applySmallT12, contractMonths, flatFeeFromSchedule, guidanceCheck, elevatedInsuranceRate, fitToT12, noiQuarters, qShiftTargets, normalizeGuidance, type TemplateData, type AnnualSources,
   refollowMgmtFee, allocFeeIncome, mgmtFeeFromMatrix,
 } from '../shared/annual.js';
 import { sum, zero12, rollup, CURVES, type CoaAccount, type Months, type BudgetLine } from '../shared/domain.js';
@@ -1658,6 +1658,54 @@ describe('fit a curve to T12', () => {
   it('a credit month in the history counts as zero, never a negative budget month', () => {
     const m = abFit([500, -200, 500, 500, 500, 500, 500, 500, 500, 500, 500, 500] as any, { shape: 'turns', turns, fit: 1 });
     expect(m[1]).toBe(0); expect(m.every((v) => v >= 0)).toBe(true); expect(tot(m)).toBe(5300);
+  });
+});
+
+/* Small T12 lines (Troy 2026-11-23: "zero out any T12 item under $200 in total, or move all of those balances into
+   another GL (or multiple)"). Synthetic property only. */
+describe('small T12 lines', () => {
+  const actual: Record<string, Months> = { ...synthetic(), '6305': cal([0, 0, 40, 0, 0, 0, 60, 0, 0, 0, 0, 50]), '6306': cal(Array(12).fill(10)) };
+  const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
+  const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
+  const plain = generateAnnualLines(coaList, inputs, src);
+
+  it('applySmallT12 moves a line onto another GL month by month, zeroes it, and reports both sides', () => {
+    const r = applySmallT12(actual, { '6305': '6302', '6306': 'zero' });
+    expect(r.actual!['6305']).toEqual(zero12());
+    expect(r.actual!['6302'][2]).toBe(140); expect(r.actual!['6302'][0]).toBe(100); expect(sum(r.actual!['6302'])).toBe(1350);
+    expect(r.actual!['6306']).toEqual(actual['6306']);           // zero leaves the history as it posted
+    expect(r.out['6305']).toEqual({ to: '6302', t12: 150 });
+    expect(r.out['6306']).toEqual({ to: null, t12: 120 });
+    expect(r.inn['6302']).toEqual({ from: ['6305'], t12: 150 });
+    expect(actual['6302'][2]).toBe(100);                          // the source is not mutated
+  });
+  it('a move onto a GL that is itself moved follows on; a loop or an unknown GL moves nothing', () => {
+    const r = applySmallT12(actual, { '6305': '6306', '6306': '6302' });
+    expect(sum(r.actual!['6302'])).toBe(1200 + 150 + 120);
+    expect(r.actual!['6306']).toEqual(zero12());
+    expect(r.inn['6302'].from.sort()).toEqual(['6305', '6306']);
+    const loop = applySmallT12(actual, { '6305': '6306', '6306': '6305' });
+    expect(loop.out['6305'].to).toBeNull(); expect(sum(loop.actual!['6305'])).toBe(150);
+    expect(applySmallT12(actual, { '6305': '9999' }, (gl) => gl !== '9999').out['6305'].to).toBeNull();
+    expect(applySmallT12(actual, {}).actual).toBe(actual);
+  });
+  it('the budget: picked lines carry nothing, the target budgets the moved money on its own formula, nothing else moves', () => {
+    expect(sum(L(plain, '6306').months)).toBeGreaterThan(0);
+    const b = generateAnnualLines(coaList, { ...inputs, smallT12: { '6305': '6302', '6306': 'zero' } }, src);
+    expect(L(b, '6305').months).toEqual(zero12());
+    expect((L(b, '6305').driver as any)).toMatchObject({ method: 'zero', small: { to: '6302', t12: 150 } });
+    expect(L(b, '6306').months).toEqual(zero12());
+    expect((L(b, '6306').driver as any).small).toEqual({ to: null, t12: 120 });
+    const t = L(b, '6302'), p = L(plain, '6302');
+    expect((t.driver as any).movedIn).toEqual({ from: ['6305'], t12: 150 });
+    expect(t.driver.method).toBe(p.driver.method);                // its own formula, on the bigger history
+    expect(sum(t.months)).toBeGreaterThan(sum(p.months));
+    expect(L(b, '6604').months).toEqual(L(plain, '6604').months);
+  });
+  it('a formula set saved from the budget does not carry the small-T12 picks', () => {
+    const b = generateAnnualLines(coaList, { ...inputs, smallT12: { '6306': 'zero' } }, src);
+    const set = formulaSetFromBudget(b, { ...inputs, smallT12: { '6306': 'zero' } } as any) as any;
+    expect(set.rules?.['6306']?.method).not.toBe('zero');
   });
 });
 

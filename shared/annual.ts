@@ -1003,6 +1003,7 @@ export function formulaSetFromBudget(lines: BudgetLine[], inputs: BudgetInputs):
     // a deliberate zero-out. "Zero out row" saves it as an edited line (override), so it is checked BEFORE the
     // hand-typed skip (Troy 2026-11-12: "zeroing rows is not applied from saved formula set"). A zeroed line
     // later typed over (revised, or any month non-zero) is a hard code like any other.
+    if (d.method === 'zero' && d.small) continue;   // a small-T12 pick is the budget's own input, not a formula
     if (d.method === 'zero' && !d.revised && (l.months || []).every((v) => !Number(v))) { rules[l.gl_code] = { method: 'zero' }; continue; }
     if (l.override) {
       // a line a row tool built, a link to another GL, a smoothed formula line: its recipe travels (Troy 2026-11-18).
@@ -1319,6 +1320,52 @@ export function applyT12Adjust(actual: Record<string, Months> | null | undefined
     byGl[a.gl] = r2((byGl[a.gl] || 0) + amt);
   }
   return { actual: out, byGl };
+}
+
+/** SMALL T12 LINES (Troy 2026-11-23: "zero out any T12 item under $200 in total, or move all of those balances into
+    another GL (or multiple)"). `map[gl]` = 'zero' → the line is budgeted at nothing (its history stays as it posted);
+    another GL code → the line's months are ADDED to that GL's months and taken off its own, so that GL's own formula
+    budgets the money and this line comes out at nothing. A move onto a GL that is itself moved follows on to the last
+    one; a loop, or a GL not in the chart, leaves the money where it is (the line is still zeroed). Returns the moved
+    calendar and, per GL, what left (`out`) and what came in (`inn`), at the history's own totals. Nothing applies
+    unless picked. */
+export const SMALL_T12_LIMIT = 200;
+export interface SmallT12Out { to: string | null; t12: number }
+export interface SmallT12In { from: string[]; t12: number }
+export function applySmallT12(actual: Record<string, Months> | null | undefined, map: Record<string, string> | null | undefined, known?: (gl: string) => boolean):
+  { actual: Record<string, Months> | null; out: Record<string, SmallT12Out>; inn: Record<string, SmallT12In> } {
+  const out: Record<string, SmallT12Out> = {};
+  const inn: Record<string, SmallT12In> = {};
+  const entries = Object.entries(map || {}).filter(([gl, v]) => gl && v);
+  if (!entries.length) return { actual: actual || null, out, inn };
+  const m = new Map(entries.map(([gl, v]) => [String(gl), String(v)]));
+  const finalOf = (gl: string): string | null => {
+    const seen = new Set([gl]);
+    let to = m.get(gl)!;
+    while (to !== 'zero' && m.has(to)) {
+      if (seen.has(to)) return null;   // a loop: nowhere to go
+      seen.add(to);
+      to = m.get(to)!;
+    }
+    return to === 'zero' || to === gl || (known && !known(to)) ? null : to;
+  };
+  const cal: Record<string, Months> = { ...(actual || {}) };
+  const src = actual || {};
+  for (const [gl, v] of m) {
+    const months = (src[gl] || zero12()).slice() as Months;
+    const t12 = r2(sum(months));
+    const to = v === 'zero' ? null : finalOf(gl);
+    out[gl] = { to, t12 };
+    if (!to) continue;
+    const cur = (cal[to] || zero12()).slice() as Months;
+    cal[to] = cur.map((x, i) => r2(x + months[i])) as Months;
+    const e = inn[to] || (inn[to] = { from: [], t12: 0 });
+    e.from.push(gl);
+    e.t12 = r2(e.t12 + t12);
+  }
+  // a moved GL keeps nothing (A → B → C: A's months and B's own both land on C, not on B)
+  for (const gl of m.keys()) if (out[gl].to) cal[gl] = zero12();
+  return { actual: cal, out, inn };
 }
 
 /* GUTTERS IN MARCH AND NOVEMBER (Troy 2026-11-17: "March and November for gutters"): a gutter contract (GL 6808 GUTTERS /
@@ -2021,6 +2068,12 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   // one-time items out of the history first: everything below reads the normalized trailing-12
   const t12Adj = applyT12Adjust(src.actual, inputs.t12Adjust);
   if (Object.keys(t12Adj.byGl).length) src = { ...src, actual: t12Adj.actual };
+  // small T12 lines zeroed, or moved onto the GL picked for them, before any formula reads the history (applySmallT12)
+  const knownGl = (gl: string): boolean => coaList.some((a) => a.code === gl && a.kind === 'detail');
+  const small = applySmallT12(src.actual, inputs.smallT12, knownGl);
+  if (Object.keys(small.out).length) {
+    src = { ...src, actual: small.actual, budget: src.budget ? applySmallT12(src.budget, inputs.smallT12, knownGl).actual : src.budget };
+  }
   const startMonth = inputs.startMonth || 1;
   const coaByCode = new Map(coaList.map((a) => [a.code, a]));
   const detail = coaList.filter((a) => a.kind === 'detail' && a.csv_order != null && a.active !== false);
@@ -2041,6 +2094,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   const ruleOf = (gl: string): AnnualRule | null => { const r = rules[gl]; return r && ruleShapeOf(r) ? r : null; };
   // GLs a saved formula set zeroes on purpose: set first, so nothing below refills them
   for (const [gl, r] of Object.entries(rules)) if (r?.method === 'zero' && coaByCode.has(gl)) mk(gl, zero12(), { method: 'zero' });
+  for (const [gl, o] of Object.entries(small.out)) if (coaByCode.has(gl)) mk(gl, zero12(), { method: 'zero', small: o } as any);
   /** Precedence: the GL's own typed factor → a category % the user typed (it must
       move the whole category, or the Assumptions boxes are inert — the GRKS factors
       used to outrank them) → the GL's foundation rule → the template's per-GL %
@@ -2828,6 +2882,16 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       const ln = lines.get(gl);
       if (ln) ln.driver = { ...(ln.driver as any), qShift: { lam: res.lam, capped: res.lam < 0.999, targets: res.targets } } as any;
     }
+  }
+
+  // the small T12 lines stay at nothing whatever ran after them; the GLs that took their money say so
+  for (const [gl, o] of Object.entries(small.out)) {
+    const ln = lines.get(gl);
+    if (ln && ((ln.driver as any)?.method !== 'zero' || ln.months.some((v) => v))) mk(gl, zero12(), { method: 'zero', small: o } as any);
+  }
+  for (const [gl, e] of Object.entries(small.inn)) {
+    const ln = lines.get(gl);
+    if (ln) ln.driver = { ...(ln.driver as any), movedIn: e } as any;
   }
 
   // every line whose history had one-time items taken out says how much

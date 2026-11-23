@@ -2131,6 +2131,15 @@ router.put('/budgets/:id', h(async (req, res) => {
       }
       (merged as any).offPlan = [...off].sort();
     }
+    // SMALL T12 LINES (Troy 2026-11-23): a line newly picked to zero or move is released from any hand-typed value, so
+    // the pick shows (the dialog says so before it is ticked). Lines already picked, and every other line, are left alone.
+    if (inputs.smallT12 !== undefined) {
+      const was = (lb1.budget.inputs as any)?.smallT12 || {};
+      const fresh = Object.keys(merged.smallT12 || {}).filter((gl) => !was[gl]);
+      if (fresh.length) {
+        await query(`update budget_lines set override=false, driver='{"method":"manual"}'::jsonb where budget_id=$1 and gl_code = any($2::text[]) and override`, [id, fresh]);
+      }
+    }
     // save the inputs FIRST and load again: some inputs change what is loaded (the start-up
     // months left out of the trailing-12), so the build must see the data as those inputs give it
     await query('update budgets set inputs=$2, updated_at=now() where id=$1', [id, JSON.stringify(merged)]);
