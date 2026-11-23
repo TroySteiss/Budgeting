@@ -5,7 +5,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import multer from 'multer';
 import { query, tx, inRegion, regionOfRequest, currentRegion } from './db.js';
 import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
-import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, parseReviewApply, type BudgetCsvParsed } from './importers.js';
+import { parseUwBook, parseUad, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, parseReviewApply, type BudgetCsvParsed } from './importers.js';
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
   acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, acqDelinquency, applyT12Adjust, FIXED_ANNUAL_GLS, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
@@ -69,7 +69,10 @@ router.get('/state', h(async (_req, res) => {
     query(`select id, property_code, as_of, created_at,
                   (data->>'marketMonthly')::numeric as market_monthly,
                   (data->>'inPlaceMonthly')::numeric as inplace_monthly,
-                  (data->>'units')::int as units
+                  (data->>'units')::int as units,
+                  -- which report it came from: uploads since 2026-11-23 say so; older ones by the file name Yardi gives a UAD
+                  coalesce(data->>'report', case when exists (select 1 from uploads u where u.id = rent_snapshots.upload_id and u.filename ~* 'unit ?availability')
+                                                 then 'uad' else 'rent_roll' end) as report
            from rent_snapshots order by created_at desc`),
   ]);
   // dashboard breakdown of each budget's CURRENT iteration: totals, ties vs
@@ -505,7 +508,9 @@ router.post('/uploads/parse', upload.single('file'), h(async (req, res) => {
     return res.json({ kind, filename: req.file.originalname, sheets });
   }
   if (kind === 'rent_roll') {
-    const props = parseRentRoll(buf);
+    // a Unit Availability Details exported as is, nothing else (Troy 2026-11-23)
+    let props;
+    try { props = parseUad(buf); } catch (e: any) { return res.status(422).json({ error: String(e?.message || e) }); }
     return res.json({ kind, filename: req.file.originalname, properties: props });
   }
   if (kind === 'comparison') {
@@ -615,7 +620,7 @@ router.post('/uploads/apply', h(async (req, res) => {
     for (const m of mappings || []) {
       const p = (payload.properties || []).find((x: any) => (x.code && x.code === m.sourceCode) || x.name === m.sourceName);
       if (!p || !m.propertyCode) continue;
-      const data = { units: p.units, marketMonthly: p.marketMonthly, inPlaceMonthly: p.inPlaceMonthly, occupiedUnits: p.occupiedUnits, source: p.source, leases: p.leases || null, charges: p.charges || null };
+      const data = { report: 'uad', units: p.units, marketMonthly: p.marketMonthly, inPlaceMonthly: p.inPlaceMonthly, occupiedUnits: p.occupiedUnits, source: p.source, leases: p.leases || null, charges: p.charges || null };
       const row = (await query(
         'insert into rent_snapshots(property_code, upload_id, as_of, data) values($1,$2,$3,$4) returning id',
         [m.propertyCode, uploadId, p.asOf ? new Date(p.asOf) : null, JSON.stringify(data)]
@@ -637,7 +642,7 @@ router.post('/uploads/apply', h(async (req, res) => {
           relinked++;
         }
       }
-      if (relinked) logChange(user, 'relink budgets to new rent roll', { filename, relinked });
+      if (relinked) logChange(user, 'relink budgets to new UAD', { filename, relinked });
     }
     logChange(user, 'upload rent_roll', { filename, created });
     return res.json({ ok: true, uploadId, created, relinked });
@@ -2956,9 +2961,9 @@ router.post('/budgets/:id/tie-growth', h(async (req, res) => {
     const lever0 = req.body?.lever === 'gpr' ? 'gpr' : 'vacancy';
     const rollOn = Number(lb.budget.inputs?.gpr?.baseMonthly) > 0;
     if (key === '7') return res.status(400).json({ error: 'Management fee follows income — set its % under Assumptions' });
-    if (key === 'loss') return res.status(400).json({ error: 'Loss to lease is its own model (rent roll burnoff / flat / ramp) — set it under Assumptions' });
+    if (key === 'loss') return res.status(400).json({ error: 'Loss to lease is its own model (UAD burnoff / flat / ramp) — set it under Assumptions' });
     const viaSteps = (key === '1' && rollOn) || ((key === 'rental' || key === 'income') && lever0 === 'gpr');
-    if ((key === 'rental' || key === 'income') && lever0 === 'gpr' && !rollOn) return res.status(400).json({ error: 'GPR runs on the acquisition plan here (no rent roll linked), so there are no market-rent steps to solve. Tie with the vacancy lever, or tie the categories. Nothing was changed.' });
+    if ((key === 'rental' || key === 'income') && lever0 === 'gpr' && !rollOn) return res.status(400).json({ error: 'GPR runs on the acquisition plan here (no UAD linked), so there are no market-rent steps to solve. Tie with the vacancy lever, or tie the categories. Nothing was changed.' });
     if (!viaSteps) {
       const pinputs: BudgetInputs = JSON.parse(JSON.stringify(lb.budget.inputs));
       const members: string[] = key === 'opex' || key === 'noi' ? GROWTH_EXPENSE_PCODES : key === 'rental' || key === 'income' ? ['3'] : [key];
@@ -3077,7 +3082,7 @@ router.post('/budgets/:id/tie-growth', h(async (req, res) => {
     const base = inputs.gpr?.baseMonthly > 0 ? inputs.gpr.baseMonthly : (lb.actualCal?.['4994'] || zero12())[(lb.lastMonth || 10) - 1] || 0;
     if (lever === 'gpr') {
       if (lineOf(lb.lines, '4994')?.override) return res.status(400).json({ error: 'GPR is overridden — release it first' });
-      if (!base) return res.status(400).json({ error: 'No GPR base (rent roll or last actual month)' });
+      if (!base) return res.status(400).json({ error: 'No GPR base (UAD or last actual month)' });
     } else {
       if (lineOf(lb.lines, '5031')?.override) return res.status(400).json({ error: 'Vacancy (5031) is overridden — release it first' });
       if (!vac0.some((v) => v)) return res.status(400).json({ error: 'No vacancy % to scale — set it under Assumptions' });
@@ -3130,7 +3135,7 @@ router.post('/budgets/:id/tie-growth', h(async (req, res) => {
 
   let lines = lb.lines;
   let how = '';
-  if (key === 'loss') return res.status(400).json({ error: 'Loss to lease is its own model (rent roll burnoff / flat / ramp) — set it under Assumptions' });
+  if (key === 'loss') return res.status(400).json({ error: 'Loss to lease is its own model (UAD burnoff / flat / ramp) — set it under Assumptions' });
   if (key === '2' || key === '3') {
     // contra-income: the lines are % of GPR (+ vacancy %, + flat October lines) —
     // scale every percentage by the same k so the subtotal lands exactly
@@ -3162,7 +3167,7 @@ router.post('/budgets/:id/tie-growth', h(async (req, res) => {
     const gprLine = lines.find((l) => l.gl_code === '4994');
     if (gprLine?.override) return res.status(400).json({ error: 'GPR is overridden — release it first' });
     const base = inputs.gpr?.baseMonthly > 0 ? inputs.gpr.baseMonthly : (lb.actualCal?.['4994'] || zero12())[(lb.lastMonth || 10) - 1] || 0;
-    if (!base) return res.status(400).json({ error: 'No GPR base (rent roll or last actual month)' });
+    if (!base) return res.status(400).json({ error: 'No GPR base (UAD or last actual month)' });
     // the month steps on file keep their places and scale together; only a
     // budget with NO steps falls back to a uniform monthly rate
     const solved = gprStepsForTarget(base, inputs.gpr?.growthPct as Months | undefined, target);

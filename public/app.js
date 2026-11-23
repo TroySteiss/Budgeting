@@ -140,12 +140,12 @@ function drvMetaBase(l) {
   switch (method) {
     case 't3avg': return { cls: 'drv-comp', tag: 'T3', label: `T3 avg of ${l.driver.srcName || 'this GL'} × ${(((l.driver || {}).pct || 0)).toFixed(1)}% → MROUND $250` };
     case 'wavg': return { cls: l.driver.srcType === 'seller' ? 'drv-t12' : 'drv-comp', tag: 'WAVG', label: `1-2-1 weighted distribution of ${l.driver.basis === 'budget' ? 'the current-year budget for ' : ''}${l.driver.srcName || ''} × ${((l.driver.pct || 0)).toFixed(1)}%${l.driver.mult ? ` → MROUND $${l.driver.mult}` : ''}` };
-    case 'gpr': return { cls: 'drv-rr', tag: l.driver.hapIn ? 'ROLL+HAP' : l.driver.hap ? 'ROLL−HAP' : 'ROLL', label: `GPR — steps: ${gprStepsSummary(((S.bv && S.bv.budget && S.bv.budget.inputs) || {}).gpr ? S.bv.budget.inputs.gpr.growthPct : null)}${l.driver.hapIn ? ` · every unit at market rent, HAP included ($${money(l.driver.hapIn)}/mo of it is HAP; 4995 / 4996 budget nothing)` : l.driver.hap ? ` · the rent roll's GPR less HAP $${money(l.driver.hap)}/mo (4995 / 4996), so GPR + HAP = the rent roll GPR ($${money(l.driver.gross || 0)} for the year)` : ''}` };
+    case 'gpr': return { cls: 'drv-rr', tag: l.driver.hapIn ? 'UAD+HAP' : l.driver.hap ? 'UAD−HAP' : 'UAD', label: `GPR — steps: ${gprStepsSummary(((S.bv && S.bv.budget && S.bv.budget.inputs) || {}).gpr ? S.bv.budget.inputs.gpr.growthPct : null)}${l.driver.hapIn ? ` · every unit at market rent, HAP included ($${money(l.driver.hapIn)}/mo of it is HAP; 4995 / 4996 budget nothing)` : l.driver.hap ? ` · the UAD's GPR less HAP $${money(l.driver.hap)}/mo (4995 / 4996), so GPR + HAP = the UAD GPR ($${money(l.driver.gross || 0)} for the year)` : ''}` };
     case 'ltl': {
       const lt = (S.bv && S.bv.budget && S.bv.budget.inputs && S.bv.budget.inputs.ltl) || {};
       const how = lt.mode === 'flat' ? 'held flat (no burnoff)' : lt.mode === 'ramp' ? 'ramp to a % of GPR' : (S.bv && S.bv.leaseCount) ? 'per-lease burnoff at each turnover' : 'burnoff on lease expirations';
       const d = l.driver || {};
-      const hapTxt = d.hap ? ` · HAP $${money(d.hap)}/mo is rent, not loss to lease: it sits inside GPR (4994) and never burns; this line is only market − resident rent − HAP${d.hapEst ? " — HAP placed from the roll's subsidy total on the lowest-rent leases; re-upload the rent roll for each unit's own HAP" : ''}${d.hapUnplaced ? `; $${money(d.hapUnplaced)}/mo could not be matched to a lease` : ''}` : '';
+      const hapTxt = d.hap ? ` · HAP $${money(d.hap)}/mo is rent, not loss to lease: it sits inside GPR (4994) and never burns; this line is only market − resident rent − HAP${d.hapEst ? " — HAP placed from the subsidy total of an older rent-roll upload on the lowest-rent leases" : ''}${d.hapUnplaced ? `; $${money(d.hapUnplaced)}/mo could not be matched to a lease` : ''}` : '';
       const m0Txt = lt.month0 != null ? ` · starts at the typed ${money(-Math.abs(lt.month0))} in the first month and runs on from there${d.k ? ` (every lease's gap scaled ×${d.k})` : ''} — to go back to the formula's own start, empty the row's Month 1 $ box (↺) or type 0 in the first month` : '';
       return { cls: 'drv-rr', tag: `${d.hap ? 'LTL·HAP' : 'LTL'}${lt.month0 != null ? '·START' : ''}`, label: `Loss to lease — ${how}${m0Txt}${lt.followGpr !== false && lt.mode !== 'ramp' ? ', deepens with GPR growth' : ''} · renewal %, burnoff on renewal / move-in are the boxes to the right (method + "follows GPR" under Assumptions)${hapTxt}` };
     }
@@ -609,7 +609,7 @@ function renderDash(el) {
         </div>
       </div>
       ${(pl.rows || []).length ? `<table class="list plist"><tr><th><input type="checkbox" id="sel-all" title="Select all of ${year}'s budgets"></th><th>Property</th><th>${year} budget</th><th>Reports</th><th title="What the %s are measured against: the UW for the year (new acquisitions) or the October T12 (growth over it)">Target</th><th title="NOI vs UW (new acquisitions) or growth over the T12. Green = at or above the target / guidance">NOI</th><th title="Total income vs the target. Green = at or above it">Income</th><th title="Total OpEx vs the target. Green = at or below it">OpEx</th><th title="The scorecard: items off the guidance (T12) or off UW (new acquisitions). Hover for the list">Guidance</th>${hasAcq ? '<th>CoC</th>' : ''}<th>Status</th><th>Updated</th><th></th></tr>
-        ${body}</table>` : `<p class="muted">No properties yet. Click <b>+ New budget</b> — for an annual budget you only need the property's Yardi budget template (budgetYSR…xlsm); it carries the trailing-12 actuals and the current-year budget. Add the rent roll for the GPR anchor and per-lease burnoff.</p>`}
+        ${body}</table>` : `<p class="muted">No properties yet. Click <b>+ New budget</b> — for an annual budget you only need the property's Yardi budget template (budgetYSR…xlsm); it carries the trailing-12 actuals and the current-year budget. Add the UAD for the GPR anchor and per-lease burnoff.</p>`}
     </div>
     <dialog id="newdlg"></dialog>
     <dialog class="assump" id="pm-dlg"></dialog>
@@ -664,7 +664,7 @@ function renderDash(el) {
    which are missing. With a current Yardi template on file that ONE file is the requirement (it
    carries the trailing-12 and the CY budget — Troy 2026-11-11: "Why do I still need to upload the T12
    statement and T12 Budget when the budget template has them?"); without one, the two statements
-   are required. A rent roll and the payroll roster are recommended. ---- */
+   are required. A UAD and the payroll roster are recommended. ---- */
 function propertyReports(st, code, budget, year) {
   // a report counts for `year` only when it is current: a trailing-12 that ends in the
   // year before the budget (or a template built for that budget year) — last year's
@@ -700,7 +700,7 @@ function propertyReports(st, code, budget, year) {
   if (tplOk && tpl.actual_period) return [
     { key: 'template', label: 'Yardi budget template', need: 'required', ok: true,
       sub: `budget ${tpl.budget_year} · T12 ${tpl.actual_period}${tpl.budget_period ? ` · budget ${tpl.budget_period}` : ''} · ${fmtd(tpl.created_at)}` },
-    { key: 'rent', label: 'Rent roll', need: 'recommended', ok: !!rent,
+    { key: 'rent', label: 'UAD', need: 'recommended', ok: !!rent,
       sub: rent ? `${rent.as_of ? fmtd(rent.as_of) : ''} · ${rent.units || '?'} units` : 'unit-level — per-lease loss to lease and market rents' },
     payItem(),
   ];
@@ -711,7 +711,7 @@ function propertyReports(st, code, budget, year) {
       sub: budOk ? `${bud.period || ''} · ${fmtd(bud.created_at)}` : tplOk && tpl.budget_period ? `from the Yardi template · ${tpl.budget_period}` : bud ? stale(bud, 'current-year budget') : 'the reference column every tie compares to' },
     { key: 'template', label: 'Yardi budget template', need: 'recommended', ok: tplOk,
       sub: tplOk ? `budget ${tpl.budget_year} · ${fmtd(tpl.created_at)}` : tpl ? `have the ${tpl.budget_year} template — the ${year} one carries this year's T12, budget, expirations, debt and suggestions` : 'budgetYSR…xlsm — carries the T12 and current-year budget (then neither statement is needed)' },
-    { key: 'rent', label: 'Rent roll', need: 'recommended', ok: !!rent,
+    { key: 'rent', label: 'UAD', need: 'recommended', ok: !!rent,
       sub: rent ? `${rent.as_of ? fmtd(rent.as_of) : ''} · ${rent.units || '?'} units` : 'unit-level — per-lease loss to lease and market rents' },
     payItem(),
   ];
@@ -799,7 +799,7 @@ function dataOnFileHtml(st) {
   const rows = [];
   for (const t of st.templates || []) rows.push({ prop: t.property_code, kind: 'Yardi template', detail: `budget ${t.budget_year}${t.actual_period ? ` · T12 ${t.actual_period}` : ''}${t.budget_period ? ` · CY budget ${t.budget_period}` : ''}`, sub: t.label, added: t.created_at, del: `template:${t.id}` });
   for (const x of (st.stmtSnapshots || []).filter((x) => !tplUploads.has(x.upload_id))) rows.push({ prop: x.property_code, kind: x.kind === 'budget' ? 'CY budget statement' : 'T12 statement', detail: `${x.period || ''}${x.book ? ` · ${x.book}` : ''}`, sub: x.label, added: x.created_at, del: `stmt:${x.id}` });
-  for (const r of st.rentSnapshots || []) rows.push({ prop: r.property_code, kind: 'Rent roll', detail: `${r.as_of ? fmtd(r.as_of) : ''} · ${r.units || '?'}u · mkt ${money(r.market_monthly)}/mo · in-place ${money(r.inplace_monthly)}/mo`, added: r.created_at, del: `rent:${r.id}` });
+  for (const r of st.rentSnapshots || []) rows.push({ prop: r.property_code, kind: r.report === 'uad' ? 'UAD' : 'Rent roll (old upload — use a UAD)', detail: `${r.as_of ? fmtd(r.as_of) : ''} · ${r.units || '?'}u · mkt ${money(r.market_monthly)}/mo · in-place ${money(r.inplace_monthly)}/mo`, added: r.created_at, del: `rent:${r.id}` });
   for (const u of st.uwSnapshots || []) rows.push({ prop: u.property_code, kind: 'UW book', detail: `${u.units ?? ''}u · NOI ${money(u.noi)}`, sub: u.label, added: u.created_at, del: `uw:${u.id}` });
   for (const x of st.t12Snapshots || []) rows.push({ prop: x.property_code, kind: 'Seller T12', detail: `${x.period || ''}${x.book ? ` · ${x.book}` : ''}`, sub: x.label, added: x.created_at, del: `t12:${x.id}` });
   for (const p of st.payrollModels || []) rows.push({ prop: '', kind: 'Payroll model', detail: p.label, added: p.created_at, del: `payroll:${p.id}`, edit: p.id });
@@ -836,7 +836,7 @@ function newBudgetDialog() {
   if (!S.newType) S.newType = (st.templates || []).length || !st.uwSnapshots.length ? 'annual' : 'new_acq';
   const annual = S.newType === 'annual';
   const nb = S.nb || (S.nb = {});           // selections survive the re-render after an inline upload
-  const KIND_LABEL = { yardi_template: 'Yardi budget template (budgetYSR…xlsm)', rent_roll: 'rent roll', payroll: 'payroll model', statement: '12 Month Statement / Budget', payroll_template: 'payroll template sheet' };
+  const KIND_LABEL = { yardi_template: 'Yardi budget template (budgetYSR…xlsm)', rent_roll: 'UAD', payroll: 'payroll model', statement: '12 Month Statement / Budget', payroll_template: 'payroll template sheet' };
   // a picker: select + an Upload button that parses, saves and selects the file right here
   const pick = (id, label, hint, uploadKind) => `
     <div class="fld" style="flex:1; min-width:240px"><label>${label}${hint ? ` <span class="muted">— ${hint}</span>` : ''}</label>
@@ -865,17 +865,17 @@ function newBudgetDialog() {
       <p class="muted" style="font-size:11px; margin:4px 0 0">A statement picked here replaces the template's own for that column. Leave both at — none — when the template is picked.</p>
     </details>
     <div class="row">
-      ${pick('nb-rent', 'Rent roll / UAD', 'GPR anchor, per-lease LTL, lease expirations (turn costs follow them +1 mo)', 'rent_roll')}
+      ${pick('nb-rent', 'UAD (Unit Availability Details)', 'GPR anchor, per-lease LTL, lease expirations (turn costs follow them +1 mo)', 'rent_roll')}
       ${pick('nb-pay', 'Payroll model', 'wages', 'payroll')}
     </div>
-    <p class="muted" style="font-size:11.5px; margin:10px 0 0">Every line starts as the same month last year × the GRKS foundation factor (admin 5%, maintenance 10%, reims 5%, utilities 5%), October-actual lines flat, GPR off the rent roll, vacancy at the October %, mgmt fee at the T12 %, debt off the template's schedule (else loan × rate in Assumptions, else the last actual month), payroll from the model. Nothing ties on its own — review the Δ columns.</p>` : `
+    <p class="muted" style="font-size:11.5px; margin:10px 0 0">Every line starts as the same month last year × the GRKS foundation factor (admin 5%, maintenance 10%, reims 5%, utilities 5%), October-actual lines flat, GPR off the UAD, vacancy at the October %, mgmt fee at the T12 %, debt off the template's schedule (else loan × rate in Assumptions, else the last actual month), payroll from the model. Nothing ties on its own — review the Δ columns.</p>` : `
     <div class="row">
       <div class="fld"><label>Property</label><select id="nb-prop">${subjects.map((p) => `<option value="${p.code}">${p.code} — ${esc(p.name)}</option>`).join('')}</select></div>
       <div class="fld"><label>Budget year</label><input id="nb-year" type="number" value="${nb.year || yearNow}" style="width:90px"></div>
     </div>
     <div class="row" style="margin-top:8px">
       ${pick('nb-uw', 'UW book', 'tie-out target', null)}
-      ${pick('nb-rent', 'Rent roll', 'GPR anchor', 'rent_roll')}
+      ${pick('nb-rent', 'UAD (Unit Availability Details)', 'GPR anchor', 'rent_roll')}
     </div>
     <div class="row" style="margin-top:8px">
       ${pick('nb-comp', 'Comp set', 'line distribution', null)}
@@ -902,7 +902,7 @@ function newBudgetDialog() {
     const py = (st.stmtSnapshots || []).find((x) => String(x.id) === $('nb-py').value);
     n.textContent = tpl
       ? `The template carries the trailing-12 actuals${tpl.actual_period ? ` (${tpl.actual_period})` : ''} and the ${tpl.budget_year - 1} budget${tpl.budget_period ? ` (${tpl.budget_period})` : ''}${py ? ' — the statement picked above is used instead where it is set.' : '.'}`
-      : py ? `Building off the ${py.period || ''} statement alone — GPR off the rent roll (or the October actual), expirations off the rent roll leases, debt from Assumptions (loan × rate) or the last actual month flat.`
+      : py ? `Building off the ${py.period || ''} statement alone — GPR off the UAD (or the October actual), expirations off the UAD leases, debt from Assumptions (loan × rate) or the last actual month flat.`
       : 'Pick or upload the Yardi budget template (⬆) — it carries the trailing-12 and the current-year budget.';
   };
   // a Nov–Oct statement budgets the year after its last month
@@ -1037,10 +1037,10 @@ async function dlgUpload(kind, file, currentProp) {
   if (kind === 'rent_roll') {
     // the roll covers every property — save each one the chart knows, select the current one
     const mappings = parsed.properties.map((p) => ({ sourceCode: p.code, sourceName: p.name, propertyCode: known(p.code) ? p.code : guessProp(p.name) || null })).filter((m) => m.propertyCode);
-    if (!mappings.length) throw new Error('No property in this rent roll matches the chart — upload it on the Data page to map by hand');
+    if (!mappings.length) throw new Error('No property in this UAD matches the chart — upload it on the Data page to map by hand');
     const resp = await POST('/uploads/apply', { kind, filename: file.name, payload: parsed, mappings, relink: false });
     const mine = (resp.created || []).find((c) => c.propertyCode === currentProp);
-    return { rentSnapshotId: mine?.id, warning: mine ? '' : `Rent roll saved for ${resp.created.length} propert${resp.created.length === 1 ? 'y' : 'ies'}, but ${currentProp} was not in it.` };
+    return { rentSnapshotId: mine?.id, warning: mine ? '' : `UAD saved for ${resp.created.length} propert${resp.created.length === 1 ? 'y' : 'ies'}, but ${currentProp} was not in it.` };
   }
   if (kind === 'payroll') {
     const resp = await POST('/uploads/apply', { kind, filename: file.name, payload: parsed, name: parsed.payroll?.label || file.name.replace(/\.xlsx?$/i, ''), relink: false });
@@ -1058,7 +1058,7 @@ async function openBudget(id) {
 /* ---------------- data (uploads) ---------------- */
 const UPLOAD_KINDS = [
   ['yardi_template', 'Yardi budget template (budgetYSR…xlsm)'],
-  ['rent_roll', 'Rent roll (Yardi summary, unit detail, lease charges) or Unit Availability Details'],
+  ['rent_roll', 'Unit Availability Details (UAD) — Yardi export as is; a rent roll is not accepted'],
   ['statement', 'Monarch 12 Month Statement / 12 Month Budget'],
   ['payroll_template', 'Payroll Budget Workbook — a property payroll sheet (tie-out reference)'],
   ['payroll', 'ND payroll model (wage aggregates)'],
@@ -1076,7 +1076,7 @@ function renderUploads(el) {
       <h2>Add data</h2>
       <div class="drop" id="drop" tabindex="0">
         <div><b>Drop files here</b> or <span class="link">choose files</span></div>
-        <div class="muted" style="font-size:11.5px; margin-top:4px">Yardi budget templates · rent rolls · Monarch statements · payroll model · UW books · comp sets — the type is recognized from the file. Several templates or statements at once is fine.</div>
+        <div class="muted" style="font-size:11.5px; margin-top:4px">Yardi budget templates · UADs (Unit Availability Details) · Monarch statements · payroll model · UW books · comp sets — the type is recognized from the file. Several templates or statements at once is fine.</div>
         <input type="file" id="up-file" accept=".xlsx,.xls,.xlsm" multiple style="display:none">
       </div>
       ${files.length ? `<div class="row" style="margin-top:10px; align-items:center">
@@ -1236,7 +1236,7 @@ function renderUploadPreview(el, parsed) {
       await refreshState(); render();
     });
   } else if (parsed.kind === 'rent_roll') {
-    el.innerHTML = `<h3>Properties in this rent roll</h3>
+    el.innerHTML = `<h3>Properties in this UAD</h3>
       <div class="mapping"><table class="list"><tr><th>Source</th><th>Units</th><th>Leases</th><th>Market/mo</th><th>In-place/mo</th><th>As of</th><th>Property</th></tr>
       ${parsed.properties.map((p, i) => `<tr>
         <td>${esc(p.code || p.name)}</td><td>${p.units}</td>
@@ -1370,7 +1370,7 @@ function renderEditor(el) {
           ${(() => {
             const used = new Set(bv.lines.filter((l) => l.months && l.months.some((v) => v)).map((l) => drvMeta(l).cls));
             if (acts.length) used.add('drv-act');
-            const items = [['drv-rr', 'Rent roll / income'], ['drv-uw', 'UW tie'], ['drv-comp', 'Minot comps'], ['drv-pay', 'Payroll tab / model'], ['drv-fee', '% of income'], ['drv-int', bv.annual ? 'Debt schedule / zero' : 'Interest'],
+            const items = [['drv-rr', 'UAD / income'], ['drv-uw', 'UW tie'], ['drv-comp', 'Minot comps'], ['drv-pay', 'Payroll tab / model'], ['drv-fee', '% of income'], ['drv-int', bv.annual ? 'Debt schedule / zero' : 'Interest'],
               ['drv-base', "This property's own history"], ['drv-corp', 'Corporate rate / suggestion'], ['drv-t12', 'Seller stmt / recovery'], ['drv-man', 'Manual override'], ['drv-act', 'Posted actuals (locked month)']];
             return items.filter(([c]) => used.has(c)).map(([c, lb]) => `<span><span class="dot ${c}"></span>${lb}</span>`).join('');
           })()}
@@ -2618,7 +2618,7 @@ function paramFor(gl, line, inp) {
       label: 'Loss to lease in the first month (negative). The formula runs on from it. Blank = the formula\'s own start',
       value: lt.month0 ?? '', patch: (v) => ({ ltl: { ...lt, month0: v ? -Math.abs(v) : null } }) };
     if (lt.mode === 'flat') return { title: '5003 Loss to lease — held flat all year.', summary: `flat ${money(lt.startMonthly ?? 0)}/mo`, multi: [
-      { k: 'startMonthly', short: 'Start $/mo', unit: '$', label: 'Monthly loss to lease, negative (0 = rent roll gap / last actual month)', value: lt.startMonthly ?? 0, patch: ltlPatch('startMonthly') },
+      { k: 'startMonthly', short: 'Start $/mo', unit: '$', label: 'Monthly loss to lease, negative (0 = UAD gap / last actual month)', value: lt.startMonthly ?? 0, patch: ltlPatch('startMonthly') },
       m0Box,
     ] };
     if (lt.mode === 'ramp') return { title: '5003 Loss to lease — ramps from a start $ toward a target % of GPR.', summary: `ramp ${money(lt.startMonthly ?? 0)} → ${pct(lt.targetPct ?? 0)}% over ${lt.rampMonths ?? 12} mo`, multi: [
@@ -2737,7 +2737,7 @@ function openColsMenu(anchorBtn, labels) {
    formulas, list the defaults a budget is running on, and check before export.
    ========================================================================== */
 const TAG_KEY = [
-  ['ROLL', 'Gross potential rent from the rent roll market rents, with the month steps typed on the row.'],
+  ['UAD', 'Gross potential rent from the UAD market rents (every unit), with the month steps typed on the row.'],
   ['LTL', 'Loss to lease: each lease keeps its rent until it resets; a reset burns the burnoff % of its gap.'],
   ['VAC·EXP', 'Vacancy: an annual average. It starts at the last actual month, move-outs land a month after expirations, and empty units fill gradually.'],
   ['%GPR', 'A % of gross potential rent (the trailing-12 ratio unless typed).'],
@@ -2972,7 +2972,7 @@ async function setSectionShape(b, section, shape) {
   }
   // never a silent nothing: say why no line took it
   if (!n) { alert(shape === '__clear' ? 'No line in this section has a formula picked on this budget.' : `No line in this section could take that formula: ${skipped} line${skipped === 1 ? ' is' : 's are'} hand-typed or built by their own formula (corporate rate, fee, suggestion). Release a hand-typed line first (row menu: Reset to engine formula).`); render(); return; }
-  if (shape === 'turns' && !budgetHasExpirations()) alert('This budget has no lease expirations yet (rent roll, typed expirations or the Yardi template). The turnover curve has nothing to follow, so these lines stay flat until expirations are loaded.');
+  if (shape === 'turns' && !budgetHasExpirations()) alert('This budget has no lease expirations yet (UAD, typed expirations or the Yardi template). The turnover curve has nothing to follow, so these lines stay flat until expirations are loaded.');
   pushUndo();
   S.bv = await PUT(`/budgets/${b.id}`, { inputs: { baseline: { ...bl, glShape } } });
   render();
@@ -3106,7 +3106,7 @@ function openBulkFormula(b) {
       <button class="btn sub" id="bs-all">All</button>
       <button class="btn sub" id="bs-none">None</button>
     </div>
-    ${hasExp ? '' : '<div class="err" style="margin-top:6px">No lease expirations on this budget yet (rent roll, typed expirations or the Yardi template): the turn curve has nothing to follow and those lines would fall back to flat.</div>'}
+    ${hasExp ? '' : '<div class="err" style="margin-top:6px">No lease expirations on this budget yet (UAD, typed expirations or the Yardi template): the turn curve has nothing to follow and those lines would fall back to flat.</div>'}
     <div style="max-height:46vh; overflow:auto; margin-top:10px; border:1px solid var(--line); border-radius:8px; padding:6px 10px">
       ${Object.entries(bySection).map(([sec, list]) => `
         <div style="margin:6px 0 2px"><label style="font-weight:650; font-size:12px; color:var(--dim); text-transform:uppercase"><input type="checkbox" data-sec="${esc(sec)}"> ${esc(sec.replace(/_/g, ' '))}</label></div>
@@ -4464,7 +4464,7 @@ function tieHtml(bv) {
     const isNoi = r.label === 'Net Operating Income';
     const noiCtl = isNoi && Math.abs(r.variance) >= 1 ? `<button class="rb" data-noi="1" title="Scale the flex categories (admin, marketing, R&M, rehab) so NOI equals ${esc(refLabel)} exactly">tie NOI</button>` : '';
     const isEgi = r.label === 'Effective Gross Income';
-    const egiCtl = isEgi && Math.abs(r.variance) >= 1 ? `<button class="rb" data-egi="1" title="Adjust loss-to-lease so Total Income equals ${esc(refLabel)} exactly (GPR stays on the rent roll)">tie income</button>` : '';
+    const egiCtl = isEgi && Math.abs(r.variance) >= 1 ? `<button class="rb" data-egi="1" title="Adjust loss-to-lease so Total Income equals ${esc(refLabel)} exactly (GPR stays on the UAD)">tie income</button>` : '';
     // UW basis vs actuals: the subtotal / category this row is (the Vacancy split shows category 3's basis only)
     const KEYOF = { 'Effective Gross Income': 'income', 'Total Operating Expenses': 'opex', 'Net Operating Income': 'noi', 'Net Gross Potential Rent': 'ngpr', 'Total Rental Income': 'rental', 'Total Other + Utility Inc': 'oth' };
     const bk = KEYOF[r.label] || (r.pcode === 'Vacancy' ? '3' : r.label === 'Delinquency & Other Loss' ? null : r.pcode);
@@ -4510,7 +4510,7 @@ function tieHtml(bv) {
   </table>
   ${bv.annual
     ? `<p class="muted" style="font-size:11px"><b>Nothing ties automatically.</b> Every line follows the Yardi template rule (own trailing-12 × factor, October actual, corporate rate, debt schedule…) and this panel shows the Δ against <b>${esc(refLabel)}</b>. Category “tie” scales that category's non-overridden lines to match the reference total; “tie NOI” / “tie income” are explicit buttons. Switch the reference above to compare against the current-year budget or your own EGI/NOI targets.</p>`
-    : `<p class="muted" style="font-size:11px"><b>NOI ties 100% to UW</b> — at generation and via “tie NOI”, the flex categories (admin, marketing, R&M, rehab) absorb the gap; other categories stay in line with their basis. Category “tie” scales that category's non-overridden lines to its own target. Basis buttons switch a category between <b>UW</b> and <b>Minot $/unit × units</b>. Payroll benefits/bonuses follow Minot ratios on the property's wage totals. GPR always anchors to the rent roll.</p>`}`;
+    : `<p class="muted" style="font-size:11px"><b>NOI ties 100% to UW</b> — at generation and via “tie NOI”, the flex categories (admin, marketing, R&M, rehab) absorb the gap; other categories stay in line with their basis. Category “tie” scales that category's non-overridden lines to its own target. Basis buttons switch a category between <b>UW</b> and <b>Minot $/unit × units</b>. Payroll benefits/bonuses follow Minot ratios on the property's wage totals. GPR always anchors to the UAD.</p>`}`;
 }
 
 function inputsHtml(inp) {
@@ -4521,10 +4521,10 @@ function inputsHtml(inp) {
     <h3>Income · Year 1 starts at the start month and runs 12 months</h3>
     <div class="row">
       <div class="fld"><label>Start month (GPR anchors here)</label><select id="in-start">${MONTHS.map((m, i) => `<option value="${i + 1}" ${inp.startMonth === i + 1 ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
-      <div class="fld"><label>GPR base $/mo${S.bv && S.bv.rollMarket > 0 ? ' · rent roll' : ''}</label><input id="in-gprbase" value="${g.baseMonthly ?? 0}" style="width:110px"${S.bv && S.bv.rollMarket > 0 ? ' readonly title="The linked rent roll&#39;s market total. To use a different number for a month, hard-code that cell on the GPR row."' : ''}></div>
+      <div class="fld"><label>GPR base $/mo${S.bv && S.bv.rollMarket > 0 ? ' · UAD' : ''}</label><input id="in-gprbase" value="${g.baseMonthly ?? 0}" style="width:110px"${S.bv && S.bv.rollMarket > 0 ? ' readonly title="The linked UAD&#39;s market total. To use a different number for a month, hard-code that cell on the GPR row."' : ''}></div>
       <div class="fld"><label>GPR growth %/mo (1 or 12 vals)</label><input id="in-gprgrow" value="${show12(g.growthPct || [])}" style="width:130px"></div>
     </div>
-    <h3>Loss to lease ${S.bv && S.bv.leaseCount ? `<span class="badge">${S.bv.leaseCount} leases on file</span>` : '<span class="badge">no lease detail — upload a unit-level rent roll</span>'}</h3>
+    <h3>Loss to lease ${S.bv && S.bv.leaseCount ? `<span class="badge">${S.bv.leaseCount} leases on file</span>` : '<span class="badge">no lease detail — upload the UAD</span>'}</h3>
     <div class="row">
       <div class="fld"><label>Method</label><select id="in-ltlmode">
         <option value="leases" ${l.mode !== 'ramp' ? 'selected' : ''}>Lease burnoff (per turnover)</option>
@@ -4629,11 +4629,11 @@ function dataLinksHtml(bv) {
       { key: 'pyStmtId', cur: b.py_stmt_id, label: 'Trailing-12 actuals', list: own((st.stmtSnapshots || []).filter((x) => x.kind === 'actual')), name: (x) => `${x.period || ''} · ${x.label}` },
       { key: 'cyBudgetStmtId', cur: b.cy_budget_stmt_id, label: 'Current-year budget', list: own((st.stmtSnapshots || []).filter((x) => x.kind === 'budget')), name: (x) => `${x.period || ''} · ${x.label}` },
     ]),
-    { key: 'rentSnapshotId', cur: b.rent_snapshot_id, label: 'Rent roll (GPR anchor, per-lease LTL, charges)', list: own(st.rentSnapshots), name: (x) => `${x.as_of ? new Date(x.as_of).toLocaleDateString() : '#' + x.id} · ${x.units || '?'}u` },
+    { key: 'rentSnapshotId', cur: b.rent_snapshot_id, label: 'UAD (GPR anchor, per-lease LTL, lease expirations)', list: own(st.rentSnapshots), name: (x) => `${x.as_of ? new Date(x.as_of).toLocaleDateString() : '#' + x.id} · ${x.units || '?'}u${x.report === 'uad' ? '' : ' · old rent roll'}` },
     { key: 'payrollModelId', cur: b.payroll_model_id, label: `Payroll model${b.payroll_model_id && !bv.payrollWages ? ' <span class="warnflag" title="The linked model has NO wages for this property">⚠ no wages for this property</span>' : ''}`, list: st.payrollModels || [], name: (x) => x.label },
   ] : [
     { key: 'uwSnapshotId', cur: b.uw_snapshot_id, label: 'UW book', list: own(st.uwSnapshots), name: (x) => x.label },
-    { key: 'rentSnapshotId', cur: b.rent_snapshot_id, label: 'Rent roll', list: own(st.rentSnapshots), name: (x) => `${x.as_of ? new Date(x.as_of).toLocaleDateString() : '#' + x.id} · ${x.units || '?'}u` },
+    { key: 'rentSnapshotId', cur: b.rent_snapshot_id, label: 'UAD', list: own(st.rentSnapshots), name: (x) => `${x.as_of ? new Date(x.as_of).toLocaleDateString() : '#' + x.id} · ${x.units || '?'}u${x.report === 'uad' ? '' : ' · old rent roll'}` },
     { key: 't12SnapshotId', cur: b.t12_snapshot_id, label: 'Seller T12', list: own(st.t12Snapshots || []), name: (x) => `${x.label} · ${x.period || ''}` },
     { key: 'compSetId', cur: b.comp_set_id, label: 'Comp set', list: st.compSets, name: (x) => x.name },
     { key: 'payrollModelId', cur: b.payroll_model_id, label: `Payroll model${b.payroll_model_id && !bv.payrollWages ? ' <span class="warnflag" title="The linked model has NO wages for this property — ✎ edit it on the Data page (add/fix this property\'s row)">⚠ no wages for this property</span>' : ''}`, list: st.payrollModels || [], name: (x) => x.label },
@@ -7011,7 +7011,7 @@ function annualInputsHtml(inp) {
   // 2. rent: GPR + loss to lease
   const s2 = `
     <div class="row">
-      ${f(S.bv && S.bv.rollMarket > 0 ? `GPR base $/mo <span class="muted">(rent roll${S.bv.rollAsOf ? ` ${esc(S.bv.rollAsOf)}` : ''})</span>` : 'GPR base $/mo', `<input id="in-gprbase" value="${g.baseMonthly ?? 0}" style="width:120px"${S.bv && S.bv.rollMarket > 0 ? ' readonly title="Always the linked rent roll&#39;s market total, all units"' : ''}>`, S.bv && S.bv.rollMarket > 0 ? 'Always the rent roll\'s market total (all units). Hard-code a GPR cell on the grid to override one month.' : '0 = the last actual month\'s GPR.')}
+      ${f(S.bv && S.bv.rollMarket > 0 ? `GPR base $/mo <span class="muted">(UAD${S.bv.rollAsOf ? ` ${esc(S.bv.rollAsOf)}` : ''})</span>` : 'GPR base $/mo', `<input id="in-gprbase" value="${g.baseMonthly ?? 0}" style="width:120px"${S.bv && S.bv.rollMarket > 0 ? ' readonly title="Always the linked UAD&#39;s market total, all units"' : ''}>`, S.bv && S.bv.rollMarket > 0 ? 'Always the UAD\'s market total (all units). Hard-code a GPR cell on the grid to override one month.' : '0 = the last actual month\'s GPR.')}
       ${f('% increase in each month', gprStepsGrid(g.growthPct || [], 'in-gprstep'), 'Compounds. Leave a month blank for no change (e.g. 3 in Mar, 2 in Sep).', 'wide')}
     </div>
     <div class="asub">Loss to lease ${S.bv.leaseCount ? `<span class="muted">· ${S.bv.leaseCount} leases on file${S.bv.rollAsOf ? `, roll ${esc(S.bv.rollAsOf)}` : ''}</span>` : ''}</div>
@@ -7021,11 +7021,11 @@ function annualInputsHtml(inp) {
       ${f('Burnoff on renewal %', `<input id="in-ltlbr" value="${((l.burnoffRenew ?? 0.75) * 100).toFixed(0)}" style="width:60px">`)}
       ${f('Burnoff on move-in %', `<input id="in-ltlbn" value="${((l.burnoffNew ?? 1) * 100).toFixed(0)}" style="width:60px">`)}
       <label class="chk" title="Market-rent growth deepens the loss to lease 1:1 (the template's 'change in market rent' row)"><input type="checkbox" id="in-ltlfollow" ${l.followGpr !== false ? 'checked' : ''}> follows GPR growth</label>
-      ${f('Start $/mo', `<input id="in-ltlstart" value="${l.startMonthly ?? 0}" style="width:100px">`, 'Negative. 0 = the rent roll gap / last actual month.', 'ltl-fr')}
+      ${f('Start $/mo', `<input id="in-ltlstart" value="${l.startMonthly ?? 0}" style="width:100px">`, 'Negative. 0 = the UAD gap / last actual month.', 'ltl-fr')}
       ${f('Ramp target % of GPR', `<input id="in-ltlpct" value="${((l.targetPct || 0) * 100).toFixed(2)}" style="width:70px">`, '', 'ltl-r')}
     </div>
     <div class="row">
-      ${f(`Lease expirations by month${tpl ? ' <span class="muted">(template)</span>' : ''}`, `<input id="in-exp" value="${(exp || []).join(', ')}" style="width:300px" placeholder="from the rent roll">`, '12 values. Drive the loss-to-lease burnoff, vacancy timing and the application / admin / deposit fees.')}
+      ${f(`Lease expirations by month${tpl ? ' <span class="muted">(template)</span>' : ''}`, `<input id="in-exp" value="${(exp || []).join(', ')}" style="width:300px" placeholder="from the UAD">`, '12 values. Drive the loss-to-lease burnoff, vacancy timing and the application / admin / deposit fees.')}
     </div>
     ${tpl && tpl.moveOuts ? `<details class="asub-d"><summary>Prior-year move-outs (reference)</summary>${moveOutsHtml(tpl, exp)}</details>` : ''}`;
   const sum2 = `GPR ${money(g.baseMonthly || 0)}/mo · ${steps} · LTL ${ltlMode === 'leases' ? `burnoff, renew ${((l.renewalPct ?? (tpl && tpl.renewalPct) ?? 0.65) * 100).toFixed(0)}%` : ltlMode}`;
@@ -7058,7 +7058,7 @@ function annualInputsHtml(inp) {
   const y = S.bv.y1Plan;
   const startup = (S.bv.t12Dead || []).length || (S.bv.t12Startup || []).length;
   const s5 = (y || startup) ? `<div class="row">
-      ${y ? (() => { const span = y.months.length ? `${MONTHS[y.months[0]]}–${MONTHS[y.months[y.months.length - 1]]}` : ''; return f(`Year-1 plan <span class="muted">(Year 1 NOI ${money(y.y1Noi)} vs ${y.uwNoi != null ? 'UW ' + money(y.uwNoi) : 'plan ' + money(y.planNoi)})</span>`, `<select id="in-y1plan"><option value="1" ${inp.y1Plan !== false ? 'selected' : ''}>the whole year from the Year-1 budget</option><option value="0" ${inp.y1Plan === false ? 'selected' : ''}>this budget's own formulas</option></select>`, `The acquisition plan (UW): ${span} = ${y.months.length}/12 of Year 1, the months after on the UW Year-2 trend; months on the property's own history. Rent-roll GPR / LTL, taxes, the fee, contracts and lines picked on their row keep their own formulas.`); })() : ''}
+      ${y ? (() => { const span = y.months.length ? `${MONTHS[y.months[0]]}–${MONTHS[y.months[y.months.length - 1]]}` : ''; return f(`Year-1 plan <span class="muted">(Year 1 NOI ${money(y.y1Noi)} vs ${y.uwNoi != null ? 'UW ' + money(y.uwNoi) : 'plan ' + money(y.planNoi)})</span>`, `<select id="in-y1plan"><option value="1" ${inp.y1Plan !== false ? 'selected' : ''}>the whole year from the Year-1 budget</option><option value="0" ${inp.y1Plan === false ? 'selected' : ''}>this budget's own formulas</option></select>`, `The acquisition plan (UW): ${span} = ${y.months.length}/12 of Year 1, the months after on the UW Year-2 trend; months on the property's own history. UAD GPR / LTL, taxes, the fee, contracts and lines picked on their row keep their own formulas.`); })() : ''}
       ${y && y.on && y.acq ? f(`Fit to posted actuals % <span class="muted">(${y.acq.postedMonths} mo posted)</span>`, `<input id="in-acqfit" value="${Math.round((inp.acqFit ?? y.acq.fit) * 100)}" style="width:52px">`, 'How far each category\'s level and GL mix move from UW toward what has posted since closing. 0 = exactly UW.') : ''}
       ${startup ? f(`Start-up months left out${(S.bv.t12Startup || []).length ? ` <span class="muted">(now ${esc(S.bv.t12Startup.join(', '))})</span>` : ''}`, `<select id="in-startup">${[0, 1, 2, 3].map((n) => `<option value="${n}" ${(inp.startupExclude ?? 1) === n ? 'selected' : ''}>${n === 0 ? 'none' : n === 1 ? 'the first month' : `the first ${n} months`}</option>`).join('')}</select>`, 'A new acquisition\'s first months (partial rent, closing entries, catch-up bills) are left out of the history.') : ''}
     </div>` : '';

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import * as XLSX from 'xlsx';
-import { parseUwBook, parseRentRoll, parseComparison, parseSellerT12, parseReviewDraft, parseComparisonActuals, detectUploadKind, parseYardiBudgetTemplate, parsePayrollTemplate } from '../src/importers.js';
+import { parseUwBook, parseRentRoll, parseUad, parseComparison, parseSellerT12, parseReviewDraft, parseComparisonActuals, detectUploadKind, parseYardiBudgetTemplate, parsePayrollTemplate } from '../src/importers.js';
 import { t12CategoryShapes } from '../shared/domain.js';
 
 const fx = (name: string): Buffer => readFileSync(join(process.cwd(), 'test', 'fixtures', name));
@@ -463,5 +463,47 @@ describe('Rent Roll with Lease Charges — HAP share per lease', () => {
       expect(Math.round(s * 100) / 100).toBeCloseTo(p.charges.subsidy, 2);
       expect(p.leases.every((l: any) => l.s != null)).toBe(true);
     }
+  });
+});
+
+describe('parseUad — only a Unit Availability Details in the standard format (Troy 2026-11-23)', () => {
+  const D = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d));
+  const HEAD = [
+    ['Unit', 'Resident', 'Name', 'Resident', 'Unit', 'Resident', 'Unit', 'Status', 'Days', 'Make', 'Move', 'Hold', 'Hold', 'Notice', 'Move', 'Lease', 'Lease', 'Lease'],
+    [null, null, null, 'Rent', 'Rent', 'Deposit', 'Deposit', null, 'Vacant', 'Ready', 'In', null, 'Until', null, 'Out', 'Sign', 'From', 'To'],
+  ];
+  const BODY = [
+    [],
+    ['Test Place (tsnd) - Occupied No Notice'],
+    ['01-103', 't03', 'Resident C', 950, 1000, 500, 0, 'Current', null, null, D(2025, 6, 1), 'No', null, null, null, D(2025, 6, 1), D(2026, 6, 1), D(2027, 5, 31)],
+    ['Total', null, '1 Units', 950, 1000],
+    ['Total for tsnd', null, '1 Units', 950, 1000],
+  ];
+  const book = (top: any[][], head = HEAD, body = BODY): Buffer => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([...top, ...head, ...body], { cellDates: true }), 'Report1');
+    return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', cellDates: true });
+  };
+  const STD = [['Unit Availability Details'], ['Test Place (tsnd)'], ['As Of: 11/20/2026'], ['Showing Pre-Leased: Yes'], ['Showing Occupied: Yes'], ['Group By: None']];
+  it('reads a standard export (property or "For Selected Properties" on row 2, "With Amenities" too)', () => {
+    const [p] = parseUad(book(STD));
+    expect(p.code).toBe('tsnd'); expect(p.units).toBe(1); expect(p.leases).toEqual([{ m: 1000, r: 950, e: '2027-05-31' }]);
+    expect(parseUad(book([['Unit Availability Details With Amenities'], ['For Selected Properties'], ...STD.slice(2)]))[0].code).toBe('tsnd');
+  });
+  it('refuses a rent roll, naming the report it is', () => {
+    expect(() => parseUad(fx('rentroll-summary.xlsx'))).toThrow(/not a Unit Availability Details \(UAD\).*Pre-Leased = Yes/);
+    expect(() => parseUad(fx('rentroll-unit-level.xlsx'))).toThrow(/not a Unit Availability Details/);
+    expect(() => parseUad(fx('rentroll-lease-charges.xlsx'))).toThrow(/not a Unit Availability Details/);
+  });
+  it('refuses a UAD run with the wrong options or with its title rows cut off', () => {
+    expect(() => parseUad(book([...STD.slice(0, 4), ['Showing Occupied: No'], STD[5]]))).toThrow(/Showing Occupied is "No" \(needs Yes\)/);
+    expect(() => parseUad(book([...STD.slice(0, 3), ['Showing Pre-Leased: No'], ...STD.slice(4)]))).toThrow(/Showing Pre-Leased is "No"/);
+    expect(() => parseUad(book([...STD.slice(0, 5), ['Group By: Unit Type']]))).toThrow(/Group By is "Unit Type" \(needs None\)/);
+    expect(() => parseUad(book([STD[0], STD[1], ['As Of:'], ...STD.slice(3)]))).toThrow(/no "As Of" date/);
+    expect(() => parseUad(book([[], [], [], [], [], []]))).toThrow(/not a Yardi Unit Availability Details/);
+  });
+  it('refuses a UAD without the Lease To column (no expirations)', () => {
+    const head = HEAD.map((r) => r.slice(0, 17)), body = BODY.map((r) => r.slice(0, 17));
+    expect(() => parseUad(book(STD, head, body))).toThrow(/Lease To column is missing/);
   });
 });

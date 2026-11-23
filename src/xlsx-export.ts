@@ -70,7 +70,7 @@ const GRAND = 'FFE3EBF7';   // grand-total row fill
 /* Driver fills — same palette as the app grid, so the workbook shows what
    each row references (Troy: "colors pull through into the review workbook") */
 const DRIVER_FILLS: Record<string, { fill: string; label: string }> = {
-  rr: { fill: 'FFE3F1DE', label: 'Rent roll / income engine' },
+  rr: { fill: 'FFE3F1DE', label: 'UAD / income engine' },
   uw: { fill: 'FFFDF3D2', label: 'UW tie' },
   comp: { fill: 'FFDDEAF9', label: 'Minot comps' },
   pay: { fill: 'FFEBE2F8', label: 'Payroll model' },
@@ -182,7 +182,7 @@ function driverLabel(d: any, ctx: { total?: number; units?: number; gl?: string 
 }
 function driverLabelBase(d: any): string {
   switch (d?.method) {
-    case 'gpr': return d.hap ? `rent roll GPR less HAP $${Math.round(d.hap).toLocaleString('en-US')}/mo (GPR + HAP = rent roll GPR)` : 'rent roll GPR';
+    case 'gpr': return d.hap ? `UAD GPR less HAP $${Math.round(d.hap).toLocaleString('en-US')}/mo (GPR + HAP = UAD GPR)` : 'UAD GPR';
     case 'ltl': return 'LTL burnoff';
     case 'vacancy': return 'vacancy % of GPR';
     case 'catShare': return `UW cat ${d.pcode} share`;

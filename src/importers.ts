@@ -315,6 +315,7 @@ export function parseUnitAvailability(g: Grid): RentParsedProperty[] {
   const col = (...want: string[]): number => heads.findIndex((hd) => want.every((w) => hd.includes(w)));
   const cResRent = col('resident', 'rent'), cUnitRent = col('unit', 'rent'), cStatus = col('status'), cLeaseTo = col('lease', 'to');
   if (cResRent < 0 || cUnitRent < 0 || cStatus < 0) throw new Error('Unit Availability Details: Resident Rent / Unit Rent / Status columns not found');
+  if (cLeaseTo < 0) throw new Error('Unit Availability Details: the Lease To column is missing, so there are no lease expirations');
   const toIso = (v: any): string | null => {
     if (v == null || v === '') return null;
     // a date cell comes back as local midnight (or UTC midnight, depending on the writer):
@@ -376,6 +377,36 @@ export function parseUnitAvailability(g: Grid): RentParsedProperty[] {
   return out;
 }
 
+/** THE ONLY RENT SOURCE A BUDGET TAKES (Troy 2026-11-23: "it must be a Unit Availability Detail w correct formatting,
+    not a rent roll"). A plain rent roll leaves units out or carries the wrong market, so GPR and loss to lease come out
+    wrong (WLMO 2026-11-12). The file must be Yardi's Unit Availability Details exported as is: the title row, an As Of
+    date, Showing Pre-Leased: Yes, Showing Occupied: Yes, Group By: None, and the Unit … Status … Lease To columns.
+    Anything else is refused with what to fix. */
+export const UAD_HOW = 'Run Yardi\'s Unit Availability Details for the property with Pre-Leased = Yes, Occupied = Yes and Group By = None, export it to Excel and upload the file as it comes out.';
+export function parseUad(buf: Buffer): RentParsedProperty[] {
+  const g = grids(buf)[0].g;
+  const top = g.slice(0, 8).map((r) => s(r?.[0]));
+  if (!top.some((t) => /^unit availability details/i.test(t))) {
+    const rr = top.find((t) => /rent roll/i.test(t));
+    throw new Error(`${rr ? `This is a "${rr}" report, not a Unit Availability Details (UAD)` : 'This file is not a Yardi Unit Availability Details (UAD) export (no "Unit Availability Details" title in the first rows)'}. ${UAD_HOW}`);
+  }
+  const opt = (k: string): string | null => {
+    const t = top.find((x) => x.toLowerCase().startsWith(k.toLowerCase()));
+    return t == null ? null : t.slice(k.length).replace(/^\s*:\s*/, '').trim();
+  };
+  const bad: string[] = [];
+  if (!/\d/.test(opt('As Of') || '')) bad.push('no "As Of" date');
+  for (const [k, want] of [['Showing Pre-Leased', 'Yes'], ['Showing Occupied', 'Yes'], ['Group By', 'None']] as const) {
+    const v = opt(k);
+    if (v == null) bad.push(`no "${k}" line`);
+    else if (v.toLowerCase() !== want.toLowerCase()) bad.push(`${k} is "${v}" (needs ${want})`);
+  }
+  if (bad.length) throw new Error(`Unit Availability Details is not in the standard format: ${bad.join('; ')}. ${UAD_HOW}`);
+  return parseUnitAvailability(g);
+}
+
+/** Every rent source the tool once read (Yardi summary / unit detail / lease charges, OneSite). Uploads no longer
+    use it: parseUad is the only way in. Kept for the parser tests and old snapshots. */
 export function parseRentRoll(buf: Buffer): RentParsedProperty[] {
   const all = grids(buf);
   const g = all[0].g;
