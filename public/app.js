@@ -146,7 +146,7 @@ function drvMetaBase(l) {
       const how = lt.mode === 'flat' ? 'held flat (no burnoff)' : lt.mode === 'ramp' ? 'ramp to a % of GPR' : (S.bv && S.bv.leaseCount) ? 'per-lease burnoff at each turnover' : 'burnoff on lease expirations';
       const d = l.driver || {};
       const hapTxt = d.hap ? ` · HAP $${money(d.hap)}/mo is rent, not loss to lease: it sits inside GPR (4994) and never burns; this line is only market − resident rent − HAP${d.hapEst ? " — HAP placed from the roll's subsidy total on the lowest-rent leases; re-upload the rent roll for each unit's own HAP" : ''}${d.hapUnplaced ? `; $${money(d.hapUnplaced)}/mo could not be matched to a lease` : ''}` : '';
-      const m0Txt = lt.month0 != null ? ` · starts at the typed ${money(-Math.abs(lt.month0))} in the first month and runs on from there${d.k ? ` (every lease's gap scaled ×${d.k})` : ''} — clear it in the row's box (Month 1 $)` : '';
+      const m0Txt = lt.month0 != null ? ` · starts at the typed ${money(-Math.abs(lt.month0))} in the first month and runs on from there${d.k ? ` (every lease's gap scaled ×${d.k})` : ''} — to go back to the formula's own start, empty the row's Month 1 $ box (↺) or type 0 in the first month` : '';
       return { cls: 'drv-rr', tag: `${d.hap ? 'LTL·HAP' : 'LTL'}${lt.month0 != null ? '·START' : ''}`, label: `Loss to lease — ${how}${m0Txt}${lt.followGpr !== false && lt.mode !== 'ramp' ? ', deepens with GPR growth' : ''} · renewal %, burnoff on renewal / move-in are the boxes to the right (method + "follows GPR" under Assumptions)${hapTxt}` };
     }
     case 'vacancy': {
@@ -1679,7 +1679,9 @@ function renderEditor(el) {
     const changed = ln ? p.months.map((v, i) => Math.abs((Number(v) || 0) - (Number(ln.months[i]) || 0)) >= 0.5).reduce((a, c, i) => (c ? [...a, i] : a), []) : [];
     if (p.gl === '5003' && ln && !ln.override && ln.driver && ln.driver.method === 'ltl' && changed.length === 1 && changed[0] === 0) {
       const lt = (S.bv.budget.inputs || {}).ltl || {};
-      S.bv = await PUT(`/budgets/${b.id}`, { inputs: { ltl: { ...lt, month0: -Math.abs(Number(p.months[0]) || 0) } } });
+      // blank or 0 = no typed start: back to the formula's own first month (Troy 2026-11-23: "there is no way to reset that field")
+      const v0 = Math.abs(Number(p.months[0]) || 0);
+      S.bv = await PUT(`/budgets/${b.id}`, { inputs: { ltl: { ...lt, month0: v0 >= 0.5 ? -v0 : null } } });
       render();
       return;
     }
@@ -2505,7 +2507,7 @@ function openMultiParams(b, gl, anchorBtn) {
   menu.innerHTML = `
     <div class="rm-head">${esc(prm.title || '')}</div>
     <div class="mfields">${prm.multi.map((p) => `<div class="mf"><label>${esc(p.short)}</label>
-      <span class="mfin"><input class="pop-multi" data-k="${p.k}" value="${p.value}"><span class="unit">${esc(p.unit || '')}</span></span>
+      <span class="mfin"><input class="pop-multi" data-k="${p.k}" value="${p.value}"${p.blank ? ' placeholder="default"' : ''}><span class="unit">${esc(p.unit || '')}</span>${p.reset ? `<button class="inline mf-reset" data-reset="${p.k}" title="Empty this box so the line goes back to the ${esc(p.reset)}">↺ ${esc(p.reset)}</button>` : ''}</span>
       <span class="hint">${esc(p.label)}</span></div>`).join('')}</div>
     <div class="rm-foot"><span class="muted">${esc(prm.summary)}</span>
       <span><button class="inline" data-act="x">Cancel</button> <button class="primary" data-act="save">Save &amp; regenerate</button></span></div>`;
@@ -2518,6 +2520,10 @@ function openMultiParams(b, gl, anchorBtn) {
   setTimeout(() => document.addEventListener('click', close, { once: true }), 0);
   const first = menu.querySelector('input.pop-multi');
   if (first) { first.focus(); first.select(); }
+  menu.querySelectorAll('button[data-reset]').forEach((rb) => rb.addEventListener('click', () => {
+    const box = menu.querySelector(`input.pop-multi[data-k="${rb.dataset.reset}"]`);
+    if (box) { box.value = ''; box.focus(); }
+  }));
   const save = async () => {
     // fold the changed boxes into one patch: each patch is built against the
     // inputs as updated so far, so the last one carries every change
@@ -2608,7 +2614,9 @@ function paramFor(gl, line, inp) {
     // every LTL input on the row (Troy 2026-11-09: no trip to Assumptions when a formula has several)
     const lt = inp.ltl || {};
     const ltlPatch = (k, scale) => (v) => ({ ltl: { ...lt, [k]: scale ? v / scale : v } });
-    const m0Box = { k: 'month0', short: 'Month 1 $', unit: '$', label: 'Loss to lease in the first month (negative). The formula runs on from it. 0 = the formula\'s own start', value: lt.month0 ?? 0, patch: (v) => ({ ltl: { ...lt, month0: v ? -Math.abs(v) : null } }) };
+    const m0Box = { k: 'month0', short: 'Month 1 $', unit: '$', blank: true, reset: 'formula start',
+      label: 'Loss to lease in the first month (negative). The formula runs on from it. Blank = the formula\'s own start',
+      value: lt.month0 ?? '', patch: (v) => ({ ltl: { ...lt, month0: v ? -Math.abs(v) : null } }) };
     if (lt.mode === 'flat') return { title: '5003 Loss to lease — held flat all year.', summary: `flat ${money(lt.startMonthly ?? 0)}/mo`, multi: [
       { k: 'startMonthly', short: 'Start $/mo', unit: '$', label: 'Monthly loss to lease, negative (0 = rent roll gap / last actual month)', value: lt.startMonthly ?? 0, patch: ltlPatch('startMonthly') },
       m0Box,
