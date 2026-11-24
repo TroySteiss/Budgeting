@@ -3262,7 +3262,20 @@ function openDroppedDialog(b) {
    review covering all changes made. I want to be able to see notes, T12 revised, prior T12, Current Model T12, with
    columns in red where changes were made on excel. Should be able to accept, flag for review, or deny changes"). An
    imported draft is held on the budget (bv.importReview) until each GL is decided: Accept applies it (typed cells, as
-   the import always did), Flag keeps it held for later, Deny drops it. A GL left undecided stays held too. ---- */
+   the import always did), Flag keeps it held for later, Deny drops it. A GL left undecided stays held too.
+   A flagged GL's months are boxes (Troy 2026-11-24: "if flagged, I would like for user to be able to make manual
+   adjustments within those boxes for the GL in each month before accepting/applying"): a typed month is saved to the
+   held review at once and goes in on Accept; blue = typed here, over the file's number. ---- */
+const irEditable = (r) => r.status === 'flagged' || (S.irDec && S.irDec.d[r.gl] === 'flag');
+function irMonthCell(ir, r, i) {
+  const v = r.months[i];
+  const typed = (r.typed || []).includes(i), edited = (r.edited || []).includes(i);
+  const fileV = r.fileMonths ? r.fileMonths[i] : v;
+  const tip = `${ir.months[i]}: model ${money(r.model[i] || 0)} → file ${money(fileV || 0)}${edited ? ` → yours ${money(v || 0)}` : ''}${r.t12 ? ` · T12 ${money(r.t12[i] || 0)}` : ''}`;
+  const cls = `${typed ? 'irchg' : 'muted'}${edited ? ' iredit' : ''}`;
+  if (!irEditable(r) || (ir.closed || []).includes(i)) return `<td class="${cls}" title="${esc(tip)}">${money(v || 0)}</td>`;
+  return `<td class="${cls} ircell" title="${esc(tip + ' · type to adjust')}"><input class="irin" inputmode="decimal" data-irgl="${esc(r.gl)}" data-iri="${i}" value="${money(v || 0)}"></td>`;
+}
 function importReviewHtml(bv) {
   const ir = bv.importReview;
   if (!ir) return '';
@@ -3278,14 +3291,14 @@ function importReviewHtml(bv) {
     const noteCell = r.note != null
       ? `<td class="l irnote irchg" title="${esc(`Note from the file${r.curNote ? `; the line's note now: ${r.curNote}` : ''}`)}">${r.note ? esc(r.note) : '<i>(note cleared)</i>'}</td>`
       : `<td class="l irnote muted" title="The line's note now (not changed in the file)">${esc(r.curNote || '')}</td>`;
-    const months = r.months.map((v, i) => `<td class="${typed.has(i) ? 'irchg' : 'muted'}" title="${esc(`${ir.months[i]}: model ${money(r.model[i] || 0)} → file ${money(v || 0)}${r.t12 ? ` · T12 ${money(r.t12[i] || 0)}` : ''}`)}">${money(v || 0)}</td>`).join('');
+    const months = r.months.map((v, i) => irMonthCell(ir, r, i)).join('');
     return `<tr class="${r.status === 'flagged' ? 'irflag' : ''}">
       <td class="l stick"><b>${esc(r.gl)}</b> ${esc(r.name)}${r.status === 'flagged' ? ' <span class="badge irflagb">flagged</span>' : ''}${r.file && r.file !== ir.file ? `<div class="muted" style="font-size:10.5px">from ${esc(r.file)}</div>` : ''}</td>
       ${noteCell}
       <td>${r.t12Year == null ? '<span class="muted">—</span>' : money(r.t12Year)}</td>
       <td>${money(r.modelYear || 0)}</td>
-      <td class="${r.typed && r.typed.length ? 'irchg' : ''}"><b>${money(r.fileYear || 0)}</b></td>
-      <td class="${d < 0 ? 'neg' : ''}">${d === '' || Math.abs(d) < 1 ? '<span class="muted">—</span>' : money(d)}</td>
+      <td class="${r.typed && r.typed.length ? 'irchg' : ''}" data-iryr="${esc(r.gl)}"><b>${money(r.fileYear || 0)}</b></td>
+      <td class="${d < 0 ? 'neg' : ''}" data-irdelta="${esc(r.gl)}">${d === '' || Math.abs(d) < 1 ? '<span class="muted">—</span>' : money(d)}</td>
       ${months}
       <td>${seg(r.gl)}</td></tr>`;
   }).join('');
@@ -3302,11 +3315,11 @@ function importReviewHtml(bv) {
       </div>
     </div>
     <div class="sumwrap"><table class="sumtbl irtbl">
-      <tr><th class="l stick">GL</th><th class="l">Notes</th><th title="The property's trailing-12 actuals for the GL">Prior T12</th><th title="The GL's budget year in the tool now">Current model</th><th title="The year as revised in the Excel file">Revised (Excel)</th><th title="Revised minus current model">Δ vs model</th>
+      <tr><th class="l stick">GL</th><th class="l">Notes</th><th title="The property's trailing-12 actuals for the GL">Prior T12</th><th title="The GL's budget year in the tool now">Current model</th><th title="The year as revised in the Excel file (with any months typed here on a flagged GL)">Revised (Excel)</th><th title="Revised minus current model">Δ vs model</th>
         ${ir.months.map((m) => `<th>${esc(m)}</th>`).join('')}<th>Decision</th></tr>
       ${rows}${capRow}
     </table></div>
-    <p class="muted" style="font-size:11.5px; margin:6px 0 0"><span class="irchg-key">Red</span> = changed in the Excel file (vs what it was exported with); hover a month for the model and T12. Accepted months come in as typed cells (bold in the grid); the line keeps its formula elsewhere. A save point is taken before anything is applied. Flagged or undecided GLs stay here, not applied.</p>
+    <p class="muted" style="font-size:11.5px; margin:6px 0 0"><span class="irchg-key">Red</span> = changed in the Excel file (vs what it was exported with); hover a month for the model and T12. Accepted months come in as typed cells (bold in the grid); the line keeps its formula elsewhere. A save point is taken before anything is applied. Flagged or undecided GLs stay here, not applied. On a flagged GL, type over any month to adjust it before you accept (<span class="iredit-key">blue</span> = your number; typing the model's number back takes that month out of the change).</p>
   </div>`;
 }
 function wireImportReview(el, b) {
@@ -3315,8 +3328,43 @@ function wireImportReview(el, b) {
   el.querySelectorAll('[data-irdec]').forEach((x) => x.addEventListener('click', () => { const g = x.dataset.irdec; S.irDec.d[g] = S.irDec.d[g] === x.dataset.v ? '' : x.dataset.v; render(); }));
   el.querySelectorAll('[data-irall]').forEach((x) => x.addEventListener('click', () => { for (const r of ir.rows) S.irDec.d[r.gl] = x.dataset.irall; if (ir.capital) S.irDec.cap = x.dataset.irall === 'flag' ? '' : x.dataset.irall; render(); }));
   el.querySelectorAll('[data-ircap]').forEach((x) => x.addEventListener('click', () => { S.irDec.cap = x.dataset.ircap; render(); }));
+  // flagged GLs: a typed month is saved to the held review straight away (saves run one after another)
+  const ins = [...el.querySelectorAll('input.irin')];
+  ins.forEach((x, k) => {
+    x.addEventListener('focus', () => x.select());
+    x.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); (ins[k + 1] || x).focus(); if (!ins[k + 1]) x.blur(); }
+      if (e.key === 'Escape') { const r = ir.rows.find((q) => q.gl === x.dataset.irgl); x.value = money(r.months[+x.dataset.iri] || 0); x.blur(); }
+    });
+    x.addEventListener('change', () => {
+      const gl = x.dataset.irgl, i = +x.dataset.iri;
+      const r = ir.rows.find((q) => q.gl === gl);
+      const txt = String(x.value).replace(/[$,\s]/g, '');
+      const v = txt === '' ? 0 : Math.round(Number(txt) * 100) / 100;
+      if (!Number.isFinite(v)) { alert(`"${x.value}" is not a number`); x.value = money(r.months[i] || 0); return; }
+      // mirror the server so the row reads right before the save comes back
+      if (!r.fileMonths) r.fileMonths = [...r.months];
+      r.months = [...r.months]; r.months[i] = v;
+      const flip = (arr, on) => { const s2 = new Set(arr || []); if (on) s2.add(i); else s2.delete(i); return [...s2].sort((a, c) => a - c); };
+      r.typed = flip(r.typed, Math.abs(v - (r.model[i] || 0)) >= 0.5);
+      r.edited = flip(r.edited, Math.abs(v - (r.fileMonths[i] || 0)) >= 0.5);
+      if (!r.edited.length) delete r.fileMonths;
+      r.fileYear = Math.round(r.months.reduce((a, c) => a + (Number(c) || 0), 0) * 100) / 100;
+      x.value = money(v);
+      const td = x.parentElement;
+      td.className = `${r.typed.includes(i) ? 'irchg' : 'muted'}${r.edited.includes(i) ? ' iredit' : ''} ircell`;
+      const yr = el.querySelector(`[data-iryr="${CSS.escape(gl)}"]`);
+      if (yr) { yr.className = r.typed.length ? 'irchg' : ''; yr.innerHTML = `<b>${money(r.fileYear)}</b>`; }
+      const dl = el.querySelector(`[data-irdelta="${CSS.escape(gl)}"]`);
+      if (dl) { const d = r.fileYear - (r.modelYear || 0); dl.className = d < 0 ? 'neg' : ''; dl.innerHTML = Math.abs(d) < 1 ? '<span class="muted">—</span>' : money(d); }
+      S.irSaving = (S.irSaving || Promise.resolve()).then(() => PUT(`/budgets/${b.id}/import-review/cell`, { gl, i, value: v }))
+        .then((got) => { if (got && got.gl === gl) { r.months = got.months; r.typed = got.typed; r.edited = got.edited; if (got.fileMonths) r.fileMonths = got.fileMonths; else delete r.fileMonths; } })
+        .catch((e) => { alert(`Could not save ${gl} ${ir.months[i]}: ${e.message}`); });
+    });
+  });
   const ap = el.querySelector('#ir-apply');
   if (ap) ap.addEventListener('click', async () => {
+    if (S.irSaving) await S.irSaving;
     const d = Object.fromEntries(Object.entries(S.irDec.d).filter(([, v]) => v));
     const n = (v) => Object.values(d).filter((x) => x === v).length;
     if (!confirm(`Apply the import decisions?\n\nAccept ${n('accept')} · flag ${n('flag')} · deny ${n('deny')}${ir.capital && S.irDec.cap ? ` · capital: ${S.irDec.cap}` : ''}\n\nA save point is taken first. Flagged and undecided GLs stay held.`)) return;

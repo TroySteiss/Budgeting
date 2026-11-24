@@ -624,6 +624,12 @@ table.irtbl tr.irflag td.stick { box-shadow: inset 3px 0 0 var(--warn, #c98a00);
 .irflagb { background: color-mix(in srgb, var(--warn, #c98a00) 20%, var(--panel)); }
 .irseg button { font-size: 11px; padding: 2px 6px; }
 .irchg-key { color: var(--bad); font-weight: 600; }
+/* flagged GLs: month boxes (Troy 2026-11-24); blue = a number typed here */
+table.irtbl td.ircell { padding: 1px 2px; }
+table.irtbl input.irin { width: 66px; box-sizing: border-box; text-align: right; font: inherit; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 3px; padding: 2px 4px; }
+table.irtbl input.irin:focus { outline: 2px solid var(--accent); outline-offset: -1px; background: var(--panel); color: var(--ink); }
+table.irtbl td.iredit, table.irtbl td.iredit input.irin, .iredit-key { color: #1f6feb; font-weight: 600; }
+[data-theme="dark"] table.irtbl td.iredit, [data-theme="dark"] table.irtbl td.iredit input.irin, [data-theme="dark"] .iredit-key { color: #4d94ff; }
 /* portfolio subtotals (Troy 2026-11-19): lighter than the region subtotal they sit inside; any subtotal with a caret folds */
 table.sumtbl tr.sub.psub td { background: color-mix(in srgb, var(--total-bg) 55%, var(--panel)); font-weight: 600; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 table.sumtbl tr.sumfold { cursor: pointer; }

@@ -3729,10 +3729,24 @@ router.get('/export/portfolio.xlsx', h(async (req, res) => {
    and a changed note; the list is held on the budget (`inputs.importReview`) and shown GL by GL in the editor (the
    file's year, the current model's year, the trailing-12, the file's months with the changed ones in red). Per GL:
    accept (applied as typed cells, exactly as the one-step import did), flag (held, still pending, to decide later), or
-   deny (dropped). Capital (Summary D27) is a decision of its own. Nothing is applied until a decision says so. */
-type ImportReviewRow = { gl: string; months: number[]; typed: number[]; note: string | null; status: 'pending' | 'flagged'; file?: string };
+   deny (dropped). Capital (Summary D27) is a decision of its own. Nothing is applied until a decision says so.
+   FLAGGED ROWS ARE EDITABLE (Troy 2026-11-24: "if flagged, I would like for user to be able to make manual adjustments
+   within those boxes for the GL in each month before accepting/applying the changes to the budget"): a month typed in
+   the review replaces the file's number for that month (`edited`, the file's own months kept in `fileMonths`). A month
+   typed back to what the model has drops out of the change; any other month joins it. Accept applies the edited row. */
+type ImportReviewRow = { gl: string; months: number[]; typed: number[]; note: string | null; status: 'pending' | 'flagged'; file?: string; edited?: number[]; fileMonths?: number[] };
 interface ImportReview { file: string; at: string; by: string; base: string; capital: { from: number; to: number } | null; rows: ImportReviewRow[] }
 
+/** Budget-year month indexes (0-11) closed to actuals. */
+function closedMonthIdx(lb: LoadedBudget): Set<number> {
+  const out = new Set<number>();
+  for (const key of Object.keys(lb.budget.inputs?.actuals || {})) {
+    const { calYear, calMonth } = parseActualKey(key);
+    const ai = ownershipIndexOf(Number(lb.budget.year), lb.budget.inputs?.startMonth || 1, calYear, calMonth);
+    if (ai >= 0) out.add(ai);
+  }
+  return out;
+}
 async function draftChanges(lb: LoadedBudget, parsed: ReturnType<typeof parseReviewDraft>, filename: string): Promise<{ rows: ImportReviewRow[]; base: string; capital: { from: number; to: number } | null }> {
   // the baseline: what the file was exported with
   let base: Record<string, number[]> | null = parsed.exported, baseFrom = 'the file\'s Formulas sheet';
@@ -3749,12 +3763,7 @@ async function draftChanges(lb: LoadedBudget, parsed: ReturnType<typeof parseRev
     }
   }
   // months closed to actuals are not plan months
-  const actIdx = new Set<number>();
-  for (const key of Object.keys(lb.budget.inputs?.actuals || {})) {
-    const { calYear, calMonth } = parseActualKey(key);
-    const ai = ownershipIndexOf(Number(lb.budget.year), lb.budget.inputs?.startMonth || 1, calYear, calMonth);
-    if (ai >= 0) actIdx.add(ai);
-  }
+  const actIdx = closedMonthIdx(lb);
   const byGl = new Map(lb.lines.map((l) => [l.gl_code, l]));
   const out = new Map<string, ImportReviewRow>();
   for (const [gl, m] of Object.entries(parsed.glMonths)) {
@@ -3824,7 +3833,7 @@ function importReviewView(lb: LoadedBudget, lines?: BudgetLine[]) {
     return { ...r, name: a?.name || '', section: a?.section || '', order: a?.display_order ?? 0, model, t12,
       fileYear: yr(r.months), modelYear: yr(model), t12Year: yr(t12), curNote: eff.get(r.gl)?.note || lb.lines.find((l) => l.gl_code === r.gl)?.note || '' };
   }).sort((x, y) => (x.order || 0) - (y.order || 0));
-  return { file: ir.file, at: ir.at, by: ir.by, base: ir.base, capital: ir.capital, rows, months: monthLabels(lb.budget.year, start) };
+  return { file: ir.file, at: ir.at, by: ir.by, base: ir.base, capital: ir.capital, rows, months: monthLabels(lb.budget.year, start), closed: [...closedMonthIdx(lb)].sort((a, b) => a - b) };
 }
 
 // step 1: read the file into a held review (nothing applied)
@@ -3850,6 +3859,36 @@ router.post('/budgets/:id/import-draft', upload.single('file'), h(async (req, re
   const view: any = budgetView((await loadBudget(lb.budget.id))!);
   view.importResult = { review: true, gls: d.rows.length, cells: d.rows.reduce((a, r) => a + r.typed.length, 0), notes: d.rows.filter((r) => r.note != null).length, capital: !!d.capital, base: d.base };
   res.json(view);
+}));
+// a month typed by hand into a held row (flagged rows: the review card's month boxes). body { gl, i, value }
+router.put('/budgets/:id/import-review/cell', h(async (req, res) => {
+  const lb = await loadBudget(Number(req.params.id));
+  if (!lb) return res.status(404).json({ error: 'Not found' });
+  const ir = lb.budget.inputs?.importReview as ImportReview | undefined;
+  if (!ir) return res.status(400).json({ error: 'No import waiting for review on this budget' });
+  const gl = String(req.body?.gl || '');
+  const i = Number(req.body?.i);
+  const value = r2(Number(req.body?.value));
+  const row = ir.rows.find((r) => r.gl === gl);
+  if (!row) return res.status(404).json({ error: `GL ${gl} is not in the import review` });
+  if (!Number.isInteger(i) || i < 0 || i > 11) return res.status(400).json({ error: 'month index must be 0-11' });
+  if (!Number.isFinite(value)) return res.status(400).json({ error: 'value must be a number' });
+  if (closedMonthIdx(lb).has(i)) return res.status(400).json({ error: 'That month is closed to actuals' });
+  if (!row.fileMonths) row.fileMonths = [...row.months];
+  row.months = [...row.months];
+  row.months[i] = value;
+  const model = Number(effectiveLines(lb).find((l) => l.gl_code === gl)?.months[i]) || 0;
+  const typed = new Set(row.typed);
+  if (Math.abs(value - model) < 0.5) typed.delete(i); else typed.add(i);
+  row.typed = [...typed].sort((a, b) => a - b);
+  const edited = new Set(row.edited || []);
+  if (Math.abs(value - (Number(row.fileMonths[i]) || 0)) < 0.5) edited.delete(i); else edited.add(i);
+  row.edited = [...edited].sort((a, b) => a - b);
+  if (!row.edited.length) delete row.fileMonths;
+  const inputs: BudgetInputs = { ...lb.budget.inputs, importReview: ir } as any;
+  await query('update budgets set inputs=$2, updated_at=now() where id=$1', [lb.budget.id, JSON.stringify(inputs)]);
+  logChange(req.session.username || '', 'import review: month edited', { id: lb.budget.id, gl, month: i, value });
+  res.json({ gl, months: row.months, typed: row.typed, edited: row.edited, fileMonths: row.fileMonths || null });
 }));
 // step 2: the decisions. body { decisions: { [gl]: 'accept' | 'flag' | 'deny' }, capital?: 'accept' | 'deny' }
 router.post('/budgets/:id/import-review', h(async (req, res) => {
