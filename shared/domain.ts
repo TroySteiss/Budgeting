@@ -276,8 +276,9 @@ export interface BudgetInputs {
       line (its T12 spike) in `month` (1-12), the rest as built; 'quarters' = the same amount each calendar quarter.
       null turns a default off (TIMING_DEFAULTS in shared/annual.ts). */
   timing?: Record<string, { kind: 'once' | 'quarters'; month?: number } | null> | null;
-  /** annual: fill a month the T12 missed (a zero between billed months) from the months either side, per GL; the
-      defaults cover sewer / water (GAP_FILL_GLS) */
+  /** annual: smooth a monthly bill's trailing-12 before the formula reads it (catch-up bills spread back to the
+      months they cover, credits netted, a month nothing caught up filled), per GL: true on, false off. The defaults
+      cover the utility bills (GAP_FILL_GLS, smoothBills in shared/annual.ts) */
   gapFill?: Record<string, boolean> | null;
   /** annual: build bad-debt recovery (5110) on the delinquency chain (T12 rate x 60-day uncollected) instead of the
       T12 average; a typed recoveryPct does the same */

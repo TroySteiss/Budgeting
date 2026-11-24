@@ -88,6 +88,14 @@ function drvMeta(l) {
     ? { cls: 'drv-corp', tag: 'QTR =', label: 'The same amount each calendar quarter (the review checklist: bonuses). Turn off with inputs.timing or the Review tab.' }
     : { cls: 'drv-corp', tag: `1X·${MONTHS[(t.month || 1) - 1].toUpperCase()}`, label: `One-time part $${money(t.amount || 0)} (${Math.round((t.share || 0) * 100)}% of its trailing-12 was a spike) budgeted in ${MONTHS[(t.month || 1) - 1]}; the rest stays on the line's own months. Year total unchanged.` }); }
   if (l && l.driver && l.driver.giftCards) { const g = l.driver.giftCards; extra.push({ cls: 'drv-pay', tag: `GIFT·${MONTHS[(g.month || 11) - 1].toUpperCase()}`, label: `Gift cards: $${money(g.perEmployee)} × ${(+g.heads).toFixed(2).replace(/\.?0+$/, '')} employees allocated here (Pay-rates roster, each at its allocation) = $${money(g.amount)} in ${MONTHS[(g.month || 11) - 1]}${g.replaced ? `, in place of last year's $${money(g.replaced)} spike` : ''}; the rest of the line on its own months.` }); }
+  // a utility bill's T12 smoothed before the formula read it (Troy 2026-11-23): catch-up bills spread back, credits netted
+  if (l && l.driver && l.driver.billSmooth) {
+    const bs = l.driver.billSmooth, parts = [];
+    for (const s of bs.spread || []) parts.push(`${MONTHS[s.from - 1]}'s catch-up bill gave $${money(s.amount)} back to ${s.to.map((m) => MONTHS[m - 1]).join(', ')}`);
+    for (const c of bs.credits || []) parts.push(`${MONTHS[c.at - 1]}'s $${money(c.amount)} credit netted against the months around it`);
+    if ((bs.filled || []).length) parts.push(`${bs.filled.map((m) => MONTHS[m - 1]).join(', ')} still had no bill: brought up to the months around it, $${money(bs.refill || 0)} taken from the other months in proportion`);
+    extra.push({ cls: 'drv-t12', tag: 'SMOOTHED', label: `The trailing-12 was smoothed before the formula read it: ${parts.join('; ')}. The T12 total is kept: nothing is added. Turn it off from the row menu.` });
+  }
   if (l && l.driver && Array.isArray(l.driver.gapFill) && l.driver.gapFill.length) extra.push({ cls: 'drv-t12', tag: 'GAP FILL', label: `The trailing-12 missed ${l.driver.gapFill.map((m) => MONTHS[m - 1]).join(', ')}: filled from the months either side before the formula read it (a monthly bill hits every month).` });
   // the recurring-journal split (TPND → TPNDC)
   if (l && l.driver && l.driver.allocOut) { const a = l.driver.allocOut; extra.push({ cls: 'drv-corp', tag: `−${Math.round(a.pct * 10000) / 100}%`, label: `${Math.round(a.pct * 10000) / 100}% of this line moves to ${String(a.to).toUpperCase()} by recurring journal: $${money(a.gross)} gross, $${money(a.out)} to ${String(a.to).toUpperCase()} (Assumptions → journal split)` }); }
@@ -2773,6 +2781,7 @@ const TAG_KEY = [
   ['ZERO·SMALL', 'A small trailing-12 line zeroed out (More → Small T12 lines).'],
   ['MOVED→gl', "A small trailing-12 line whose history was moved onto another GL; that GL's formula budgets it."],
   ['+n MOVED', 'A second chip: this GL took the history of n small T12 lines before its formula read it.'],
+  ['SMOOTHED', "A second chip: the line's trailing-12 was smoothed before its formula read it. A catch-up bill gives its excess back to the missed months before it, credits are netted, and a month still at nothing is brought up to the months around it, with the T12 total kept. On by default for the utility bills; turn it off or on from the row menu."],
 
   ['+ SMOOTH', 'A second chip: missed-bill smoothing applied on top of the line formula (months fixed, rounded to $5).'],
   ['MAN', 'Typed by hand; formulas do not touch it until it is unlocked.'],
@@ -3408,11 +3417,14 @@ function defaultsInUse(bv) {
   const ncon = (inp.contracts || []).length, nadj = (inp.t12Adjust || []).length;
   if (ncon) add('contracts', 'Known contracts', `${ncon} on ${new Set(inp.contracts.map((c) => c.gl)).size} GLs, $${money(inp.contracts.reduce((a, c) => a + contractAnnual(c, bv), 0))} a year`, false);
   { const st = Object.entries(inp.smallT12 || {}); if (st.length) { const mv = st.filter(([, v]) => v !== 'zero'); add('smallt12', 'Small T12 lines', `${st.length - mv.length} zeroed, ${mv.length} moved onto ${new Set(mv.map(([, v]) => v)).size} GL${new Set(mv.map(([, v]) => v)).size === 1 ? '' : 's'} (under $${money(Number(inp.smallT12Limit) || 200)} of T12)`, false); } }
+  { const sm = bv.lines.filter((l) => l.driver && l.driver.billSmooth); if (sm.length) { add('billsmooth', 'T12 billing smoothed', `${sm.length} line${sm.length === 1 ? '' : 's'} (${sm.map((l) => l.gl_code).sort().join(', ')}): catch-up bills spread back to the months they cover, credits netted, empty months brought up; T12 totals kept`, !Object.keys(inp.gapFill || {}).length); } }
   if (nadj) add('onetime', 'One-time items out of the T12', `${nadj} items, $${money(inp.t12Adjust.reduce((a, x) => a + (Number(x.amount) || 0), 0))} removed`, false);
   if (bv.allocOut) add('alloc', 'Journal split', `${Math.round(bv.allocOut.pct * 10000) / 100}% of ${bv.allocOut.gls.join(', ')} to ${String(bv.allocOut.to).toUpperCase()} (engine-built lines; history lines already post net)`, inp.allocOut === undefined);
   add('sp', 'Special projects', `${money(sp)} budgeted${spT12 ? ` (T12 posted ${money(spT12)})` : ''} — cash flow and cash-on-cash are before special projects${(bv.kpis || {}).principal ? '' : ' and principal'}`, !sp, !sp && Math.abs(spT12) > 1000 ? 'none entered' : '');
   return out;
 }
+/* the GLs whose T12 billing is smoothed by default (shared/annual.ts GAP_FILL_GLS) */
+const BILL_SMOOTH_GLS = new Set(['6604', '6608', '6614', '6620', '6622']);
 const defaultsHash = (items) => items.map((x) => `${x.key}=${x.value}`).join('|');
 /* One quiet chip on the legend row; the list itself opens in a dialog on click. */
 function defaultsChipHtml(bv) {
@@ -5045,7 +5057,7 @@ function openRowTools(b, gl, anchorBtn) {
   const menu = document.createElement('div');
   menu.className = 'rowmenu';
   // the chip each tool leaves on the row — same tag and colour as the grid (Troy 2026-11-11)
-  const TOOL_CHIP = { undrop: ['drv-base', 'FLATLINE'], flatGrow: ['drv-base', 'FLATLINE'], flatMonthly: ['drv-base', 'FLATLINE'], flatAnnual: ['drv-base', 'FLATLINE'], ownFormula: ['drv-uw', 'OWN'], zero: ['drv-int', 'ZERO'], grow: ['drv-man', 'MAN'], minot: ['drv-comp', 'MINOT'], t3avg: ['drv-comp', 'T3'], shape: ['drv-base', 'SHAPE'], pctgpr: ['drv-base', '%GPR'], suggest: ['drv-corp', 'CORP'], seller: ['drv-t12', 'SLR'], ownBudget: ['drv-t12', 'CY BUD'], t12curve: ['drv-t12', 'T12C'], link: ['drv-fee', 'LINK'], smooth: ['drv-t12', 'SMOOTH'], recmap: ['drv-t12', 'REC'], wavg: ['drv-comp', 'WAVG'], reset: ['drv-uw', 'ENGINE'], burdenFrom: ['drv-pay', '%WAGES'] };
+  const TOOL_CHIP = { billSmooth: ['drv-t12', 'SMOOTHED'], undrop: ['drv-base', 'FLATLINE'], flatGrow: ['drv-base', 'FLATLINE'], flatMonthly: ['drv-base', 'FLATLINE'], flatAnnual: ['drv-base', 'FLATLINE'], ownFormula: ['drv-uw', 'OWN'], zero: ['drv-int', 'ZERO'], grow: ['drv-man', 'MAN'], minot: ['drv-comp', 'MINOT'], t3avg: ['drv-comp', 'T3'], shape: ['drv-base', 'SHAPE'], pctgpr: ['drv-base', '%GPR'], suggest: ['drv-corp', 'CORP'], seller: ['drv-t12', 'SLR'], ownBudget: ['drv-t12', 'CY BUD'], t12curve: ['drv-t12', 'T12C'], link: ['drv-fee', 'LINK'], smooth: ['drv-t12', 'SMOOTH'], recmap: ['drv-t12', 'REC'], wavg: ['drv-comp', 'WAVG'], reset: ['drv-uw', 'ENGINE'], burdenFrom: ['drv-pay', '%WAGES'] };
   const dot = (cls, act) => { const c = act && TOOL_CHIP[act]; return c ? `${chipHtml(c[0], c[1])} ` : `<span class="dot ${cls}" style="margin-right:6px"></span>`; };
   menu.innerHTML = `
     <div class="rm-head">${gl} ${esc(acc.name || '')}<br>
@@ -5067,6 +5079,15 @@ function openRowTools(b, gl, anchorBtn) {
       </div>`;
     })()}
     ${S.bv.annual && ((inp.baseline || {}).glShape || {})[gl] ? `<button data-act="ownFormula" title="Drop the shape chosen on this row; the line goes back to its usual formula">${dot('drv-uw', 'ownFormula')}Back to this line's own formula</button>` : ''}
+    ${(() => {
+      // auto-smoothing of the T12 billing (Troy 2026-11-23): on by default for the utility bills, any history line can have it
+      if (!S.bv.annual || !line || line.override || !line.driver || line.driver.method !== 'baseline') return '';
+      const gfv = (inp.gapFill || {})[gl];
+      const on = !!line.driver.billSmooth || gfv === true || (gfv !== false && BILL_SMOOTH_GLS.has(gl));
+      return on
+        ? `<button data-act="billSmooth" data-on="1" title="Read the trailing-12 exactly as it posted: no catch-up bills spread back, no missed months filled">${dot('drv-t12', 'billSmooth')}Auto-smooth T12 billing: <b>on</b> — turn off</button>`
+        : `<button data-act="billSmooth" data-on="0" title="Before the formula reads the trailing-12: a catch-up bill gives its excess back to the missed months before it, credits are netted, a month still at nothing is brought up to the months around it. The T12 total is kept.">${dot('drv-t12', 'billSmooth')}Auto-smooth T12 billing${gfv === false ? ' <span class="muted">(turned off)</span>' : ''}</button>`;
+    })()}
     <button data-act="zero">${dot('drv-int', 'zero')}Zero out row</button>
     ${S.bv.annual ? '' : `<button data-act="grow">${dot('drv-man', 'grow')}Start $ /mo + growth %/mo…</button>`}
     ${hasComp ? `<button data-act="minot">${dot('drv-comp', 'minot')}Minot $/unit × units (${money((S.bv.compWeights[gl] / S.bv.compUnits) * inp.units)}/yr, seasonal)</button>` : ''}
@@ -5114,6 +5135,7 @@ function openRowTools(b, gl, anchorBtn) {
     const act = mb.dataset.act;
     S.pickOther = !!e.shiftKey;   // Shift-click a GL-based option = pick ANOTHER line instead of this row's own
     if (act === 'zero') return put(Array(12).fill(0), { method: 'zero' });
+    if (act === 'billSmooth') { try { await saveInputs(b, { gapFill: { ...(inp.gapFill || {}), [gl]: mb.dataset.on !== '1' } }); } catch (err) { alert(err.message); } return; }
     if (act === 'shape') return openShapeMenu(b, gl, acc, anchorBtn, inp);
     if (act === 'pctgpr') {
       const cur = line && line.driver && line.driver.method === 'pctGpr' ? (line.driver.pct || 0) * 100 : 0;

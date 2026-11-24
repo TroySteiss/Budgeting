@@ -2740,7 +2740,7 @@ router.get('/summary', h(async (req, res) => {
 /* REVIEW FIX (Troy 2026-11-18: "likely worth adjusting default formulas for some of the specific lines based on the
    checks, or at least making it adjustable from there"): puts the ticked budgets' line on the check's pattern — a
    one-time month (inputs.timing once), the same each quarter (timing quarters), no growth over the T12
-   (baseline.glGrowth 0; 5110 off the delinquency chain), a monthly bill's missed months filled (inputs.gapFill). A save
+   (baseline.glGrowth 0; 5110 off the delinquency chain), a monthly bill's T12 smoothed (inputs.gapFill). A save
    point first; a line on the acquisition plan comes off it (offPlan); a hand-typed line is left alone and said so. */
 router.post('/review-fix', h(async (req, res) => {
   const ruleId = String(req.body?.ruleId || '');
@@ -2778,7 +2778,7 @@ router.post('/review-fix', h(async (req, res) => {
       if (gl === '5110') { inp.recoveryChain = false; delete inp.recoveryPct; }
       what = 'no growth over the T12';
     } else if (rule.kind === 'every') {
-      inp.gapFill = { ...(inp.gapFill || {}), [gl]: true }; what = 'missed months filled';
+      inp.gapFill = { ...(inp.gapFill || {}), [gl]: true }; what = 'billing smoothed (catch-up bills spread back, missed months filled)';
     }
     if (d.acq) { inp.offPlan = [...new Set<string>([...((inp.offPlan || []) as string[]).map(String), gl])].sort(); what += ' (off the UW plan)'; }
     // the fix's own effect: the budget rebuilt on its current inputs vs rebuilt with the fix — so a budget on older

@@ -1449,8 +1449,10 @@ export const ALLOC_OUT_DEFAULTS: Record<string, AllocOut> = {
 export const FIXED_DOLLAR_GLS = new Set(['5117', '5126', '5155', '5168', '5140', '5110']);
 /** Bad-debt recovery: the T12 total spread flat (the delinquency chain is opt-in: inputs.recoveryChain / recoveryPct). */
 export const RECOVERY_FLAT_GLS = new Set(['5110']);
-/** Monthly bills whose missed months are filled from the months either side (inputs.gapFill turns it off / on per GL). */
-export const GAP_FILL_GLS = new Set(['6614', '6622']);
+/** Utility bills whose trailing-12 is smoothed before the formula reads it (smoothBills): electric and gas common,
+    sewer, trash, water. inputs.gapFill turns it off / on per GL (Troy 2026-11-23: "especially for utilities"). Not the
+    vacant-unit lines: their empty months are real. */
+export const GAP_FILL_GLS = new Set(['6604', '6608', '6614', '6620', '6622']);
 /** November gift cards (Troy 2026-11-18): $ per employee x the employees allocated to the property. */
 export const GIFT_CARD_GL = '6318';
 export const GIFT_CARD_PER_EMPLOYEE = 500;
@@ -1510,21 +1512,93 @@ export function evenQuarters(months: Months, startMonth: number): Months | null 
   if (d) { const bi = outCal.reduce((b, v, i) => (Math.abs(v) > Math.abs(outCal[b]) ? i : b), 11); outCal[bi] = r2(outCal[bi] + d); }
   return Array.from({ length: 12 }, (_, i) => outCal[(startMonth - 1 + i) % 12]) as Months;
 }
-/** A monthly bill's missed months (zero between billed months) filled with the average of the billed months either
-    side; only on a line billed at least 9 months of 12 (a quarterly bill is left alone). Calendar order. */
-export function fillBillGaps(cal: Months): { cal: Months; filled: number[] } | null {
-  const nz = cal.map((v, i) => (Math.abs(v) >= 1 ? i : -1)).filter((i) => i >= 0);
-  if (nz.length < 9 || nz.length === 12) return null;
-  const out = [...cal] as Months;
-  const filled: number[] = [];
+/** A monthly bill's trailing-12 smoothed before the formula reads it (Troy 2026-11-23: "Gap Fill shouldnt just jam a
+    number in there - it should auto smooth the GL, especially for utilities"). The old fill put the average of the
+    months either side into a missed month, so a missed bill followed by a double one (GRKS sewer: Nov $0, Dec $8,708 on
+    a $4,381 bill) was budgeted twice. Now the history is read in TIME order (oldest month first, so a catch-up bill
+    looks back at the months it covers) and, as the row tool's gentle smoothing (app.js smoothGentle) does:
+      1. a credit month (against the line's sign) is taken out of the nearest months above the typical one;
+      2. a catch-up bill (over 1.5x the typical month and 1.5x the months beside it) gives its EXCESS back to the low
+         months within three months of it, nearest first and the months before it first, each filled only up to the
+         typical month. What does not fit stays where it posted;
+      3. a month still at nothing (a missed bill nothing caught up, or a credit month once netted) is brought up to the
+         billed months either side (never above the typical month), taken from every other month in proportion, as
+         the row tool fills a drop. No money is added (CLND gas: a January refund left January budgeted at $0).
+         Only up to three such months.
+    Every step keeps the year's total to the cent. Only a monthly bill (8+ months billed of 12); a line with nothing
+    wrong comes back null. Months are calendar months 1-12. */
+export interface BillSmooth {
+  cal: Months;
+  spread: { from: number; to: number[]; amount: number }[];
+  credits: { at: number; amount: number }[];
+  filled: number[];
+  refill: number;
+}
+export function smoothBills(cal: Months, lastMonth: number, gl: string): BillSmooth | null {
+  const total = r2(sum(cal));
+  const sign = parseInt(gl, 10) >= 6000 || total >= 0 ? 1 : -1;
+  const L = (((Math.round(Number(lastMonth)) || 12) - 1) % 12 + 12) % 12;   // calendar index of the last T12 month
+  const calOf = (k: number): number => (L + 1 + k) % 12;                    // time position (0 = oldest) -> calendar index
+  const w = Array.from({ length: 12 }, (_, k) => (Number(cal[calOf(k)]) || 0) * sign);
+  if (w.filter((v) => Math.abs(v) >= 1).length < 8) return null;           // not a monthly bill
+  const pos = w.filter((v) => v > 0).sort((a, b) => a - b);
+  const med = pos.length ? pos[Math.floor((pos.length - 1) / 2)] : 0;
+  if (!(med > 0)) return null;
+  const near = (i: number, d: number): number[] => [i - d, i + d].filter((j) => j >= 0 && j < 12);
+  const spread: BillSmooth['spread'] = [];
+  const credits: BillSmooth['credits'] = [];
+  // 1. credits
   for (let i = 0; i < 12; i++) {
-    if (Math.abs(cal[i]) >= 1) continue;
-    let p = (i + 11) % 12; while (Math.abs(cal[p]) < 1) p = (p + 11) % 12;
-    let n = (i + 1) % 12; while (Math.abs(cal[n]) < 1) n = (n + 1) % 12;
-    out[i] = r2((cal[p] + cal[n]) / 2);
-    filled.push(i + 1);
+    if (!(w[i] <= -1)) continue;
+    const amt = -w[i];
+    let need = amt; w[i] = 0;
+    for (const floor of [med, 0]) for (let d = 1; d < 12 && need > 0.005; d++) for (const j of near(i, d)) {
+      const take = Math.min(need, Math.max(0, w[j] - floor));
+      if (take > 0) { w[j] -= take; need -= take; }
+    }
+    if (need > 0.005) w[i] = -need;
+    if (amt - need >= 1) credits.push({ at: calOf(i) + 1, amount: r2(amt - need) });
   }
-  return { cal: out, filled };
+  // 2. catch-up bills
+  for (let i = 0; i < 12; i++) {
+    const nb = Math.max(...[i - 1, i + 1].filter((j) => j >= 0 && j < 12).map((j) => w[j]));
+    if (!(w[i] > 1.5 * med && w[i] - med >= 50 && w[i] > 1.5 * nb)) continue;
+    let excess = w[i] - med, moved = 0;
+    const to: number[] = [];
+    for (let d = 1; d <= 3 && excess > 0.005; d++) for (const j of near(i, d)) {
+      const give = Math.min(excess, Math.max(0, med - w[j]));
+      if (give > 0.005) { w[j] += give; w[i] -= give; excess -= give; moved += give; to.push(calOf(j) + 1); }
+    }
+    if (moved >= 1) spread.push({ from: calOf(i) + 1, to, amount: r2(moved) });
+  }
+  // 3. a month still at nothing: brought up to the months either side, taken from every other month in proportion
+  const filled: number[] = [];
+  let refill = 0;
+  const empty = w.map((v, k) => (Math.abs(v) < 1 ? k : -1)).filter((k) => k >= 0);
+  if (empty.length && empty.length <= 3) {
+    const billed = (k: number): boolean => Math.abs(w[k]) >= 1;
+    const target = empty.map((k) => {
+      let p = k - 1; while (p >= 0 && !billed(p)) p--;
+      let n = k + 1; while (n < 12 && !billed(n)) n++;
+      const sides = [p >= 0 ? w[p] : null, n < 12 ? w[n] : null].filter((v): v is number => v != null && v > 0);
+      return sides.length ? Math.min(med, sides.reduce((a, b) => a + b, 0) / sides.length) : 0;
+    });
+    const need = target.reduce((a, b) => a + b, 0);
+    const isEmpty = new Set(empty);
+    const rest = w.reduce((a, v, k) => a + (isEmpty.has(k) ? 0 : Math.max(0, v)), 0);
+    if (need >= 1 && rest > need) {
+      const k2 = (rest - need) / rest;
+      for (let k = 0; k < 12; k++) if (!isEmpty.has(k) && w[k] > 0) w[k] *= k2;
+      empty.forEach((k, x) => { if (target[x] > 0) { w[k] = target[x]; filled.push(calOf(k) + 1); } });
+      refill = need;
+    }
+  }
+  if (!spread.length && !credits.length && !filled.length) return null;
+  const out = zero12();
+  for (let k = 0; k < 12; k++) out[calOf(k)] = r2(w[k] * sign);
+  const d = r2(total - sum(out));
+  if (d) { let bi = 0; out.forEach((v, i) => { if (Math.abs(v) > Math.abs(out[bi])) bi = i; }); out[bi] = r2(out[bi] + d); }
+  return { cal: out, spread, credits, filled: filled.sort((a, b) => a - b), refill: r2(refill) };
 }
 
 /** The companion's monthly income that sits in the management-fee basis, in budget-month order
@@ -2133,8 +2207,10 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   const baseline = (a: CoaAccount, shape?: BaselineShape, pctOverride?: number): boolean => {
     let cal = base[a.code];
     if (!cal || !cal.some((v) => v)) return false;
-    // a monthly bill the T12 missed (sewer / water: "hits every month"): filled from the months either side
-    const gf = (GAP_FILL_GLS.has(a.code) && inputs.gapFill?.[a.code] !== false) || inputs.gapFill?.[a.code] === true ? fillBillGaps(cal) : null;
+    // a utility bill's catch-up bills, credits and missed months smoothed before the formula reads it (smoothBills);
+    // not on a GL that carries a contract (its months are the contract's billing)
+    const gfOn = !contractGls.has(a.code) && ((GAP_FILL_GLS.has(a.code) && inputs.gapFill?.[a.code] !== false) || inputs.gapFill?.[a.code] === true);
+    const gf = gfOn ? smoothBills(cal, lastMonth, a.code) : null;
     if (gf) cal = gf.cal;
     const rule = ruleOf(a.code);
     const pct = pctOverride ?? pctFor(a);
@@ -2210,7 +2286,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
         months = Array(12).fill(mult ? r2(Math.round(mo / mult) * mult) : r2(mo)) as Months;
       }
     }
-    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(accrual ? { accrual, taxYear } : {}), ...(reTax ? { reTax } : {}), ...(taxNoInputs ? { taxNoInputs: true } : {}), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(fit ? { fit } : {}), ...(lastDev != null ? { lastDev } : {}), ...(drift ? { drift } : {}), ...(noNeg.folded ? { folded: noNeg.folded } : {}), ...(gf ? { gapFill: gf.filled } : {}), ...(lastEmpty ? { lastEmpty: true, shape: 'actual' } : {}) } as any);
+    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(accrual ? { accrual, taxYear } : {}), ...(reTax ? { reTax } : {}), ...(taxNoInputs ? { taxNoInputs: true } : {}), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(fit ? { fit } : {}), ...(lastDev != null ? { lastDev } : {}), ...(drift ? { drift } : {}), ...(noNeg.folded ? { folded: noNeg.folded } : {}), ...(gf ? { billSmooth: { spread: gf.spread, credits: gf.credits, filled: gf.filled, refill: gf.refill } } : {}), ...(lastEmpty ? { lastEmpty: true, shape: 'actual' } : {}) } as any);
     return true;
   };
 

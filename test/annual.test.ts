@@ -2854,7 +2854,7 @@ describe('cash on cash with a companion NOI (Troy 2026-11-18: "TPND COC return n
   });
 });
 
-import { spikeShare, retimeOnce, evenQuarters, fillBillGaps, timingFor } from '../shared/annual.js';
+import { spikeShare, retimeOnce, evenQuarters, smoothBills, timingFor } from '../shared/annual.js';
 describe('review-checklist defaults (Troy 2026-11-18: "If one time, I would like for it to say in which month")', () => {
   it('spikeShare: a once-a-year amount is all one-time, a steady line none of it', () => {
     expect(spikeShare([0, 0, 0, 0, 0, 0, 0, 0, 0, 1200, 0, 0])).toBe(1);
@@ -2877,11 +2877,43 @@ describe('review-checklist defaults (Troy 2026-11-18: "If one time, I would like
     expect([0, 1, 2, 3].map((k) => q[k * 3] + q[k * 3 + 1] + q[k * 3 + 2])).toEqual([500, 500, 500, 500]);
     expect(q[2]).toBe(500); expect(q[0]).toBe(0);     // paid in the quarter's last month, as the history
   });
-  it('fillBillGaps: a missed month of a monthly bill, never a quarterly bill', () => {
-    const r = fillBillGaps([100, 100, 100, 100, 100, 100, 100, 100, 0, 0, 120, 100] as Months)!;
-    expect(r.filled).toEqual([9, 10]);
-    expect(r.cal[8]).toBe(110);
-    expect(fillBillGaps([300, 0, 0, 300, 0, 0, 300, 0, 0, 300, 0, 0] as Months)).toBeNull();
+  it('smoothBills: a missed bill and the double one after it are spread back, total kept (GRKS sewer)', () => {
+    // calendar months; the T12 runs Nov..Oct (last month 10): Nov missed, Dec came in double
+    const cal = [4177, 4177, 4381, 4381, 4381, 4381, 4381, 4381, 4381, 4381, 0, 8708] as Months;
+    const r = smoothBills(cal, 10, '6614')!;
+    expect(r.cal[10]).toBe(4327);                       // Nov gets Dec's excess
+    expect(r.cal[11]).toBe(4381);                       // Dec back to the usual bill
+    expect(r.spread).toEqual([{ from: 12, to: [11], amount: 4327 }]);
+    expect(r.filled).toEqual([]);
+    expect(r.refill).toBe(0);
+    expect(sum(r.cal)).toBe(sum(cal));
+  });
+  it('smoothBills: the catch-up looks back in TIME order, across the calendar year end', () => {
+    // last month March: Apr..Mar. Jan missed, Feb double; Dec (time-before Jan) stays a normal bill
+    const cal = [0, 200, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100] as Months;
+    const r = smoothBills(cal, 3, '6622')!;
+    expect(r.cal[0]).toBe(100); expect(r.cal[1]).toBe(100);
+    expect(sum(r.cal)).toBe(1200);
+  });
+  it('smoothBills: a month nothing caught up is brought up from the other months (nothing added); a credit is netted; quarterly / clean lines untouched', () => {
+    const cal = [100, 100, 100, 100, 100, 100, 100, 100, 0, 0, 120, 100] as Months;
+    const miss = smoothBills(cal, 12, '6614')!;
+    expect(miss.filled).toEqual([9, 10]);
+    expect(miss.cal[8]).toBeGreaterThan(80);
+    expect(miss.refill).toBe(200);                      // up to the typical $100 each, never the $110 average
+    expect(sum(miss.cal)).toBe(sum(cal));               // no money added
+    // CLND gas: a January refund bigger than the bill; January ends up near the months around it, not at $0
+    const gas = [-2586, 4262, 4122, 3441, 2688, 2297, 2135, 1961, 2006, 2251, 1288, 2109] as Months;
+    const cr = smoothBills(gas, 10, '6608')!;
+    expect(cr.credits[0].at).toBe(1);
+    expect(cr.filled).toEqual([1]);
+    expect(cr.cal.every((v) => v >= 0)).toBe(true);
+    expect(cr.cal[0]).toBeGreaterThan(1500);
+    expect(sum(cr.cal)).toBe(sum(gas));
+    expect(smoothBills([300, 0, 0, 300, 0, 0, 300, 0, 0, 300, 0, 0] as Months, 12, '6614')).toBeNull();
+    expect(smoothBills(Array(12).fill(100) as Months, 12, '6614')).toBeNull();
+    // a seasonal top is not a catch-up bill: its neighbours are high too
+    expect(smoothBills([300, 260, 200, 150, 100, 80, 80, 80, 100, 150, 220, 280] as Months, 12, '6608')).toBeNull();
   });
   it('the defaults: rebates January, dues and 401(k) February, gift cards November, bonuses even quarters; null turns one off', () => {
     expect(timingFor({}, '5178')).toEqual({ kind: 'once', month: 1 });
