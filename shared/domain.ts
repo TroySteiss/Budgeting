@@ -186,6 +186,12 @@ export interface BudgetInputs {
   /** vacancy % of GPR typed for single months (budget month order, null = the formula) — overrides whatever built the
       month (Troy 2026-11-16) */
   vacancyMonthPct?: (number | null)[];
+  /** annual: where the vacancy carry-over chain starts — the last actual month's % (default) or the chain's own steady
+      state, so every month scales with the average (Riley Combs 2026-11-24) */
+  vacancyStart?: 'last' | 'steady';
+  /** annual: utility recovery target per group (water / sewer / gas / flat fee...): the reimbursements set to this share of
+      the group's expense, above 90% included (Kara Garrison 2026-11-23); null / absent = the formula (over 100% resets to 90%) */
+  utilRecovery?: Record<string, number | null> | null;
   /** annual: share of the previous month's delinquency (5035) collected as prior-period collections (5036); unset = the trailing-12 rate, capped at 100% */
   collectPct?: number;
   /** annual budgets: the per-GL formula rules this budget runs on — a COPY of the saved formula
@@ -214,11 +220,16 @@ export interface BudgetInputs {
       month "YYYY-MM" (the partial-month rule). Overlaid on read/export only —
       budget_lines stay the pure plan. See applyActuals / injectPreStartActuals. */
   actuals?: Record<string, ActualizedMonth> | null;
-  gpr: { baseMonthly: number; growthPct: Months };  // monthly % change, compounding off base
+  gpr: { baseMonthly: number; growthPct: Months;
+    /** annual: the first month's 4994 typed on the row (net of HAP); the monthly steps compound from it (Kara / Riley 2026-11-24). null = the roll */
+    month0?: number | null };  // monthly % change, compounding off base
   ltl: {
     /** 'leases' = per-lease burnoff at each lease's turnover month (needs a
         unit-level rent roll); 'ramp' = simple linear ramp fallback. */
-    mode?: 'leases' | 'ramp' | 'flat';
+    /** 'pct' = a share of each month's GPR (typed `pct`, else the trailing-12 ratio) — Riley Combs 2026-11-24 */
+    mode?: 'leases' | 'ramp' | 'flat' | 'pct';
+    /** 'pct' mode: loss to lease as a share of GPR (positive fraction, e.g. 0.04); unset = the trailing-12's own ratio */
+    pct?: number | null;
     startMonthly: number; targetPct: number; rampMonths: number;   // ramp params
     renewalPct?: number;      // share of expiring leases that renew (default .70)
     burnoffRenew?: number;    // LTL share burned at a renewal (default .50 — "half")
@@ -317,6 +328,8 @@ export interface BudgetInputs {
     /** per-GL "fit to T12" (0..1) for a line on a curve (turnover curve / seasonal curve): the share of the
         monthly shape taken from the GL's OWN trailing-12 months instead of the curve. Total unchanged. */
     glFit?: Record<string, number>;
+    /** per GL: what the fit leans toward — the GL's own T12 months (default) or a flat month (Kara Garrison 2026-11-23) */
+    glFitTo?: Record<string, 't12' | 'flat'>;
     /** increase % typed on a SECTION header (chart `section`: admin, utilities, in_house_maint…) — every
         history-based line of the subsection takes it unless the row has its own % or is hand-typed */
     secGrowth?: Record<string, number>;

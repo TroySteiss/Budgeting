@@ -40,7 +40,8 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-19e';   // e: LTL market growth off the rent roll GPR, not GPR net of HAP
+export const ENGINE_VERSION = '2026-11-25a';   // a: trash reim never capped; typed recovery targets; fee rate follows the income month; one-time spikes move the largest month only (row shapes keep their months); a row shape wins over a set's zero; collection fee without the chain; January GPR start; LTL % of GPR; fit toward flat; vacancy anchor switch
+// (2026-11-19e: LTL market growth off the rent roll GPR, not GPR net of HAP)
 // 2026-11-19d: 5157 = move-ins × setup fee ($150) + VCR admin fees
 // 2026-11-19c: per-move-in income follows turnover from the T12
 // 2026-11-19b: no fit on a line that carries a contract
@@ -447,7 +448,9 @@ export interface TemplateData {
   lastActual: { year: number; month: number };          // Budget Worksheet N1 — the last actual month
   /** calendar month → the year the template's "PY actual" comes from (E1..P1) */
   pyYears: number[];
-  debt: { interest: Months; principal: Months; principalGl: string; loans: string[] };
+  debt: { interest: Months; principal: Months; principalGl: string; loans: string[];
+    /** principal by the GL each loan books to (BookToGl): a 2nd mortgage on 3090 beside the 1st on 3080 (Kara Garrison 2026-11-24) */
+    principalByGl?: Record<string, Months> };
   mgmtFee: { actualPct: number | null; actualFee: number; actualIncome: number; matrix: Record<string, number>; override: number | null; notes: string };
   utilForecast: Record<string, Months>;                 // gl → % change per budget month
   suggestions: Record<string, Months>;                  // gl → $ per budget month
@@ -778,15 +781,16 @@ export function fitToT12(months: Months, own: Months, f: number, mult = 0): Mont
 
 /** A calendar series → the budget months on a shape, × (1+pct) (or a
     per-month pct array), rotated into budget order, MROUNDed when asked. */
-export function annualBaseline(cal: Months, opts: { pct?: number; pcts?: Months | null; shape: BaselineShape; startMonth?: number; lastMonth?: number; curve?: Months | null; mult?: number; turns?: Months | null; fit?: number }): Months {
+export function annualBaseline(cal: Months, opts: { pct?: number; pcts?: Months | null; shape: BaselineShape; startMonth?: number; lastMonth?: number; curve?: Months | null; mult?: number; turns?: Months | null; fit?: number; /** the fit leans toward a flat month instead of the T12 months (Kara Garrison 2026-11-23: "a % of flat vs turns") */ fitFlat?: boolean }): Months {
   const g = (i: number) => 1 + (opts.pcts ? (opts.pcts[i] || 0) : (opts.pct || 0));
   // FIT TO T12 (Troy 2026-11-11: "apply a turnover curve, and then fit it closer to T12 historical expenses"):
   // the curve's weights are blended with the GL's own trailing-12 months, `fit` (0..1) being the share taken
   // from history. 0 = the pure curve, 1 = the T12 months themselves. Credit months count as zero. Total unchanged.
+  // With `fitFlat` the blend is toward the same amount every month instead (50% = half turnover curve, half flat).
   const fitted = (w: number[]): Months => {
     const f = Math.min(1, Math.max(0, opts.fit || 0));
     const sg = cal.reduce((a, b) => a + b, 0) >= 0 ? 1 : -1;
-    const own = cal.map((v) => (v * sg > 0 ? v * sg : 0));
+    const own = opts.fitFlat ? Array(12).fill(1) : cal.map((v) => (v * sg > 0 ? v * sg : 0));
     const os = own.reduce((a, b) => a + b, 0), ws = w.reduce((a, b) => a + b, 0);
     if (!f || !os || !ws) return w as Months;
     return w.map((v, i) => ((1 - f) * v) / ws + (f * own[i]) / os) as Months;
@@ -1261,6 +1265,8 @@ export interface AnnualSources {
   /** when ownership began ('YYYY-MM': the Yardi template's acquisition date, else the start of
       the property's acquisition budget) and the first-year management fee % that budget ran on */
   acquisition?: { start?: string | null; firstYearPct?: number | null } | null;
+  /** when a line's money lands by default (the region's review checklist, `timingDefaultsFromRules`); unset = the built-in table */
+  timingDefaults?: Record<string, { kind: 'once' | 'quarters'; month?: number }> | null;
 }
 
 /** FIRST-YEAR MANAGEMENT FEE (Troy 2026-11-09: "If Management fee is 3% for first year, it
@@ -1464,22 +1470,45 @@ export const TIMING_DEFAULTS: Record<string, { kind: 'once' | 'quarters'; month?
   '6421': { kind: 'once', month: 2 },    // 401(k): the February employer match
   '6408': { kind: 'quarters' },          // bonuses: the same each quarter
 };
-export function timingFor(inputs: Pick<BudgetInputs, 'timing'> | null | undefined, gl: string): { kind: 'once' | 'quarters'; month?: number } | null {
+export function timingFor(inputs: Pick<BudgetInputs, 'timing'> | null | undefined, gl: string, defaults: Record<string, { kind: 'once' | 'quarters'; month?: number }> | null = TIMING_DEFAULTS): { kind: 'once' | 'quarters'; month?: number } | null {
   const t = inputs?.timing?.[gl];
   if (t === null) return null;
   if (t && (t.kind === 'quarters' || (t.kind === 'once' && Number(t.month) >= 1 && Number(t.month) <= 12))) return t;
-  return TIMING_DEFAULTS[gl] || null;
+  return (defaults || TIMING_DEFAULTS)[gl] || null;
+}
+/** THE REGION'S OWN MONTHS (Kara Garrison 2026-11-23, AGMO / FPMO / PWMO: licenses "locked on putting it all to February
+    which is not correct", vendor rebates "largest in March not Jan"): the timing defaults come from the region's review
+    checklist (Settings -> Budget review checklist), so a region whose dues or rebates land in another month changes the
+    check's month there and every budget follows. A 'peak' rule with a month = a one-time month; 'quarterlySame' = the
+    same each quarter. No rules = the built-in table. */
+export function timingDefaultsFromRules(rules: { gl: string; kind: string; month?: number | null }[] | null | undefined): Record<string, { kind: 'once' | 'quarters'; month?: number }> {
+  if (!rules || !rules.length) return { ...TIMING_DEFAULTS };
+  const out: Record<string, { kind: 'once' | 'quarters'; month?: number }> = {};
+  for (const r of rules) {
+    const gl = String(r.gl || '');
+    if (r.kind === 'peak' && Number(r.month) >= 1 && Number(r.month) <= 12) out[gl] = { kind: 'once', month: Math.round(Number(r.month)) };
+    else if (r.kind === 'quarterlySame') out[gl] = { kind: 'quarters' };
+  }
+  return out;
 }
 const medianOf = (xs: number[]): number => { const s = xs.slice().sort((a, b) => a - b); const n = s.length; return n ? (n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2) : 0; };
-/** The share of a year that is one-time: the months standing out (at least 1.5x the median and $1 over it, as the
-    review check reads a spike), above the median. 1 for a once-a-year amount, 0 for a steady line. */
+/** The share of a year that is one-time: the LARGEST month when it stands out (at least 1.5x the median and $1 over
+    it, as the review check reads a spike), above the median. 1 for a once-a-year amount, 0 for a steady line.
+    Only that one month (Kara Garrison 2026-11-23, employee relations / licenses: "needs a higher amount in August and
+    Dec for summer and holiday parties" / "putting too much into Feb"): every spike used to be swept into the one-time
+    month, so a second real event in the history was flattened and moved with it. The other months keep their pattern. */
+export function spikeIndex(v: number[]): number {
+  const m = medianOf(v);
+  let bi = -1;
+  v.forEach((x, i) => { if (x >= 1.5 * m && x > m + 1 && (bi < 0 || x > v[bi])) bi = i; });
+  return bi;
+}
 export function spikeShare(cal: number[]): number {
   const v = cal.map((x) => Math.max(0, Number(x) || 0));
   const tot = v.reduce((a, b) => a + b, 0);
   if (!(tot > 0)) return 0;
-  const m = medianOf(v);
-  const ex = v.reduce((a, x) => a + (x >= 1.5 * m && x > m + 1 ? x - m : 0), 0);
-  return Math.min(1, ex / tot);
+  const bi = spikeIndex(v);
+  return bi < 0 ? 0 : Math.min(1, (v[bi] - medianOf(v)) / tot);
 }
 /** The line with `share` of its year in calendar `month` and the rest over the year on its own pattern with its spikes
     cut back to the run rate. Total kept to the cent. */
@@ -1490,7 +1519,8 @@ export function retimeOnce(months: Months, month: number, startMonth: number, sh
   const amount = r2(total * Math.min(1, Math.max(0, share)));
   const pos = months.map((x) => Math.max(0, x));
   const m = medianOf(pos);
-  const capped = pos.map((x) => (x >= 1.5 * m && x > m + 1 ? m : x));
+  const bi = spikeIndex(pos);   // the one-time month moves; a second spike stays where it is
+  const capped = pos.map((x, i) => (i === bi ? m : x));
   const cs = capped.reduce((a, b) => a + b, 0);
   const rest = r2(total - amount);
   const out = capped.map((x) => (cs > 0 ? r2((rest * x) / cs) : r2(rest / 12))) as Months;
@@ -1993,20 +2023,30 @@ export function fillDeadMonths(lines: BudgetLine[], o: { posted: Record<string, 
    and we can make money on trash and pest, hence why they are broken out. The rest is compared to aggregated expense for
    remaining utilities"): one group — every utility reim but trash (5169) and pest (5158), which are left out (they may
    earn a margin) — against the remaining utilities together (water, sewer, gas, electric common and vacants). Pure. */
+/* TRASH IS NEVER CAPPED (Kara Garrison 2026-11-23: "We don't need to cap trash income at 90%, we are allowed to make income
+   on trash per legal and many sites do"): 5169 / 6620 are out of every group, RUBS sites included (pest 5158 never was). */
 export const RECOVERY_GROUPS: { key: string; reims: string[]; expenses: string[] }[] = [
   { key: 'water', reims: ['5174'], expenses: ['6622'] },
   { key: 'sewer', reims: ['5167'], expenses: ['6614'] },
-  { key: 'trash', reims: ['5169'], expenses: ['6620'] },
   { key: 'gas', reims: ['5171'], expenses: ['6608', '6604', '6606'] },
-  { key: 'all', reims: ['5174', '5167', '5169', '5171', '5170', '5172'], expenses: ['6622', '6614', '6620', '6608', '6604', '6606'] },
+  { key: 'all', reims: ['5174', '5167', '5171', '5170', '5172'], expenses: ['6622', '6614', '6608', '6604', '6606'] },
 ];
+/** The group a reimbursement GL's typed recovery target applies to (inputs.utilRecovery: group key -> share of the expense). */
+export function recoveryGroupOf(gl: string, flatFee = false): { key: string; reims: string[]; expenses: string[] } | null {
+  return (flatFee ? RECOVERY_GROUPS_FLAT_FEE : RECOVERY_GROUPS).find((g) => g.key !== 'all' && g.reims.includes(gl)) || null;
+}
 export const RECOVERY_GROUPS_FLAT_FEE: { key: string; reims: string[]; expenses: string[] }[] = [
   { key: 'flat fee (all but trash and pest)', reims: ['5170', '5174', '5167', '5171', '5172'], expenses: ['6622', '6614', '6608', '6604', '6606'] },
 ];
 export const RECOVERY_CAP = 1, RECOVERY_RESET = 0.9;
-export function capUtilityRecovery(lines: BudgetLine[], opts: { flatFee?: boolean; split?: { pct: number; gls: string[] } | null } = {}): { lines: BudgetLine[]; groups: { key: string; reim: number; expense: number; ratio: number | null; reset: boolean; locked: boolean }[] } {
+/* A TYPED RECOVERY TARGET (Kara Garrison 2026-11-23: "Sewer is also capping at 90% recovery but some properties are above
+   90%. Need to be able to have the calculations work at recovery higher than 90%. Would be nice to be able to set the
+   desired recovery % and have it match last year's recovery %"): `opts.targets[group]` (inputs.utilRecovery) sets the
+   group's reimbursements to that share of its expense whatever the formula gave, above 90% included (the row menu offers
+   last year's own ratio). The over-100% reset only runs on a group with no target. */
+export function capUtilityRecovery(lines: BudgetLine[], opts: { flatFee?: boolean; split?: { pct: number; gls: string[] } | null; targets?: Record<string, number | null> | null } = {}): { lines: BudgetLine[]; groups: { key: string; reim: number; expense: number; ratio: number | null; reset: boolean; locked: boolean; target?: number }[] } {
   let out = lines;
-  const groups: { key: string; reim: number; expense: number; ratio: number | null; reset: boolean; locked: boolean }[] = [];
+  const groups: { key: string; reim: number; expense: number; ratio: number | null; reset: boolean; locked: boolean; target?: number }[] = [];
   /* A SPLIT PROPERTY'S BILL (TPND 2026-11-19): residents are billed (RUBS) on the whole bill, while the property's own
      expense lines carry only its share after the recurring journal (58.89%); the recovery is tested against the bill
      grossed back up, else TPND reads 103-111% recovered and its income was cut to 90% of its share. */
@@ -2016,12 +2056,17 @@ export function capUtilityRecovery(lines: BudgetLine[], opts: { flatFee?: boolea
   for (const g of opts.flatFee ? RECOVERY_GROUPS_FLAT_FEE : RECOVERY_GROUPS) {
     const R = tot(out, g.reims), E = tot(out, g.expenses, true);
     const ratio = E > 0 ? R / E : null;
-    if (ratio == null || ratio <= RECOVERY_CAP + 1e-9) { groups.push({ key: g.key, reim: r2(R), expense: r2(E), ratio, reset: false, locked: false }); continue; }
+    const tRaw = g.key === 'all' ? null : opts.targets?.[g.key];
+    const target = tRaw != null && Number.isFinite(Number(tRaw)) && Number(tRaw) > 0 ? Number(tRaw) : null;
+    if (ratio == null || (target == null && ratio <= RECOVERY_CAP + 1e-9) || (target != null && Math.abs(ratio - target) < 1e-6)) {
+      groups.push({ key: g.key, reim: r2(R), expense: r2(E), ratio, reset: false, locked: false, ...(target != null ? { target } : {}) }); continue;
+    }
     const free = out.filter((l) => g.reims.includes(l.gl_code) && !l.override && Math.abs(sum(l.months)) > 0);
     const lockedR = R - free.reduce((a, l) => a + Math.abs(sum(l.months)), 0);
-    const want = RECOVERY_RESET * E - lockedR;
+    const to = target ?? RECOVERY_RESET;
+    const want = to * E - lockedR;
     const freeR = R - lockedR;
-    if (!free.length || !(freeR > 0) || want <= 0) { groups.push({ key: g.key, reim: r2(R), expense: r2(E), ratio, reset: false, locked: true }); continue; }
+    if (!free.length || !(freeR > 0) || want <= 0) { groups.push({ key: g.key, reim: r2(R), expense: r2(E), ratio, reset: false, locked: true, ...(target != null ? { target } : {}) }); continue; }
     const k = want / freeR;
     const ids = new Set(free.map((l) => l.gl_code));
     out = out.map((l) => {
@@ -2030,9 +2075,11 @@ export function capUtilityRecovery(lines: BudgetLine[], opts: { flatFee?: boolea
       const mult = Number(l.round) || Number(d.mult) || 0;
       let cum = 0, prev = 0;
       const months = l.months.map((v) => { cum += v * k; const r = mult > 0 ? Math.round(cum / mult) * mult : Math.round(cum * 100) / 100; const x = r - prev; prev = r; return x; }) as Months;
-      return { ...l, months, driver: { ...d, recoveryCap: { group: g.key, ratio: Math.round(ratio * 10000) / 10000, to: RECOVERY_RESET, expense: r2(E), was: r2(Math.abs(sum(l.months))) } } as any };
+      const mark = { group: g.key, ratio: Math.round(ratio * 10000) / 10000, to, expense: r2(E), was: r2(Math.abs(sum(l.months))) };
+      const { recoveryCap: _c, recoveryTarget: _t, ...rest } = d;
+      return { ...l, months, driver: { ...rest, ...(target != null ? { recoveryTarget: mark } : { recoveryCap: mark }) } as any };
     });
-    groups.push({ key: g.key, reim: r2(R), expense: r2(E), ratio, reset: true, locked: false });
+    groups.push({ key: g.key, reim: r2(R), expense: r2(E), ratio, reset: true, locked: false, ...(target != null ? { target } : {}) });
   }
   return { lines: out, groups };
 }
@@ -2232,11 +2279,12 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const mult = bl.glMround?.[a.code] ?? (bl.mround || rule?.mround || 0);
     // no fit on a GL that carries a contract: a formula under an 'add' contract keeps its own months too
     const fit = (sh === 'turns' || sh === 'curve') && !contractGls.has(a.code) ? Math.min(1, Math.max(0, bl.glFit?.[a.code] ?? rule?.fit ?? 0)) : 0;
+    const fitFlat = bl.glFitTo?.[a.code] === 'flat';
     /* "LAST MONTH, FLAT" ON A MONTH WITH NO BILL (TPND 2026-11-19: auto insurance $600 in the T12 budgeted $0 — October had
        no bill, the yearly one posts in another month): a default "last month" line whose last month is empty while the
        T12 is not budgets the T12's own months (same month). A shape picked on the row is taken as picked. */
     const lastEmpty = sh === 'last' && !bl.glShape?.[a.code] && !shape && !(Math.abs(cal[lastMonth - 1] || 0) >= 1) && cal.some((v) => Math.abs(v) >= 1);
-    let months = annualBaseline(cal, { pct, pcts, shape: lastEmpty ? 'actual' : sh, startMonth, lastMonth, curve: CURVES[a.curve || 'flat'], mult, turns: turnCurve, fit });
+    let months = annualBaseline(cal, { pct, pcts, shape: lastEmpty ? 'actual' : sh, startMonth, lastMonth, curve: CURVES[a.curve || 'flat'], mult, turns: turnCurve, fit, fitFlat });
     if (rule?.method === 'wavg' && sh === 'wavg' && !bl.glShape?.[a.code] && startMonth === 1) {
       // RMC's Excel weighted average can't wrap the year: January and December
       // fall back to the plain same-month × factor, MROUND $10 (the GRKS cells)
@@ -2286,7 +2334,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
         months = Array(12).fill(mult ? r2(Math.round(mo / mult) * mult) : r2(mo)) as Months;
       }
     }
-    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(accrual ? { accrual, taxYear } : {}), ...(reTax ? { reTax } : {}), ...(taxNoInputs ? { taxNoInputs: true } : {}), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(fit ? { fit } : {}), ...(lastDev != null ? { lastDev } : {}), ...(drift ? { drift } : {}), ...(noNeg.folded ? { folded: noNeg.folded } : {}), ...(gf ? { billSmooth: { spread: gf.spread, credits: gf.credits, filled: gf.filled, refill: gf.refill } } : {}), ...(lastEmpty ? { lastEmpty: true, shape: 'actual' } : {}) } as any);
+    mk(a.code, months, { method: 'baseline', src: baseSrc, pct, shape: sh, mult, base: baseTotal(a.code), ...(accrual ? { accrual, taxYear } : {}), ...(reTax ? { reTax } : {}), ...(taxNoInputs ? { taxNoInputs: true } : {}), ...(pcts ? { pcts } : {}), ...(rule ? { rule: rule.method } : {}), ...(sh === 'turns' ? { turns: exp.reduce((x, y) => x + y, 0) } : {}), ...(fit ? { fit, ...(fitFlat ? { fitTo: 'flat' } : {}) } : {}), ...(lastDev != null ? { lastDev } : {}), ...(drift ? { drift } : {}), ...(noNeg.folded ? { folded: noNeg.folded } : {}), ...(gf ? { billSmooth: { spread: gf.spread, credits: gf.credits, filled: gf.filled, refill: gf.refill } } : {}), ...(lastEmpty ? { lastEmpty: true, shape: 'actual' } : {}) } as any);
     return true;
   };
 
@@ -2299,7 +2347,10 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
      engine formula. ---- */
   const userShaped = new Set<string>();
   for (const a of coaList) {
-    if (a.kind !== 'detail' || !bl.glShape?.[a.code] || isSet(a.code)) continue;
+    if (a.kind !== 'detail' || !bl.glShape?.[a.code]) continue;
+    // a shape picked on the row wins over a formula set's zero-out (Kara Garrison 2026-11-23: a set saved with a zeroed
+    // category would not let "T12 / 12 x growth" take on a new budget); a small-T12 zero stays (re-asserted at the end)
+    if (isSet(a.code) && !(rules[a.code]?.method === 'zero' && !small.out[a.code])) continue;
     // growth: the % typed on the row; a payroll line with none typed takes the raise % (as before)
     const g = a.pcode === '10' && bl.glGrowth?.[a.code] == null ? (BURDEN_LAST_GLS.has(a.code) ? 0 : (inputs.payrollRaisePct ?? 0.035)) : undefined;
     if (baseline(a, undefined, g)) userShaped.add(a.code);
@@ -2307,6 +2358,10 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
 
   /* ---- GPR: rent roll market rents (Troy) or the last actual month (template) × monthly % changes ---- */
   const gprBase = inputs.gpr?.baseMonthly > 0 ? inputs.gpr.baseMonthly : lastOf('4994');
+  // A JANUARY GPR TYPED ON THE ROW (Kara Garrison / Riley Combs 2026-11-23/24: "manually update the January GPR top line, & it
+  // properly flow to the rest of the months"): the first month's 4994 is the typed figure and every later month compounds
+  // the monthly steps from it (the roll's level is replaced, the steps and the HAP lines are not). 0 / blank = the roll.
+  const gprMonth0 = inputs.gpr?.month0 != null && Number(inputs.gpr.month0) > 0 ? Number(inputs.gpr.month0) : null;
   const gpr = zero12();
   /* HAP IS RENT (Troy 2026-11-11: "HAP + GPR should equal rent roll GPR… It should not be offset by
      LTL"). With the GPR base on the RENT ROLL (all units at market, HAP units included), 4994 carries
@@ -2327,14 +2382,14 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   if (userShaped.has('4994')) {
     // GPR itself on a chosen shape: everything that reads GPR below reads these months
     lines.get('4994')!.months.forEach((v, i) => { gpr[i] = v; });
-  } else if (gprBase > 0) {
+  } else if (gprBase > 0 || gprMonth0) {
     let cum = gprBase;
     for (let i = 0; i < 12; i++) {
-      cum = i === 0 ? gprBase * (1 + (inputs.gpr?.growthPct?.[0] || 0)) : cum * (1 + (inputs.gpr?.growthPct?.[i] || 0));
+      cum = i === 0 ? (gprMonth0 ? gprMonth0 + hapEarly[0] : gprBase * (1 + (inputs.gpr?.growthPct?.[0] || 0))) : cum * (1 + (inputs.gpr?.growthPct?.[i] || 0));
       gprGross[i] = r2(cum);
       gpr[i] = r2(cum - hapEarly[i]);
     }
-    mk('4994', gpr.slice() as Months, { method: 'gpr', ...(hapFromRoll && sum(hapEarly) ? { hap: r2(sum(hapEarly) / 12), gross: r2(sum(gprGross)) } : {}) } as any);
+    mk('4994', gpr.slice() as Months, { method: 'gpr', ...(hapFromRoll && sum(hapEarly) ? { hap: r2(sum(hapEarly) / 12), gross: r2(sum(gprGross)) } : {}), ...(gprMonth0 ? { month0: gprMonth0 } : {}) } as any);
   }
   const squareGpr = (): void => {
     // 4994 = rent roll GPR − the HAP lines as finally built (a contract or a fit on 4996 included)
@@ -2378,6 +2433,12 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     // market growth deepens the gap on the occupied units' market (all units when the roll is summary-only)
     const deepen = (i: number) => (!followGpr || !gpr[0] ? 0 : model ? ((mktGrowth?.[i] ?? 1) - 1) * model.occupiedMarket : gpr[i] - gpr[0]);
     mk('5003', gpr.map((v, i) => r2(Math.min(0, L0 - deepen(i)))) as Months, { method: 'ltl', ...hapInfo } as any);
+  } else if (ltl.mode === 'pct') {
+    // % OF GPR (Riley Combs 2026-11-24: "Loss to lease isn't calculating off GPR"): the typed share of each month's GPR,
+    // else the trailing-12's own ratio — every GPR change moves it month for month
+    const t12r = baseGpr ? baseTotal('5003') / baseGpr : 0;
+    const p = ltl.pct != null && Number.isFinite(Number(ltl.pct)) ? -Math.abs(Number(ltl.pct)) : -Math.abs(t12r);
+    mk('5003', gpr.map((v) => r2(Math.min(0, p * v))) as Months, { method: 'ltl', pctGpr: Math.round(p * 1e6) / 1e6, basis: ltl.pct != null ? 'typed' : 't12', ...hapInfo } as any);
   } else if (ltl.mode === 'ramp') {
     const out = zero12();
     for (let i = 0; i < 12; i++) {
@@ -2418,7 +2479,11 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
      decide which months carry more or less of it (vacancyByMonth) ---- */
   // the chain starts from the last ACTUAL month's vacancy % (posted, not the budget base)
   const actLastGpr = (src.actual?.['4994'] || zero12())[lastMonth - 1] || 0;
-  const vacStart = actLastGpr > 0 ? Math.abs((src.actual?.['5031'] || zero12())[lastMonth - 1] || 0) / actLastGpr : null;
+  // ANCHOR SWITCH (Riley Combs 2026-11-24: "When I adjust the vacancy %, it only is adjusting June-Dec"): with the chain
+  // anchored on the last actual month, the early months are what that month leaves behind and only the later months
+  // answer to the average. inputs.vacancyStart = 'steady' drops the anchor: the chain runs from its own steady state
+  // and every month scales with the average (the shape stays: winter fills slowest).
+  const vacStart = inputs.vacancyStart === 'steady' ? null : actLastGpr > 0 ? Math.abs((src.actual?.['5031'] || zero12())[lastMonth - 1] || 0) / actLastGpr : null;
   const vac = vacancyByMonth(inputs.vacancyPct, exp, gpr as Months, inputs.vacancyExpWeight ?? 1, { startPct: vacStart, lastMonth });
   const vacPct = vac.pcts;
   if (!isSet('5031')) {
@@ -2428,7 +2493,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       const drift = r2(-r2(vac.avg * sum(gpr)) - sum(months));
       if (drift) { const bi = months.reduce((mi, v, i) => (Math.abs(v) > Math.abs(months[mi]) ? i : mi), 0); months[bi] = r2(months[bi] + drift); }
     }
-    mk('5031', months, { method: 'vacancy', avg: Math.round(vac.avg * 1e6) / 1e6, shaped: vac.shaped, pcts: vacPct, weight: inputs.vacancyExpWeight ?? 1, ...(vac.startPct != null ? { startPct: Math.round(vac.startPct * 1e6) / 1e6 } : {}) } as any);
+    mk('5031', months, { method: 'vacancy', avg: Math.round(vac.avg * 1e6) / 1e6, shaped: vac.shaped, pcts: vacPct, weight: inputs.vacancyExpWeight ?? 1, ...(vac.startPct != null ? { startPct: Math.round(vac.startPct * 1e6) / 1e6 } : {}), ...(inputs.vacancyStart === 'steady' ? { anchor: 'steady' } : {}) } as any);
   }
 
   /* ---- concessions & other rental loss: TRAILING-12 ratio to GPR × GPR (Troy:
@@ -2783,11 +2848,13 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const ln = lines.get(gl); const d: any = ln?.driver || {};
     const f = fitOf(gl);
     if (!ln || !f || FIT_SKIP.has(d.method) || (d.method === 'baseline' && (d.shape === 'curve' || d.shape === 'turns'))) return;
-    const own = rotate12((src.actual || {})[gl] || zero12(), startMonth);
+    // toward the T12 months, or toward a flat month when the row says so (bl.glFitTo)
+    const flat = bl.glFitTo?.[gl] === 'flat';
+    const own = flat ? (Array(12).fill(1) as Months) : rotate12((src.actual || {})[gl] || zero12(), startMonth);
     const out = fitToT12(ln.months, own, f, d.mult || 0);
     if (!out) return;
     ln.months = out;
-    ln.driver = { ...d, fitT12: Math.round(f * 1000) / 1000 } as any;
+    ln.driver = { ...d, fitT12: Math.round(f * 1000) / 1000, ...(flat ? { fitTo: 'flat' } : {}) } as any;
   };
   for (const gl of [...lines.keys()]) if (gl !== '6112') fitLine(gl);
   // another property's monthly curve on the line's own total (inputs.shapeFromGl, spec §4): after the line's formula and
@@ -2816,9 +2883,13 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
       const pct = inputs.recoveryPct != null ? Math.max(0, Number(inputs.recoveryPct)) : recT12 / unc;
       mk('5110', zero12(), { method: 'badDebtRecovery', pct: Math.round(pct * 100000) / 100000, startDq: r2(lastDq), lastPpc: r2(lastPpc), t12: r2(recT12), t12Uncollected: r2(unc) } as any);
     }
-    if (coaByCode.has('6309') && chainMay('6309') && (lines.get('5110')?.driver as any)?.method === 'badDebtRecovery') {
+    // the fee follows the recovery line whatever built it once a % is typed on the budget (Kara Garrison 2026-11-23:
+    // "Collection fee expense should be able to set to 50% of bad debt recovery income"); on the chain it always does
+    const recL = lines.get('5110');
+    const feeOn = (recL?.driver as any)?.method === 'badDebtRecovery' || (inputs.collectionFeePct != null && !!recL && recL.months.some((v) => v));
+    if (coaByCode.has('6309') && chainMay('6309') && feeOn) {
       const fp = inputs.collectionFeePct != null ? Math.min(1, Math.max(0, Number(inputs.collectionFeePct))) : COLLECTION_FEE_PCT;
-      mk('6309', zero12(), { method: 'collectionFee', pct: fp } as any);
+      mk('6309', zero12(), { method: 'collectionFee', pct: fp, ...(((recL?.driver as any)?.method !== 'badDebtRecovery') ? { of: (recL?.driver as any)?.method || 'line' } : {}) } as any);
     }
     for (const l of dqChain([...lines.values()])) lines.set(l.gl_code, l);
   }
@@ -2854,9 +2925,13 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   })();
   for (const [gl, ln] of lines) {
     if (gl === GIFT_CARD_GL && giftDone) continue;
-    const t = timingFor(inputs, gl);
+    const t = timingFor(inputs, gl, src.timingDefaults || null);
     const d: any = ln.driver || {};
     if (!t || ln.override || d.acq || ['contract', 'review', 'zero', 'dropped', 'manual'].includes(d.method) || !ln.months.some((v) => v)) continue;
+    // a formula picked on the row is taken literally (as with drift and the $1,000 floor): its months stay where its
+    // history put them unless the month was typed for this line (inputs.timing); corporate lines keep their schedule
+    const typedTiming = inputs.timing?.[gl] != null;
+    if (!typedTiming && (bl.glShape?.[gl] || CORP_FORMULA_METHODS.has(d.method))) continue;
     if (t.kind === 'quarters') {
       const months = evenQuarters(ln.months, startMonth);
       if (months) { ln.months = months; ln.driver = { ...d, timing: { kind: 'quarters' } } as any; }
@@ -2900,7 +2975,11 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     const rets = Array.isArray(inputs.mgmtReturns) ? [0, 1, 2, 3].map((q) => { const v = inputs.mgmtReturns![q]; return v == null || !Number.isFinite(Number(v)) ? null : Number(v); }) : null;
     const matrix = tpl?.mgmtFee?.matrix || null;
     const byQ = rets && rets.some((v) => v != null) ? rets.map((r) => (r == null ? null : { ret: r, pct: mgmtFeeFromMatrix(matrix, r) })) : null;
-    const regular = byQ ? Array.from({ length: 12 }, (_, i) => byQ[Math.floor(i / 3)]?.pct ?? feePct) as Months : feePct;
+    /* IN ARREARS (Kara Garrison 2026-11-23: "When MGMT fee changes, it is getting implemented in the first month of the
+       quarter"): the fee line's month i bills the income of month i-1, so a quarter's rate runs on the fee months that
+       bill that quarter's income — budget months 2-4 for the first quarter, 5-7 for the second... The first fee month
+       bills the month before the budget (the prior year's last quarter) at the fee %. */
+    const regular = byQ ? Array.from({ length: 12 }, (_, i) => (i === 0 ? feePct : byQ[Math.floor((i - 1) / 3)]?.pct ?? feePct)) as Months : feePct;
     const fr = mgmtFeeRates(inputs.year, startMonth, regular, fy);
     mk('6112', basis.map((v, i) => Math.round(v * fr.rates[i])) as Months, { method: 'mgmtPct', pct: feePct, priorMonth: true, ...(extra ? { feeExtra: extra, feeExtraFrom: feeExtraFrom } : {}), ...(fr.firstMonths ? { firstYear: { pct: fy.pct, months: fr.firstMonths, through: fr.through } } : {}),
       ...(byQ ? { byQuarter: byQ, ...(byQ.some((q) => q && q.pct == null) ? { noMatrix: true } : {}) } : {}),
@@ -2920,8 +2999,11 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
     if (tpl?.debt && coaByCode.has(pGl) && !isSet(pGl) && tpl.debt.principal.some((v) => v)) mk(pGl, rotate12(tpl.debt.principal, startMonth), { method: 'debtService', kind: 'principal', loan: tpl.debt.loans.join('+') });
   } else if (tpl?.debt && tpl.debt.interest.some((v) => v)) {
     mk('7300', rotate12(tpl.debt.interest, startMonth), { method: 'debtService', kind: 'interest', loan: tpl.debt.loans.join('+') });
-    const pGl = tpl.debt.principalGl || '3080';
-    if (coaByCode.has(pGl) && tpl.debt.principal.some((v) => v)) mk(pGl, rotate12(tpl.debt.principal, startMonth), { method: 'debtService', kind: 'principal', loan: tpl.debt.loans.join('+') });
+    // each loan's principal on the GL it books to (1st mortgage 3080, 2nd 3090...); the summed series when the sheet has no split
+    const byGl = tpl.debt.principalByGl && Object.keys(tpl.debt.principalByGl).length ? tpl.debt.principalByGl : { [tpl.debt.principalGl || '3080']: tpl.debt.principal };
+    for (const [pGl, pm] of Object.entries(byGl)) {
+      if (coaByCode.has(pGl) && !isSet(pGl) && pm.some((v) => v)) mk(pGl, rotate12(pm, startMonth), { method: 'debtService', kind: 'principal', loan: tpl.debt.loans.join('+') });
+    }
   } else if (inputs.loan && inputs.rate) {
     const int = zero12();
     for (let i = 0; i < 12; i++) int[i] = r2((inputs.loan * inputs.rate / 360) * daysInMonth(calYearOf(inputs.year, startMonth, i), calMonthOf(startMonth, i)));

@@ -10,7 +10,7 @@ import { parseUwBook, parseUad, parseComparison, parseSellerT12, parsePayrollMod
 import {
   generateAnnualLines, regenerateAnnual, defaultAnnualInputs, copyFormulas, sectionFormulaSource, applyY1Plan, clearY1Plan, y1Check, type Y1Plan, stmtCalendar, trailing12, annualizedFromCal,
   acqCalendarPlan, applyPlanSlice, postedSinceClosing, type AcqHistory, sellerFillT12, dqChain, fitToT12, acqDelinquency, applyT12Adjust, FIXED_ANNUAL_GLS, y1MonthsIn, uwCheck, sinceClosing, contractLine, ACQ_FIT_DEFAULT, TURN_EXPENSE_GLS, expirationsFromLeases, lagMonths, type AcqPlan,
-  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, formulaOverride, formulaSetGls, corpGuidanceLine, scalePlanLines, taxFloor, uwDqBundle, fillCalMonths, mgmtFeeOnIncome, mgmtFeeRates, vacancyMonthOverride, fillDeadMonths, capUtilityRecovery, flatFeeBilling, applyShapeFrom, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee, spikeShare, isFyBudgetStmt } from '../shared/annual.js';
+  refFromCalendar, refColumn, ENGINE_VERSION, effectiveRules, followsDefaults, builtinShape, shapeRule, ruleShapeOf, isEngineRule, CORP_RATES, type AnnualRule, budgetRefLabel, formulaSetFromBudget, applyFormulaSet, formulaOverride, formulaSetGls, corpGuidanceLine, scalePlanLines, taxFloor, uwDqBundle, fillCalMonths, mgmtFeeOnIncome, mgmtFeeRates, vacancyMonthOverride, fillDeadMonths, capUtilityRecovery, timingDefaultsFromRules, flatFeeBilling, applyShapeFrom, summaryColumn, summaryLabels, type SummaryCol, type FormulaSet, type TemplateData, type StmtData, type AnnualSources, gprStepsForTarget, gprStepsSummary, FLAT_FEE_PROPERTIES, ALLOC_OUT_DEFAULTS, allocOutFor, guidanceCheck, DEFAULT_GUIDANCE, normalizeGuidance, elevatedInsuranceRate, type BudgetGuidance, noiQuarters, refollowMgmtFee, spikeShare, isFyBudgetStmt } from '../shared/annual.js';
 import { loadAnnualRules } from './annual-rules.js';
 import { reviewCell, normalizeReviewRules, DEFAULT_REVIEW_RULES, REVIEW_KINDS, REVIEW_FIX_KINDS, type ReviewRule, type ReviewResult } from '../shared/review.js';
 import { planApply, refileReviewLine, type ApplyRow, type ApplyPlan } from '../shared/reviewApply.js';
@@ -245,6 +245,30 @@ router.post('/review-na', h(async (req, res) => {
 router.get('/review-rules', h(async (_req, res) => {
   const r = await loadReviewRules();
   res.json({ ...r, kinds: REVIEW_KINDS, defaults: DEFAULT_REVIEW_RULES[currentRegion() === 'kc' ? 'kc' : 'nd'] });
+}));
+/* ONE MONTH, ONE CLICK (Troy 2026-11-25: "Make it easier to adjust the checklist for rebates and other things"): any
+   signed-in user can move a 'peak' check's month (vendor rebates to March, dues to the region's own month…) from the
+   budget's timing chip or the Review view, without the full editor. The region's list is saved with just that change
+   (the built-in rules become the region's own list on first use); a GL with no peak check gets one. Logged. */
+router.post('/review-rules/month', h(async (req, res) => {
+  const gl = String(req.body?.gl || '').trim();
+  const id = String(req.body?.id || '').trim();
+  const month = Math.round(Number(req.body?.month));
+  if (!(month >= 1 && month <= 12)) return res.status(400).json({ error: 'month must be 1-12' });
+  const cur = await loadReviewRules();
+  const rules = cur.rules.map((r) => ({ ...r }));
+  let rule = (id && rules.find((r) => r.id === id)) || (gl && rules.find((r) => r.gl === gl && r.kind === 'peak')) || null;
+  if (!rule) {
+    if (!/^\d{4}$/.test(gl)) return res.status(400).json({ error: 'no such check; give a four-digit GL to add one' });
+    const name = (await loadCoa()).find((a) => a.code === gl)?.name || gl;
+    rule = { id: `m${Date.now().toString(36)}`, gl, label: `${name}: one-time month`, kind: 'peak', month, amount: null, pct: null, props: [] };
+    rules.push(rule);
+  }
+  const was = rule.month;
+  rule.month = month;
+  await query('update app_meta set review_rules=$1 where id=1', [JSON.stringify(rules)]);
+  logChange(req.session.username || '', 'budget review month', { gl: rule.gl, id: rule.id, from: was, to: month });
+  res.json({ ...(await loadReviewRules()), kinds: REVIEW_KINDS, changed: { id: rule.id, gl: rule.gl, from: was, to: month } });
 }));
 router.put('/review-rules', requireAdmin, h(async (req, res) => {
   // { rules: [...] } saves this region's list; { reset: true } goes back to the built-in rules
@@ -802,6 +826,8 @@ interface LoadedBudget {
   sellerRows: any[] | null;
   /** the shared default formulas (Default formulas screen); used only by a budget not on a named saved set */
   defaultRules?: Record<string, AnnualRule> | null;
+  /** when a line's money lands by default: from the region's review checklist (timingDefaultsFromRules) */
+  timingDefaults?: Record<string, { kind: 'once' | 'quarters'; month?: number }> | null;
   /* ---- annual (non-acquisition) mode ---- */
   annual: boolean;
   stmtActual: StmtData | null; stmtBudget: StmtData | null; template: TemplateData | null;
@@ -1098,6 +1124,8 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
     }
   }
   const defaultRules: Record<string, AnnualRule> | null = annual ? await loadDefaultRules() : null;
+  // when a line's money lands by default: the region's review checklist (Settings -> Budget review checklist)
+  const timingDefaults = annual ? timingDefaultsFromRules((await loadReviewRules()).rules) : null;
   // the per-category UW basis from the property's newest UW upload that has it (Troy re-uploads the books; the
   // budgets stay linked to the snapshot they were built on)
   const ub = (await query(`select label, data->'basis' as basis from uw_snapshots where property_code=$1 and data ? 'basis' order by created_at desc limit 1`, [budget.property_code])).rows[0];
@@ -1276,7 +1304,7 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
   const companionNoi: LoadedBudget['companionNoi'] = !coSplit ? null
     : typedCo ? { amount: typedCo, from: 'typed', to: coSplit.to }
     : await companionT12Noi(coSplit.to);
-  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, companionNoi, rollAsOf, rollMarket, sellerUtil, charges, sellerRows, defaultRules, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, uwBasisLatest, burdenSrc, burdenGlSrc, shapeGlSrc, guidance, refKey,
+  return { budget, lines, coa, coaMap, uw, comps, catShapes, payrollWages, leases, companionNoi, rollAsOf, rollMarket, sellerUtil, charges, sellerRows, defaultRules, timingDefaults, savePoints, payrollTpl, rosterLink, acquisition, y1Plan, uwBasisLatest, burdenSrc, burdenGlSrc, shapeGlSrc, guidance, refKey,
            annual, stmtActual, stmtBudget, template, actualCal, budgetCal, budgetRefCal, fyBudget, lastMonth, t12Missing, t12Dead, t12Live, t12Startup, t12Early, noiTrend, t12End, ref, refLabel, refs, priorT12 };
 }
 
@@ -1797,6 +1825,7 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
       burdenSrc: lb.burdenSrc && lb.burdenSrc.found && String(inputs.burdenFrom || '').toLowerCase() === lb.burdenSrc.code ? { code: lb.burdenSrc.code, actual: lb.burdenSrc.actual, budget: lb.burdenSrc.budget } : null,
       // the borrowed curve is laid on once, at the end of buildLines (applyShapeFrom), on the final months
       shapeGl: {},
+      timingDefaults: lb.timingDefaults || null,
       burdenGl: Object.fromEntries(Object.entries(lb.burdenGlSrc || {}).filter(([gl, d]) => d.actual && (inputs.burdenFromGl || {})[gl]?.length).map(([gl, d]) => [gl, { code: d.code, actual: d.actual, budget: d.budget }])) };
     lines = existing ? regenerateAnnual(existing, lb.coa, inputs, src) : generateAnnualLines(lb.coa, inputs, src);
   } else {
@@ -1927,7 +1956,7 @@ export function buildLines(lb: LoadedBudget, inputs: BudgetInputs, existing?: Bu
     lines = fillDeadMonths(lines, { posted: lb.actualCal, liveIdx: acqLive.length ? acqLive : acqHistoryOf(lb.y1Plan, lb.actualCal, lb.t12End, lb.acquisition?.start).history.ownedIdx || [],
       filledIdx: lb.y1Plan.t12Filled, pcodeOf: (gl) => String(lb.coaMap.get(gl)?.pcode || ''), curveOf: (gl) => (lb.coaMap.get(gl) as any)?.curve || null });
   }
-  if (lb.annual) lines = capUtilityRecovery(lines, { flatFee: flatFeeBilling(inputs as any, lb.budget.property_code), split: allocOutFor(inputs, lb.budget.property_code) }).lines;
+  if (lb.annual) lines = capUtilityRecovery(lines, { flatFee: flatFeeBilling(inputs as any, lb.budget.property_code), split: allocOutFor(inputs, lb.budget.property_code), targets: (inputs as any).utilRecovery || null }).lines;
   // the fee on the final income (Troy 2026-11-16: "Management fee needs to be adjusted to prior month income"): the plan,
   // the DQ chain and the ties above all move income after the generator built the fee
   if (lb.annual) {

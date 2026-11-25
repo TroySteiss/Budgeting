@@ -191,7 +191,7 @@ function driverLabel(d: any, ctx: { total?: number; units?: number; gl?: string 
 function driverLabelBase(d: any): string {
   switch (d?.method) {
     case 'gpr': return d.hap ? `UAD GPR less HAP $${Math.round(d.hap).toLocaleString('en-US')}/mo (GPR + HAP = UAD GPR)` : 'UAD GPR';
-    case 'ltl': return 'LTL burnoff';
+    case 'ltl': return d.pctGpr != null ? `LTL ${(Math.abs(d.pctGpr) * 100).toFixed(2)}% of GPR` : 'LTL burnoff';
     case 'vacancy': return 'vacancy % of GPR';
     case 'catShare': return `UW cat ${d.pcode} share`;
     case 'perUnitComp': return `Minot $${d.perUnit}/unit`;

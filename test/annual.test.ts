@@ -2649,18 +2649,32 @@ describe('no $0 month on a line that posts every month (Troy 2026-11-16, audit r
 describe('utility recovery by group, never over 100% (Troy 2026-11-16, audit rule 1)', () => {
   const flat = (v: number) => Array(12).fill(v) as Months;
   const ln = (gl: string, v: number, extra: Partial<BudgetLine> = {}): BudgetLine => ({ gl_code: gl, months: flat(v), driver: { method: 'baseline', acq: {} } as any, override: false, note: '', ...extra });
-  // RRND-like: water 90%, trash 81.8%, gas group 52.9%, sewer 105.8%
-  const lines = () => [ln('6622', 2000), ln('5174', 1800), ln('6620', 1100), ln('5169', 900), ln('6608', 1000), ln('6604', 600), ln('6606', 100), ln('5171', 900), ln('6614', 1925), ln('5167', 2036.65)];
-  it('a group over 100% is reset to 90% of its expense; the rest are untouched', () => {
+  // RRND-like: water 90%, trash 300% (never capped), gas group 52.9%, sewer 105.8%
+  const lines = () => [ln('6622', 2000), ln('5174', 1800), ln('6620', 1100), ln('5169', 3300), ln('6608', 1000), ln('6604', 600), ln('6606', 100), ln('5171', 900), ln('6614', 1925), ln('5167', 2036.65)];
+  it('a group over 100% is reset to 90% of its expense; the rest are untouched; trash is in no group (Kara 2026-11-23)', () => {
     const r = capUtilityRecovery(lines());
     const g = Object.fromEntries(r.groups.map((x) => [x.key, x]));
     expect(g.sewer.reset).toBe(true);
     expect(g.sewer.ratio).toBeCloseTo(1.058, 3);
-    expect(g.water.reset).toBe(false); expect(g.trash.reset).toBe(false); expect(g.gas.reset).toBe(false);
+    expect(g.water.reset).toBe(false); expect(g.trash).toBeUndefined(); expect(g.gas.reset).toBe(false);
+    expect(g.all.reset).toBe(false);                                                   // trash's margin is not in "all" either
     const sewer = r.lines.find((l) => l.gl_code === '5167')!;
     expect(sum(sewer.months)).toBeCloseTo(0.9 * 1925 * 12, 0);
     expect((sewer.driver as any).recoveryCap).toMatchObject({ group: 'sewer', to: 0.9 });
     expect(r.lines.find((l) => l.gl_code === '5174')!.months[0]).toBe(1800);
+    expect(r.lines.find((l) => l.gl_code === '5169')!.months[0]).toBe(3300);           // trash income kept at 300%
+  });
+  it('a typed recovery target sets the group to that share of its expense, above 90% included (Kara 2026-11-23)', () => {
+    const r = capUtilityRecovery(lines(), { targets: { sewer: 0.95, water: 0.95 } });
+    const sewer = r.lines.find((l) => l.gl_code === '5167')!, water = r.lines.find((l) => l.gl_code === '5174')!;
+    expect(sum(sewer.months)).toBeCloseTo(0.95 * 1925 * 12, 0);                        // down from 105.8% to 95%, not 90%
+    expect(sum(water.months)).toBeCloseTo(0.95 * 2000 * 12, 0);                        // up from 90% to 95%
+    expect((sewer.driver as any).recoveryTarget).toMatchObject({ group: 'sewer', to: 0.95 });
+    expect((sewer.driver as any).recoveryCap).toBeUndefined();
+    expect(r.groups.find((x) => x.key === 'water')!.target).toBe(0.95);
+    // a target above 100% is honoured too (the site is allowed to bill more than the bill); no target = the old reset
+    expect(sum(capUtilityRecovery(lines(), { targets: { sewer: 1.1 } }).lines.find((l) => l.gl_code === '5167')!.months)).toBeCloseTo(1.1 * 1925 * 12, 0);
+    expect(sum(capUtilityRecovery(lines(), { targets: { water: null } }).lines.find((l) => l.gl_code === '5167')!.months)).toBeCloseTo(0.9 * 1925 * 12, 0);
   });
   it('a locked reimbursement is never moved; no expense = no test', () => {
     const ls = lines().map((l) => (l.gl_code === '5167' ? { ...l, override: true } : l));
@@ -2854,12 +2868,43 @@ describe('cash on cash with a companion NOI (Troy 2026-11-18: "TPND COC return n
   });
 });
 
-import { spikeShare, retimeOnce, evenQuarters, smoothBills, timingFor } from '../shared/annual.js';
+import { spikeShare, retimeOnce, evenQuarters, smoothBills, timingFor, timingDefaultsFromRules, TIMING_DEFAULTS } from '../shared/annual.js';
 describe('review-checklist defaults (Troy 2026-11-18: "If one time, I would like for it to say in which month")', () => {
   it('spikeShare: a once-a-year amount is all one-time, a steady line none of it', () => {
     expect(spikeShare([0, 0, 0, 0, 0, 0, 0, 0, 0, 1200, 0, 0])).toBe(1);
     expect(spikeShare(Array(12).fill(100))).toBe(0);
     expect(spikeShare([100, 100, 100, 100, 100, 100, 100, 100, 100, 700, 100, 100])).toBeCloseTo(600 / 1800, 6);
+  });
+  it('only the largest spike is one-time: a second event stays where it posted (Kara 2026-11-23, Aug / Dec parties)', () => {
+    const m = [100, 100, 100, 100, 100, 100, 100, 400, 100, 100, 700, 100] as Months;   // August party, November gift cards
+    expect(spikeShare(m)).toBeCloseTo(600 / 2100, 6);
+    const out = retimeOnce(m, 11, 1, spikeShare(m))!;
+    expect(out.months[7]).toBe(400);                  // August keeps its party
+    expect(out.months[10]).toBe(700);
+    expect(sum(out.months)).toBe(2100);
+  });
+  it('the timing defaults come from the region\'s review checklist (Kara 2026-11-23: KC months differ)', () => {
+    const d = timingDefaultsFromRules([{ gl: '5178', kind: 'peak', month: 3 }, { gl: '6408', kind: 'quarterlySame' }, { gl: '6116', kind: 'pctOverT12' }]);
+    expect(d).toEqual({ '5178': { kind: 'once', month: 3 }, '6408': { kind: 'quarters' } });
+    expect(timingFor({}, '5178', d)).toEqual({ kind: 'once', month: 3 });
+    expect(timingFor({}, '6324', d)).toBeNull();                               // no rule = no default in that region
+    expect(timingFor({ timing: { '6324': { kind: 'once', month: 5 } } }, '6324', d)).toEqual({ kind: 'once', month: 5 });
+    expect(timingDefaultsFromRules([])).toEqual(TIMING_DEFAULTS);
+  });
+  it('a formula picked on the row keeps its own months unless the month is typed for the line', () => {
+    const actual = synthetic();
+    actual['6324'] = [50, 50, 50, 900, 50, 50, 50, 50, 50, 50, 50, 50] as Months;   // dues posted in April
+    const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
+    const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
+    const def = L(generateAnnualLines(coaList, inputs, src), '6324');
+    expect((def.driver as any).timing).toMatchObject({ kind: 'once', month: 2 });              // the built-in default moves it to February
+    const same = L(generateAnnualLines(coaList, { ...inputs, baseline: { ...inputs.baseline!, glShape: { '6324': 'actual' } } }, src), '6324');
+    expect((same.driver as any).timing).toBeUndefined();                                       // "same month" picked on the row: April stays
+    expect(same.months[3]).toBeGreaterThan(same.months[1]);
+    const typed = L(generateAnnualLines(coaList, { ...inputs, timing: { '6324': { kind: 'once', month: 6 } }, baseline: { ...inputs.baseline!, glShape: { '6324': 'actual' } } }, src), '6324');
+    expect((typed.driver as any).timing).toMatchObject({ kind: 'once', month: 6 });            // a month typed on the line still wins
+    const region = L(generateAnnualLines(coaList, inputs, { ...src, timingDefaults: { '6324': { kind: 'once', month: 4 } } }), '6324');
+    expect((region.driver as any).timing).toMatchObject({ kind: 'once', month: 4 });
   });
   it('retimeOnce: the one-time part lands in its month, the rest keeps its pattern, the total to the cent', () => {
     const m = [100, 100, 100, 100, 100, 100, 100, 100, 100, 700, 100, 100] as Months;   // calendar = budget (start Jan)
@@ -3074,14 +3119,19 @@ describe('management fee by quarterly return (Troy 2026-11-19)', () => {
     const b = baseInputs(2026, 10, actual, null, coaList, null, 10);
     return L(generateAnnualLines(coaList, { ...b, mgmtPct: 0.04, ...patch }, { actual, budget: null, lastMonth: 10, template: t }), '6112');
   };
-  it("each typed quarter's fee follows its return; a blank quarter keeps the fee %", () => {
+  it("each typed quarter's fee follows its return on the fee months that bill that quarter's income; a blank quarter keeps the fee %", () => {
     const base = run({});
     const l = run({ mgmtReturns: [0.16, null, 0.18, 0.10] });
     const ratio = (i: number) => l.months[i] / base.months[i];
-    expect(ratio(1)).toBeCloseTo(0.05 / 0.04, 2);      // Q1 at 16% → 5%
-    expect(l.months[4]).toBe(base.months[4]);          // Q2 blank → 4%
-    expect(ratio(7)).toBeCloseTo(0.06 / 0.04, 2);      // Q3 at 18% → 6%
-    expect(l.months[10]).toBe(base.months[10]);        // Q4 at 10% → 4%
+    // in arrears (Kara 2026-11-23): the fee posted in February bills January's income, so a quarter's rate starts the
+    // month after the quarter opens; January bills December (the prior year) at the fee %
+    expect(l.months[0]).toBe(base.months[0]);          // Jan fee (Dec income) → the fee %
+    expect(ratio(1)).toBeCloseTo(0.05 / 0.04, 2);      // Feb fee (Jan income, Q1 at 16%) → 5%
+    expect(ratio(3)).toBeCloseTo(0.05 / 0.04, 2);      // Apr fee (Mar income, Q1) → 5%
+    expect(l.months[4]).toBe(base.months[4]);          // May fee (Apr income, Q2 blank) → 4%
+    expect(ratio(7)).toBeCloseTo(0.06 / 0.04, 2);      // Aug fee (Jul income, Q3 at 18%) → 6%
+    expect(ratio(9)).toBeCloseTo(0.06 / 0.04, 2);      // Oct fee (Sep income, Q3) → 6%
+    expect(l.months[10]).toBe(base.months[10]);        // Nov fee (Oct income, Q4 at 10%) → 4%
     expect((l.driver as any).byQuarter[0]).toEqual({ ret: 0.16, pct: 0.05 });
     expect((l.driver as any).byQuarter[1]).toBeNull();
   });
@@ -3089,5 +3139,96 @@ describe('management fee by quarterly return (Troy 2026-11-19)', () => {
     const l = run({ mgmtReturns: [0.16, 0.16, 0.16, 0.16] }, { ...tpl, mgmtFee: { ...tpl.mgmtFee, matrix: {} } });
     expect(sum(l.months)).toBeCloseTo(sum(run({}).months), 2);
     expect((l.driver as any).noMatrix).toBe(true);
+  });
+});
+
+/* ---------------------------------------------------------------------------------------------------------------
+   Kara Garrison / Riley Combs notes, 2026-11-23/24 (the "Claude Budget Tool Notes" thread)
+   --------------------------------------------------------------------------------------------------------------- */
+describe('budget tool notes thread (Kara / Riley, 2026-11-23/24)', () => {
+  const actual = synthetic();
+  const inputs = baseInputs(2027, 10, actual, null, coaList, null, 10);
+  const src: AnnualSources = { actual, budget: null, lastMonth: 10 };
+  it('a shape picked on the row wins over a formula set\'s zero-out (Kara: "T12 / 12 * growth" on a zeroed category)', () => {
+    const zsrc = { ...src, rules: { '6302': { method: 'zero' as const } } };
+    const zeroed = L(generateAnnualLines(coaList, inputs, zsrc), '6302');
+    expect(zeroed.months.every((v) => v === 0)).toBe(true);
+    const back = L(generateAnnualLines(coaList, { ...inputs, baseline: { ...inputs.baseline!, glShape: { '6302': 'flat' }, glGrowth: { '6302': 0.03 } } }, zsrc), '6302');
+    expect(sum(back.months)).toBeCloseTo(1200 * 1.03, 1);
+    expect((back.driver as any).shape).toBe('flat');
+    // a small-T12 zero is not undone by a row shape
+    const small = L(generateAnnualLines(coaList, { ...inputs, smallT12: { '6302': 'zero' }, smallT12Limit: 2000, baseline: { ...inputs.baseline!, glShape: { '6302': 'flat' } } } as any, src), '6302');
+    expect(small.months.every((v) => v === 0)).toBe(true);
+  });
+  it('collection fees = a typed % of bad debt recovery even with the delinquency chain off (Kara)', () => {
+    const off = generateAnnualLines(coaList, inputs, src);
+    expect((L(off, '5110').driver as any).method).not.toBe('badDebtRecovery');
+    expect((L(off, '6309').driver as any).method).not.toBe('collectionFee');
+    const on = generateAnnualLines(coaList, { ...inputs, collectionFeePct: 0.5 }, src);
+    const rec = L(on, '5110'), fee = L(on, '6309');
+    expect((fee.driver as any)).toMatchObject({ method: 'collectionFee', pct: 0.5, of: (rec.driver as any).method });
+    fee.months.forEach((v, i) => expect(v).toBeCloseTo(0.5 * rec.months[i], 2));
+  });
+  it('loss to lease as a % of GPR (Riley: "isn\'t calculating off GPR"): the T12 ratio, or a typed share, on every month', () => {
+    const steps = zero12(); steps[1] = 0.03;
+    const t12 = L(generateAnnualLines(coaList, { ...inputs, gpr: { baseMonthly: 10000, growthPct: steps }, ltl: { ...inputs.ltl, mode: 'pct' } }, src), '5003');
+    expect((t12.driver as any)).toMatchObject({ method: 'ltl', basis: 't12' });
+    expect(t12.months[0]).toBeCloseTo(-500, 2);                       // 5% of 10,000 (the T12 ratio)
+    expect(t12.months[1]).toBeCloseTo(-500 * 1.03, 2);                // follows the February step
+    const typed = L(generateAnnualLines(coaList, { ...inputs, gpr: { baseMonthly: 10000, growthPct: steps }, ltl: { ...inputs.ltl, mode: 'pct', pct: 0.04 } }, src), '5003');
+    expect(typed.months[0]).toBeCloseTo(-400, 2);
+    expect((typed.driver as any).basis).toBe('typed');
+  });
+  it('a January GPR typed on the row: the first month is the typed figure and the steps run on from it (Kara / Riley)', () => {
+    const steps = zero12(); steps[0] = 0.02; steps[2] = 0.03;
+    const roll = L(generateAnnualLines(coaList, { ...inputs, gpr: { baseMonthly: 10000, growthPct: steps } }, src), '4994');
+    expect(roll.months[0]).toBeCloseTo(10200, 2);
+    const typed = L(generateAnnualLines(coaList, { ...inputs, gpr: { baseMonthly: 10000, growthPct: steps, month0: 11000 } }, src), '4994');
+    expect(typed.months[0]).toBe(11000);                              // January as typed (the January step is inside it)
+    expect(typed.months[1]).toBe(11000);
+    expect(typed.months[2]).toBeCloseTo(11000 * 1.03, 2);             // the March step runs on from it
+    expect((typed.driver as any).month0).toBe(11000);
+    // the % of GPR lines follow the typed January
+    expect(L(generateAnnualLines(coaList, { ...inputs, gpr: { baseMonthly: 10000, growthPct: steps, month0: 11000 } }, src), '5019').months[0]).toBeCloseTo(-60 * 11000 / 10000, 1);
+    // 0 / null = the roll
+    expect(L(generateAnnualLines(coaList, { ...inputs, gpr: { baseMonthly: 10000, growthPct: steps, month0: 0 } }, src), '4994').months[0]).toBeCloseTo(10200, 2);
+  });
+  it('fit toward a flat month instead of the T12 months (Kara: "a % of flat vs turns")', () => {
+    const c = cal([100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200]);
+    const turns = cal([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7800]);          // every expiration in December
+    const pure = annualBaseline(c, { pct: 0, shape: 'turns', turns, fit: 0 });
+    expect(pure[11]).toBeCloseTo(7800, 1);
+    const half = annualBaseline(c, { pct: 0, shape: 'turns', turns, fit: 0.5, fitFlat: true });
+    expect(half[11]).toBeCloseTo(7800 / 2 + 7800 / 24, 1);               // half the curve, half flat
+    expect(half[0]).toBeCloseTo(7800 / 24, 1);
+    expect(sum(half)).toBeCloseTo(7800, 1);
+    const line = L(generateAnnualLines(coaList, { ...inputs, baseline: { ...inputs.baseline!, glShape: { '6302': 'flat' }, glFit: { '6302': 1 }, glFitTo: { '6302': 'flat' } } }, src), '6302');
+    expect((line.driver as any).fitTo).toBe('flat');
+    expect(new Set(line.months.map((v) => Math.round(v))).size).toBe(1);   // all the way to flat
+  });
+  it('vacancy: the anchor on the last actual month holds the early months; unanchored, every month scales with the average (Riley)', () => {
+    const exp = cal([10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10]);
+    const g = cal(Array(12).fill(10000));
+    const anchored = (avg: number) => vacancyByMonth(Array(12).fill(avg), exp, g, 1, { startPct: 0.10, lastMonth: 10 }).pcts;
+    const aR = anchored(0.06).map((v, i) => v / anchored(0.04)[i]);
+    expect(aR[0]).toBeLessThan(aR[11]);                                 // January barely moves, December carries the change
+    const free = (avg: number) => vacancyByMonth(Array(12).fill(avg), exp, g, 1, { startPct: null, lastMonth: 10 }).pcts;
+    const fR = free(0.06).map((v, i) => v / free(0.04)[i]);
+    fR.forEach((r) => expect(r).toBeCloseTo(1.5, 3));                   // every month x 1.5
+    const line = L(generateAnnualLines(coaList, { ...inputs, vacancyStart: 'steady', expirations: exp }, src), '5031');
+    expect((line.driver as any).anchor).toBe('steady');
+    expect((line.driver as any).startPct).toBeUndefined();
+  });
+  it('principal from the template\'s debt schedule lands on each loan\'s own GL (Kara: the CSV carried interest, not principal)', () => {
+    const tpl = { lastActual: { month: 10, year: 2026 }, units: 10, debt: { interest: Array(12).fill(1000), principal: Array(12).fill(-900), principalGl: '3090', loans: ['a', 'b'],
+      principalByGl: { '3080': Array(12).fill(-600), '3090': Array(12).fill(-300) } } } as any;
+    const lines = generateAnnualLines(coaList, inputs, { ...src, template: tpl });
+    expect(L(lines, '3080').months[0]).toBe(-600);
+    expect(L(lines, '3090').months[0]).toBe(-300);
+    expect((L(lines, '3090').driver as any)).toMatchObject({ method: 'debtService', kind: 'principal' });
+    // an older template without the split: the summed series on the one GL
+    const one = generateAnnualLines(coaList, inputs, { ...src, template: { ...tpl, debt: { ...tpl.debt, principalByGl: undefined } } });
+    expect(L(one, '3090').months[0]).toBe(-900);
+    expect(L(one, '3080').months[0]).toBe(0);
   });
 });

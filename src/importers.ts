@@ -1427,13 +1427,18 @@ export function parseYardiBudgetTemplate(buf: Buffer, coaDetail?: Set<string>): 
   const interest = Array(12).fill(0) as number[], principal = Array(12).fill(0) as number[];
   const loans = new Set<string>();
   let principalGl = '3080';
+  // each loan's principal on the GL it books to (BookToGl): a 2nd mortgage on 3090 beside the 1st on 3080 (Kara Garrison
+  // 2026-11-24: the CSV carried the interest but not the principal). The summed series stays for older readers.
+  const principalByGl: Record<string, number[]> = {};
   for (const r of ds.slice(1)) {
     const d = serialDate(r?.[2]);
     if (!d || d.y !== year) continue;
     loans.add(s(r[1]));
     interest[d.m - 1] += num(r[5]);
     principal[d.m - 1] += num(r[4]);
+    const gl = s(r[7]) || principalGl;
     if (s(r[7])) principalGl = s(r[7]);
+    (principalByGl[gl] = principalByGl[gl] || Array(12).fill(0))[d.m - 1] += num(r[4]);
   }
   // management fee matrix + actual
   const mf = sheet(/^manfeematrix$/i) || [];
@@ -1498,7 +1503,8 @@ export function parseYardiBudgetTemplate(buf: Buffer, coaDetail?: Set<string>): 
   const template: TemplateData = {
     code, name, units, capital, acquisitionDate: acq ? `${acq.y}-${String(acq.m).padStart(2, '0')}` : null, budgetYear: year,
     lastActual: { year: lastActual.y, month: lastActual.m }, pyYears,
-    debt: { interest: interest.map((v) => Math.round(v * 100) / 100), principal: principal.map((v) => Math.round(v * 100) / 100), principalGl, loans: [...loans] },
+    debt: { interest: interest.map((v) => Math.round(v * 100) / 100), principal: principal.map((v) => Math.round(v * 100) / 100), principalGl, loans: [...loans],
+      principalByGl: Object.fromEntries(Object.entries(principalByGl).map(([gl, m]) => [gl, m.map((v) => Math.round(v * 100) / 100)])) as any },
     mgmtFee, utilForecast, suggestions, suggestionNotes, leaseGoals, leaseExpirations,
     renewalPct, burnoffRenew, burnoffNew, gprPct, vacancyPct, delinqPct, priorPeriodPct, distHist, mortgage, softwareFixedMo,
     moveOuts: moveOuts && (moveOuts.scheduled.some((v) => v) || moveOuts.unscheduled.some((v) => v)) ? moveOuts : null,

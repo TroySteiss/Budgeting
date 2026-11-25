@@ -2,7 +2,8 @@
 
 > Structural map so a new session can orient without re-exploring.
 > **Keep this updated when the architecture changes.**
-> Last updated: 2026-11-24, latest — **Change log (admin) + FLATLINE fill** (Troy: "Make flatline formatting include cell fill, and keep a log of changes under more, with notes about who made them, and if they came from an import. This should not slow down the tool, and can be done in batches. Admin only insight"). FLATLINE lines (row tool flatlines, T12 ÷ 12 flat, a flat "curve" with no seasonal curve) get their own chip and cell colour `drv-flat` (maroon), in the grid only; the Excel export is unchanged (Troy picked grid only). The change log is in `src/change-log.ts`: `logChange` queues entries, saved in one insert per region every 3 s (or at 200 queued, before a shutdown, and before the log is read). Requests never wait on it. Entries carry `budget_ids` and `source` 'import' (migration 021 adds both and tags older entries). Each request runs in a change context opened by `h()`. `saveLines`, and the single-line edit route, record which GLs moved: year before → after, months changed, note, formula, lock. The request's entry carries those, and lines saved with no named action log as "lines saved (route)". More → Admin → Change log… (`GET /budgets/:id/changes`, requireAdmin) shows 100 at a time: when, who, what, From (Import + file, or In the tool), and the lines moved. It can filter to imports only or one person.
+> Last updated: 2026-11-25, latest — **The "Claude Budget Tool Notes" thread (Kara Garrison / Riley Combs, 2026-11-23/24)**, ENGINE_VERSION 2026-11-25a. Built: trash reimbursement (5169) is in no recovery group, so trash income is never cut to 90%; a typed recovery target per utility group (row menu on a reim line: "Recovery target % of the sewer expense…", last year's own ratio offered; `inputs.utilRecovery`, chip RECOVERY n%); the fee by quarterly return runs in arrears (a quarter's rate on the fee months that bill that quarter's income; January on the fee %); one-time timing moves only the largest spike (a second event in the history stays), the defaults come from the region's review checklist (`timingDefaultsFromRules`, Settings → Budget review checklist), a shape picked on the row keeps its own months unless the month is typed (row menu "When it lands…"); a row shape wins over a formula set's zero-out; collection fees = a typed % of 5110 with the chain off (row menu on 6309); loss to lease has a "% of GPR" method (`ltl.mode = 'pct'`, `ltl.pct`); a January GPR typed in the first 4994 cell (or the steps popover) sets `gpr.month0` and the steps run on from it, a first month typed on a % of GPR line (PEP, concessions) becomes its % of GPR, a first month typed on a Flatline line flatlines the year; the FIT chip can lean toward flat instead of the T12 months (`baseline.glFitTo`); vacancy anchor switch (Assumptions "starts from the last actual month"; `inputs.vacancyStart = 'steady'` scales every month with the average); Formula for lines takes a % over T12 and an "Other income: flat + 3%" preset and lists set-zeroed lines; the import review has per-section Accept / Flag / Deny; principal from the template's debt schedule lands on each loan's own GL (`debt.principalByGl`), the principal rows stay visible while interest is budgeted and the export check warns when principal is $0; % of GPR shows under the T12 / CY budget / year figures of loss to lease, concessions and rental-loss lines and on the compare card's contra rows, with an economic-vacancy (5031–5034) reference row under 5034; Reset to engine formula on 5003 / 4994 clears a typed first month. **Checklist months in one click** (Troy: "Make it easier to adjust the checklist for rebates and other things"): the 1X chip on a line (and the row menu's "When it lands…") opens a popover with this budget's month and the region's checklist month for the GL; the Review view's "high in a month" checks carry an inline month select; both call `POST /review-rules/month {id|gl, month}` (any signed-in user, logged, adds a peak check for a GL without one). See "Budget tool notes thread" below.
+> Before that, 2026-11-24 — **Change log (admin) + FLATLINE fill** (Troy: "Make flatline formatting include cell fill, and keep a log of changes under more, with notes about who made them, and if they came from an import. This should not slow down the tool, and can be done in batches. Admin only insight"). FLATLINE lines (row tool flatlines, T12 ÷ 12 flat, a flat "curve" with no seasonal curve) get their own chip and cell colour `drv-flat` (maroon), in the grid only; the Excel export is unchanged (Troy picked grid only). The change log is in `src/change-log.ts`: `logChange` queues entries, saved in one insert per region every 3 s (or at 200 queued, before a shutdown, and before the log is read). Requests never wait on it. Entries carry `budget_ids` and `source` 'import' (migration 021 adds both and tags older entries). Each request runs in a change context opened by `h()`. `saveLines`, and the single-line edit route, record which GLs moved: year before → after, months changed, note, formula, lock. The request's entry carries those, and lines saved with no named action log as "lines saved (route)". More → Admin → Change log… (`GET /budgets/:id/changes`, requireAdmin) shows 100 at a time: when, who, what, From (Import + file, or In the tool), and the lines moved. It can filter to imports only or one person.
 > Before that, 2026-11-24 — **Import review: flagged GLs are editable** (Troy: "if flagged, I would like for user to be able to make manual adjustments within those boxes for the GL in each month before accepting/applying the changes to the budget"): a flagged row (saved as flagged, or set to Flag on the card) shows its months as boxes, except months closed to actuals. A typed month saves at once to the held review (`PUT /budgets/:id/import-review/cell` {gl, i, value}); the file's own months are kept in `fileMonths`, the typed ones in `edited` (blue). A month typed back to the model's number (within $0.50) leaves `typed`, so Accept doesn't pin it; any other month joins `typed`. Accept and Apply work as before, on the edited row. The year and Δ cells update as you type; Apply waits for pending saves.
 > Before that, 2026-11-24 — **Gap Fill → T12 billing smoothing** (Troy: "Gap Fill shouldnt just jam a number in there - it should auto smooth the GL, especially for utilities"): `fillBillGaps` (which plugged the neighbours' average into a missed month, so a missed bill plus the double one after it was budgeted twice: GRKS sewer Nov $0 / Dec $8,708) is replaced by `smoothBills` (shared/annual.ts), the row tool's gentle smoothing run on the T12 in TIME order before the formula reads it. Credits are netted against the nearest high months; a catch-up bill's excess goes back to the low months within 3 months (months before it first); a month still at nothing is brought up to the months around it from the other months in proportion. The T12 total is always kept, so no money is added. On by default for `GAP_FILL_GLS` 6604 / 6608 / 6614 / 6620 / 6622, never on a contract GL; `inputs.gapFill[gl]` true/false per row (row menu "Auto-smooth T12 billing"). Driver `billSmooth` {spread, credits, filled, refill}, chip SMOOTHED, listed under Defaults in use.
 > Before that, 2026-11-23 — **Summary page**: the $/unit columns (Income, OpEx, NOI, Δ NOI, Δ EGI) and the $/unit/mo · /yr · Total $ toggle are gone; each compare cell's growth % has the budget's $ per unit per year under it (`renderSummary`, `.sumsub`).
@@ -2003,6 +2004,67 @@ reference columns blank. The name cell carries `data-hist` + a ▸/▾ chevron; 
   `lagMonths(exp, 1)` (December rolls into January); any GL can pick or drop the shape in
   its row shape menu ("T12 total on lease expirations, +1 month lag"); driver tag TURNS,
   `driver.turns` = expirations counted. Tests in annual.test.ts / importers.test.ts (174).
+
+## Budget tool notes thread (Kara Garrison / Riley Combs, 2026-11-23/24)
+
+Troy forwarded the "Claude Budget Tool Notes" email thread (four emails) and asked for every worthwhile change; the rest
+of the list is recorded in that session's reply (already possible / done another way on purpose). ENGINE_VERSION
+2026-11-25a: existing budgets change on their next Recalc only.
+
+- **Trash income is never capped** (Kara: "we are allowed to make income on trash per legal"): `RECOVERY_GROUPS` has no
+  trash group and 5169 / 6620 are out of "all"; the flat-fee group already left trash and pest out.
+- **Recovery target per group** (Kara: sewer "capping at 90% ... some properties are above 90%"): `inputs.utilRecovery`
+  {water | sewer | gas | 'flat fee (all but trash and pest)': share of the expense}; `capUtilityRecovery(..., { targets })`
+  scales the group's unlocked reim lines to target × expense in either direction (driver `recoveryTarget`, chip
+  RECOVERY n%); a group with no target keeps the over-100% → 90% reset. Row menu on a reim line: "Recovery target % of
+  the <group> expense…" (`recoveryGroupUi` / `recoveryRatios` in app.js mirror the groups — keep in step) shows the
+  budget's ratio now and last year's own ratio (the T12 on file) as the default. Listed under Defaults in use.
+- **Fee by quarterly return, in arrears** (Kara: the change "is getting implemented in the first month of the quarter"):
+  fee month i bills income month i−1, so `regular[i]` = the quarter of month i−1's rate; month 1 = the fee %.
+- **One-time timing** (Kara: licenses "locked on putting it all to February which is not correct for AGMO", rebates
+  "largest in March not Jan", employee relations "higher amount in August and Dec"): `spikeIndex` / `spikeShare` /
+  `retimeOnce` move only the LARGEST spike; other spikes keep their months. `timingFor(inputs, gl, defaults)` takes the
+  region's defaults, built by `timingDefaultsFromRules` from the review checklist ('peak' + month → once, 'quarterlySame'
+  → quarters) in `loadBudget` (`lb.timingDefaults` → `AnnualSources.timingDefaults`); a region edits the month in
+  Settings → Budget review checklist. A row-picked shape (`baseline.glShape`) and corporate lines skip the default
+  unless `inputs.timing[gl]` is typed; row menu "When it lands…" (month, 0 = own months, blank = the region default).
+- **A row shape wins over a set's zero** (Kara: a set saved with a zeroed category refused "T12 / 12 × growth"): the
+  userShaped pass runs on a GL whose only setter is a formula-set `zero` rule (not a small-T12 zero). Formula for lines
+  lists such lines too.
+- **Collection fee without the chain** (Kara): `inputs.collectionFeePct` typed → 6309 = % × 5110 whatever built 5110
+  (driver `of`); row menu on 6309 "= % of bad debt recovery (5110)…" / back to its own formula (pct null).
+- **LTL % of GPR** (Riley: "isn't calculating off GPR"): `ltl.mode = 'pct'`, `ltl.pct` (blank = the T12 ratio); Assumptions
+  method select + box, row popup box; chip LTL·%GPR; export label.
+- **January GPR typed** (Kara / Riley: "manually update the January GPR top line, & it properly flow"): `gpr.month0`
+  (net of HAP) = month 1 of 4994, the steps compound from it; set by typing only the first 4994 cell (0 / blank = the UAD),
+  the steps popover's box, or cleared by Reset to engine formula. The LTL market growth and the % of GPR lines follow.
+  Also by first-cell typing: a `pctGpr` (of GPR) line → `inputs.pctGpr[gl]` = typed ÷ January GPR; a Flatline /
+  T12 ÷ 12 line → `flatline` $/month for the year (Kara: "set an amount in January and then its flat").
+- **FIT toward flat** (Kara: "a % of flat vs turns"): `baseline.glFitTo[gl] = 'flat'`; `annualBaseline` `fitFlat` blends
+  the curve with flat weights, `fitLine` leans toward a flat month; chip FIT n%→FLAT; FIT chip menu "toward T12 months |
+  flat".
+- **Vacancy anchor** (Riley: "it only is adjusting June-Dec"): the chain anchored on the last actual month leaves the
+  early months to that start, so the average lands on the later months (Troy's 11-09 rule). `inputs.vacancyStart =
+  'steady'` (Assumptions: untick "starts from the last actual month") runs the chain from its steady state so every
+  month scales with the average; driver `anchor`, chip hover explains either way.
+- **Formula for lines** (Riley: "take 4 rows and flatline +3% at once"): a "% over T12" box (`glGrowth` on the ticked
+  lines) and an "Other income: flat + 3%" preset (pcode 4 / 5 lines, trash and pest reims left out).
+- **Import review by section** (Kara: a payroll-template import hard-coded every expense line): rows grouped by chart
+  section with Accept / Flag / Deny section buttons (`tr.irsec`).
+- **Principal** (Kara: the CSV "uploads the interest expense but not the 1st/2nd mortgage principal"): the Debt Service
+  sheet is read per BookToGl (`debt.principalByGl`), the engine books each loan's principal on its own GL (3080 / 3090),
+  the grid keeps the principal rows visible on an annual budget while interest is budgeted, and the pre-export check
+  warns when interest is budgeted with $0 principal. The CSV always carried 3080 / 3090 rows (csv_order 1–3); what Yardi
+  does with a balance-sheet row on upload is not something the tool can see — confirm on a real upload.
+- **Checklist month in one click**: `POST /review-rules/month` (routes.ts; not admin-only: a month is a region choice any
+  budgeter may make, and it is logged) rewrites one 'peak' rule's month, saving the built-in list as the region's own on
+  first use, or adds a peak check for the GL. Client: `openTimingChip` (the 1X chip is a button, `data-timing`; the row
+  menu's "When it lands…" opens it) with "This budget" (region default / own months / a month) and "<region> checklist
+  month"; the Review view's peak rows carry `select.rvmon`. Settings → Budget review checklist keeps the full editor.
+- **% of GPR beside the figures** (Kara: concessions / DQ / PPC / net DQ "as a % of GPR vs T12"): `.sumsub` under the
+  T12 / T3 / CY budget / year cells of loss, concession and rental-loss lines and the NET DELINQUENCY row (share of
+  4994 in that column), the compare card's contra rows (reference and budget), and a reference row "VACANCY + MODELS /
+  ADMIN / DOWN % OF GPR" under 5034 (Kara: "include models/admin/down, like Curtis' sheet").
 
 ## Gotchas / policy
 
