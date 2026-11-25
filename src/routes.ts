@@ -4,6 +4,7 @@ import { contractMonths as contractMonthsOf } from '../shared/annual.js';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import multer from 'multer';
 import { query, tx, inRegion, regionOfRequest, currentRegion } from './db.js';
+import { logChange, withChangeCtx, changeLabel, noteLineDiffs, trackingChanges, diffLines, flushChangeLog } from './change-log.js';
 import { requireAuth, requireAdmin, login, logout, status } from './auth.js';
 import { parseUwBook, parseUad, parseComparison, parseSellerT12, parsePayrollModel, parseReviewDraft, parseComparisonActuals, parseBudgetCsvBlocks, budgetCsvBlockText, parseMonarchStatement, parseYardiBudgetTemplate, parsePayrollTemplate, detectUploadKind, parseReviewApply, type BudgetCsvParsed } from './importers.js';
 import {
@@ -31,13 +32,13 @@ export const router = Router();
 
 /* async error wrapper → JSON 500 */
 /* every handler runs inside its request's region (db.ts): queries hit only that region's schema.
-   Re-entered here, not just in a middleware, because multer's stream callbacks drop the async context. */
+   Re-entered here, not just in a middleware, because multer's stream callbacks drop the async context.
+   It also opens the request's change context (change-log.ts): saved lines are logged with the action. */
 const h = (fn: (req: Request, res: Response) => Promise<any>) =>
-  (req: Request, res: Response, next: NextFunction) => inRegion(regionOfRequest(req), () => fn(req, res)).catch(next);
+  (req: Request, res: Response, next: NextFunction) => inRegion(regionOfRequest(req), () =>
+    withChangeCtx(req.session?.username || '', changeLabel(req), () => fn(req, res))).catch(next);
 
-const logChange = (username: string, action: string, detail: any): void => {
-  query('insert into change_log(username, action, detail) values($1,$2,$3)', [username, action, JSON.stringify(detail)]).catch(() => {});
-};
+// logChange: change-log.ts (queued, saved in batches; tagged with the budget and whether it came from a file)
 
 /* ---------------- auth ---------------- */
 router.post('/login', h(login as any));
@@ -1285,7 +1286,13 @@ export async function loadBudget(id: number): Promise<LoadedBudget | null> {
    a row a concurrent save already wrote is updated rather than failing (the log showed budget_lines_pkey clashes). */
 export async function saveLines(budgetId: number, lines: BudgetLine[], fullBuild = false): Promise<void> {
   const rows = [...new Map(lines.map((l) => [l.gl_code, l])).values()];
+  const track = trackingChanges();
   await tx(async (c) => {
+    // the change log: what this save moves (only inside a request; one read of the lines it replaces)
+    if (track) {
+      const old = (await c.query(`select gl_code, months, note, override, driver->>'method' as method from budget_lines where budget_id=$1`, [budgetId])).rows;
+      noteLineDiffs(budgetId, diffLines(old, rows));
+    }
     await c.query('delete from budget_lines where budget_id=$1', [budgetId]);
     for (let k = 0; k < rows.length; k += 500) {
       const params: any[] = [budgetId];
@@ -2159,6 +2166,8 @@ router.put('/budgets/:id/lines/:gl', h(async (req, res) => {
   const { months, note, override, driver } = req.body || {};
   const existing = lb.lines.find((l) => l.gl_code === gl);
   if (!existing) return res.status(404).json({ error: `No line for GL ${gl}` });
+  // the change log: the lines as they were (this route writes lines one by one, not through saveLines)
+  const orig = trackingChanges() ? lb.lines.map((l) => ({ gl_code: l.gl_code, months: [...l.months], note: l.note, override: l.override, method: (l.driver as any)?.method || '' })) : null;
   const incomeOf = (ls: BudgetLine[]): Months => rollup(new Map(ls.map((l) => [l.gl_code, l.months]))).get('5500') || zero12();
   const income0 = incomeOf(lb.lines);
   if (months) {
@@ -2259,6 +2268,7 @@ router.put('/budgets/:id/lines/:gl', h(async (req, res) => {
     }
   }
   await query('update budgets set updated_at=now() where id=$1', [id]);
+  if (orig) { const fin = new Map(lb.lines.map((l) => [l.gl_code, l])); for (const l of passed) fin.set(l.gl_code, l); noteLineDiffs(id, diffLines(orig, [...fin.values()])); }
   logChange(req.session.username || '', 'edit line', { id, gl, annual: sum(existing.months) });
   res.json(budgetView((await loadBudget(id))!));
 }));
@@ -3860,6 +3870,20 @@ router.post('/budgets/:id/import-draft', upload.single('file'), h(async (req, re
   view.importResult = { review: true, gls: d.rows.length, cells: d.rows.reduce((a, r) => a + r.typed.length, 0), notes: d.rows.filter((r) => r.note != null).length, capital: !!d.capital, base: d.base };
   res.json(view);
 }));
+/* CHANGE LOG for one budget (admin only; Troy 2026-11-24). Newest first, `limit` (default 100) at a time; `before` = the
+   last id shown, for the next page. Anything still queued is saved first so the list is current. */
+router.get('/budgets/:id/changes', requireAdmin, h(async (req, res) => {
+  const id = Number(req.params.id);
+  const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
+  const before = Number(req.query.before) || null;
+  await flushChangeLog();
+  const rows = (await query(
+    `select id, at, username, action, detail, source from change_log
+      where $1 = any(budget_ids) and ($2::int is null or id < $2)
+      order by id desc limit $3`, [id, before, limit + 1])).rows;
+  res.json({ entries: rows.slice(0, limit), more: rows.length > limit });
+}));
+
 // a month typed by hand into a held row (flagged rows: the review card's month boxes). body { gl, i, value }
 router.put('/budgets/:id/import-review/cell', h(async (req, res) => {
   const lb = await loadBudget(Number(req.params.id));

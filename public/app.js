@@ -104,7 +104,7 @@ function drvMeta(l) {
 /* The chip a formula choice produces, shown BESIDE the choice wherever formulas are picked (Troy
    2026-11-11: "colored chips … next to different formula options when picking out, so that the
    code/color for each is more clear"). Same tag + colour as the grid's Fx chip. */
-const SHAPE_CHIP = { actual: ['drv-base', 'SAME MO'], wavg: ['drv-base', 'WAVG'], flat: ['drv-base', 'FLATLINE'], curve: ['drv-base', 'CURVE'], avgnz: ['drv-base', 'AVG≠0'], last: ['drv-base', 'LAST'], turns: ['drv-base', 'TURNS'] };
+const SHAPE_CHIP = { actual: ['drv-base', 'SAME MO'], wavg: ['drv-base', 'WAVG'], flat: ['drv-flat', 'FLATLINE'], curve: ['drv-base', 'CURVE'], avgnz: ['drv-base', 'AVG≠0'], last: ['drv-base', 'LAST'], turns: ['drv-base', 'TURNS'] };
 const chipHtml = (cls, tag) => `<span class="drv ${cls} optchip">${esc(tag)}</span>`;
 const shapeChip = (k) => (SHAPE_CHIP[k] ? chipHtml(SHAPE_CHIP[k][0], SHAPE_CHIP[k][1]) : '');
 /** does this GL have a real seasonal curve (electric, heat, snow …)? With none, "seasonal curve" is just T12 ÷ 12 */
@@ -211,7 +211,7 @@ function drvMetaBase(l) {
     case 'yardiCsv': return { cls: 'drv-man', tag: 'YARDI', label: `Adopted from the Yardi budget CSV${l.driver.file ? ` (${l.driver.file})` : ''} — the month as it sits in Yardi` };
     case 'imported': return { cls: 'drv-man', tag: 'IMP', label: `Imported from draft workbook${l.driver.file ? ` (${l.driver.file})` : ''}` };
     case 'smooth': return { cls: 'drv-t12', tag: 'SMOOTH', label: `Missed-bill smoothing ×${l.driver.passes || 0}${l.driver.of ? ` of ${String(l.driver.of).toUpperCase()}${l.driver.srcName ? ' ' + l.driver.srcName : ''}` : ''} — spikes spread into surrounding months, total kept` };
-    case 'flatline': return { cls: 'drv-base', tag: 'FLATLINE', label: l.driver.per === 'year' ? `Flatline: $${money(l.driver.amount || 0)} per year typed, ÷ 12 = $${money((l.driver.amount || 0) / 12)} every month` : `Flatline: $${money(l.driver.amount || 0)} per month typed, every month ($${money((l.driver.amount || 0) * 12)} a year)` };
+    case 'flatline': return { cls: 'drv-flat', tag: 'FLATLINE', label: l.driver.per === 'year' ? `Flatline: $${money(l.driver.amount || 0)} per year typed, ÷ 12 = $${money((l.driver.amount || 0) / 12)} every month` : `Flatline: $${money(l.driver.amount || 0)} per month typed, every month ($${money((l.driver.amount || 0) * 12)} a year)` };
     case 'setTotal': return { cls: 'drv-man', tag: 'TOTAL', label: `Total set to ${Math.round(l.driver.total || 0).toLocaleString()} — ${l.driver.of ? `${String(l.driver.of).toUpperCase()} distribution kept` : 'prior distribution kept'}` };
     /* ---- annual (template) rules ---- */
     case 'baseline': {
@@ -229,7 +229,8 @@ function drvMetaBase(l) {
       const tag = d.src === 'budget' ? 'CYB' : d.pcts ? 'UTIL' : flatCurve ? SHAPE_CHIP.flat[1] : (SHAPE_CHIP[d.shape] || SHAPE_CHIP.actual)[1];
       const foldTxt = d.folded ? ` · ${d.folded} credit month${d.folded === 1 ? '' : 's'} in the history folded into the other months (no negative budget months; total kept)` : '';
       const lastWarn = d.lastDev != null ? ` · ⚠ last actual month is ${d.lastDev > 0 ? '+' : ''}${Math.round(d.lastDev * 100)}% vs the T12 average — one month is setting the year (shape menu: T12 ÷ 12 flat)` : '';
-      return { cls: 'drv-base', tag: d.lastDev != null ? '⚠LAST' : tag, label: `${d.src === 'budget' ? 'CY budget' : 'Own trailing-12 actual'} — ${shape} ${factor}${d.mult ? ` → MROUND $${d.mult}` : ''} · T12 ${Math.round(d.base || 0).toLocaleString()}${foldTxt}${d.drift ? ` · tilted ${(d.drift * 100).toFixed(1)}% January to December (costs drift up through the year; year total unchanged)` : ''}${d.rule ? ' · default shape and factor from the 2026 GRKS draft (not set for this property)' : ''}${lastWarn}` };
+      // FLATLINE months have a fill of their own (Troy 2026-11-24: "Make flatline formatting include cell fill")
+      return { cls: d.lastDev == null && tag === SHAPE_CHIP.flat[1] ? 'drv-flat' : 'drv-base', tag: d.lastDev != null ? '⚠LAST' : tag, label: `${d.src === 'budget' ? 'CY budget' : 'Own trailing-12 actual'} — ${shape} ${factor}${d.mult ? ` → MROUND $${d.mult}` : ''} · T12 ${Math.round(d.base || 0).toLocaleString()}${foldTxt}${d.drift ? ` · tilted ${(d.drift * 100).toFixed(1)}% January to December (costs drift up through the year; year total unchanged)` : ''}${d.rule ? ' · default shape and factor from the 2026 GRKS draft (not set for this property)' : ''}${lastWarn}` };
     }
     case 'pctGpr': if (l.gl_code === '5035' && (l.driver.basis === 'uw' || l.driver.basis === 'typed' || l.driver.basis === 'posted')) { const u = l.driver.uwBundle, p2 = (v) => `${(v * 100).toFixed(2)}%`; const uwTxt = u ? `UW vacancy + DQ ${p2(u.pct)} (Year 1 ${p2(u.p1)} × ${u.n1}/12${u.n1 < 12 ? ` + Year 2 ${p2(u.p2)} × ${12 - u.n1}/12` : ''}) less this budget's vacancy ${p2(l.driver.vac || 0)} = ${p2(Math.max(0, u.pct - (l.driver.vac || 0)))} of GPR` : ''; return { cls: 'drv-base', tag: l.driver.basis === 'uw' ? 'DQ·UW−VAC' : l.driver.basis === 'typed' ? '%GPR' : '%NET RENT·POSTED', label: l.driver.basis === 'uw' ? `Current delinquency = ${uwTxt}, every month on GPR. Type a % in the box to use your own (clear the box to come back here).` : l.driver.basis === 'typed' ? `Current delinquency = ${p2(Math.abs(l.driver.pct || 0))} of GPR, typed on this budget.${uwTxt ? ` The default would be ${uwTxt}.` : ''} Clear the box to use the default.` : `Current delinquency = the posted rate since closing, ${p2(Math.abs(l.driver.pct || 0))} of net rental income, every month.` }; }
       return { cls: 'drv-base', tag: l.driver.of === 'net' ? '%NET RENT' : l.driver.of === 'netgpr' ? '%NET GPR' : '%GPR', label: `${((l.driver.pct || 0) * 100).toFixed(2)}% of ${l.driver.of === 'net' ? 'net rental income' : l.driver.of === 'netgpr' ? 'net GPR' : 'GPR'} (${l.driver.basis === 'last' ? 'last-month' : 'trailing-12'} ratio)${l.driver.capped ? ` — CAPPED at each month's budgeted delinquency (the ratio alone gave ${money(l.driver.uncapped || 0)} for the year; collections cannot exceed what is delinquent)` : ''}` };
@@ -1386,7 +1387,7 @@ function renderEditor(el) {
             const used = new Set(bv.lines.filter((l) => l.months && l.months.some((v) => v)).map((l) => drvMeta(l).cls));
             if (acts.length) used.add('drv-act');
             const items = [['drv-rr', 'UAD / income'], ['drv-uw', 'UW tie'], ['drv-comp', 'Minot comps'], ['drv-pay', 'Payroll tab / model'], ['drv-fee', '% of income'], ['drv-int', bv.annual ? 'Debt schedule / zero' : 'Interest'],
-              ['drv-base', "This property's own history"], ['drv-corp', 'Corporate rate / suggestion'], ['drv-t12', 'Seller stmt / recovery'], ['drv-man', 'Manual override'], ['drv-act', 'Posted actuals (locked month)']];
+              ['drv-base', "This property's own history"], ['drv-flat', 'Flatline (same every month)'], ['drv-corp', 'Corporate rate / suggestion'], ['drv-t12', 'Seller stmt / recovery'], ['drv-man', 'Manual override'], ['drv-act', 'Posted actuals (locked month)']];
             return items.filter(([c]) => used.has(c)).map(([c, lb]) => `<span><span class="dot ${c}"></span>${lb}</span>`).join('');
           })()}
           <span class="muted">· click a row's chip to change its formula</span>
@@ -1506,6 +1507,8 @@ function renderEditor(el) {
       <button data-x="qshift" title="Move NOI share between quarters on the lines you pick (aggressive Q4, conservative Q1…); the year's NOI stays the same. Also on the NOI row's % by quarter.">◫ Shift NOI between quarters…${inp0.qShift ? ' ✓' : ''}</button>
       <button data-x="feesched" title="Flat-fee utility package by bedroom count: reimbursement income from fee × occupied units, with RUBS leases switching at expiration">⌂ Flat-fee package schedule…</button>
       <button data-x="split" title="Recurring journal split to a companion property (TPND → TPNDC 41.11%)">⇄ Journal split to another property…</button>` : ''}
+      ${S.auth && S.auth.isAdmin ? `${grp('Admin')}
+      <button data-x="clog" title="Every change to this budget: who made it, when, whether it came from an imported file, and the lines it moved. Admins only.">🕘 Change log…</button>` : ''}
       ${grp('View')}
       <button data-x="cols">▦ Columns…</button>
       <button data-x="side">${sideOn ? '⏵ Hide side panel' : '⏴ Show side panel'}</button>
@@ -1529,6 +1532,7 @@ function renderEditor(el) {
       { const c4 = menu.querySelector('[data-x="split"]'); if (c4) c4.addEventListener('click', () => openAllocSplit(b)); }
       { const c5 = menu.querySelector('[data-x="qshift"]'); if (c5) c5.addEventListener('click', () => openQShift(b, (((bv.budget.inputs || {}).qShift) || {}).targets || [null, null, null, null])); }
       const o = menu.querySelector('[data-x="ovr"]'); if (o) o.addEventListener('click', () => openOverridesAudit(b));
+      { const cl = menu.querySelector('[data-x="clog"]'); if (cl) cl.addEventListener('click', () => openChangeLog(b)); }
       menu.querySelector('[data-x="cols"]').addEventListener('click', () => setTimeout(() => openColsMenu(anchor, labels), 0));
       menu.querySelector('[data-x="side"]').addEventListener('click', () => { localStorage.setItem('bt-side', sideOn ? '0' : '1'); render(); });
       menu.querySelector('[data-x="zero"]').addEventListener('change', (ev) => { S.showZero = ev.target.checked; render(); });
@@ -3377,6 +3381,89 @@ function wireImportReview(el, b) {
   });
 }
 
+/* ---- CHANGE LOG (Troy 2026-11-24: "keep a log of changes under more, with notes about who made them, and if they came
+   from an import ... Admin only insight"). Newest first, 100 at a time; each entry: when, who, what, where it came from
+   (an imported file or the tool), and the lines it moved (open the row). ---- */
+const CLOG_SKIP = new Set(['id', 'ids', 'budgets', 'lines', 'linesTotal', 'changes', 'file', 'filename', 'via', 'inputs', 'qShift', 'from', 'sets']);
+const CLOG_NAMES = { gl: 'GL', key: 'month', name: 'name', pcode: 'category', pct: '%', target: 'target', accepted: 'accepted', denied: 'denied', flagged: 'flagged', pending: 'pending', cells: 'cells', gls: 'GLs', notes: 'notes', month: 'month', value: '$', capital: 'capital', multiple: 'MROUND', sid: 'save point', annual: 'year $' };
+function clogWhat(e) {
+  const d = e.detail || {};
+  const bits = [];
+  for (const [k, v] of Object.entries(d)) {
+    if (CLOG_SKIP.has(k) || v == null || v === '' || typeof v === 'object') continue;
+    let txt = typeof v === 'number' ? (Math.abs(v) >= 1000 ? money(v) : String(Math.round(v * 10000) / 10000)) : String(v);
+    if (k === 'gl') txt = `${v} ${glName(String(v))}`;
+    if (k === 'month' && typeof v === 'number' && S.bv && S.bv.monthLabels) txt = S.bv.monthLabels[v] || txt;
+    if (txt.length > 60) txt = txt.slice(0, 57) + '…';
+    bits.push(`${CLOG_NAMES[k] || k} ${txt}`);
+  }
+  const act = String(e.action || '');
+  return `<b>${esc(act.charAt(0).toUpperCase() + act.slice(1))}</b>${d.via ? ' <span class="muted">(lines saved by it)</span>' : ''}${bits.length ? `<div class="muted" style="font-size:11px">${esc(bits.join(' · '))}</div>` : ''}`;
+}
+function clogLines(e) {
+  const ls = (e.detail || {}).lines || [];
+  if (!ls.length) return '<span class="muted">—</span>';
+  const total = (e.detail || {}).linesTotal || ls.length;
+  const net = ls.reduce((a, x) => a + ((x.to || 0) - (x.from || 0)), 0);
+  const meth = (m) => m || 'none';
+  const rows = ls.map((x) => {
+    const other = [x.n ? `${x.n} mo` : '', x.m ? `formula ${meth(x.m[0])} → ${meth(x.m[1])}` : '', x.lock === true ? 'locked' : x.lock === false ? 'unlocked' : '', x.note != null ? `note: ${x.note ? `"${x.note.slice(0, 80)}"` : '(cleared)'}` : ''].filter(Boolean).join(' · ');
+    const dlt = (x.to || 0) - (x.from || 0);
+    return `<tr><td>${esc(x.gl)}</td><td class="l">${esc(glName(x.gl))}</td><td>${money(x.from || 0)}</td><td>${money(x.to || 0)}</td><td class="${dlt < 0 ? 'neg' : ''}">${dlt ? money(dlt) : '—'}</td><td class="l muted">${esc(other)}</td></tr>`;
+  }).join('');
+  return `<details><summary>${total} line${total === 1 ? '' : 's'}${Math.abs(net) >= 1 ? ` · ${net > 0 ? '+' : '−'}$${money(Math.abs(net))}` : ''}</summary>
+    <table class="list clogl"><tr><th>GL</th><th class="l">Account</th><th>Before</th><th>After</th><th>Δ</th><th class="l"></th></tr>${rows}</table>
+    ${total > ls.length ? `<div class="muted" style="font-size:11px">+ ${total - ls.length} more line${total - ls.length === 1 ? '' : 's'} not listed</div>` : ''}</details>`;
+}
+async function openChangeLog(b) {
+  let dlg = document.getElementById('clog-dlg');
+  if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'clog-dlg'; dlg.className = 'clogdlg'; document.body.appendChild(dlg); }
+  const st = { entries: [], more: false, only: false, who: '', busy: false };
+  const site = S.bv && S.bv.budget ? `${String(S.bv.budget.property_code || '').toUpperCase()} ${S.bv.budget.year || ''}` : '';
+  const draw = () => {
+    const users = [...new Set(st.entries.map((e) => e.username).filter(Boolean))].sort();
+    const shown = st.entries.filter((e) => (!st.only || e.source === 'import') && (!st.who || e.username === st.who));
+    const body = shown.map((e) => {
+      const d = e.detail || {};
+      const file = d.file || d.filename || '';
+      const src = e.source === 'import' ? `<span class="badge clogimp">Import</span>${file ? `<div class="muted" style="font-size:10.5px">${esc(String(file))}</div>` : ''}` : '<span class="muted">In the tool</span>';
+      return `<tr><td class="muted" style="white-space:nowrap">${new Date(e.at).toLocaleString()}</td><td style="white-space:nowrap">${esc(e.username || '—')}</td><td class="l">${clogWhat(e)}</td><td class="l">${src}</td><td class="l">${clogLines(e)}</td></tr>`;
+    }).join('');
+    dlg.innerHTML = `<h2 style="margin:0 0 4px">Change log${site ? ` · ${esc(site)}` : ''}</h2>
+      <p class="muted" style="font-size:12px; margin:0 0 8px">Who changed this budget, when, whether it came from an imported file, and the lines each change moved (open a row). Admins only. Newest first.</p>
+      <div class="row" style="gap:12px; align-items:center; margin-bottom:6px">
+        <label><input type="checkbox" id="clog-imp" ${st.only ? 'checked' : ''}> Imports only</label>
+        <label>Who <select id="clog-who"><option value="">everyone</option>${users.map((u) => `<option ${u === st.who ? 'selected' : ''}>${esc(u)}</option>`).join('')}</select></label>
+        <span class="muted" style="font-size:11.5px">${st.entries.length} loaded${shown.length !== st.entries.length ? `, ${shown.length} shown` : ''}</span>
+      </div>
+      <div style="max-height:62vh; overflow:auto"><table class="list clogt">
+        <tr><th>When</th><th>Who</th><th class="l">What</th><th class="l">From</th><th class="l">Lines moved</th></tr>
+        ${body || `<tr><td colspan="5" class="muted">${st.busy ? 'Loading…' : 'Nothing logged for this budget yet.'}</td></tr>`}
+      </table></div>
+      <div class="row" style="justify-content:space-between; margin-top:10px">
+        <span>${st.more ? `<button class="btn sub" id="clog-more" ${st.busy ? 'disabled' : ''}>Load older (100 more)</button>` : ''}</span>
+        <button class="btn" id="clog-x">Close</button>
+      </div>`;
+    dlg.querySelector('#clog-x').addEventListener('click', () => dlg.close());
+    dlg.querySelector('#clog-imp').addEventListener('change', (ev) => { st.only = ev.target.checked; draw(); });
+    dlg.querySelector('#clog-who').addEventListener('change', (ev) => { st.who = ev.target.value; draw(); });
+    const mo = dlg.querySelector('#clog-more'); if (mo) mo.addEventListener('click', () => load());
+  };
+  const load = async () => {
+    st.busy = true; draw();
+    try {
+      const last = st.entries[st.entries.length - 1];
+      const r = await GET(`/budgets/${b.id}/changes?limit=100${last ? `&before=${last.id}` : ''}`);
+      st.entries.push(...(r.entries || []));
+      st.more = !!r.more;
+    } catch (e) { alert('Could not load the change log: ' + e.message); }
+    st.busy = false; draw();
+  };
+  draw();
+  if (!dlg.open) dlg.showModal();
+  await load();
+}
+
 /* ---- calculated on older formulas? ---- */
 function staleCalc(bv) { return !!bv.engineVersion && bv.budget.calc_version !== bv.engineVersion; }
 function staleBannerHtml(bv) {
@@ -5105,7 +5192,7 @@ function openRowTools(b, gl, anchorBtn) {
   const menu = document.createElement('div');
   menu.className = 'rowmenu';
   // the chip each tool leaves on the row — same tag and colour as the grid (Troy 2026-11-11)
-  const TOOL_CHIP = { billSmooth: ['drv-t12', 'SMOOTHED'], undrop: ['drv-base', 'FLATLINE'], flatGrow: ['drv-base', 'FLATLINE'], flatMonthly: ['drv-base', 'FLATLINE'], flatAnnual: ['drv-base', 'FLATLINE'], ownFormula: ['drv-uw', 'OWN'], zero: ['drv-int', 'ZERO'], grow: ['drv-man', 'MAN'], minot: ['drv-comp', 'MINOT'], t3avg: ['drv-comp', 'T3'], shape: ['drv-base', 'SHAPE'], pctgpr: ['drv-base', '%GPR'], suggest: ['drv-corp', 'CORP'], seller: ['drv-t12', 'SLR'], ownBudget: ['drv-t12', 'CY BUD'], t12curve: ['drv-t12', 'T12C'], link: ['drv-fee', 'LINK'], smooth: ['drv-t12', 'SMOOTH'], recmap: ['drv-t12', 'REC'], wavg: ['drv-comp', 'WAVG'], reset: ['drv-uw', 'ENGINE'], burdenFrom: ['drv-pay', '%WAGES'] };
+  const TOOL_CHIP = { billSmooth: ['drv-t12', 'SMOOTHED'], undrop: ['drv-flat', 'FLATLINE'], flatGrow: ['drv-flat', 'FLATLINE'], flatMonthly: ['drv-flat', 'FLATLINE'], flatAnnual: ['drv-flat', 'FLATLINE'], ownFormula: ['drv-uw', 'OWN'], zero: ['drv-int', 'ZERO'], grow: ['drv-man', 'MAN'], minot: ['drv-comp', 'MINOT'], t3avg: ['drv-comp', 'T3'], shape: ['drv-base', 'SHAPE'], pctgpr: ['drv-base', '%GPR'], suggest: ['drv-corp', 'CORP'], seller: ['drv-t12', 'SLR'], ownBudget: ['drv-t12', 'CY BUD'], t12curve: ['drv-t12', 'T12C'], link: ['drv-fee', 'LINK'], smooth: ['drv-t12', 'SMOOTH'], recmap: ['drv-t12', 'REC'], wavg: ['drv-comp', 'WAVG'], reset: ['drv-uw', 'ENGINE'], burdenFrom: ['drv-pay', '%WAGES'] };
   const dot = (cls, act) => { const c = act && TOOL_CHIP[act]; return c ? `${chipHtml(c[0], c[1])} ` : `<span class="dot ${cls}" style="margin-right:6px"></span>`; };
   menu.innerHTML = `
     <div class="rm-head">${gl} ${esc(acc.name || '')}<br>
@@ -5119,7 +5206,7 @@ function openRowTools(b, gl, anchorBtn) {
       const cur = d0.method === 'flatline' ? d0.per : d0.method === 'baseline' && d0.shape === 'flat' ? 't12' : null;
       const sub = (act, text, on, tip) => `<button class="rm-sub${on ? ' on' : ''}" data-act="${act}" title="${esc(tip)}">${text}${on ? ' <span class="rm-cur">● current</span>' : ''}</button>`;
       const t12 = S.bv.annual ? rowT12(gl) : 0;
-      return `<button class="rm-grp" data-flgrp title="The same amount every month. Click to show the ways to set it.">${dot('drv-base', 'flatGrow')}<b>Flatline</b> <span class="rm-more">${cur ? '▾' : '▸'} ${t12 ? 3 : 2} options</span></button>
+      return `<button class="rm-grp" data-flgrp title="The same amount every month. Click to show the ways to set it.">${dot('drv-flat', 'flatGrow')}<b>Flatline</b> <span class="rm-more">${cur ? '▾' : '▸'} ${t12 ? 3 : 2} options</span></button>
       <div class="rm-subs"${cur ? '' : ' hidden'}>
         ${t12 ? sub('flatGrow', `T12 ÷ 12 × growth… <span class="muted">(T12 ${money(t12)})</span>`, cur === 't12', "Every month = this line's trailing-12 total ÷ 12 × (1 + the growth % you type). Works on any line with history. It replaces the line's own formula until you put it back.") : ''}
         ${sub('flatMonthly', `$ per month…${cur === 'month' ? ` <span class="muted">(${money(d0.amount || 0)})</span>` : ''}`, cur === 'month', 'Type a dollar amount; every month gets it.')}

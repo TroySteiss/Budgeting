@@ -17,6 +17,7 @@
   --drv-sp: #ffe7c2;   --drv-sp-ink: #9a5b00;   /* special projects — manual per site */
   --drv-act: #d6efe3;  --drv-act-ink: #135c3d;  /* posted actuals — closed month locked 1:1 */
   --drv-base: #e8ecf9; --drv-base-ink: #3b4fa0; /* annual: own trailing-12 × factor (template rule) */
+  --drv-flat: #ecd3d8; --drv-flat-ink: #7a1f30; /* FLATLINE: the same every month (Troy 2026-11-24: its own fill) */
   --drv-corp: #fff4d6; --drv-corp-ink: #8a5a00; /* annual: corporate rate / suggestion */
 }
 [data-theme="dark"] {
@@ -37,6 +38,7 @@
   --drv-sp: #3a2a10;   --drv-sp-ink: #f0a848;
   --drv-act: #10302a;  --drv-act-ink: #6fd3a6;
   --drv-base: #1d2240; --drv-base-ink: #9fb0ff;
+  --drv-flat: #3a141c; --drv-flat-ink: #eaa0ad;
   --drv-corp: #3a2e10; --drv-corp-ink: #f0c060;
 }
 
@@ -148,6 +150,7 @@ td.m.hard { box-shadow: inset 0 -2px 0 var(--hard, #c2185b); }
 td.m.drv-man { background: var(--drv-man); }  td.m.drv-man input { color: var(--drv-man-ink); font-weight: 600; }
 td.m.drv-t12 { background: var(--drv-t12); }  td.m.drv-t12 input { color: var(--drv-t12-ink); }
 td.m.drv-base { background: var(--drv-base); } td.m.drv-base input { color: var(--drv-base-ink); }
+td.m.drv-flat { background: var(--drv-flat); } td.m.drv-flat input { color: var(--drv-flat-ink); }
 td.m.drv-corp { background: var(--drv-corp); } td.m.drv-corp input { color: var(--drv-corp-ink); }
 td.ref { text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* blended % vs T12: stands out on a hand-adjusted line, and while a row is being typed */
@@ -180,6 +183,15 @@ input.fxp:focus { border-color: var(--accent); color: var(--ink); outline: none;
 .drv.drv-base { background: var(--drv-base); color: var(--drv-base-ink); }
 .drv.drv-corp { background: var(--drv-corp); color: var(--drv-corp-ink); }
 .dot.drv-base { background: var(--drv-base); } .dot.drv-corp { background: var(--drv-corp); }
+.drv.drv-flat { background: var(--drv-flat); color: var(--drv-flat-ink); } .dot.drv-flat { background: var(--drv-flat); }
+/* change log (admin; 2026-11-24) */
+dialog.clogdlg { max-width: 1150px; width: min(95vw, 1150px); }
+table.clogt td, table.clogt th { vertical-align: top; font-size: 12px; }
+table.clogt td.l, table.clogt th.l { text-align: left; }
+table.clogl { font-size: 11px; margin-top: 4px; }
+table.clogl td, table.clogl th { text-align: right; padding: 1px 6px; }
+table.clogl td.l, table.clogl th.l { text-align: left; }
+.clogimp { background: color-mix(in srgb, var(--accent) 18%, var(--panel)); }
 .drv.drv-none { background: transparent; color: var(--dim); border-style: dashed; }
 .dot.drv-rr { background: var(--drv-rr); } .dot.drv-uw { background: var(--drv-uw); }
 .dot.drv-comp { background: var(--drv-comp); } .dot.drv-pay { background: var(--drv-pay); }

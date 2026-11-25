@@ -7,6 +7,7 @@ import { router, apiErrors, recalcContractBudgets } from './routes.js';
 import { syncRepoContracts } from './contracts.js';
 import { REGIONS, inRegion, type Region } from './db.js';
 import { payrollRouter } from './payroll.js';
+import { flushChangeLog } from './change-log.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -47,3 +48,10 @@ runMigrations()
   .then(loadRepoContracts)
   .then(() => app.listen(port, () => console.log(`budget-tool listening on :${port}`)))
   .catch((e) => { console.error('boot failed', e); process.exit(1); });
+// the change log is queued in memory (change-log.ts): save what is queued before a deploy stops the process
+for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+  process.once(sig, () => {
+    const stop = setTimeout(() => process.exit(0), 3000);
+    flushChangeLog().finally(() => { clearTimeout(stop); process.exit(0); });
+  });
+}
