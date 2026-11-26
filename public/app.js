@@ -165,10 +165,11 @@ function drvMetaBase(l) {
     }
     case 'vacancy': {
       const d = l.driver;
-      if (d.shaped === 'expirations') return { cls: 'drv-rr', tag: 'VAC·EXP', label: `Vacancy averages ${(d.avg * 100).toFixed(2)}% of GPR for the year. Month by month it carries over: ${d.startPct != null ? `it starts from the last actual month (${(d.startPct * 100).toFixed(1)}%), ` : d.anchor === 'steady' ? 'not anchored on the last actual month (every month scales with the average), ' : ''}move-outs land the month after a lease expires and empty units fill gradually (slowest in winter) — ${(Math.min(...d.pcts) * 100).toFixed(1)}% to ${(Math.max(...d.pcts) * 100).toFixed(1)}%${d.weight != null && d.weight < 1 ? ` (${Math.round(d.weight * 100)}% weight on expirations)` : ''}${d.startPct != null ? '. The early months are what that start leaves behind, so a change to the average lands mostly on the later months — untick "starts from the last actual month" under Assumptions to scale every month' : ''}` };
-      if (d.shaped === 'typed') return { cls: 'drv-rr', tag: '%GPR', label: `Vacancy % of GPR typed month by month (averages ${(d.avg * 100).toFixed(2)}%)` };
-      if (d.vacMonths && Object.keys(d.vacMonths).length) return { cls: 'drv-rr', tag: `VAC·${Object.keys(d.vacMonths).length} TYPED`, label: `Vacancy typed for ${Object.entries(d.vacMonths).map(([i, p]) => `${MONTHS[Number(i)]} ${(p * 100).toFixed(2)}%`).join(', ')} of GPR (the row under this line); the other months on the formula${d.avg != null ? ` (averages ${(d.avg * 100).toFixed(2)}%)` : ''}` };
-      return { cls: 'drv-rr', tag: '%GPR', label: d.avg != null ? `Vacancy ${(d.avg * 100).toFixed(2)}% of GPR every month (set flat, or the lease expirations on file cover fewer than nine months)` : '% of GPR' };
+      const gb = d.hapBase ? 'GPR + HAP' : 'GPR';   // the vacancy base: 4994 + the HAP lines (Troy 2026-11-25)
+      if (d.shaped === 'expirations') return { cls: 'drv-rr', tag: 'VAC·EXP', label: `Vacancy averages ${(d.avg * 100).toFixed(2)}% of ${gb} for the year. Month by month it carries over: ${d.startPct != null ? `it starts from the last actual month (${(d.startPct * 100).toFixed(1)}%), ` : d.anchor === 'steady' ? 'not anchored on the last actual month (every month scales with the average), ' : ''}move-outs land the month after a lease expires and empty units fill gradually (slowest in winter) — ${(Math.min(...d.pcts) * 100).toFixed(1)}% to ${(Math.max(...d.pcts) * 100).toFixed(1)}%${d.weight != null && d.weight < 1 ? ` (${Math.round(d.weight * 100)}% weight on expirations)` : ''}${d.startPct != null ? '. The early months are what that start leaves behind, so a change to the average lands mostly on the later months — untick "starts from the last actual month" under Assumptions to scale every month' : ''}` };
+      if (d.shaped === 'typed') return { cls: 'drv-rr', tag: '%GPR', label: `Vacancy % of ${gb} typed month by month (averages ${(d.avg * 100).toFixed(2)}%)` };
+      if (d.vacMonths && Object.keys(d.vacMonths).length) return { cls: 'drv-rr', tag: `VAC·${Object.keys(d.vacMonths).length} TYPED`, label: `Vacancy typed for ${Object.entries(d.vacMonths).map(([i, p]) => `${MONTHS[Number(i)]} ${(p * 100).toFixed(2)}%`).join(', ')} of ${gb} (the row under this line); the other months on the formula${d.avg != null ? ` (averages ${(d.avg * 100).toFixed(2)}%)` : ''}` };
+      return { cls: 'drv-rr', tag: '%GPR', label: d.avg != null ? `Vacancy ${(d.avg * 100).toFixed(2)}% of ${gb} every month (set flat, or the lease expirations on file cover fewer than nine months)` : `% of ${gb}` };
     }
     case 'contract': {
       const d = l.driver, items = (d.items || []).map((x) => `${x.vendor || 'contract'} $${money(x.annual)}${x.review ? ` [${x.review.rowId}]` : ''}`).join(' + ');
@@ -1672,6 +1673,14 @@ function renderEditor(el) {
     // Enter in a category % box hops to the next one (Troy 2026-11-09) — Apply still applies
     const blp = [...dlg.querySelectorAll('.in-blpct')];
     blp.forEach((x, i) => x.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); const n = blp[i + 1]; if (n) { n.focus(); n.select(); } } }));
+    // Enter in a rent box (GPR base, the % increase in each month) = Apply & regenerate (Troy 2026-11-25: "when
+    // adjusting rents growth, I should be able to hit enter instead of Apply and regen")
+    dlg.querySelectorAll('.in-gprstep, #in-gprbase, #in-gprgrow').forEach((x) => x.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const btn = dlg.querySelector('#inp-apply');
+      if (btn && !btn.disabled) btn.click();
+    }));
     dlg.querySelector('#inp-apply').addEventListener('click', async () => {
       const btn = dlg.querySelector('#inp-apply');
       btn.disabled = true; btn.textContent = 'Applying…';
@@ -2041,7 +2050,7 @@ function overallOf(gl, l, linesByGl, totals, refA) {
   const perUnit = (v) => { const u = Number((S.bv.budget.inputs || {}).units) || 0; return u ? { v: v / u, kind: 'unit', what: `${u} units` } : null; };
   const netRental = () => coa.filter((a) => a.kind === 'detail' && (a.pcode === '1' || a.pcode === 'loss' || a.pcode === '2' || ['5031', '5032', '5033', '5034'].includes(a.code))).reduce((x, a) => x + Y(a.code), 0);
   switch (d.method) {
-    case 'vacancy': return ratio(Y('4994'), 'GPR');
+    case 'vacancy': return ratio(Y('4994') + Y('4995') + Y('4996'), 'GPR + HAP');
     case 'ltl': return ratio(Y('4994'), 'GPR');
     case 'pctGpr': return d.of === 'net' ? ratio(netRental(), 'net rental') : d.of === 'netgpr' ? ratio(Y('4994') + Y('4995') + Y('4996') + Y('5003'), 'GPR less LTL') : ratio(Y('4994'), 'GPR');
     case 'collections': {
@@ -2122,14 +2131,17 @@ function gridHtml(bv, totals) {
   // GPR vs T12"): the line as a share of 4994 in that column, so the budget's own share (the Overall column) compares
   const coaPcode = new Map(coa.map((a) => [a.code, a.pcode]));
   const GPR_SHARE_PCODES = new Set(['loss', '2', '3']);
-  const gprShare = (v, g) => (Math.abs(g) > 0.5 && v ? `<span class="sumsub" title="% of GPR (4994) in this column">${(Math.abs(v) / Math.abs(g) * 100).toFixed(2)}%</span>` : '');
+  const gprShare = (v, g, hap) => (Math.abs(g) > 0.5 && v ? `<span class="sumsub" title="% of ${hap ? 'GPR + HAP (4994 + 4995 + 4996, the vacancy base)' : 'GPR (4994)'} in this column">${(Math.abs(v) / Math.abs(g) * 100).toFixed(2)}%</span>` : '');
+  // vacancy (5031) reads on GPR + HAP, its own base (Troy 2026-11-25); the other contra lines on 4994
+  const gprOf = (byGl, code) => (byGl['4994'] || 0) + (code === '5031' ? (byGl['4995'] || 0) + (byGl['4996'] || 0) : 0);
   const refCell = (ref, code, kind) => {
     if (!ref) return '';
     const v = kind === 'total' ? ref.totals[code] : ref.byGl[code];
-    const sub = kind === 'detail' && GPR_SHARE_PCODES.has(coaPcode.get(code)) ? gprShare(v, ref.byGl['4994'] || 0) : '';
+    const sub = kind === 'detail' && GPR_SHARE_PCODES.has(coaPcode.get(code)) ? gprShare(v, gprOf(ref.byGl, code), code === '5031') : '';
     return `<td class="ref ${v < 0 ? 'neg' : ''}">${v ? money(v) : ''}${sub}</td>`;
   };
   const budGpr = sumM(((linesByGl.get('4994') || {}).months) || []);
+  const budGprHap = budGpr + sumM(((linesByGl.get('4995') || {}).months) || []) + sumM(((linesByGl.get('4996') || {}).months) || []);
   // blended increase over the T12 (Troy 2026-11-09): the line's year total vs its trailing-12,
   // right beside the total — so a hand-typed line shows what % it comes out to. The cell carries
   // its T12 so it can update live while a row is being typed (see the month / total handlers).
@@ -2328,6 +2340,15 @@ function gridHtml(bv, totals) {
     const hardSet = l && l.override ? (Array.isArray((l.driver || {}).hard) ? new Set(l.driver.hard) : (l.driver || {}).smooth || (l.driver || {}).method === 'smooth' ? new Set() : 'all') : null;
     const isHard = (i) => !!hardSet && (hardSet === 'all' ? !!m[i] : hardSet.has(i));
     const hard = hardSet === 'all';
+    // LOCKED VACANCY MONTHS (Troy 2026-11-25: "notate w formatting & maybe a lock icon for hard coded vacancy amounts"):
+    // on 5031 a month typed as a % of GPR (the row under the line: inputs.vacancyMonthPct, the same boxes that row
+    // shows bold, so the two rows always agree) or typed as dollars is hard-coded, so the cell carries the hard look plus
+    // a lock badge; the hover says which and how to release it
+    const vacTyped = a.code === '5031' && l ? (((bv.budget || {}).inputs || {}).vacancyMonthPct || (l.driver && l.driver.vacMonths) || null) : null;
+    const vacLock = (i) => a.code === '5031' && !!l && !actIdx.has(i) && ((vacTyped && vacTyped[i] != null) || isHard(i));
+    const vacLockTip = (i) => (vacTyped && vacTyped[i] != null
+      ? `Locked: vacancy typed at ${(Math.abs(vacTyped[i]) * 100).toFixed(2)}% of GPR for ${labels[i] || MONTHS[i]} (the % row under this line). The formula, the T12 fit and the acquisition plan do not touch it; clear that % box to put the month back on the formula.`
+      : 'Locked: this vacancy amount was typed by hand. Formulas do not touch it; 🔓 in the row tools puts the line back on its formula.');
     // cells set by the ND 2027 Budget Review: bold teal, hover = the review row(s) behind the number. A cell typed
     // over later is hand-typed (magenta) instead.
     // a CONTRACT line filed from the review: its contracts carry the row and the months they bill
@@ -2363,8 +2384,8 @@ function gridHtml(bv, totals) {
       <td class="code">${a.code}</td>
       <td class="name${histFor(a.code).length ? ' hashist' : ''}" ${histFor(a.code).length ? `data-hist="${a.code}"` : ''} title="${esc(a.name)} ${a.pcode ? '· cat ' + a.pcode : ''}${histFor(a.code).length ? ' — click for the prior T12 / CY budget by month' : ''}">${histFor(a.code).length ? `<span class="hx">${histOpen(a.code) ? '▾' : '▸'}</span>` : ''}${esc(a.name)}${smell ? ` <span class="warnflag" title="Seller billing looks NON-ACCRUAL: ${esc(smell.join('; '))}. Likely bad bills — review, or smooth via WAVG / flat / Minot seasonal.">⚠</span>` : ''}${a.active === false ? ' <span class="badge" title="Deactivated GL still carrying dollars — Recalc zeroes it">inactive — recalc to zero</span>' : ''}${l && l.override ? ` <button class="rb" data-unlock="${a.code}" title="Clear manual override">🔓</button>` : ''}</td>
       ${cols.fx ? `<td style="white-space:nowrap"><button class="drv drv-has ${dm.cls}" data-tools="${a.code}" title="${esc(dm.label)} — click for this line's formula options">${dm.tag}<span class="drv-more" aria-hidden="true">▾</span></button>${drvExtraHtml({ extra: (dm.extra || []).filter((x) => !x.fit) })}${fitChipHtml(a.code, l)}${l && l.round ? `<span class="rnd" title="Standing MROUND to $${l.round} — re-applies on regeneration">≈${l.round}</span>` : ''}${prm ? (prm.steps ? `<button class="fxp fxp-steps" data-steps="${a.code}" title="${esc(prm.label)} — click to place increases in specific months">${esc(prm.value)}</button>` : prm.multi ? `<button class="fxp fxp-steps" data-multi="${a.code}" title="${esc(prm.title || '')} — click to edit every input">${esc(prm.summary)}</button>` : `<input class="fxp" data-fxp="${a.code}" value="${prm.value}" title="${esc(prm.label)} — Enter applies & regenerates">${/%/.test(prm.label) ? '<span class="fxu" title="percent">%</span>' : ''}`) : ''}</td>` : ''}
-      ${monthIdx.map((i) => `<td class="m ${actIdx.has(i) ? 'drv-act' : sp ? '' : dm.cls}${isHard(i) && !actIdx.has(i) ? ' hard' : ''}${revAt(i) && !actIdx.has(i) ? ' rev' : ''}"${isHard(i) && !actIdx.has(i) ? ' title="Hard-coded: this cell was typed or fixed by hand. 🔓 in the row tools puts the line back on its formula."' : revAt(i) && !actIdx.has(i) ? ` title="${esc(revTip(i))}"` : ''}><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money(Math.round(m[i]) || 0) : ''}"></td>`).join('')}
-      ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}${hard && ann ? ' hard' : ''}"><input data-ann="${a.code}" value="${ann ? money(Math.round(ann) || 0) : ''}" title="${bv.annual ? bv.budget.year : 'Year 1'} total — type a new total and the months rescale proportionally (distribution kept)">${bv.annual && GPR_SHARE_PCODES.has(a.pcode) ? gprShare(ann, budGpr) : ''}</td>` : ''}
+      ${monthIdx.map((i) => `<td class="m ${actIdx.has(i) ? 'drv-act' : sp ? '' : dm.cls}${(isHard(i) || vacLock(i)) && !actIdx.has(i) ? ' hard' : ''}${vacLock(i) ? ' vlock' : ''}${revAt(i) && !actIdx.has(i) ? ' rev' : ''}"${vacLock(i) ? ` title="${esc(vacLockTip(i))}"` : isHard(i) && !actIdx.has(i) ? ' title="Hard-coded: this cell was typed or fixed by hand. 🔓 in the row tools puts the line back on its formula."' : revAt(i) && !actIdx.has(i) ? ` title="${esc(revTip(i))}"` : ''}><input data-gl="${a.code}" data-i="${i}" value="${m[i] ? money(Math.round(m[i]) || 0) : ''}"></td>`).join('')}
+      ${cols.annual ? `<td class="ann ${ann < 0 ? 'neg' : ''}${hard && ann ? ' hard' : ''}"><input data-ann="${a.code}" value="${ann ? money(Math.round(ann) || 0) : ''}" title="${bv.annual ? bv.budget.year : 'Year 1'} total — type a new total and the months rescale proportionally (distribution kept)">${bv.annual && GPR_SHARE_PCODES.has(a.pcode) ? (a.code === '5031' ? gprShare(ann, budGprHap, true) : gprShare(ann, budGpr)) : ''}</td>` : ''}
       ${refCells(a.code, 'detail', ann, !!(l && l.override))}
       ${cols.punit ? `<td>${ann ? money(ann / units) : ''}</td>` : ''}
       ${cols.note ? `<td class="note"><input data-gl="${a.code}" value="${esc(l ? l.note : '')}" placeholder="note"></td>` : ''}
@@ -2390,7 +2411,7 @@ function gridHtml(bv, totals) {
       const yr = gm.reduce((x, v) => x + v, 0), vy = vm.reduce((x, v) => x + Math.abs(v || 0), 0);
       rows.push(`<tr class="vacpct" title="Vacancy as a % of GPR (4994 + HAP) each month. Type a % in a month to set that month's vacancy to it — it overrides the formula, the T12 fit and the acquisition plan for that month only (bold). Clear the box to put the month back on the formula.">
         <td class="code"></td><td class="name">VACANCY % OF GPR <span class="muted">(type to set a month)</span></td>${cols.fx ? '<td></td>' : ''}
-        ${monthIdx.map((i) => `<td><input class="vacm${typedV[i] != null ? ' typed' : ''}" data-vm="${i}" value="${(pv(i) * 100).toFixed(2)}" title="${typedV[i] != null ? `Typed: ${(typedV[i] * 100).toFixed(2)}% of GPR — clear to go back to the formula` : 'From the formula — type a % to set this month'}"></td>`).join('')}
+        ${monthIdx.map((i) => `<td${typedV[i] != null ? ' class="vlock"' : ''}><input class="vacm${typedV[i] != null ? ' typed' : ''}" data-vm="${i}" value="${(pv(i) * 100).toFixed(2)}" title="${typedV[i] != null ? `Locked: typed ${(typedV[i] * 100).toFixed(2)}% of GPR for ${labels[i] || MONTHS[i]}; the 5031 month above is held to it. Clear the box to go back to the formula` : 'From the formula — type a % to set this month'}"></td>`).join('')}
         ${cols.annual ? `<td>${yr ? ((vy / yr) * 100).toFixed(2) + '%' : ''}</td>` : ''}${cols.overall ? '<td></td>' : ''}${cols.refpct ? '<td></td>' : ''}${cols.ref1 ? '<td></td>' : ''}${cols.ref3 ? '<td></td>' : ''}${cols.ref2 ? '<td></td>' : ''}
         ${cols.punit ? '<td></td>' : ''}${cols.note ? '<td></td>' : ''}</tr>`);
     }
@@ -2400,13 +2421,14 @@ function gridHtml(bv, totals) {
       const gls = ['5031', '5032', '5033', '5034'];
       const em = Array(12).fill(0);
       for (const g of gls) ((linesByGl.get(g) || {}).months || []).forEach((v, i) => { em[i] += Number(v) || 0; });
-      const gm = ((linesByGl.get('4994') || {}).months) || Array(12).fill(0);
+      const gm = Array(12).fill(0);   // GPR + HAP, the vacancy base
+      for (const g of ['4994', '4995', '4996']) ((linesByGl.get(g) || {}).months || []).forEach((v, i) => { gm[i] += Number(v) || 0; });
       const et = sumM(em);
-      const refSh = (ref) => { if (!ref) return '<td class="ref"></td>'; const g = ref.byGl['4994'] || 0, v = gls.reduce((x, c) => x + (ref.byGl[c] || 0), 0); return `<td class="ref">${g ? (Math.abs(v) / Math.abs(g) * 100).toFixed(2) + '%' : ''}</td>`; };
-      rows.push(`<tr class="vacpct econ" title="Economic vacancy: vacancy + models + admin + down units (5031–5034) as a % of GPR (4994) each month. Reference only.">
+      const refSh = (ref) => { if (!ref) return '<td class="ref"></td>'; const g = gprOf(ref.byGl, '5031'), v = gls.reduce((x, c) => x + (ref.byGl[c] || 0), 0); return `<td class="ref">${g ? (Math.abs(v) / Math.abs(g) * 100).toFixed(2) + '%' : ''}</td>`; };
+      rows.push(`<tr class="vacpct econ" title="Economic vacancy: vacancy + models + admin + down units (5031–5034) as a % of GPR + HAP (4994 + 4995 + 4996, the vacancy base) each month. Reference only.">
         <td class="code"></td><td class="name">VACANCY + MODELS / ADMIN / DOWN % OF GPR <span class="muted">(reference)</span></td>${cols.fx ? '<td></td>' : ''}
         ${monthIdx.map((i) => `<td class="muted">${gm[i] ? (Math.abs(em[i]) / Math.abs(gm[i]) * 100).toFixed(2) + '%' : ''}</td>`).join('')}
-        ${cols.annual ? `<td>${budGpr ? (Math.abs(et) / Math.abs(budGpr) * 100).toFixed(2) + '%' : ''}</td>` : ''}${cols.overall ? '<td></td>' : ''}${cols.refpct ? '<td></td>' : ''}${cols.ref1 ? refSh(refA) : ''}${cols.ref3 ? refSh(refT3) : ''}${cols.ref2 ? refSh(refB) : ''}
+        ${cols.annual ? `<td>${budGprHap ? (Math.abs(et) / Math.abs(budGprHap) * 100).toFixed(2) + '%' : ''}</td>` : ''}${cols.overall ? '<td></td>' : ''}${cols.refpct ? '<td></td>' : ''}${cols.ref1 ? refSh(refA) : ''}${cols.ref3 ? refSh(refT3) : ''}${cols.ref2 ? refSh(refB) : ''}
         ${cols.punit ? '<td></td>' : ''}${cols.note ? '<td></td>' : ''}</tr>`);
     }
     // NET DELINQUENCY (Troy 2026-11-12: "Need subtotal line for combined Current DQ and Prior Period Collections"):
@@ -2629,13 +2651,21 @@ function openGprSteps(b, anchorBtn) {
   menu.querySelectorAll('.pop-gprstep').forEach((x) => x.addEventListener('input', () => { menu.querySelector('#pop-gprsum').textContent = gprStepsSummary(readGprSteps(menu, 'pop-gprstep', [])); }));
   menu.querySelector('[data-act="clear"]').addEventListener('click', () => { menu.querySelectorAll('.pop-gprstep').forEach((x) => { x.value = ''; }); wireGprCum(menu, 'pop-gprstep'); menu.querySelectorAll('.pop-gprstep')[0].dispatchEvent(new Event('input')); });
   menu.querySelector('#pop-gprm0-x').addEventListener('click', () => { menu.querySelector('#pop-gprm0').value = ''; });
-  menu.querySelector('[data-act="save"]').addEventListener('click', async () => {
+  let saving = false;
+  const save = async () => {
+    if (saving) return;
+    saving = true;
     const steps = readGprSteps(menu, 'pop-gprstep', []);
     const m0 = parseFloat(String(menu.querySelector('#pop-gprm0').value).replace(/[$,\s]/g, ''));
     pushUndo();
-    S.bv = await PUT(`/budgets/${b.id}`, { inputs: { gpr: { ...g, growthPct: steps, month0: Number.isFinite(m0) && m0 > 0 ? m0 : null } } });
+    try {
+      S.bv = await PUT(`/budgets/${b.id}`, { inputs: { gpr: { ...g, growthPct: steps, month0: Number.isFinite(m0) && m0 > 0 ? m0 : null } } });
+    } catch (err) { saving = false; alert(err.message); return; }
     close(); render();
-  });
+  };
+  menu.querySelector('[data-act="save"]').addEventListener('click', save);
+  // Enter in any box = Save & regenerate (Troy 2026-11-25)
+  menu.querySelectorAll('.pop-gprstep, #pop-gprm0').forEach((x) => x.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } }));
 }
 
 /* A formula with several inputs (LTL renewal % + burnoffs, corporate rate,
@@ -2928,6 +2958,7 @@ function openTagKey() {
   dlg.innerHTML = `<h2>Chip key</h2>
     <table class="list" style="font-size:12.5px">${TAG_KEY.map(([t, d]) => `<tr><td style="white-space:nowrap"><span class="drv" style="background:var(--soft)">${esc(t)}</span></td><td>${esc(d)}</td></tr>`).join('')}</table>
     <p style="font-size:12.5px; margin:10px 0 0"><span class="hardkey">1,234</span> — a cell in bold in this colour is <b>hard-coded</b>: typed by hand. When a whole line was fixed at once (a typed total, an import) every month of it is marked. A smoothed line is not marked: its formula still drives it.</p>
+    <p style="font-size:12.5px; margin:6px 0 0"><span class="hardkey">🔒 1,234</span> — a vacancy (5031) month with the lock is <b>held</b>: typed as a % of GPR in the row under the line, or typed as dollars. Hover the cell for which; clear the % box (or 🔓 the line) to release it.</p>
     <p style="font-size:12.5px; margin:6px 0 0"><span class="revkey">1,234</span> — bold in this colour, on a <b>REVIEW</b> line: set by the ND 2027 Budget Review workbook (a contract, a KB rule, a floor). Hover the number for the review row behind it — item, action, firmness, basis and source.</p>
     <div class="row" style="justify-content:flex-end; margin-top:10px"><button class="btn" id="tagkey-x">Close</button></div>`;
   dlg.querySelector('#tagkey-x').addEventListener('click', () => dlg.close());
@@ -3682,7 +3713,8 @@ function defaultsInUse(bv) {
   // vacancy
   const vl = lines.get('5031') || {};
   const vAvg = (inp.vacancyPct || [])[0] || 0;
-  const t12Vac = t12['4994'] ? Math.abs(t12['5031'] || 0) / t12['4994'] : null;
+  const t12GprHap = (t12['4994'] || 0) + (t12['4995'] || 0) + (t12['4996'] || 0);   // the vacancy base: GPR + HAP
+  const t12Vac = t12GprHap ? Math.abs(t12['5031'] || 0) / t12GprHap : null;
   add('vac', 'Vacancy', vl.override ? `typed by hand on the row (${money(tot('5031'))}); the average and the expirations shape are off` : `${pc(vAvg, 2)} annual average${t12Vac != null ? ` (T12 was ${pc(t12Vac, 2)})` : ''}, ${Math.round((inp.vacancyExpWeight ?? 1) * 100)}% on the move-out / carry-over curve${inp.vacancyStart === 'steady' ? ', not anchored on the last actual month' : ', starting from the last actual month'}`, !vl.override && t12Vac != null && Math.abs(vAvg - t12Vac) < 0.0006 && inp.vacancyExpWeight == null && !inp.vacancyStart);
   { const ur = Object.entries(inp.utilRecovery || {}).filter(([, v]) => v != null); if (ur.length) add('utilrec', 'Utility recovery targets', ur.map(([k, v]) => `${k} ${pc(v, 1)} of the expense`).join(', '), false); }
   // GPR base vs last posted

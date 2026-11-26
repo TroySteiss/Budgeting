@@ -40,7 +40,7 @@ import {
 /** Bump whenever a formula or default changes what a (re)calculation produces. A budget is
     stamped with it on every full build (budgets.calc_version); the editor flags a budget
     calculated on an older one, because stored lines only move on Recalc. */
-export const ENGINE_VERSION = '2026-11-25a';   // a: trash reim never capped; typed recovery targets; fee rate follows the income month; one-time spikes move the largest month only (row shapes keep their months); a row shape wins over a set's zero; collection fee without the chain; January GPR start; LTL % of GPR; fit toward flat; vacancy anchor switch
+export const ENGINE_VERSION = '2026-11-25b';   // b: vacancy on GPR + HAP (4994 + 4995 + 4996), the % row's base; a: trash reim never capped; typed recovery targets; fee rate follows the income month; one-time spikes move the largest month only (row shapes keep their months); a row shape wins over a set's zero; collection fee without the chain; January GPR start; LTL % of GPR; fit toward flat; vacancy anchor switch
 // (2026-11-19e: LTL market growth off the rent roll GPR, not GPR net of HAP)
 // 2026-11-19d: 5157 = move-ins × setup fee ($150) + VCR admin fees
 // 2026-11-19c: per-move-in income follows turnover from the T12
@@ -2477,23 +2477,37 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
 
   /* ---- vacancy: the input is the annual average % of GPR; lease expirations (+1 month)
      decide which months carry more or less of it (vacancyByMonth) ---- */
-  // the chain starts from the last ACTUAL month's vacancy % (posted, not the budget base)
-  const actLastGpr = (src.actual?.['4994'] || zero12())[lastMonth - 1] || 0;
+  /* VACANCY BASE = GPR + HAP (Kara Garrison's "GPR + HAP" note, Troy 2026-11-25: "needs to be adjusted to account for
+     HAP"; DEVILS_ADVOCATE 2026-11-05). The vacancy % is of 4994 + the HAP lines 4995 / 4996, the same base as the
+     "VACANCY % OF GPR" row, a month's typed % (vacancyMonthOverride) and the T12 default %. Before, the formula ran on
+     4994 alone (net of HAP), so on a HAP site the row read lower than the input. On a UAD base that is the roll's gross
+     GPR (4994 is squared to it once the HAP lines are final); off the last actual month it is 4994 + the HAP lines held
+     at their last month (or their row shape). */
+  const hapVac = zero12();
+  for (const gl of ['4995', '4996']) {
+    if (hapFromRoll || !coaByCode.has(gl)) continue;
+    const m = userShaped.has(gl) ? lines.get(gl)!.months : (Array(12).fill(lastOf(gl)) as Months);
+    for (let i = 0; i < 12; i++) hapVac[i] = r2(hapVac[i] + (m[i] || 0));
+  }
+  const vacBase = gpr.map((v, i) => r2(v + (hapFromRoll ? hapEarly[i] : hapVac[i]))) as Months;
+  // the chain starts from the last ACTUAL month's vacancy % (posted, not the budget base) of that month's GPR + HAP
+  const actLast = (gl: string): number => (src.actual?.[gl] || zero12())[lastMonth - 1] || 0;
+  const actLastGpr = actLast('4994') + actLast('4995') + actLast('4996');
   // ANCHOR SWITCH (Riley Combs 2026-11-24: "When I adjust the vacancy %, it only is adjusting June-Dec"): with the chain
   // anchored on the last actual month, the early months are what that month leaves behind and only the later months
   // answer to the average. inputs.vacancyStart = 'steady' drops the anchor: the chain runs from its own steady state
   // and every month scales with the average (the shape stays: winter fills slowest).
   const vacStart = inputs.vacancyStart === 'steady' ? null : actLastGpr > 0 ? Math.abs((src.actual?.['5031'] || zero12())[lastMonth - 1] || 0) / actLastGpr : null;
-  const vac = vacancyByMonth(inputs.vacancyPct, exp, gpr as Months, inputs.vacancyExpWeight ?? 1, { startPct: vacStart, lastMonth });
+  const vac = vacancyByMonth(inputs.vacancyPct, exp, vacBase, inputs.vacancyExpWeight ?? 1, { startPct: vacStart, lastMonth });
   const vacPct = vac.pcts;
   if (!isSet('5031')) {
-    const months = gpr.map((v, i) => -r2(vacPct[i] * v)) as Months;
+    const months = vacBase.map((v, i) => -r2(vacPct[i] * v)) as Months;
     if (vac.shaped === 'expirations') {
-      // rounding: the year still totals average x GPR — the cent difference goes on the largest month
-      const drift = r2(-r2(vac.avg * sum(gpr)) - sum(months));
+      // rounding: the year still totals average x (GPR + HAP) — the cent difference goes on the largest month
+      const drift = r2(-r2(vac.avg * sum(vacBase)) - sum(months));
       if (drift) { const bi = months.reduce((mi, v, i) => (Math.abs(v) > Math.abs(months[mi]) ? i : mi), 0); months[bi] = r2(months[bi] + drift); }
     }
-    mk('5031', months, { method: 'vacancy', avg: Math.round(vac.avg * 1e6) / 1e6, shaped: vac.shaped, pcts: vacPct, weight: inputs.vacancyExpWeight ?? 1, ...(vac.startPct != null ? { startPct: Math.round(vac.startPct * 1e6) / 1e6 } : {}), ...(inputs.vacancyStart === 'steady' ? { anchor: 'steady' } : {}) } as any);
+    mk('5031', months, { method: 'vacancy', ...(sum(vacBase) !== sum(gpr) ? { hapBase: r2(sum(vacBase) - sum(gpr)) } : {}), avg: Math.round(vac.avg * 1e6) / 1e6, shaped: vac.shaped, pcts: vacPct, weight: inputs.vacancyExpWeight ?? 1, ...(vac.startPct != null ? { startPct: Math.round(vac.startPct * 1e6) / 1e6 } : {}), ...(inputs.vacancyStart === 'steady' ? { anchor: 'steady' } : {}) } as any);
   }
 
   /* ---- concessions & other rental loss: TRAILING-12 ratio to GPR × GPR (Troy:
@@ -2782,7 +2796,7 @@ export function generateAnnualLines(coaList: CoaAccount[], inputs: BudgetInputs,
   if (flatFeeBilling(inputs, src.propertyCode)) {
     const act = src.actual || {};
     const lastAct = (gl: string): number => (act[gl] || zero12())[lastMonth - 1] || 0;
-    const lastGprA = lastAct('4994');
+    const lastGprA = lastAct('4994') + lastAct('4995') + lastAct('4996');   // GPR + HAP, the vacancy base
     const occLast = lastGprA > 0 ? Math.min(1, Math.max(0.5, 1 - Math.abs(lastAct('5031')) / lastGprA)) : 1;
     // the package schedule, when entered: the total from fee x occupied units as leases switch over,
     // split across the reimbursement GLs by the last actual month's mix (else the last-month rule below)
@@ -3788,8 +3802,9 @@ export function defaultAnnualInputs(year: number, units: number, actual: Record<
   const ratio = (v: number, lo = 0, hi = 1) => (gpr ? Math.min(hi, Math.max(lo, Math.abs(v) / gpr)) : 0);
   const income = ['1', 'loss', '2', '3', '4', '5'].reduce((a, p) => r2(a + catTot(p)), 0);
   const mgmt = tot('6112');
-  // vacancy %: the TRAILING-12 ratio (Troy — not the template's October %)
-  const vac = gpr ? ratio(tot('5031'), 0, 0.5) : 0.05;
+  // vacancy %: the TRAILING-12 ratio (Troy — not the template's October %), of GPR + HAP (the vacancy base)
+  const gprHap = gpr + tot('4995') + tot('4996');
+  const vac = gprHap ? Math.min(0.5, Math.abs(tot('5031')) / gprHap) : 0.05;
   return {
     mode: 'annual',
     year, units: units || tpl?.units || 0, capital: tpl?.capital || 0, loan: 0, rate: 0, startMonth: 1,

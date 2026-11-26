@@ -2001,6 +2001,27 @@ describe('HAP inside GPR', () => {
     expect(L(ls, '4994').months[0]).toBe(10000);
     expect((L(ls, '4994').driver as any).hap).toBeUndefined();
   });
+  /* Vacancy base = GPR + HAP (Kara's "GPR + HAP" note, Troy 2026-11-25): the % is of 4994 + the HAP lines, the same base
+     as the "VACANCY % OF GPR" row and a typed month, so the row reads what was input. */
+  const vacOn = (ls: ReturnType<typeof generateAnnualLines>) => {
+    const v = L(ls, '5031'), g = L(ls, '4994').months, h = L(ls, '4996').months, p = (v.driver as any).pcts as number[];
+    for (let i = 0; i < 12; i++) expect(Math.abs(v.months[i] + p[i] * (g[i] + h[i]))).toBeLessThan(1);   // cents of rounding
+    return v;
+  };
+  it('vacancy is a % of GPR + HAP: off the rent roll (the roll gross)', () => {
+    const ls = generateAnnualLines(coaList, roll, { actual, budget: null, lastMonth: 10, leases, charges: { subsidy: 800 } });
+    const v = vacOn(ls);
+    expect((v.driver as any).hapBase).toBe(9600);                   // 800 x 12 in the base
+  });
+  it('vacancy is a % of GPR + HAP: off the last actual month (4994 net + the HAP line held)', () => {
+    const ls = generateAnnualLines(coaList, inputs, { actual, budget: null, lastMonth: 10 });
+    const v = vacOn(ls);
+    expect((v.driver as any).hapBase).toBe(8400);                   // 700 x 12
+  });
+  it('the T12 default vacancy % is of GPR + HAP', () => {
+    const noHap = baseInputs(2027, 10, synthetic(), null, coaList, null, 10);
+    expect(inputs.vacancyPct![0]).toBeLessThan(noHap.vacancyPct![0]);
+  });
 });
 const r2n = (v: number) => Math.round(v * 100) / 100;
 
